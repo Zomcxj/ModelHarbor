@@ -50,8 +50,8 @@ cargo build --release
 | `openai-responses` / `openai-codex-responses` | `POST {base}/responses` | `Authorization: Bearer` |
 | `azure-openai-responses` | `POST {base}/responses` | `api-key` |
 | `anthropic-messages` | `POST {base}/v1/messages` | `x-api-key` + `anthropic-version` |
-| `google-generative-ai` | `POST {base}/models/{model}:generateContent` | `?key=` 查询参数 |
-| `google-vertex` | `POST {base}/publishers/google/models/{model}:generateContent` | `Authorization: Bearer` |
+| `google-generative-ai` | `POST {base}/models/{model}:streamGenerateContent?alt=sse` | `?key=` 查询参数 |
+| `google-vertex` | `POST {base}/publishers/google/models/{model}:streamGenerateContent?alt=sse` | `Authorization: Bearer` |
 | `pi-messages` | `POST {base}/messages` | `Authorization: Bearer` |
 | `google-gemini-cli` / `bedrock-converse-stream` | 不支持 | 需专有签名 / 私有网关 |
 
@@ -59,10 +59,23 @@ cargo build --release
   （pi / oh-my-pi / DSH 的 base 不含 `/v1`，opencode 的 baseURL 必带 `/v1`，见「注意事项」）
 
 - **厂商连通性**：Providers 标题行右侧「连通性测试」按钮，一键测试当前页面全部厂商，耗时显示在各厂商卡片名字右侧（失败显示错误码，悬停看完整错误）；卡片收起时依然可见
-- **模型延迟**：每个 provider 的 Models 标题右侧「模型延迟」按钮，并发测试该 provider 的全部模型（每批 8 个），结果显示在模型卡片头部，并实时显示测试进度
-- 超时判定 10 秒；耗时着色：<5 秒绿色、5~10 秒黄色、>10 秒红色；测试中显示乱码动画
+- **模型延迟**：每个模型行的「测试」按钮（在拖动按钮右侧，结果就在按钮右侧），**一次只测一个模型**，没有批量入口
+- 测的是**首字延迟**（全程流式）：请求发出 → 第一个带内容的 SSE 块到达；其余协议在同端点靠请求体 `stream: true` 区分，Google 系换动词/加 `?alt=sse`
+- 超时判定 10 秒（单个读操作 / 首字的等待上限）；着色：<2 秒绿色、2~5 秒黄色、≥5 秒红色；测试中显示乱码动画
 - 不支持自动测试的协议直接报错提示，不发无意义的请求
-- 测试会消耗极少量 token（单条最短对话），请勿在计费敏感的账号上频繁测试
+
+### 模型延迟的防封号保护
+
+中转站（API 代理）普遍带「多 IP 检测 / 测活封号」风控，所以模型延迟按「单发、低频、像人」设计：
+
+- **网络守卫**：检测到 Windows 系统代理（含 PAC）或处于 `Up` 状态的 VPN / TUN 网卡时，直接禁用模型延迟测试，并在 Providers 标题行给出原因（每 5 秒复查，关掉代理后自动恢复）；厂商「连通性测试」不受影响（只拉模型列表，不做推理）
+- **节流（按厂商各自计数，跨厂商不牽连）**：同一厂商的任意两次探测（同模型、不同模型都算）至少间隔 5 秒，且同一厂商同时只允许一个探测在飞（探测最长 10 秒）；不同厂商之间没有间隔，可以并行测。按钮上显示剩余冷却秒数，悬停有说明
+- **问句轮换**：请求体是题库里的 24 条跨领域常识名词题（地理 / 天文 / 生物 / 化学 / 物理 / 文学 / 艺术 / 音乐 / 历史，均为「一句话能答」的定论型题目），按 provider key 偏移 + 轮换游标选取，不再固定发 `ping`；**不校验答案**，判定只看「有没有出字」与首字耗时
+- **全协议流式**：主流客户端默认全部流式，同步请求在中转站日志里会显示成「类型：同步」，反而是少数派特征；因此探测一律带 `stream: true`（Google 系走 `:streamGenerateContent`），并带上 SDK 惯用的 `Accept: text/event-stream`
+- **把流读完**：测到首字后仍继续读到 `[DONE]` / `message_stop` / `response.completed` / EOF（上限 64 KB）才关连接——真实客户端不会拿到流就断，匆匆断开反而像探测流量
+- **客户端身份**：`User-Agent` 按协议伪装成白名单客户端（Anthropic / pi-messages → `claude-cli/…`，OpenAI 兼容 / Responses / Google → `opencode/…`）——中转站普遍只放行白名单客户端，实测同一站点同一 key：`ureq/2.x`、不传 UA、`pi/…` 一律 `401 unauthorized client detected`（有的站点直接卡到超时），而这两种身份 200；版本号不被校验
+- **token 上限 16**：避免推理模型因上限过小返回空内容或整体报错
+- 节流状态只在内存中，重启清零（重启后只能逐个手点，不会批量冲击）；测试仍会消耗极少量 token，不建议在计费敏感账号上频繁测试
 
 ## 配置预览 / 编辑面板
 
@@ -80,7 +93,8 @@ cargo build --release
 
 - 每页有独立保存按钮与写入路径，默认写 Windows 本地路径
 - 当前文件属于本页格式且已加载时写当前文件；手动改了路径但未加载时写入该路径并保留目标文件其余配置
-- 跨格式写入只接管 `agent` / `provider`（或 `providers`）容器：容器内的条目与顺序完全来自界面，目标文件里多出来的旧条目不残留；目标文件其余顶层配置（如 `mcp`、`instructions`）原样保留
+- 跨格式写入由界面接管的容器：`provider`（opencode）/ `providers`（pi / omp / DSH）——容器内的条目与顺序完全来自界面，目标文件里多出来的旧条目不残留；目标文件其余顶层配置（如 `mcp`、`instructions`）原样保留
+- opencode 的 `agent` 容器只在界面确实持有 agents 数据时才接管（来源为 opencode，或在 opencode 页手动新增）；来源为 pi / omp / DSH 时界面无从表达 agents，**目标文件已有的 agents 原样保留**，不会被清空
 - 跨格式写入覆盖已存在的文件前，先把原内容备份为 `<文件>.bak`（内容相同或文件为空时跳过）；备份失败则取消保存，不会静默替换旧配置
 - 勾选「WSL同步」后同时写入 WSL 侧对应路径；未在 WSL 中安装对应 agent 时禁用勾选
 

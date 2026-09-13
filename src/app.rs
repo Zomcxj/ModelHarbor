@@ -490,17 +490,174 @@ struct LatencyState {
     pending: HashSet<String>,
 }
 
-/// 延迟测试的读取超时与「超时」判定阈值（毫秒）。
+/// 延迟测试的读取超时与「超时」判定阈值（毫秒）：单个读操作 / 首字的等待上限。
 const LATENCY_TIMEOUT_MS: u64 = 10_000;
-/// 延迟着色阈值（毫秒）：低于此值为绿色。
-const LATENCY_GOOD_MS: u64 = 5_000;
+/// 首字延迟着色阈值（毫秒）：低于此值为绿色。
+///（首字延迟量级远小于整段生成耗时，不能沿用同步请求的 5 秒口径。）
+const LATENCY_GOOD_MS: u64 = 2_000;
+/// 首字延迟超过此值算慢（红）。
+const LATENCY_SLOW_MS: u64 = 5_000;
 
-/// 延迟配色：<5s 绿色、5~10s 黄色、>10s 红色（超时）。
+/// 延迟配色：<2s 绿色、2~5s 黄色、≥5s 红色（超时同样显示红色错误）。
 const LATENCY_GREEN: egui::Color32 = egui::Color32::from_rgb(90, 180, 110);
 const LATENCY_YELLOW: egui::Color32 = egui::Color32::from_rgb(201, 162, 39);
 const LATENCY_RED: egui::Color32 = egui::Color32::from_rgb(220, 90, 90);
 
+/// 模型延迟探测的风控节流参数（中转站的「多 IP 检测 / 测活封号」）：
+/// **同一个 provider** 的任意两次探测（同模型、不同模型都算）间隔 ≥5 秒；
+/// **不同 provider 互不牵连**（不同中转站是不同站点，各自独立计数、可并行）。
+const PROBE_PROVIDER_GAP_S: f64 = 5.0;
+
+/// 探测用的中性短问句库：跨领域的常识名词（地理 / 天文 / 生物 / 化学 / 物理 /
+/// 文学 / 艺术 / 音乐 / 历史），都是「一句话能答」的定论型题目。
+///
+/// 目的只是让请求看起来像普通对话而不是脚本测活（**不校验答案**：判定只看 HTTP
+/// 是否成功与往返耗时），所以题目要求「短、无歧义、与政治 / 敏感话题无关」。
+/// 题目太浅（如「1 加 1 等于几」）反而不像真人在问，所以选题偏向各领域的常识名词。
+const PROBE_QUESTIONS: [&str; 24] = [
+    "世界上最长的河流是哪条？只回答河名",
+    "世界上面积最大的国家是哪个？只回答国名",
+    "世界上最高的山峰叫什么？只回答山名",
+    "澳大利亚的首都是哪座城市？只回答城市名",
+    "尼罗河位于哪个大洲？只回答大洲名",
+    "地中海位于欧洲和哪个大洲之间？只回答大洲名",
+    "太阳系中体积最大的行星是哪颗？只回答行星名",
+    "太阳系中离太阳最近的行星是哪颗？只回答行星名",
+    "地球的天然卫星叫什么？只回答名称",
+    "北斗七星属于哪个星座？只回答星座名",
+    "人体面积最大的器官是什么？只回答名称",
+    "一个健康的成年人全身大约有多少块骨头？只回答数字",
+    "血液中负责运输氧气的是哪种细胞？只回答名称",
+    "植物通过光合作用吸收哪种气体？只回答化学式",
+    "水的化学式是什么？只回答化学式",
+    "食盐的主要成分是什么？只回答化学式",
+    "空气中含量最多的气体是什么？只回答化学式",
+    "常温常压下唯一呈液态的金属是哪种？只回答名称",
+    "《红楼梦》的作者是谁？只回答姓名",
+    "《论语》主要记录了哪位思想家及其弟子的言行？只回答姓名",
+    "《蒙娜丽莎》的作者是谁？只回答姓名",
+    "《命运交响曲》的作曲家是谁？只回答姓名",
+    "中国古代四大发明中用于辨别方向的是哪一项？只回答名称",
+    "泰姬陵位于哪个国家？只回答国名",
+];
+
+/// FNV-1a：给 provider key 一个稳定的起始题号偏移，避免所有 provider 都从第 1 题开始。
+fn fnv1a(value: &str) -> usize {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash as usize
+}
+
+/// 取一条探测问句：provider 偏移 + 轮换游标，同一 provider 连续探测不重复同一题。
+fn probe_question(provider_key: &str, cursor: usize) -> &'static str {
+    let index = fnv1a(provider_key).wrapping_add(cursor) % PROBE_QUESTIONS.len();
+    PROBE_QUESTIONS[index]
+}
+
+/// 单次探测的门控结论。
+#[derive(Clone, Debug, PartialEq)]
+enum ProbeGateState {
+    /// 可以探测。
+    Ready,
+    /// 节流冷却中，剩余秒数。
+    Cooling(f64),
+    /// 全局串行：上一个探测还没结束。
+    Busy,
+    /// 网络守卫拦截（系统代理 / VPN）。
+    NetBlocked(String),
+}
+
+/// 模型延迟探测的节流与串行状态（按 provider 各自一份）。
+///
+/// 纯内存、重启清零：重启后只能手动一个个点，人手点击的节奏本身不构成突发，
+/// 因此无需落盘（写盘也不增加实际安全性）。
+#[derive(Default)]
+struct ProbeGate {
+    /// provider key → 上次探测时刻（egui 秒）。
+    last_provider: HashMap<String, f64>,
+    /// 正在飞的探测（provider key）：同一 provider 一次只允许一个。
+    in_flight: HashSet<String>,
+    /// 每个 provider 的题目轮换游标。
+    cursor: HashMap<String, usize>,
+}
+
+impl ProbeGate {
+    /// 累加一个「还需等待」的约束。
+    fn accumulate(wait: &mut Option<f64>, left: Option<f64>) {
+        if let Some(left) = left.filter(|left| *left > 0.0) {
+            *wait = Some(match *wait {
+                Some(current) => current.max(left),
+                None => left,
+            });
+        }
+    }
+
+    /// 当前是否允许探测；不允许时给出原因（按钮禁用 + 倒计时 + 悬停说明）。
+    ///
+    /// 只看本 provider 的状态，不看别的 provider（跨厂商不排队）。
+    fn state(&self, provider_key: &str, now: f64, net_guard: Option<&str>) -> ProbeGateState {
+        if let Some(reason) = net_guard {
+            return ProbeGateState::NetBlocked(reason.to_string());
+        }
+        // 同一 provider 一次只允许一个探测在飞：探测最长 10 秒，可能超过 5 秒间隔，
+        // 否则会同时向同一个中转站发两个请求。
+        if self.in_flight.contains(provider_key) {
+            return ProbeGateState::Busy;
+        }
+        let mut wait: Option<f64> = None;
+        Self::accumulate(
+            &mut wait,
+            self.last_provider
+                .get(provider_key)
+                .map(|at| PROBE_PROVIDER_GAP_S - (now - at)),
+        );
+        match wait {
+            Some(left) => ProbeGateState::Cooling(left),
+            None => ProbeGateState::Ready,
+        }
+    }
+
+    /// 记录一次探测并占用该 provider 的串行位。
+    fn start(&mut self, provider_key: &str, now: f64) {
+        self.last_provider.insert(provider_key.to_string(), now);
+        self.in_flight.insert(provider_key.to_string());
+    }
+
+    /// 探测结束（拿到结果 / 失败 / 超时）后释放该 provider 的串行位。
+    fn finish(&mut self, provider_key: &str) {
+        self.in_flight.remove(provider_key);
+    }
+
+    /// 探测状态整体被丢弃时释放串行位（重载配置 / 关闭新增表单）。
+    ///
+    /// 不释放的话，被丢弃的通道不会再有结果回传，该 provider 会永久卡在 Busy。
+    /// `provider_key` 为 `None` 表示全部释放。
+    fn release(&mut self, provider_key: Option<&str>) {
+        match provider_key {
+            Some(key) => {
+                self.in_flight.remove(key);
+            }
+            None => self.in_flight.clear(),
+        }
+    }
+
+    /// 取该 provider 的下一条探测问句并推进游标。
+    fn next_question(&mut self, provider_key: &str) -> &'static str {
+        let cursor = self.cursor.entry(provider_key.to_string()).or_insert(0);
+        let question = probe_question(provider_key, *cursor);
+        *cursor = cursor.wrapping_add(1);
+        question
+    }
+}
+
 /// 延迟测试用的 HTTP 客户端（较短超时，避免卡住 UI 线程池）。
+///
+/// **不要给它设置 `Proxy`**：ureq 默认不使用系统代理，探测请求始终直连，开着 Clash /
+/// VPN 时也不会从代理出口发出（中转站的「多 IP 检测」看的正是出口 IP）。
+/// 一旦在这里引入 `Proxy::try_from_env()`，探测就会改走代理口，务必保持直连。
 fn latency_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(5))
@@ -520,7 +677,7 @@ fn http_error(err: ureq::Error, elapsed: u64) -> String {
 fn latency_color(ms: u64) -> egui::Color32 {
     if ms < LATENCY_GOOD_MS {
         LATENCY_GREEN
-    } else if ms <= LATENCY_TIMEOUT_MS {
+    } else if ms < LATENCY_SLOW_MS {
         LATENCY_YELLOW
     } else {
         LATENCY_RED
@@ -571,7 +728,22 @@ fn model_latency_label(ui: &mut egui::Ui, state: Option<&LatencyState>, model_id
     };
     match state.models.get(model_id) {
         Some(Ok(ms)) => {
-            ui.label(egui::RichText::new(format!("{}ms", ms)).color(latency_color(*ms)));
+            // 固定宽度右对齐：数字位数变化时按钮不会左右跳动。
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(72.0, ui.spacing().interact_size.y),
+                egui::Sense::hover(),
+            );
+            ui.painter().text(
+                rect.left_center(),
+                egui::Align2::LEFT_CENTER,
+                format!("{}ms", ms),
+                egui::FontId::proportional(13.0),
+                latency_color(*ms),
+            );
+            response.on_hover_text(format!(
+                "最近一次首字延迟 {} ms（流式：请求发出 → 第一个字）",
+                ms
+            ));
         }
         Some(Err(err)) => {
             ui.label(egui::RichText::new(short_err(err)).color(LATENCY_RED))
@@ -579,6 +751,49 @@ fn model_latency_label(ui: &mut egui::Ui, state: Option<&LatencyState>, model_id
         }
         None if state.pending.contains(model_id) => matrix_label(ui, model_id),
         None => {}
+    }
+}
+
+/// 模型行上的单模型延迟测试按钮（位于拖动按钮右侧，结果标签就在它右侧）。
+///
+/// 返回 `true` 表示用户点了测试；调用方负责在 UI 循环外真正发起探测
+/// （节流/串行的权威判定也在那里再做一次）。
+fn model_probe_button(
+    ui: &mut egui::Ui,
+    gate: &ProbeGate,
+    provider_key: &str,
+    now: f64,
+    net_guard: Option<&str>,
+) -> bool {
+    let state = gate.state(provider_key, now, net_guard);
+    let (label, hint) = match &state {
+        ProbeGateState::Ready => ("测试".to_string(), None),
+        ProbeGateState::Busy => (
+            "测试中".to_string(),
+            Some("该厂商上一个延迟测试尚未结束（同一厂商一次只测一个）".to_string()),
+        ),
+        ProbeGateState::Cooling(left) => (
+            format!("测试({}s)", left.ceil() as u64),
+            Some(format!(
+                "节流中：{} 秒后可再测（同一厂商的任意两次探测（同模型 / 不同模型都算）至少间隔 5 秒，避免中转站测活风控；其他厂商不受影响）",
+                left.ceil() as u64
+            )),
+        ),
+        ProbeGateState::NetBlocked(reason) => (
+            "测试".to_string(),
+            Some(format!(
+                "{}：{}。请关闭系统代理 / VPN 后重试",
+                crate::netguard::BLOCK_PREFIX,
+                reason
+            )),
+        ),
+    };
+    let enabled = matches!(state, ProbeGateState::Ready);
+    let button = ui.add_enabled(enabled, egui::Button::new(label));
+    match hint {
+        Some(hint) if !enabled => button.on_disabled_hover_text(hint).clicked(),
+        Some(hint) => button.on_hover_text(hint).clicked(),
+        None => button.clicked(),
     }
 }
 
@@ -666,9 +881,26 @@ fn apply_auth(request: ureq::Request, auth: AuthKind, secret: &str) -> ureq::Req
 /// Google 系把密钥放查询参数；其余协议原样返回。
 fn with_query_key(url: &str, auth: AuthKind, secret: &str) -> String {
     if auth == AuthKind::QueryKey && !secret.is_empty() {
-        format!("{}?key={}", url, secret)
+        // URL 里可能已经带了查询参数（Google 流式端点的 `?alt=sse`），要用 `&` 接着拼
+        let separator = if url.contains('?') { '&' } else { '?' };
+        format!("{}{}key={}", url, separator, secret)
     } else {
         url.to_string()
+    }
+}
+
+/// 探测请求的 User-Agent：按协议伪装成主流客户端。
+///
+/// 中转站普遍只放行白名单客户端：实测同一站点同一 key，`ureq/2.12.1`、不传 UA、
+/// `pi/0.1.0` 一律返回 `401 unauthorized client detected`（有的站点直接卡住到超时），
+/// 而 `claude-cli/*` 与 `opencode/*` 正常返回 200。版本号不被校验（`claude-cli/9.9.9`
+/// 同样放行），但写成真实存在的版本更自然（版本号取自本机安装的客户端）。
+fn probe_user_agent(wire: ApiWire) -> &'static str {
+    match wire {
+        // Anthropic 系中转站本来就是给 Claude Code 用的
+        ApiWire::AnthropicMessages | ApiWire::PiMessages => "claude-cli/1.18.30 (external, cli)",
+        // OpenAI 兼容 / Responses / Google 系用 opencode 的身份
+        _ => "opencode/1.18.30",
     }
 }
 
@@ -683,13 +915,14 @@ fn measure_provider_latency(url: &str, secret: &str, api: &str) -> Result<u64, S
     if secret.is_empty() {
         return Err("缺少 API Key".to_string());
     }
-    let auth = auth_kind(api_wire(api));
+    let wire = api_wire(api);
+    let auth = auth_kind(wire);
     let target = with_query_key(url, auth, secret);
     let agent = latency_agent();
     let request = apply_auth(
         agent
             .get(&target)
-            .set("User-Agent", "model-harbor")
+            .set("User-Agent", probe_user_agent(wire))
             .set("Accept", "application/json"),
         auth,
         secret,
@@ -707,7 +940,18 @@ fn measure_provider_latency(url: &str, secret: &str, api: &str) -> Result<u64, S
 }
 
 /// 最小对话请求的地址：按协议决定路径（Google 系需要模型名参与路径）。
-fn chat_url(base_url: &str, api: &str, model: &str) -> String {
+/// Google 系的推理动作：非流式 `:generateContent`，流式 `:streamGenerateContent?alt=sse`。
+///
+/// Google 的流式靠**换端点**区分，而不是请求体里的 `stream` 字段。
+fn google_action(stream: bool) -> &'static str {
+    if stream {
+        ":streamGenerateContent?alt=sse"
+    } else {
+        ":generateContent"
+    }
+}
+
+fn chat_url(base_url: &str, api: &str, model: &str, stream: bool) -> String {
     let base = base_url.trim().trim_end_matches('/');
     let model = model.trim();
     match api_wire(api) {
@@ -719,51 +963,167 @@ fn chat_url(base_url: &str, api: &str, model: &str) -> String {
             }
         }
         ApiWire::Responses | ApiWire::AzureResponses => format!("{}/responses", base),
-        ApiWire::GoogleGenerativeAi => format!("{}/models/{}:generateContent", base, model),
-        ApiWire::GoogleVertex => {
-            format!(
-                "{}/publishers/google/models/{}:generateContent",
-                base, model
-            )
+        ApiWire::GoogleGenerativeAi => {
+            format!("{}/models/{}{}", base, model, google_action(stream))
         }
+        ApiWire::GoogleVertex => format!(
+            "{}/publishers/google/models/{}{}",
+            base,
+            model,
+            google_action(stream)
+        ),
         ApiWire::PiMessages => format!("{}/messages", base),
         ApiWire::ChatCompletions | ApiWire::Unsupported => format!("{}/chat/completions", base),
     }
 }
 
-/// 最小请求体：内容固定为 `ping`，按协议取字段名（token 上限给到最小可用值）。
-fn minimal_body(wire: ApiWire, model: &str) -> Value {
+/// 单次探测的请求体：内容是题库里的中性短问句。
+///
+/// - **不校验答案**：目的只是让请求看起来像正常对话（规避中转站测活特征），
+///   判定只看 HTTP 是否成功与往返耗时。
+/// - token 上限给到 16：太小会让推理模型返回空内容甚至直接报错。
+/// - 不设 `temperature`：部分推理模型只接受默认值，设了反而报错。
+fn minimal_body(wire: ApiWire, model: &str, question: &str) -> Value {
     match wire {
         ApiWire::Responses | ApiWire::AzureResponses => serde_json::json!({
             "model": model,
             "max_output_tokens": 16,
-            "input": "ping"
+            "input": question,
+            "stream": true
         }),
         ApiWire::GoogleGenerativeAi | ApiWire::GoogleVertex => serde_json::json!({
-            "contents": [{ "role": "user", "parts": [{ "text": "ping" }] }],
-            "generationConfig": { "maxOutputTokens": 1 }
+            "contents": [{ "role": "user", "parts": [{ "text": question }] }],
+            "generationConfig": { "maxOutputTokens": 16 }
         }),
         ApiWire::AnthropicMessages | ApiWire::PiMessages => serde_json::json!({
             "model": model,
-            "max_tokens": 1,
-            "messages": [{ "role": "user", "content": "ping" }]
+            "max_tokens": 16,
+            "stream": true,
+            "messages": [{ "role": "user", "content": question }]
         }),
         ApiWire::ChatCompletions | ApiWire::Unsupported => serde_json::json!({
             "model": model,
-            "max_tokens": 1,
-            "stream": false,
-            "messages": [{ "role": "user", "content": "ping" }]
+            "max_tokens": 16,
+            "stream": true,
+            "messages": [{ "role": "user", "content": question }]
         }),
     }
 }
 
-/// 对单个模型发一个最小请求，测量往返延迟（毫秒）。
+/// 判断一个 SSE 载荷是不是「第一个字」（即真的开始出内容了）。
+///
+/// 只看内容类字段，不看 role / usage / 各种元事件：中转站常常在模型真正开始生成前
+/// 先推一个 role 块或心跳块，把它当首字，测出来的就不是用户体感的「首字延迟」。
+fn chunk_has_content(wire: ApiWire, chunk: &Value) -> bool {
+    match wire {
+        ApiWire::ChatCompletions | ApiWire::Unsupported => {
+            let delta = &chunk["choices"][0]["delta"];
+            // 推理模型先出 reasoning_content（思维链）也算已经出字
+            non_empty_text(&delta["content"]) || non_empty_text(&delta["reasoning_content"])
+        }
+        ApiWire::Responses | ApiWire::AzureResponses => {
+            // 形如 {"type":"response.output_text.delta","delta":"你"}
+            chunk["type"]
+                .as_str()
+                .is_some_and(|kind| kind.ends_with(".delta"))
+                && non_empty_text(&chunk["delta"])
+        }
+        ApiWire::AnthropicMessages | ApiWire::PiMessages => {
+            // 形如 {"type":"content_block_delta","delta":{"text":"你"}}
+            let delta = &chunk["delta"];
+            non_empty_text(&delta["text"]) || non_empty_text(&delta["thinking"])
+        }
+        ApiWire::GoogleGenerativeAi | ApiWire::GoogleVertex => chunk["candidates"][0]["content"]
+            ["parts"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|part| non_empty_text(&part["text"]))),
+    }
+}
+
+/// 字段是否含有非空文本（兼容「字符串 / 内容块数组 / 嵌套对象」三种形态）。
+fn non_empty_text(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => items.iter().any(non_empty_text),
+        Value::Object(fields) => fields.values().any(non_empty_text),
+        _ => false,
+    }
+}
+
+/// 流结束标记：OpenAI 兼容的 `[DONE]`、Anthropic 的 `message_stop`、Responses 的 `response.completed`。
+///
+/// Anthropic 会先发一行 `event: message_stop` 再发 `data: {"type":"message_stop"}`，
+/// 两种形态都要认（裸标记行没有引号，所以按子串匹配）。
+/// 站点发完标记后未必立刻关连接，靠它提前收尾，避免一直读到读超时才结束。
+fn is_stream_end(line: &str) -> bool {
+    line.contains("[DONE]")
+        || line.contains("message_stop")
+        || line.contains("response.completed")
+        || line.contains("response.incomplete")
+        || line.contains("response.failed")
+}
+
+/// 读完流式响应，返回**首字延迟**（毫秒，从请求发出算起）。
+///
+/// - 边读边解析 SSE 的 `data:` 载荷，碰到第一个带内容的块立刻记下耗时；
+/// - 记下之后**继续把流读完**（`[DONE]` / `message_stop` / EOF / 64 KB 上限）再关闭连接：
+///   真实客户端不会拿到流就断，匆匆断开在中转站日志里反而像探测流量；
+/// - 全程没有数据返回时返回 `None`（调用方按超时 / 协议不支持流式处理）；
+/// - 有数据但认不出内容块（形态罕见）时退回「第一个 `data:` 包到达的时刻」。
+fn read_stream_ttft(
+    reader: impl std::io::Read,
+    wire: ApiWire,
+    started: std::time::Instant,
+) -> Option<u64> {
+    use std::io::BufRead;
+    /// 读取上限：足够装下 16 token 的流式响应，又能顶住发完不关连接的站点。
+    const MAX_STREAM_BYTES: usize = 64 * 1024;
+    let mut buffer = std::io::BufReader::new(reader);
+    let mut line = String::new();
+    let mut read_bytes = 0usize;
+    let mut first_data: Option<u64> = None;
+    let mut ttft: Option<u64> = None;
+    loop {
+        line.clear();
+        match buffer.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(read) => read_bytes += read,
+            // 读超时 / 连接中断：保留已经测到的首字
+            Err(_) => break,
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if is_stream_end(trimmed) {
+            break;
+        }
+        if let Some(payload) = trimmed.strip_prefix("data:") {
+            if let Ok(chunk) = serde_json::from_str::<Value>(payload.trim()) {
+                if first_data.is_none() {
+                    first_data = Some(started.elapsed().as_millis() as u64);
+                }
+                if ttft.is_none() && chunk_has_content(wire, &chunk) {
+                    ttft = Some(started.elapsed().as_millis() as u64);
+                }
+            }
+        }
+        if read_bytes >= MAX_STREAM_BYTES {
+            break;
+        }
+    }
+    ttft.or(first_data)
+}
+
+/// 对单个模型发一个**流式**探测请求，测量**首字延迟**（毫秒）。
+///
+/// 走流式是为了不像脚本测活：主流客户端（Claude Code / opencode / pi 等）默认全部流式，
+/// 同步请求在中转站日志里会显示成「类型：同步」，反而是少数派特征。
+/// 解响应体只是为了找第一个内容块（测首字），**不校验答案**。
 /// 端点、鉴权与请求体都按所选协议构造；失败仍会报出耗时，便于判断服务是否可达。
 fn measure_model_latency(
     base_url: &str,
     secret: &str,
     api: &str,
     model: &str,
+    question: &str,
 ) -> Result<u64, String> {
     if let Some(reason) = unsupported_reason(api) {
         return Err(reason);
@@ -776,30 +1136,40 @@ fn measure_model_latency(
     }
     let wire = api_wire(api);
     let auth = auth_kind(wire);
-    let url = with_query_key(&chat_url(base_url, api, model), auth, secret);
-    let body = minimal_body(wire, model).to_string();
-    // 模型延迟测试的读取超时固定为 LATENCY_TIMEOUT_MS：超过即视为超时。
+    let url = with_query_key(&chat_url(base_url, api, model, true), auth, secret);
+    let body = minimal_body(wire, model, question).to_string();
+    // 首字延迟：读取超时固定为 LATENCY_TIMEOUT_MS，超过即视为超时。
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout_read(std::time::Duration::from_millis(LATENCY_TIMEOUT_MS))
         .build();
     let started = std::time::Instant::now();
+    // Accept 与主流 SDK 的流式口径一致；UA 伪装成白名单客户端（见 probe_user_agent）。
     let result = apply_auth(
         agent
             .post(&url)
-            .set("User-Agent", "model-harbor")
+            .set("User-Agent", probe_user_agent(wire))
+            .set("Accept", "text/event-stream")
             .set("Content-Type", "application/json"),
         auth,
         secret,
     )
     .send_string(&body);
-    let elapsed = started.elapsed().as_millis() as u64;
-    if elapsed >= LATENCY_TIMEOUT_MS {
-        return Err(format!("超时（{} ms）", elapsed));
-    }
-    match result {
-        Ok(_) => Ok(elapsed),
-        Err(err) => Err(http_error(err, elapsed)),
+    let response = match result {
+        Ok(response) => response,
+        Err(err) => return Err(http_error(err, started.elapsed().as_millis() as u64)),
+    };
+    match read_stream_ttft(response.into_reader(), wire, started) {
+        Some(ms) if ms < LATENCY_TIMEOUT_MS => Ok(ms),
+        Some(ms) => Err(format!("超时（{} ms）", ms)),
+        None => {
+            let waited = started.elapsed().as_millis() as u64;
+            Err(if waited >= LATENCY_TIMEOUT_MS {
+                format!("超时（{} ms）", waited)
+            } else {
+                "流式响应没有数据".to_string()
+            })
+        }
     }
 }
 
@@ -814,7 +1184,8 @@ fn fetch_models_remote(url: &str, secret: &str, api: &str) -> Result<Vec<String>
     if secret.is_empty() {
         return Err("缺少 API Key，无法获取模型".to_string());
     }
-    let auth = auth_kind(api_wire(api));
+    let wire = api_wire(api);
+    let auth = auth_kind(wire);
     let target = with_query_key(url, auth, secret);
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
@@ -823,7 +1194,7 @@ fn fetch_models_remote(url: &str, secret: &str, api: &str) -> Result<Vec<String>
     let request = apply_auth(
         agent
             .get(&target)
-            .set("User-Agent", "model-harbor")
+            .set("User-Agent", probe_user_agent(wire))
             .set("Accept", "application/json"),
         auth,
         secret,
@@ -919,6 +1290,12 @@ pub struct App {
     model_fetch_open: HashSet<String>,
     /// 每个 provider 的延迟测试状态（key → 状态）。
     latency: HashMap<String, LatencyState>,
+    /// 模型延迟探测的节流与串行状态（纯内存，重启清零）。
+    probe: ProbeGate,
+    /// 网络守卫结论：`Some(reason)` 表示检测到系统代理 / VPN，模型延迟测试被禁用。
+    net_guard: Option<String>,
+    /// 上次网络守卫检测时刻（egui 秒）。
+    net_guard_at: f64,
     theme: Theme,
     save_format: SaveFormat,
     /// 滚轮切换保存格式的门门：一次连续滚动手势只切换一次。
@@ -928,8 +1305,6 @@ pub struct App {
     targets: Vec<SaveTarget>,
     current_page: ConfigFormat,
     sync_wsl: bool,
-    show_agents_section: bool,
-    show_providers_section: bool,
     /// 全局 API Key 显隐：一键控制所有密钥输入框的明文/掩码显示。
     show_api_keys: bool,
     /// 右侧配置预览/编辑面板是否打开。
@@ -992,6 +1367,9 @@ impl Default for App {
             model_fetch: HashMap::new(),
             model_fetch_open: HashSet::new(),
             latency: HashMap::new(),
+            probe: ProbeGate::default(),
+            net_guard: crate::netguard::detect(),
+            net_guard_at: 0.0,
             theme: Theme::default(),
             save_format: SaveFormat::default(),
             save_format_wheel_latch: false,
@@ -1000,8 +1378,6 @@ impl Default for App {
             targets: Vec::new(),
             current_page: format,
             sync_wsl: false,
-            show_agents_section: true,
-            show_providers_section: true,
             show_api_keys: false,
             show_preview: false,
             preview_ratio: 0.38,
@@ -1037,6 +1413,13 @@ impl eframe::App for App {
         if let Some(path) = dropped {
             self.config_path = path;
             self.reload();
+        }
+        // 每 5 秒复查一次系统代理 / VPN：用户可能在运行期间开关 Clash 等，
+        // 守卫结论用于禁用模型延迟测试（见 netguard 模块说明）。
+        let frame_time = ctx.input(|i| i.time);
+        if frame_time - self.net_guard_at >= 5.0 {
+            self.net_guard = crate::netguard::detect();
+            self.net_guard_at = frame_time;
         }
         // 首帧惰性加载各后端官方图标
         if self.backend_icons.is_empty() {
@@ -1477,6 +1860,8 @@ impl App {
         self.model_fetch.clear();
         self.model_fetch_open.clear();
         self.latency.clear();
+        // 被丢弃的探测不会再回传结果：释放全局串行位，否则门控会一直卡在 Busy。
+        self.probe.release(None);
         // 加载后跳转到来源格式对应的页面
         self.current_page = self.source_format;
         self.reset_preview_draft();
@@ -1665,55 +2050,58 @@ impl App {
     /// Agents 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
     fn ui_agents_section(&mut self, ui: &mut egui::Ui) {
         let anchor = sticky_begin(ui, 30.0);
-        if self.show_agents_section {
-            let matched: Vec<usize> = (0..self.agents.len()).collect();
+        let matched: Vec<usize> = (0..self.agents.len()).collect();
 
-            if self.agents.is_empty() && !self.show_new_agent {
-                self.show_new_agent = true;
-            }
+        if self.agents.is_empty() && !self.show_new_agent {
+            self.show_new_agent = true;
+        }
 
-            let mut to_remove: Option<usize> = None;
-            let mut to_copy: Option<usize> = None;
-            let mut hover_target: Option<String> = None;
-            card_list(ui, &matched, 0.0, |ui, idx| {
-                self.render_agent_card(ui, idx, &mut to_remove, &mut to_copy, &mut hover_target);
-            });
-            if let Some(idx) = to_remove {
-                self.agents.remove(idx);
-                self.status = "已删除 agent".into();
-            }
-            if let Some(idx) = to_copy {
-                let mut a = self.agents[idx].clone();
-                a.key = format!("{}_copy", a.key);
-                self.agents.push(a);
-                self.status = "已复制 agent".into();
-            }
-            if self.agent_drag_src.is_some() {
-                self.agent_drag_target = hover_target;
-            } else {
-                self.agent_drag_target = None;
-            }
+        let mut to_remove: Option<usize> = None;
+        let mut to_copy: Option<usize> = None;
+        let mut hover_target: Option<String> = None;
+        card_list(ui, &matched, 0.0, |ui, idx| {
+            self.render_agent_card(ui, idx, &mut to_remove, &mut to_copy, &mut hover_target);
+        });
+        if let Some(idx) = to_remove {
+            self.agents.remove(idx);
+            self.status = "已删除 agent".into();
+        }
+        if let Some(idx) = to_copy {
+            let mut a = self.agents[idx].clone();
+            a.key = format!("{}_copy", a.key);
+            self.agents.push(a);
+            self.status = "已复制 agent".into();
+        }
+        if self.agent_drag_src.is_some() {
+            self.agent_drag_target = hover_target;
+        } else {
+            self.agent_drag_target = None;
+        }
 
-            ui.add_space(6.0);
-            if ui.button("新增 Agent").clicked() {
-                self.show_new_agent = !self.show_new_agent;
-            }
-            if self.show_new_agent {
-                self.ui_new_agent_form(ui);
-            }
+        ui.add_space(6.0);
+        if ui.button("新增 Agent").clicked() {
+            self.show_new_agent = !self.show_new_agent;
+        }
+        if self.show_new_agent {
+            self.ui_new_agent_form(ui);
         }
         sticky_end(ui, anchor, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("Agents");
-                let btn_label = if self.show_agents_section {
-                    "隐藏"
-                } else {
-                    "展开"
-                };
-                if ui.button(btn_label).clicked() {
-                    self.show_agents_section = !self.show_agents_section;
+                // agents 只属于 opencode 页：来源不是 opencode 时界面没有 agents 数据，
+                // 跨格式保存不会接管目标文件的 agent 容器（避免静默清空）。
+                if self.source_format != ConfigFormat::Opencode {
+                    let src = self.source_format.label();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "（来源 {}：目标文件已有 agents 会保留，不被清空）",
+                            src
+                        ))
+                        .small()
+                        .weak(),
+                    );
                 }
-                if self.show_agents_section && !self.agents.is_empty() {
+                if !self.agents.is_empty() {
                     let all_open = self.agents.iter().all(|a| self.agent_open.contains(&a.key));
                     if ui
                         .button(if all_open {
@@ -2225,55 +2613,83 @@ impl App {
         state.provider_rx = Some(rx);
     }
 
-    /// 并发启动全部模型的延迟测试（每批 8 个并发，结果逐个回传）。
-    /// 返回需要提示的状态栏消息（无模型可测时）。
-    fn start_models_latency(
+    /// 单模型探测的统一入口：门控 → 选问句 → 启动后台线程 → 返回状态栏消息。
+    ///
+    /// 写成关联函数（不借 `&mut self`）是为了能在 provider 卡片内部调用：
+    /// 那里 `providers` 字段已经被可变借用，只能按字段拆分借用。
+    #[allow(clippy::too_many_arguments)]
+    fn run_model_probe(
+        probe: &mut ProbeGate,
+        latency: &mut HashMap<String, LatencyState>,
+        net_guard: Option<&str>,
+        provider_key: &str,
+        model_id: &str,
+        now: f64,
+        base_url: &str,
+        secret: &str,
+        api: &str,
+    ) -> String {
+        match probe.state(provider_key, now, net_guard) {
+            ProbeGateState::Ready => {
+                let question = probe.next_question(provider_key);
+                probe.start(provider_key, now);
+                Self::start_model_latency(
+                    latency,
+                    provider_key,
+                    base_url,
+                    secret,
+                    api,
+                    model_id,
+                    question,
+                );
+                format!("正在测试 {} 的 {} 延迟…", provider_key, model_id)
+            }
+            ProbeGateState::Cooling(left) => {
+                format!("节流中：{} 秒后可再测", left.ceil() as u64)
+            }
+            ProbeGateState::Busy => "上一个延迟测试尚未结束（一次只测一个模型）".to_string(),
+            ProbeGateState::NetBlocked(reason) => {
+                format!("{}：{}", crate::netguard::BLOCK_PREFIX, reason)
+            }
+        }
+    }
+
+    /// 启动单个模型的延迟探测（后台线程，结果经通道回传）。
+    ///
+    /// **一次只测一个**：中转站的测活风控对「批量扫模型」最敏感，因此不再提供批量
+    /// 入口，节流与串行统一由 [`ProbeGate`] 把关。
+    fn start_model_latency(
         latency: &mut HashMap<String, LatencyState>,
         key: &str,
         base_url: &str,
         secret: &str,
         api: &str,
-        models: Vec<String>,
-    ) -> Option<String> {
-        if models.is_empty() {
-            return Some("没有可测试的模型".to_string());
-        }
+        model: &str,
+        question: &str,
+    ) {
         let base = base_url.to_string();
         let secret = secret.trim().to_string();
         let api = api.to_string();
+        let model = model.trim().to_string();
+        let question = question.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
-        let total = models.len();
-        let pending: HashSet<String> = models.iter().map(|m| m.trim().to_string()).collect();
+        let worker_model = model.clone();
         std::thread::spawn(move || {
-            const BATCH: usize = 8;
-            for chunk in models.chunks(BATCH) {
-                std::thread::scope(|scope| {
-                    for model in chunk {
-                        let tx = tx.clone();
-                        let base = base.clone();
-                        let secret = secret.clone();
-                        let api = api.clone();
-                        scope.spawn(move || {
-                            let result = measure_model_latency(&base, &secret, &api, model);
-                            let _ = tx.send((model.clone(), result));
-                        });
-                    }
-                });
-            }
+            let result = measure_model_latency(&base, &secret, &api, &worker_model, &question);
+            let _ = tx.send((worker_model, result));
         });
         let state = latency.entry(key.to_string()).or_default();
-        state.models.clear();
         state.done = 0;
-        state.total = total;
-        state.pending = pending;
+        state.total = 1;
+        state.pending.clear();
+        state.pending.insert(model);
         state.model_rx = Some(rx);
-        None
     }
 
     /// 每帧轮询延迟测试结果，并更新状态栏。
     fn poll_latency(&mut self) {
         let mut notices: Vec<String> = Vec::new();
-        for (_, state) in self.latency.iter_mut() {
+        for (key, state) in self.latency.iter_mut() {
             if let Some(rx) = &state.provider_rx {
                 match rx.try_recv() {
                     Ok(result) => {
@@ -2300,17 +2716,21 @@ impl App {
                             state.pending.remove(&id);
                             state.models.insert(id, result);
                             state.done += 1;
+                            // 单模型探测：拿到结果即释放该 provider 的串行位。
+                            self.probe.finish(key);
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                             state.model_rx = None;
                             state.total = state.done;
-                            // 线程异常退出时不会有结果回传：清掉等待动画。
+                            // 单模型探测：total 恒为 1，只区分「已回传结果」与「线程异常退出」。
+                            let unfinished = !state.pending.is_empty();
                             state.pending.clear();
-                            notices.push(format!(
-                                "模型延迟测试完成（{}/{}）",
-                                state.done, state.total
-                            ));
+                            notices.push(if unfinished {
+                                "模型延迟测试中断（线程异常退出）".to_string()
+                            } else {
+                                "模型延迟测试完成".to_string()
+                            });
                             break;
                         }
                     }
@@ -2374,72 +2794,62 @@ impl App {
     /// Providers 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
     fn ui_providers_section(&mut self, ui: &mut egui::Ui) {
         let anchor = sticky_begin(ui, 30.0);
-        if self.show_providers_section {
-            let matched: Vec<usize> = (0..self.providers.len()).collect();
+        let matched: Vec<usize> = (0..self.providers.len()).collect();
 
-            if self.providers.is_empty() && !self.show_new_provider {
-                self.show_new_provider = true;
-            }
+        if self.providers.is_empty() && !self.show_new_provider {
+            self.show_new_provider = true;
+        }
 
-            let mut to_remove: Option<usize> = None;
-            let mut to_copy: Option<usize> = None;
-            // 拖拽落点必须在**所有卡片渲染完之后**统一聚合再写入 self：
-            // 卡片各自赋值会被后渲染的卡片用 None 覆盖（模型卡片曾因此丢失绿色落点边框）。
-            let mut hover_target: Option<String> = None;
-            let mut model_hover_target: Option<String> = None;
-            card_list(ui, &matched, 0.0, |ui, idx| {
-                self.render_provider_card(
-                    ui,
-                    idx,
-                    &mut to_remove,
-                    &mut to_copy,
-                    &mut hover_target,
-                    &mut model_hover_target,
-                );
-            });
-            if let Some(idx) = to_remove {
-                self.providers.remove(idx);
-                self.status = "已删除 provider".into();
-            }
-            if let Some(idx) = to_copy {
-                let mut p = self.providers[idx].clone();
-                p.key = format!("{}_copy", p.key);
-                self.providers.push(p);
-                self.status = "已复制 provider".into();
-            }
-            if self.provider_drag_src.is_some() {
-                self.provider_drag_target = hover_target;
-            } else {
-                self.provider_drag_target = None;
-            }
-            // 模型拖拽落点：与 provider 同样在外层聚合，保证任意展开顺序下被拖到的
-            // 模型卡片都能拿到绿色边框（见 render_provider_form 里的说明）。
-            if self.model_drag_src.is_some() {
-                self.model_drag_target = model_hover_target;
-            } else {
-                self.model_drag_target = None;
-            }
+        let mut to_remove: Option<usize> = None;
+        let mut to_copy: Option<usize> = None;
+        // 拖拽落点必须在**所有卡片渲染完之后**统一聚合再写入 self：
+        // 卡片各自赋值会被后渲染的卡片用 None 覆盖（模型卡片曾因此丢失绿色落点边框）。
+        let mut hover_target: Option<String> = None;
+        let mut model_hover_target: Option<String> = None;
+        card_list(ui, &matched, 0.0, |ui, idx| {
+            self.render_provider_card(
+                ui,
+                idx,
+                &mut to_remove,
+                &mut to_copy,
+                &mut hover_target,
+                &mut model_hover_target,
+            );
+        });
+        if let Some(idx) = to_remove {
+            self.providers.remove(idx);
+            self.status = "已删除 provider".into();
+        }
+        if let Some(idx) = to_copy {
+            let mut p = self.providers[idx].clone();
+            p.key = format!("{}_copy", p.key);
+            self.providers.push(p);
+            self.status = "已复制 provider".into();
+        }
+        if self.provider_drag_src.is_some() {
+            self.provider_drag_target = hover_target;
+        } else {
+            self.provider_drag_target = None;
+        }
+        // 模型拖拽落点：与 provider 同样在外层聚合，保证任意展开顺序下被拖到的
+        // 模型卡片都能拿到绿色边框（见 render_provider_form 里的说明）。
+        if self.model_drag_src.is_some() {
+            self.model_drag_target = model_hover_target;
+        } else {
+            self.model_drag_target = None;
+        }
 
-            ui.add_space(10.0);
-            if ui.button("新增 Provider").clicked() {
-                self.show_new_provider = !self.show_new_provider;
-            }
-            if self.show_new_provider {
-                self.ui_new_provider_form(ui);
-            }
+        ui.add_space(10.0);
+        if ui.button("新增 Provider").clicked() {
+            self.show_new_provider = !self.show_new_provider;
+        }
+        if self.show_new_provider {
+            self.ui_new_provider_form(ui);
         }
         sticky_end(ui, anchor, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("Providers");
-                let btn_label = if self.show_providers_section {
-                    "隐藏"
-                } else {
-                    "展开"
-                };
-                if ui.button(btn_label).clicked() {
-                    self.show_providers_section = !self.show_providers_section;
-                }
-                if self.show_providers_section && !self.providers.is_empty() {
+                if !self.providers.is_empty() {
                     let all_open = self
                         .providers
                         .iter()
@@ -2461,11 +2871,10 @@ impl App {
                     }
                 }
                 // 连通性测试：放在标题行右侧，收起全部卡片时也始终可见。
-                if self.show_providers_section
-                    && ui
-                        .button("连通性测试")
-                        .on_hover_text("并发测试当前页面全部厂商的接口连通性")
-                        .clicked()
+                if ui
+                    .button("连通性测试")
+                    .on_hover_text("并发测试当前页面全部厂商的接口连通性")
+                    .clicked()
                 {
                     let targets: Vec<(String, String, String, String)> = self
                         .providers
@@ -2486,34 +2895,48 @@ impl App {
                     }
                     self.status = format!("已开始连通性测试（{} 个厂商）", count);
                 }
+                // 网络守卫提示：检测到系统代理 / VPN 时禁用模型延迟测试
+                //（中转站的「多 IP 检测 / 测活封号」可能因此触发）。
+                if let Some(reason) = self.net_guard.clone() {
+                    ui.label(
+                        egui::RichText::new(format!("{}：{reason}", crate::netguard::BLOCK_PREFIX))
+                            .small()
+                            .color(LATENCY_RED),
+                    )
+                    .on_hover_text(
+                        "中转站常见多 IP 检测 / 测活风控，经代理做推理探测可能被封号；\n\
+                         因此已禁用模型延迟测试。请关闭系统代理 / VPN 后重试。\n\
+                         （厂商「连通性测试」不受影响：它只拉模型列表，不做推理。）",
+                    );
+                }
                 // 全局 API Key 显示/隐藏：一键切换全部密钥的明文/掩码。
                 // 文案带「密钥」二字，与区块「隐藏/展开」、卡片 ▼/▶ 折叠按钮明确区分。
-                if self.show_providers_section
-                    && ui
-                        .button(if self.show_api_keys {
-                            "隐藏密钥"
-                        } else {
-                            "显示密钥"
-                        })
-                        .on_hover_text(if self.show_api_keys {
-                            "点击掩码全部 API Key（默认状态）"
-                        } else {
-                            "点击显示全部 API Key 明文（注意防窥）"
-                        })
-                        .clicked()
+                if ui
+                    .button(if self.show_api_keys {
+                        "隐藏密钥"
+                    } else {
+                        "显示密钥"
+                    })
+                    .on_hover_text(if self.show_api_keys {
+                        "点击掩码全部 API Key（默认状态）"
+                    } else {
+                        "点击显示全部 API Key 明文（注意防窥）"
+                    })
+                    .clicked()
                 {
                     self.show_api_keys = !self.show_api_keys;
                 }
                 // 配置预览：右侧面板实时展示当前页面的序列化内容，可编辑并应用回组件。
-                if self.show_providers_section
-                    && ui
-                        .button(if self.show_preview {
-                            "关闭预览"
-                        } else {
-                            "预览"
-                        })
-                        .on_hover_text("在右侧打开当前页面「待保存文档」预览；可直接编辑，改动实时应用并自动保存")
-                        .clicked()
+                if ui
+                    .button(if self.show_preview {
+                        "关闭预览"
+                    } else {
+                        "预览"
+                    })
+                    .on_hover_text(
+                        "在右侧打开当前页面「待保存文档」预览；可直接编辑，改动实时应用并自动保存",
+                    )
+                    .clicked()
                 {
                     self.show_preview = !self.show_preview;
                     if self.show_preview {
@@ -2720,7 +3143,8 @@ impl App {
         ui.add_space(6.0);
         let mut fetch_request: Option<(String, String, String, String)> = None;
         let mut close_fetch = false;
-        let mut latency_models: Option<(String, String, Vec<String>, String)> = None;
+        // 本帧用户点下的探测请求（provider key, model id），UI 循环外统一发起。
+        let mut probe_request: Option<(String, String)> = None;
         ui.horizontal(|ui| {
             ui.strong("Models");
             let fetch_api = p.effective_api();
@@ -2736,34 +3160,16 @@ impl App {
             if self.model_fetch_open.contains(&p.key) && ui.button("关闭").clicked() {
                 close_fetch = true;
             }
-            if ui.button("模型延迟").clicked() {
-                latency_models = Some((
-                    p.key.clone(),
-                    p.base_url.clone(),
-                    p.models
-                        .iter()
-                        .map(|m| m.id.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect(),
-                    fetch_api.clone(),
-                ));
-            }
-            if let Some(state) = self.latency.get(&p.key) {
-                if state.model_rx.is_some() {
-                    ui.label(
-                        egui::RichText::new(format!("模型 {}/{}", state.done, state.total)).small(),
-                    );
-                }
+            // 模型延迟已无批量入口：每个模型行右侧各有一个「测试」按钮，
+            // 一次只测一个（同模型 60s、同厂商 10s 节流，规避测活风控）。
+            if self
+                .latency
+                .get(&p.key)
+                .is_some_and(|s| s.model_rx.is_some())
+            {
+                ui.label(egui::RichText::new("延迟测试中…").small());
             }
         });
-        if let Some((key, base, models, api)) = latency_models {
-            let secret = credentials::effective_secret(p);
-            if let Some(msg) =
-                Self::start_models_latency(&mut self.latency, &key, &base, &secret, &api, models)
-            {
-                self.status = msg;
-            }
-        }
         if let Some((key, base, secret, api)) = fetch_request {
             // 后台线程拉取模型列表（避免阻塞 UI），结果经通道回传。
             let url = Self::models_url(&base, &api);
@@ -2826,9 +3232,18 @@ impl App {
                     if handle.drag_stopped() {
                         model_drag_stopped = true;
                     }
-                    // 该行显示延迟（拖动按钮右侧），删除按钮右对齐。
-                    let latency = self.latency.get(&p.key);
+                    // 单模型延迟测试：按钮在拖动按钮右侧，结果显示在按钮右侧。
                     let model_id = p.models[j].id.trim().to_string();
+                    if model_probe_button(
+                        ui,
+                        &self.probe,
+                        &p.key,
+                        ui.input(|i| i.time),
+                        self.net_guard.as_deref(),
+                    ) {
+                        probe_request = Some((p.key.clone(), model_id.clone()));
+                    }
+                    let latency = self.latency.get(&p.key);
                     model_latency_label(ui, latency, &model_id);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("删").clicked() {
@@ -2911,6 +3326,23 @@ impl App {
                     model_hover_here = Some(model_key.clone());
                 }
             }
+        }
+        if let Some((provider_key, model_id)) = probe_request {
+            let now = ui.input(|i| i.time);
+            let base_url = p.base_url.clone();
+            let secret = credentials::effective_secret(p);
+            let api = p.effective_api();
+            self.status = Self::run_model_probe(
+                &mut self.probe,
+                &mut self.latency,
+                self.net_guard.as_deref(),
+                &provider_key,
+                &model_id,
+                now,
+                &base_url,
+                &secret,
+                &api,
+            );
         }
         // 只登记「本 provider 内被拖到的模型」，跨卡片的聚合交给调用方
         // （ui_providers_section 在全部卡片渲染完之后统一写入 self.model_drag_target）。
@@ -3099,7 +3531,6 @@ impl App {
             ui.add_space(6.0);
             let mut fetch_request: Option<(String, String, String)> = None;
             let mut close_fetch = false;
-            let mut latency_models: Option<(String, Vec<String>, String)> = None;
             ui.horizontal(|ui| {
                 ui.strong("Models");
                 let fetch_api = self.new_provider.effective_api();
@@ -3116,40 +3547,15 @@ impl App {
                 {
                     close_fetch = true;
                 }
-                if ui.button("模型延迟").clicked() {
-                    latency_models = Some((
-                        self.new_provider.base_url.clone(),
-                        self.new_provider
-                            .models
-                            .iter()
-                            .map(|m| m.id.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect(),
-                        fetch_api.clone(),
-                    ));
-                }
-                if let Some(state) = self.latency.get(NEW_PROVIDER_FETCH_KEY) {
-                    if state.model_rx.is_some() {
-                        ui.label(
-                            egui::RichText::new(format!("模型 {}/{}", state.done, state.total))
-                                .small(),
-                        );
-                    }
+                // 模型延迟已无批量入口：每个模型行右侧各有一个「测试」按钮。
+                if self
+                    .latency
+                    .get(NEW_PROVIDER_FETCH_KEY)
+                    .is_some_and(|s| s.model_rx.is_some())
+                {
+                    ui.label(egui::RichText::new("延迟测试中…").small());
                 }
             });
-            if let Some((base, models, api)) = latency_models {
-                let secret = credentials::effective_secret(&self.new_provider);
-                if let Some(msg) = Self::start_models_latency(
-                    &mut self.latency,
-                    NEW_PROVIDER_FETCH_KEY,
-                    &base,
-                    &secret,
-                    &api,
-                    models,
-                ) {
-                    self.status = msg;
-                }
-            }
             if let Some((base, secret, api)) = fetch_request {
                 self.start_model_fetch(NEW_PROVIDER_FETCH_KEY, &base, &secret, &api);
                 self.model_fetch_open
@@ -3171,6 +3577,8 @@ impl App {
             }
             let mut rm_new: Option<usize> = None;
             let mut move_new_request: Option<(usize, usize)> = None;
+            // 本帧用户点下的探测请求（新 provider 固定用 NEW_PROVIDER_FETCH_KEY 做节流键）。
+            let mut probe_request: Option<(String, String)> = None;
             for j in 0..self.new_provider.models.len() {
                 let model_count = self.new_provider.models.len();
                 card_frame(ui, true, 0, |ui| {
@@ -3181,9 +3589,19 @@ impl App {
                         if j + 1 < model_count && ui.button("↓").clicked() {
                             move_new_request = Some((j, j + 1));
                         }
-                        // 该行显示延迟（调整按钮右侧），删除按钮右对齐。
-                        let latency = self.latency.get(NEW_PROVIDER_FETCH_KEY);
+                        // 单模型延迟测试：按钮在调整按钮右侧，结果显示在按钮右侧。
                         let model_id = self.new_provider.models[j].id.trim().to_string();
+                        if model_probe_button(
+                            ui,
+                            &self.probe,
+                            NEW_PROVIDER_FETCH_KEY,
+                            ui.input(|i| i.time),
+                            self.net_guard.as_deref(),
+                        ) {
+                            probe_request =
+                                Some((NEW_PROVIDER_FETCH_KEY.to_string(), model_id.clone()));
+                        }
+                        let latency = self.latency.get(NEW_PROVIDER_FETCH_KEY);
                         model_latency_label(ui, latency, &model_id);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("删").clicked() {
@@ -3215,6 +3633,23 @@ impl App {
                         numeric_text_edit(ui, &mut self.new_provider.models[j].output, 53.0, "");
                     });
                 });
+            }
+            if let Some((provider_key, model_id)) = probe_request {
+                let now = ui.input(|i| i.time);
+                let base_url = self.new_provider.base_url.clone();
+                let secret = credentials::effective_secret(&self.new_provider);
+                let api = self.new_provider.effective_api();
+                self.status = Self::run_model_probe(
+                    &mut self.probe,
+                    &mut self.latency,
+                    self.net_guard.as_deref(),
+                    &provider_key,
+                    &model_id,
+                    now,
+                    &base_url,
+                    &secret,
+                    &api,
+                );
             }
             if let Some((from, to)) = move_new_request {
                 move_item(&mut self.new_provider.models, from, to);
@@ -3334,6 +3769,8 @@ impl App {
         self.latency.remove(NEW_PROVIDER_FETCH_KEY);
         self.model_fetch.remove(NEW_PROVIDER_FETCH_KEY);
         self.model_fetch_open.remove(NEW_PROVIDER_FETCH_KEY);
+        // 表单关掉后探测结果无处显示：释放它的串行位。
+        self.probe.release(Some(NEW_PROVIDER_FETCH_KEY));
     }
 
     fn reload(&mut self) {
@@ -4095,6 +4532,7 @@ impl App {
                 self.model_fetch.clear();
                 self.model_fetch_open.clear();
                 self.latency.clear();
+                self.probe.release(None);
                 true
             }
             Err(e) => {
@@ -4915,16 +5353,78 @@ mod model_fetch_tests {
     #[test]
     fn chat_url_openai_and_anthropic() {
         assert_eq!(
-            chat_url("https://api.openai.com/v1", "openai-completions", "gpt-4o"),
+            chat_url(
+                "https://api.openai.com/v1",
+                "openai-completions",
+                "gpt-4o",
+                true
+            ),
             "https://api.openai.com/v1/chat/completions"
         );
         assert_eq!(
             chat_url(
                 "https://api.anthropic.com",
                 "anthropic-messages",
-                "claude-sonnet-4"
+                "claude-sonnet-4",
+                true
             ),
             "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn chat_url_streaming_only_changes_google() {
+        // 除 Google 系外，流式与非流式是同一个端点（靠请求体里的 stream 字段区分）
+        assert_eq!(
+            chat_url(
+                "https://gw.example.com/v1",
+                "openai-completions",
+                "gpt-4o",
+                false
+            ),
+            chat_url(
+                "https://gw.example.com/v1",
+                "openai-completions",
+                "gpt-4o",
+                true
+            )
+        );
+        // Google 系要换动词（streamGenerateContent）并加 SSE 查询参数
+        assert_eq!(
+            chat_url(
+                "https://generativelanguage.googleapis.com/v1beta",
+                "google-generative-ai",
+                "gemini-2.5-pro",
+                true
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        );
+        assert_eq!(
+            chat_url(
+                "https://us-central1-aiplatform.googleapis.com/v1",
+                "google-vertex",
+                "gemini-2.5-pro",
+                true
+            ),
+            "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn query_key_appends_after_existing_query() {
+        use super::{with_query_key, AuthKind};
+        assert_eq!(
+            with_query_key("https://gw.example.com/models", AuthKind::QueryKey, "sk-1"),
+            "https://gw.example.com/models?key=sk-1"
+        );
+        // Google 流式端点已经带了 ?alt=sse，密钥要用 & 接着拼
+        assert_eq!(
+            with_query_key(
+                "https://gw.example.com/models/m:streamGenerateContent?alt=sse",
+                AuthKind::QueryKey,
+                "sk-1"
+            ),
+            "https://gw.example.com/models/m:streamGenerateContent?alt=sse&key=sk-1"
         );
     }
 
@@ -4933,21 +5433,21 @@ mod model_fetch_tests {
         let base = "https://gw.example.com/v1";
         // Responses 系走 /responses（含 Azure）
         assert_eq!(
-            chat_url(base, "openai-responses", "gpt-4o"),
+            chat_url(base, "openai-responses", "gpt-4o", false),
             "https://gw.example.com/v1/responses"
         );
         assert_eq!(
-            chat_url(base, "azure-openai-responses", "gpt-4o"),
+            chat_url(base, "azure-openai-responses", "gpt-4o", false),
             "https://gw.example.com/v1/responses"
         );
         // Mistral 会话协议仍是 chat/completions
         assert_eq!(
-            chat_url(base, "mistral-conversations", "mistral-large"),
+            chat_url(base, "mistral-conversations", "mistral-large", false),
             "https://gw.example.com/v1/chat/completions"
         );
         // pi 自己的协议是 /messages（不带 v1 前缀时也直接用 base）
         assert_eq!(
-            chat_url(base, "pi-messages", "some-model"),
+            chat_url(base, "pi-messages", "some-model", false),
             "https://gw.example.com/v1/messages"
         );
         // Google 系需要模型名参与路径
@@ -4955,7 +5455,8 @@ mod model_fetch_tests {
             chat_url(
                 "https://generativelanguage.googleapis.com/v1beta",
                 "google-generative-ai",
-                "gemini-2.5-pro"
+                "gemini-2.5-pro",
+                false
             ),
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
         );
@@ -4963,7 +5464,8 @@ mod model_fetch_tests {
             chat_url(
                 "https://us-central1-aiplatform.googleapis.com/v1",
                 "google-vertex",
-                "gemini-2.5-pro"
+                "gemini-2.5-pro",
+                false
             ),
             "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-pro:generateContent"
         );
@@ -5002,17 +5504,197 @@ mod model_fetch_tests {
     #[test]
     fn minimal_body_matches_protocol() {
         use super::{api_wire, minimal_body};
-        let chat = minimal_body(api_wire("openai-completions"), "m");
-        assert_eq!(chat["messages"][0]["content"], "ping");
-        assert_eq!(chat["max_tokens"], 1);
-        let resp = minimal_body(api_wire("openai-responses"), "m");
-        assert_eq!(resp["input"], "ping");
+        let question = "世界上最长的河流是哪条？只回答河名";
+        let chat = minimal_body(api_wire("openai-completions"), "m", question);
+        assert_eq!(chat["messages"][0]["content"], question);
+        assert_eq!(chat["max_tokens"], 16);
+        let resp = minimal_body(api_wire("openai-responses"), "m", question);
+        assert_eq!(resp["input"], question);
         assert_eq!(resp["max_output_tokens"], 16);
-        let google = minimal_body(api_wire("google-generative-ai"), "m");
-        assert_eq!(google["contents"][0]["parts"][0]["text"], "ping");
+        let anthropic = minimal_body(api_wire("anthropic-messages"), "m", question);
+        assert_eq!(anthropic["messages"][0]["content"], question);
+        let google = minimal_body(api_wire("google-generative-ai"), "m", question);
+        assert_eq!(google["contents"][0]["parts"][0]["text"], question);
+        assert_eq!(google["generationConfig"]["maxOutputTokens"], 16);
+        // 全部走流式（Google 除外：它的流式靠换端点，请求体里没有 stream 字段）
+        assert_eq!(chat["stream"], true);
+        assert_eq!(resp["stream"], true);
+        assert_eq!(anthropic["stream"], true);
+        assert!(google.get("stream").is_none());
         // 字段名不得互相串用（Responses 没有 messages，Google 没有 model）
         assert!(resp.get("messages").is_none());
         assert!(google.get("model").is_none());
+    }
+
+    #[test]
+    fn probe_user_agent_matches_whitelisted_clients() {
+        use super::{api_wire, probe_user_agent};
+        // Anthropic 系用 Claude Code 的身份，其余用 opencode 的身份
+        // （中转站只放行这两种；ureq 默认 UA / 无 UA / pi 的 UA 都会 401）
+        assert!(probe_user_agent(api_wire("anthropic-messages")).starts_with("claude-cli/"));
+        assert!(probe_user_agent(api_wire("pi-messages")).starts_with("claude-cli/"));
+        assert!(probe_user_agent(api_wire("openai-completions")).starts_with("opencode/"));
+        assert!(probe_user_agent(api_wire("openai-responses")).starts_with("opencode/"));
+        assert!(probe_user_agent(api_wire("google-generative-ai")).starts_with("opencode/"));
+    }
+
+    #[test]
+    fn chunk_content_detection_per_protocol() {
+        use super::{api_wire, chunk_has_content};
+        let parse = |text: &str| match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(value) => value,
+            Err(err) => panic!("测试用例不是合法 JSON：{err}"),
+        };
+        // Chat Completions：role 块不算出字，content / reasoning_content 才算
+        let chat = api_wire("openai-completions");
+        assert!(!chunk_has_content(
+            chat,
+            &parse(r#"{"choices":[{"delta":{"role":"assistant"}}]}"#)
+        ));
+        assert!(chunk_has_content(
+            chat,
+            &parse(r#"{"choices":[{"delta":{"content":"尼罗河"}}]}"#)
+        ));
+        assert!(chunk_has_content(
+            chat,
+            &parse(r#"{"choices":[{"delta":{"reasoning_content":"嗯"}}]}"#)
+        ));
+        // 内容块数组形态也要认（部分中转站回 parts）
+        assert!(chunk_has_content(
+            chat,
+            &parse(r#"{"choices":[{"delta":{"content":[{"text":"你"}]}}]}"#)
+        ));
+        // Responses：只有 *.delta 事件且带 delta 文本才算
+        let responses = api_wire("openai-responses");
+        assert!(!chunk_has_content(
+            responses,
+            &parse(r#"{"type":"response.created"}"#)
+        ));
+        assert!(chunk_has_content(
+            responses,
+            &parse(r#"{"type":"response.output_text.delta","delta":"你"}"#)
+        ));
+        // Anthropic：content_block_delta 里的 text / thinking
+        let anthropic = api_wire("anthropic-messages");
+        assert!(!chunk_has_content(
+            anthropic,
+            &parse(r#"{"type":"message_start","message":{"id":"x"}}"#)
+        ));
+        assert!(chunk_has_content(
+            anthropic,
+            &parse(r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"你"}}"#)
+        ));
+        // Google：candidates[0].content.parts[*].text
+        let google = api_wire("google-generative-ai");
+        assert!(!chunk_has_content(
+            google,
+            &parse(r#"{"candidates":[{"content":{"parts":[{"text":""}]}}]}"#)
+        ));
+        assert!(chunk_has_content(
+            google,
+            &parse(r#"{"candidates":[{"content":{"parts":[{"text":"尼罗河"}]}}]}"#)
+        ));
+    }
+
+    #[test]
+    fn stream_ttft_reads_first_content_and_drains() {
+        use super::{api_wire, read_stream_ttft};
+        let started = std::time::Instant::now();
+        // role 块在前：首字必须落在 content 块上，且读完流后不能报错
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"尼罗河\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let ttft = read_stream_ttft(
+            std::io::Cursor::new(sse.as_bytes()),
+            api_wire("openai-completions"),
+            started,
+        );
+        assert!(matches!(ttft, Some(ms) if ms < 1_000));
+        // 只有元事件（没有任何内容）：退回第一个数据包的时刻，不返回 None
+        let meta = "data: {\"type\":\"response.created\"}\n\n";
+        let fallback = read_stream_ttft(
+            std::io::Cursor::new(meta.as_bytes()),
+            api_wire("openai-responses"),
+            started,
+        );
+        assert!(fallback.is_some());
+        // 空流（连数据包都没有）才算失败
+        let empty: &[u8] = b"";
+        assert!(read_stream_ttft(
+            std::io::Cursor::new(empty),
+            api_wire("openai-completions"),
+            started
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn stream_end_markers_are_recognized() {
+        use super::is_stream_end;
+        assert!(is_stream_end("data: [DONE]"));
+        assert!(is_stream_end("event: message_stop"));
+        assert!(is_stream_end("data: {\"type\":\"response.completed\"}"));
+        // 普通内容块不能被误判成结束
+        assert!(!is_stream_end(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"尼罗河\"}}]}"
+        ));
+        // content_block_stop 里含 stop，但不是结束事件
+        assert!(!is_stream_end(
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}"
+        ));
+    }
+
+    #[test]
+    fn probe_gate_throttles_per_provider() {
+        use super::{ProbeGate, ProbeGateState, PROBE_PROVIDER_GAP_S};
+        let mut gate = ProbeGate::default();
+        assert_eq!(gate.state("a", 100.0, None), ProbeGateState::Ready);
+        gate.start("a", 100.0);
+        // 同一 provider 在飞期间 Busy（探测最长 10s，可能超过 5s 间隔，
+        // 否则会同时向同一中转站发两个请求）
+        assert_eq!(gate.state("a", 101.0, None), ProbeGateState::Busy);
+        // 不同 provider 互不牵连：另一个厂商立即可测（可并行）
+        assert_eq!(gate.state("b", 100.0, None), ProbeGateState::Ready);
+        gate.start("b", 100.0);
+        gate.finish("a");
+        // 同一 provider 的任意两次探测（同模型 / 不同模型都算）统一间隔 5 秒
+        match gate.state("a", 102.0, None) {
+            ProbeGateState::Cooling(left) => {
+                assert!(left > 0.0 && left <= PROBE_PROVIDER_GAP_S)
+            }
+            other => panic!("应为 Cooling，实际 {other:?}"),
+        }
+        assert_eq!(gate.state("a", 105.0, None), ProbeGateState::Ready);
+        // b 仍在飞，不影响 a
+        assert_eq!(gate.state("b", 106.0, None), ProbeGateState::Busy);
+        gate.finish("b");
+        // 网络守卫优先级最高：即使冷却结束也不允许探测
+        assert!(matches!(
+            gate.state("a", 200.0, Some("检测到系统代理")),
+            ProbeGateState::NetBlocked(_)
+        ));
+        // 释放：重载 / 关闭表单时不能把某个 provider 永久卡在 Busy
+        gate.start("c", 300.0);
+        gate.release(Some("a"));
+        assert_eq!(gate.state("c", 400.0, None), ProbeGateState::Busy);
+        gate.release(None);
+        assert_eq!(gate.state("c", 400.0, None), ProbeGateState::Ready);
+    }
+
+    #[test]
+    fn probe_questions_rotate_per_provider() {
+        use super::{probe_question, ProbeGate, PROBE_QUESTIONS};
+        // 同一 provider 连续取题不重复（避免每次都问同一句）
+        let mut gate = ProbeGate::default();
+        let first = gate.next_question("relay-a");
+        let second = gate.next_question("relay-a");
+        assert_ne!(first, second);
+        // 不同 provider 的起始偏移不同（同一游标下题目不同）
+        let other = probe_question("relay-b", 0);
+        assert_ne!(probe_question("relay-a", 0), other);
+        assert!(PROBE_QUESTIONS.contains(&other));
     }
 
     #[test]
@@ -5144,8 +5826,8 @@ mod syntax_highlight_tests {
 #[cfg(test)]
 mod latency_tests {
     use super::{
-        latency_color, matrix_glyphs, LATENCY_GOOD_MS, LATENCY_GREEN, LATENCY_RED,
-        LATENCY_TIMEOUT_MS, LATENCY_YELLOW, MATRIX_CHARS, MATRIX_LEN,
+        latency_color, matrix_glyphs, LATENCY_GOOD_MS, LATENCY_GREEN, LATENCY_RED, LATENCY_SLOW_MS,
+        LATENCY_YELLOW, MATRIX_CHARS, MATRIX_LEN,
     };
 
     #[test]
@@ -5153,8 +5835,8 @@ mod latency_tests {
         assert_eq!(latency_color(0), LATENCY_GREEN);
         assert_eq!(latency_color(LATENCY_GOOD_MS - 1), LATENCY_GREEN);
         assert_eq!(latency_color(LATENCY_GOOD_MS), LATENCY_YELLOW);
-        assert_eq!(latency_color(LATENCY_TIMEOUT_MS), LATENCY_YELLOW);
-        assert_eq!(latency_color(LATENCY_TIMEOUT_MS + 1), LATENCY_RED);
+        assert_eq!(latency_color(LATENCY_SLOW_MS - 1), LATENCY_YELLOW);
+        assert_eq!(latency_color(LATENCY_SLOW_MS), LATENCY_RED);
     }
 
     #[test]

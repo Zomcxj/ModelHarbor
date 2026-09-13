@@ -32,11 +32,21 @@ impl Theme {
     fn palette(&self) -> Palette {
         match self {
             // dark, panel, faint, extreme, widget, hover, accent, text
-            Theme::Dark => Palette::new(true, 0x1E1E1E, 0x242424, 0x101010, 0x2D2D2D, 0x383838, 0x3B82F6, 0xE4E4E4),
-            Theme::Light => Palette::new(false, 0xF5F5F5, 0xECECEC, 0xFFFFFF, 0xE2E2E2, 0xD5D5D5, 0x2563EB, 0x1E1E1E),
-            Theme::Ocean => Palette::new(true, 0x0D1B2A, 0x1B263B, 0x0A1622, 0x22384F, 0x2C4A66, 0x48CAE4, 0xE0E8F0),
-            Theme::Nord => Palette::new(true, 0x2E3440, 0x3B4252, 0x272C36, 0x434C5E, 0x4C566A, 0x88C0D0, 0xD8DEE9),
-            Theme::Rose => Palette::new(false, 0xFBEEF0, 0xF5DCE1, 0xFFFFFF, 0xF0CDD4, 0xE8B9C2, 0xB5838D, 0x4A2E33),
+            Theme::Dark => Palette::new(
+                true, 0x1E1E1E, 0x242424, 0x101010, 0x2D2D2D, 0x383838, 0x3B82F6, 0xE4E4E4,
+            ),
+            Theme::Light => Palette::new(
+                false, 0xF5F5F5, 0xECECEC, 0xFFFFFF, 0xE2E2E2, 0xD5D5D5, 0x2563EB, 0x1E1E1E,
+            ),
+            Theme::Ocean => Palette::new(
+                true, 0x0D1B2A, 0x1B263B, 0x0A1622, 0x22384F, 0x2C4A66, 0x48CAE4, 0xE0E8F0,
+            ),
+            Theme::Nord => Palette::new(
+                true, 0x2E3440, 0x3B4252, 0x272C36, 0x434C5E, 0x4C566A, 0x88C0D0, 0xD8DEE9,
+            ),
+            Theme::Rose => Palette::new(
+                false, 0xFBEEF0, 0xF5DCE1, 0xFFFFFF, 0xF0CDD4, 0xE8B9C2, 0xB5838D, 0x4A2E33,
+            ),
         }
     }
 
@@ -75,7 +85,16 @@ struct Palette {
 
 impl Palette {
     #[allow(clippy::too_many_arguments)]
-    fn new(dark: bool, panel: u32, faint: u32, extreme: u32, widget: u32, hover: u32, accent: u32, text: u32) -> Self {
+    fn new(
+        dark: bool,
+        panel: u32,
+        faint: u32,
+        extreme: u32,
+        widget: u32,
+        hover: u32,
+        accent: u32,
+        text: u32,
+    ) -> Self {
         Self {
             dark,
             panel: rgb(panel),
@@ -89,7 +108,11 @@ impl Palette {
     }
 
     fn into_visuals(self) -> Visuals {
-        let mut v = if self.dark { Visuals::dark() } else { Visuals::light() };
+        let mut v = if self.dark {
+            Visuals::dark()
+        } else {
+            Visuals::light()
+        };
         v.panel_fill = self.panel;
         v.window_fill = self.panel;
         v.faint_bg_color = self.faint;

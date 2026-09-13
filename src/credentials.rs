@@ -16,7 +16,9 @@ pub fn sidecar_path(config_path: &str) -> String {
         '\\'
     };
     match config_path.rsplit_once(separator) {
-        Some((parent, _)) if !parent.is_empty() => format!("{}{}{}", parent, separator, ".credentials.yaml"),
+        Some((parent, _)) if !parent.is_empty() => {
+            format!("{}{}{}", parent, separator, ".credentials.yaml")
+        }
         _ => ".credentials.yaml".to_string(),
     }
 }
@@ -51,8 +53,7 @@ pub fn secret_for(root: &Value, env_name: &str) -> String {
 /// 空密钥删除对应 ref；其余 refs/records/未知字段完全保留。
 pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> {
     if !providers.iter().any(|provider| {
-        !effective_env_name(provider).is_empty()
-            || !provider.original_api_key_env.trim().is_empty()
+        !effective_env_name(provider).is_empty() || !provider.original_api_key_env.trim().is_empty()
     }) {
         return Ok(());
     }
@@ -149,8 +150,14 @@ mod tests {
 
     #[test]
     fn sidecar_is_same_directory() {
-        assert_eq!(sidecar_path(r"C:\Users\cxj\.dsh\settings.yaml"), r"C:\Users\cxj\.dsh\.credentials.yaml");
-        assert_eq!(sidecar_path("/home/cxj/.dsh/settings.yaml"), "/home/cxj/.dsh/.credentials.yaml");
+        assert_eq!(
+            sidecar_path(r"C:\Users\cxj\.dsh\settings.yaml"),
+            r"C:\Users\cxj\.dsh\.credentials.yaml"
+        );
+        assert_eq!(
+            sidecar_path("/home/cxj/.dsh/settings.yaml"),
+            "/home/cxj/.dsh/.credentials.yaml"
+        );
     }
 
     #[test]
