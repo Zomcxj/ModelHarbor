@@ -191,15 +191,29 @@ fn strip_drops_managed_containers_per_format() {
         "agent": { "writer": {} },
         "mcp": { "srv": {} }
     });
-    strip_cross_format_containers(ConfigFormat::Opencode, &mut oc);
+    strip_cross_format_containers(ConfigFormat::Opencode, &mut oc, true);
     assert!(oc.get("provider").is_none());
     assert!(oc.get("agent").is_none());
     assert!(oc["mcp"]["srv"].is_object());
 
+    // 界面没有 agents 数据（来源为 pi / omp / DSH）时不得接管 agent 容器
+    let mut oc_no_agents = json!({
+        "provider": { "old": {} },
+        "agent": { "writer": {} },
+        "mcp": { "srv": {} }
+    });
+    strip_cross_format_containers(ConfigFormat::Opencode, &mut oc_no_agents, false);
+    assert!(oc_no_agents.get("provider").is_none());
+    assert!(
+        oc_no_agents["agent"]["writer"].is_object(),
+        "来源不是 opencode 时，目标文件的 agents 必须保留"
+    );
+    assert!(oc_no_agents["mcp"]["srv"].is_object());
+
     // pi / omp：providers 由界面接管，其他顶层字段保留
     for fmt in [ConfigFormat::Pi, ConfigFormat::OhMyPi] {
         let mut root = json!({ "providers": { "old": {} }, "defaultModel": "x" });
-        strip_cross_format_containers(fmt, &mut root);
+        strip_cross_format_containers(fmt, &mut root, false);
         assert!(root.get("providers").is_none(), "{:?}", fmt);
         assert_eq!(root["defaultModel"], "x", "{:?}", fmt);
     }
@@ -209,7 +223,7 @@ fn strip_drops_managed_containers_per_format() {
         "llm-pi-ai": { "providers": { "old": {} }, "timeoutMs": 10000 },
         "other": 1
     });
-    strip_cross_format_containers(ConfigFormat::DeepSeekHarness, &mut dsh);
+    strip_cross_format_containers(ConfigFormat::DeepSeekHarness, &mut dsh, false);
     assert!(dsh["llm-pi-ai"].get("providers").is_none());
     assert_eq!(dsh["llm-pi-ai"]["timeoutMs"], 10000);
     assert_eq!(dsh["other"], 1);
@@ -222,7 +236,7 @@ fn cross_format_pi_doc_takes_ui_providers_and_order() {
         "providers": { "old": { "baseUrl": "https://old/v1" } },
         "defaultProvider": "old"
     });
-    strip_cross_format_containers(ConfigFormat::Pi, &mut target);
+    strip_cross_format_containers(ConfigFormat::Pi, &mut target, false);
     let providers = ui_providers(&["zeta", "alpha"]);
     let doc = backends::backend(ConfigFormat::Pi).serialize_root(
         &[],
@@ -253,7 +267,7 @@ fn cross_format_opencode_doc_takes_ui_providers_and_order() {
         "agent": { "writer": {} },
         "mcp": { "srv": { "command": "node" } }
     });
-    strip_cross_format_containers(ConfigFormat::Opencode, &mut target);
+    strip_cross_format_containers(ConfigFormat::Opencode, &mut target, true);
     let providers = ui_providers(&["b", "a"]);
     let doc = merge_opencode_root(&target, &[], &providers);
     let keys: Vec<String> = doc["provider"]
@@ -263,5 +277,26 @@ fn cross_format_opencode_doc_takes_ui_providers_and_order() {
     assert_eq!(keys, vec!["b", "a"]);
     assert!(doc["provider"].get("old").is_none());
     assert!(doc["agent"].as_object().is_none_or(|o| o.is_empty()));
+    assert_eq!(doc["mcp"]["srv"]["command"], "node");
+}
+
+#[test]
+fn cross_format_opencode_save_keeps_target_agents_when_ui_has_none() {
+    // 回归：加载 pi / omp / DSH 后保存到 opencode，界面没有 agents 数据，
+    // 目标文件里已有的 agents 不得被清空（修复前会被整体删除）
+    let mut target = json!({
+        "provider": { "old": {} },
+        "agent": { "writer": {}, "reviewer": {} },
+        "mcp": { "srv": { "command": "node" } }
+    });
+    strip_cross_format_containers(ConfigFormat::Opencode, &mut target, false);
+    let providers = ui_providers(&["b", "a"]);
+    let doc = merge_opencode_root(&target, &[], &providers);
+    assert!(doc["agent"]["writer"].is_object(), "writer 必须保留");
+    assert!(doc["agent"]["reviewer"].is_object(), "reviewer 必须保留");
+    assert!(
+        doc["provider"].get("old").is_none(),
+        "provider 仍由界面接管（干净转换语义不变）"
+    );
     assert_eq!(doc["mcp"]["srv"]["command"], "node");
 }

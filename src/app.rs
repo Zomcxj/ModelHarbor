@@ -3629,7 +3629,7 @@ impl App {
         } else {
             let mut target = backend.load_target_root(path);
             if cross_format {
-                strip_cross_format_containers(fmt, &mut target);
+                strip_cross_format_containers(fmt, &mut target, !self.agents.is_empty());
             }
             Some(target)
         };
@@ -4061,7 +4061,7 @@ impl App {
         } else {
             let mut target = backend.load_target_root(&path);
             if self.source_format != fmt {
-                strip_cross_format_containers(fmt, &mut target);
+                strip_cross_format_containers(fmt, &mut target, !self.agents.is_empty());
             }
             Some(target)
         };
@@ -4434,14 +4434,20 @@ pub use crate::util::parse_config_content;
 /// 目的：跨格式保存/预览时，provider 条目与顺序完全以界面为准（干净转换），
 /// 同时目标文件的其他顶层字段（如 DSH 的 llm-pi-ai 下其他设置）原样保留。
 /// 同格式目标（WSL 同步等）不走这里，仍用保守合并。
-pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value) {
+///
+/// `agents_owned` 表示界面确实持有 agents 数据。agents 只属于 opencode 页：
+/// 数据来自 pi / oh-my-pi / DSH（或空载启动）时界面无从表达 agents，
+/// 此时必须保留目标文件里的 agent 容器，否则会把它们静默删掉。
+pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents_owned: bool) {
     let Some(obj) = root.as_object_mut() else {
         return;
     };
     match fmt {
         ConfigFormat::Opencode => {
             obj.remove("provider");
-            obj.remove("agent");
+            if agents_owned {
+                obj.remove("agent");
+            }
         }
         ConfigFormat::Pi | ConfigFormat::OhMyPi => {
             obj.remove("providers");
