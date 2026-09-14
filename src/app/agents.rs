@@ -1,11 +1,11 @@
 //! Agents 区块：卡片列表、编辑表单与新增表单（仅 opencode 页面使用）。
+use super::App;
+use crate::app::bars::{sticky_begin, sticky_end};
 use crate::format::ConfigFormat;
 use crate::model::AgentRow;
 use crate::ui::{card_frame, card_list, field_label, move_item, numeric_text_edit, DragHandle};
-use crate::app::bars::{sticky_begin, sticky_end};
 use eframe::egui;
 use std::collections::HashSet;
-use super::App;
 
 impl App {
     /// Agents 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
