@@ -317,9 +317,18 @@ pub fn write_wsl_file(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 文件对话框支持的扩展名。
+///
+/// **首个滤镜就是 Windows 对话框的默认选中项**，而对话框会按选中滤镜过滤列表：
+/// 只写 json 会让 `.yml` / `.yaml`（oh-my-pi 的 `models.yml`、DSH 的 `settings.yaml`）
+/// 在「浏览」时直接不可见 —— 即使用户手动切到 YAML 滤镜也容易被误认为「不支持 yml」。
+/// 单测 `dialog_extensions_cover_backend_defaults` 会用各后端的默认路径反向守住这份清单。
+const CONFIG_FILE_EXTENSIONS: &[&str] = &["json", "jsonc", "yml", "yaml"];
+
 pub fn show_file_dialog() -> Option<String> {
     rfd::FileDialog::new()
         .set_title("选择配置文件")
+        .add_filter("配置文件（JSON / YAML）", CONFIG_FILE_EXTENSIONS)
         .add_filter("JSON", &["json", "jsonc"])
         .add_filter("YAML", &["yml", "yaml"])
         .add_filter("所有文件", &["*"])
@@ -486,7 +495,41 @@ pub fn url_suspicions(url: &str) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::url_suspicions;
+    use super::{url_suspicions, CONFIG_FILE_EXTENSIONS};
+
+    /// 反向守住对话框滤镜：每个后端的默认配置扩展名都必须在列表里。
+    ///
+    /// 曾经的 Bug：首项滤镜只有 json，Windows 对话框默认按它过滤，
+    /// `.yml` / `.yaml`（oh-my-pi / DSH 的配置文件）在「浏览」时不可见。
+    #[test]
+    fn dialog_extensions_cover_backend_defaults() {
+        for backend in crate::backends::BACKENDS {
+            let path = backend.default_local_path();
+            let ext = std::path::Path::new(&path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            assert!(
+                !ext.is_empty(),
+                "后端 {:?} 的默认配置没有扩展名：{path}",
+                backend.id()
+            );
+            assert!(
+                CONFIG_FILE_EXTENSIONS.contains(&ext.as_str()),
+                "后端 {:?} 的默认配置 {path} 扩展名 .{ext} 不在对话框滤镜里，\
+                 会导致浏览时选不到该文件",
+                backend.id()
+            );
+        }
+        // JSON 与 YAML 两侧都不能漏：首项滤镜必须同时覆盖两者。
+        for ext in ["json", "jsonc", "yml", "yaml"] {
+            assert!(
+                CONFIG_FILE_EXTENSIONS.contains(&ext),
+                "对话框滤镜缺少 {ext}"
+            );
+        }
+    }
 
     #[test]
     fn url_suspicions_flags_double_slash() {
