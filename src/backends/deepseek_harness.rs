@@ -72,6 +72,9 @@ fn model_to_dsh(m: &ModelRow, preserve_raw: bool) -> Value {
         dsh_set_reasoning_efforts(m, &mut obj);
     }
 
+    if preserve_raw {
+        crate::model::merge_advanced_model(&mut obj, m);
+    }
     Value::Object(order_fields(obj, DSH_MODEL_FIELDS))
 }
 
@@ -193,6 +196,7 @@ fn provider_from_dsh(key: &str, v: &Value, credentials_root: &Value) -> Provider
     let retry_mode = dsh_retry_mode(v);
     let max_retries = dsh_max_retries(v);
     let secret = credentials::secret_for(credentials_root, &env);
+    let advanced = crate::model::advanced_json_for_provider(v);
     ProviderRow {
         key: key.to_string(),
         description: String::new(),
@@ -226,6 +230,8 @@ fn provider_from_dsh(key: &str, v: &Value, credentials_root: &Value) -> Provider
         source_format: Some(ConfigFormat::DeepSeekHarness),
         raw: v.clone(),
         pi_api: api.to_string(),
+        advanced: advanced.clone(),
+        original_advanced: advanced,
     }
 }
 
@@ -538,6 +544,9 @@ fn provider_to_dsh(p: &ProviderRow) -> Value {
                 obj.remove("timeoutMs");
             }
         }
+    }
+    if preserve_raw {
+        crate::model::merge_advanced_provider(&mut obj, p);
     }
     Value::Object(order_fields(
         obj,

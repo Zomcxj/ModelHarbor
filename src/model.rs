@@ -173,6 +173,10 @@ pub struct ModelRow {
     pub variants: String,
     /// 加载时的思考档位投影，用于区分跨格式继承值与用户在目标页的手动输入。
     pub original_variants: String,
+    /// 未在界面建模的方言字段（JSON 文本），见 [`advanced_json_of`]。
+    pub advanced: String,
+    /// 加载时的同名字段，用于「未编辑不写回」。
+    pub original_advanced: String,
     /// raw 所属格式；None 表示在当前页面中新建的条目。
     pub source_format: Option<ConfigFormat>,
     pub raw: Value,
@@ -201,6 +205,7 @@ impl ModelRow {
             .and_then(|o| o.get("store"))
             .and_then(|s| s.as_bool())
             .unwrap_or(false);
+        let advanced = advanced_json_of(v, MODEL_UI_KEYS);
         Self {
             id: id.to_string(),
             name: str_at(v, "name").to_string(),
@@ -213,6 +218,8 @@ impl ModelRow {
             modalities_output: nested_list_str(v, &["modalities", "output"]),
             original_variants: variants.clone(),
             variants,
+            advanced: advanced.clone(),
+            original_advanced: advanced,
             source_format: Some(ConfigFormat::Opencode),
             raw: v.clone(),
         }
@@ -233,6 +240,8 @@ impl ModelRow {
             modalities_output: "text".into(),
             variants: "medium, high, xhigh, max".into(),
             original_variants: String::new(),
+            advanced: String::new(),
+            original_advanced: String::new(),
             source_format: None,
             raw: Value::Object(Map::new()),
         }
@@ -256,6 +265,13 @@ impl ModelRow {
         self.apply_limits(&mut m, convert_dialect);
         self.apply_modalities(&mut m, convert_dialect);
         self.apply_variants(&mut m, convert_dialect);
+
+        // 高级字段（未建模的方言键，如 cost / samplingParams / headers / tokenizer）：
+        // 只在用户改过文本且文本合法时写回；跨格式转换不改写，
+        // 避免把源方言专属键带进目标格式（沿用既有转换语义）。
+        if !convert_dialect {
+            merge_advanced_model(&mut m, self);
+        }
 
         // 新建模型 / 跨格式写入时按 opencode 惯例键顺序输出（name、modalities、
         // reasoning、tool_call、limit、options、variants），与配置文件保持一致；
@@ -444,6 +460,136 @@ fn raw_object_is_empty(raw: &Value) -> bool {
     }
 }
 
+/// 界面已建模的 model 键（各方言并集）：其余键归入「高级字段」JSON 编辑区。
+///
+/// 新增建模字段时必须同步这里，否则该字段会在高级区重复出现（保存仍最小 diff，
+/// 但界面会同时存在两个入口）。
+const MODEL_UI_KEYS: &[&str] = &[
+    "id",
+    "name",
+    "api",
+    "baseUrl",
+    "provider",
+    "reasoning",
+    "tool_call",
+    "options",
+    "limit",
+    "modalities",
+    "variants",
+    "thinkingLevelMap",
+    "thinking",
+    "reasoningEfforts",
+    "contextWindow",
+    "maxTokens",
+    "input",
+];
+
+/// 界面已建模的 provider 键（各方言并集）。
+const PROVIDER_UI_KEYS: &[&str] = &[
+    "description",
+    "npm",
+    "baseUrl",
+    "baseURL",
+    "apiKey",
+    "apiKeyEnv",
+    "api",
+    "timeout",
+    "timeoutMs",
+    "options",
+    "models",
+    "retryPolicy",
+    "compat",
+];
+
+/// 从 raw 中摘出未建模字段并格式化为 JSON 文本（无高级字段时返回空串，
+/// 让界面保持安静；键序沿用 raw 原序，保存时不会触发无意义重排）。
+fn advanced_json_of(raw: &Value, ui_keys: &[&str]) -> String {
+    let Some(obj) = raw.as_object() else {
+        return String::new();
+    };
+    let mut rest = Map::new();
+    for (k, v) in obj {
+        if !ui_keys.contains(&k.as_str()) {
+            rest.insert(k.clone(), v.clone());
+        }
+    }
+    if rest.is_empty() {
+        return String::new();
+    }
+    serde_json::to_string_pretty(&Value::Object(rest)).unwrap_or_default()
+}
+
+/// 从方言 raw 摘出 model 的高级字段（供 convert / backends 构造 ModelRow 时复用）。
+pub fn advanced_json_for_model(raw: &Value) -> String {
+    advanced_json_of(raw, MODEL_UI_KEYS)
+}
+
+/// 从方言 raw 摘出 provider 的高级字段。
+pub fn advanced_json_for_provider(raw: &Value) -> String {
+    advanced_json_of(raw, PROVIDER_UI_KEYS)
+}
+
+/// 把 Row 上「高级字段」的改动合并进以 raw 为基底的目标对象。
+///
+/// 未改动或文本非法时不做任何事（保证最小 diff、不破坏配置）。
+/// pi / omp / DSH 的写出路径都以 raw 为基底，因此各自需要显式调用本函数；
+/// opencode 路径已在 `ModelRow::to_value` 内部调用。
+pub fn merge_advanced_model(obj: &mut Map<String, Value>, row: &ModelRow) {
+    if row.advanced == row.original_advanced {
+        return;
+    }
+    if let (Ok(original), Ok(edited)) = (
+        parse_advanced_json(&row.original_advanced),
+        parse_advanced_json(&row.advanced),
+    ) {
+        merge_advanced(obj, &original, &edited);
+    }
+}
+
+/// 把 provider 的「高级字段」改动合并进以 raw 为基底的目标对象（语义同
+/// [`merge_advanced_model`]）。
+pub fn merge_advanced_provider(obj: &mut Map<String, Value>, row: &ProviderRow) {
+    if row.advanced == row.original_advanced {
+        return;
+    }
+    if let (Ok(original), Ok(edited)) = (
+        parse_advanced_json(&row.original_advanced),
+        parse_advanced_json(&row.advanced),
+    ) {
+        merge_advanced(obj, &original, &edited);
+    }
+}
+
+/// 解析「高级字段」文本：空文本表示没有高级字段；必须是 JSON 对象。
+pub fn parse_advanced_json(text: &str) -> Result<Map<String, Value>, String> {
+    if text.trim().is_empty() {
+        return Ok(Map::new());
+    }
+    match serde_json::from_str::<Value>(text) {
+        Ok(Value::Object(obj)) => Ok(obj),
+        Ok(_) => Err("高级字段必须是一个 JSON 对象（以 { 开始）".to_string()),
+        Err(e) => Err(format!("JSON 解析失败: {}", e)),
+    }
+}
+
+/// 把编辑后的高级字段合并进目标对象：
+/// 先移除原高级键，再写入新值 —— 用户删掉的键会被真正移除，
+/// 而界面建模的键（未出现在这里）不受影响。
+fn merge_advanced(
+    m: &mut Map<String, Value>,
+    original: &Map<String, Value>,
+    edited: &Map<String, Value>,
+) {
+    for key in original.keys() {
+        if !edited.contains_key(key) {
+            m.remove(key);
+        }
+    }
+    for (k, v) in edited {
+        m.insert(k.clone(), v.clone());
+    }
+}
+
 /// opencode 模型的惯例键顺序（未列举的键按原顺序追加在后）。
 const MODEL_KEY_ORDER: &[&str] = &[
     "name",
@@ -511,6 +657,10 @@ pub struct ProviderRow {
     pub source_format: Option<ConfigFormat>,
     pub raw: Value,
     pub pi_api: String,
+    /// 未在界面建模的方言字段（JSON 文本），见 [`advanced_json_of`]。
+    pub advanced: String,
+    /// 加载时的同名字段，用于「未编辑不写回」。
+    pub original_advanced: String,
 }
 
 impl Default for ProviderRow {
@@ -538,6 +688,7 @@ impl ProviderRow {
                     "" | "@ai-sdk/openai" | "@ai-sdk/openai-compatible"
                 )
             });
+        let advanced = advanced_json_of(v, PROVIDER_UI_KEYS);
         let row = Self {
             key: key.to_string(),
             description: str_at(v, "description").to_string(),
@@ -580,6 +731,8 @@ impl ProviderRow {
             source_format: Some(ConfigFormat::Opencode),
             raw: v.clone(),
             pi_api: String::new(),
+            advanced: advanced.clone(),
+            original_advanced: advanced,
         };
         // opencode 的 anthropic-messages 必须带 /v1：读入即补齐，界面显示与落盘一致。
         let api = row.effective_api();
@@ -656,6 +809,8 @@ impl ProviderRow {
             source_format: None,
             raw: Value::Object(Map::new()),
             pi_api: String::new(),
+            advanced: String::new(),
+            original_advanced: String::new(),
         }
     }
 
@@ -708,11 +863,157 @@ impl ProviderRow {
                 m.insert("options".into(), Value::Object(options));
             }
         }
+        // 高级字段（如 omp 的 auth / authHeader / discovery / transport）：
+        // 同样只在用户改过文本且文本合法时写回，跨格式转换不改写。
+        if !convert_dialect {
+            merge_advanced_provider(&mut m, self);
+        }
         let mut models = Map::new();
         for mdl in &self.models {
             models.insert(mdl.id.clone(), mdl.to_value());
         }
         m.insert("models".into(), Value::Object(models));
         Value::Object(m)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        advanced_json_for_model, advanced_json_for_provider, parse_advanced_json, ModelRow,
+    };
+    use crate::backends::oh_my_pi::provider_to_omp;
+    use crate::convert::{model_from_pi, model_to_pi, provider_from_pi};
+    use serde_json::{json, Value};
+
+    /// pi 方言 model（无 limit/modalities/options/variants → 非 opencode 形状）。
+    fn pi_model_raw() -> Value {
+        json!({
+            "id": "m1",
+            "name": "M1",
+            "api": "openai-completions",
+            "baseUrl": "https://api.example.com/v1",
+            "reasoning": true,
+            "contextWindow": 1000,
+            "maxTokens": 100,
+            "cost": {"input": 1.5, "output": 2.5},
+            "samplingParams": {"temperature": 0.4}
+        })
+    }
+
+    /// pi 方言 provider（models 是数组，不是对象 → 非 opencode 形状）。
+    fn pi_provider_raw() -> Value {
+        json!({
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "sk-test",
+            "api": "openai-completions",
+            "auth": "none",
+            "discovery": {"type": "ollama"},
+            "models": [pi_model_raw()]
+        })
+    }
+
+    #[test]
+    fn advanced_json_excludes_ui_keys() {
+        let model = advanced_json_for_model(&pi_model_raw());
+        assert!(model.contains("\"cost\""), "cost 应归入高级字段: {model}");
+        assert!(model.contains("samplingParams"));
+        assert!(
+            !model.contains("contextWindow"),
+            "已建模字段不应出现: {model}"
+        );
+        assert!(!model.contains("\"name\""));
+
+        let provider = advanced_json_for_provider(&pi_provider_raw());
+        assert!(provider.contains("\"auth\""));
+        assert!(provider.contains("\"discovery\""));
+        assert!(!provider.contains("\"baseUrl\""));
+        assert!(!provider.contains("\"models\""));
+    }
+
+    #[test]
+    fn parse_advanced_json_accepts_empty_and_objects() {
+        assert!(parse_advanced_json("   ").unwrap().is_empty());
+        assert_eq!(parse_advanced_json("{\"cost\": 1}").unwrap().len(), 1);
+        assert!(parse_advanced_json("{").is_err(), "非法 JSON 应报错");
+        assert!(parse_advanced_json("[1, 2]").is_err(), "数组不是对象");
+        assert!(parse_advanced_json("42").is_err());
+    }
+
+    #[test]
+    fn pi_model_round_trip_keeps_unedited_advanced() {
+        let raw = pi_model_raw();
+        let row = model_from_pi(&raw);
+        let out = model_to_pi(&row);
+        assert_eq!(out.get("cost"), raw.get("cost"));
+        assert_eq!(out.get("samplingParams"), raw.get("samplingParams"));
+    }
+
+    #[test]
+    fn pi_model_round_trip_applies_edited_advanced() {
+        let mut row = model_from_pi(&pi_model_raw());
+        // 用户改掉 cost，并删掉了 samplingParams
+        row.advanced = "{\"cost\": {\"input\": 9.0}}".to_string();
+        let out = model_to_pi(&row);
+        assert_eq!(out["cost"]["input"], json!(9.0));
+        assert!(out.get("samplingParams").is_none(), "被删除的高级键应移除");
+        // 已建模字段不受影响
+        assert_eq!(out["contextWindow"], json!(1000));
+    }
+
+    #[test]
+    fn pi_model_round_trip_ignores_invalid_advanced() {
+        let mut row = model_from_pi(&pi_model_raw());
+        row.advanced = "{ 这不是合法 JSON".to_string();
+        let out = model_to_pi(&row);
+        // 非法文本不写盘、不破坏 raw
+        assert_eq!(out.get("cost"), pi_model_raw().get("cost"));
+    }
+
+    #[test]
+    fn opencode_same_format_merge_is_minimal() {
+        let raw = json!({
+            "name": "M",
+            "reasoning": true,
+            "limit": {"context": 1000},
+            "cost": {"input": 1.0},
+            "attachment": true
+        });
+        let mut row = ModelRow::from("m", &raw);
+        // 未编辑 → 高级键原样保留
+        let untouched = row.to_value();
+        assert_eq!(untouched.get("cost"), raw.get("cost"));
+        assert_eq!(untouched.get("attachment"), raw.get("attachment"));
+
+        row.advanced = "{\"cost\": {\"input\": 4.0}}".to_string();
+        let edited = row.to_value();
+        assert_eq!(edited["cost"]["input"], json!(4.0));
+        assert!(edited.get("attachment").is_none(), "删除的高级键应移除");
+        assert_eq!(edited["name"], json!("M"));
+        assert_eq!(edited["limit"]["context"], json!(1000));
+    }
+
+    #[test]
+    fn omp_provider_round_trip_applies_edited_advanced() {
+        let mut row = provider_from_pi("p1", &pi_provider_raw());
+        row.advanced = "{\"auth\": \"oauth\"}".to_string();
+        let out = provider_to_omp(&row);
+        assert_eq!(out["auth"], json!("oauth"));
+        assert!(out.get("discovery").is_none(), "被删除的高级键应移除");
+        assert_eq!(out["apiKey"], json!("sk-test"));
+    }
+
+    #[test]
+    fn cross_format_does_not_leak_advanced() {
+        // opencode 形状的 row 转到 pi：高级字段（opencode 专属键）不应被带过去
+        let raw = json!({
+            "name": "M",
+            "limit": {"context": 1000},
+            "attachment": true
+        });
+        let mut row = ModelRow::from("m", &raw);
+        row.advanced = "{\"attachment\": false}".to_string();
+        let out = model_to_pi(&row);
+        assert!(out.get("attachment").is_none(), "跨格式转换不写入高级字段");
     }
 }
