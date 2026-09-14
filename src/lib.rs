@@ -5,6 +5,7 @@ pub mod credentials;
 #[cfg(target_os = "windows")]
 pub mod cursor;
 pub mod format;
+pub mod http_status;
 pub mod model;
 pub mod netguard;
 pub mod presets;

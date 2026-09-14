@@ -173,10 +173,32 @@ mod compact_tests {
 
 #[cfg(test)]
 mod model_fetch_tests {
+    use crate::app::bars::{sanitize_network_error, short_err};
     use crate::app::fetch::{chat_url, parse_models_response};
-    use crate::app::bars::sanitize_network_error;
     use crate::app::providers_form::{fetch_grid_columns, FETCH_GRID_GAP_X};
     use crate::app::App;
+
+    /// 卡片 / 列表里的单行摘要：状态码后面保留人话原因，丢掉耗时与处理建议。
+    #[test]
+    fn short_err_keeps_status_code_with_reason() {
+        assert_eq!(
+            short_err("HTTP 503 服务临时不可用：上游繁忙、维护或过载；稍后重试，或切到备用线路（1234 ms）"),
+            "HTTP 503 服务临时不可用"
+        );
+        // 拉取模型失败那种多行错误：只取第一行的状态码 + 原因
+        assert_eq!(
+            short_err("HTTP 404 接口或模型不存在：Not Found\nBase URL 路径或模型名写错；检查接口地址与模型 id"),
+            "HTTP 404 接口或模型不存在"
+        );
+        // 未收录的状态码：只给数字，不猜原因
+        assert_eq!(short_err("HTTP 599（200 ms）"), "HTTP 599");
+        // 非 HTTP 错误：原样短文本（超长才截断）
+        assert_eq!(
+            short_err("网络错误：Connection refused"),
+            "网络错误：Connection refused"
+        );
+        assert_eq!(short_err("  "), "");
+    }
 
     #[test]
     fn fetch_grid_columns_never_exceed_available_width() {

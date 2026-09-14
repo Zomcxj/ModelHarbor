@@ -217,7 +217,10 @@ pub(super) fn latency_agent() -> ureq::Agent {
 
 pub(super) fn http_error(err: ureq::Error, elapsed: u64) -> String {
     match err {
-        ureq::Error::Status(code, _) => format!("HTTP {}（{} ms）", code, elapsed),
+        // 状态码后面补人话原因与处理建议（悬停提示看全文，卡片上只显示短摘要）。
+        ureq::Error::Status(code, _) => {
+            format!("{}（{} ms）", crate::http_status::detail(code), elapsed)
+        }
         ureq::Error::Transport(t) => {
             format!("网络错误：{}", sanitize_network_error(&t.to_string()))
         }
@@ -754,7 +757,20 @@ pub(super) fn fetch_models_remote(
         secret,
     );
     let response = request.call().map_err(|err| match err {
-        ureq::Error::Status(code, resp) => format!("HTTP {}：{}", code, resp.status_text()),
+        ureq::Error::Status(code, resp) => {
+            // 「HTTP 404 接口或模型不存在：Not Found」+ 换行给出处理建议。
+            let mut msg = crate::http_status::label(code);
+            let text = resp.status_text().trim();
+            if !text.is_empty() {
+                msg.push('：');
+                msg.push_str(text);
+            }
+            if let Some(hint) = crate::http_status::hint(code) {
+                msg.push('\n');
+                msg.push_str(hint);
+            }
+            msg
+        }
         ureq::Error::Transport(transport) => format!(
             "网络错误：{}",
             sanitize_network_error(&transport.to_string())
