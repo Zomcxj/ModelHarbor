@@ -7,7 +7,8 @@ use eframe::egui;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-use super::{sanitize_network_error, short_err, App};
+use super::App;
+use crate::app::bars::{sanitize_network_error, short_err};
 
 /// 单个 provider 的模型获取状态（后台线程 + 通道）。
 pub(super) struct ModelFetchState {

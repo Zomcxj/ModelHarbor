@@ -174,7 +174,8 @@ mod compact_tests {
 #[cfg(test)]
 mod model_fetch_tests {
     use crate::app::fetch::{chat_url, parse_models_response};
-    use crate::app::{fetch_grid_columns, sanitize_network_error, App, FETCH_GRID_GAP_X};
+    use crate::app::bars::sanitize_network_error;
+    use crate::app::{fetch_grid_columns, App, FETCH_GRID_GAP_X};
 
     #[test]
     fn fetch_grid_columns_never_exceed_available_width() {
