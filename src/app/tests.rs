@@ -772,7 +772,7 @@ mod latency_tests {
 
 #[cfg(test)]
 mod preview_sync_tests {
-    use crate::app::preview_should_rebuild;
+    use crate::app::preview::preview_should_rebuild;
 
     #[test]
     fn rebuild_gate_ignores_focus_but_keeps_user_text() {

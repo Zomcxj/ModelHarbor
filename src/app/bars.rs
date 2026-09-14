@@ -1,5 +1,7 @@
 //! 顶栏 / 状态栏 / 页头等外围栏位，以及吸顶标题与错误文本处理小工具。
-use super::{App, PageTarget, SaveFormat, PREVIEW_EDITOR_ID};
+use super::{App, SaveFormat};
+use crate::app::preview::PREVIEW_EDITOR_ID;
+use crate::app::save::PageTarget;
 use crate::backends;
 use crate::format::ConfigFormat;
 use crate::theme::Theme;
