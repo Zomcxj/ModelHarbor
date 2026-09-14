@@ -7,6 +7,7 @@ pub mod cursor;
 pub mod format;
 pub mod model;
 pub mod netguard;
+pub mod presets;
 pub mod theme;
 pub mod ui;
 pub mod util;

@@ -60,6 +60,38 @@ pub(super) fn provider_npm_combo(
 /// api / npm 下拉里的「(空)」标签：表示未指定协议。
 pub(super) const EMPTY_API_LABEL: &str = "(空)";
 
+/// 官方预设下拉：只填 key / baseUrl / 协议（opencode 页填 npm），不写密钥、不动模型列表。
+///
+/// 首项就是「(自定义 / 不套用)」——不选预设时表单与以前完全一样，第三方 / 中转站 / 自建
+/// 端点照旧手填；套用后所有字段仍可继续手改。
+pub(super) fn provider_preset_combo(
+    ui: &mut egui::Ui,
+    p: &mut ProviderRow,
+    dialect: crate::presets::PresetDialect,
+    id_salt: &str,
+) {
+    field_label(ui, 120.0, "官方预设");
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text("(自定义 / 不套用)")
+        .width(240.0)
+        .show_ui(ui, |ui| {
+            ui.label(
+                egui::RichText::new("套用后仅覆盖 key / baseUrl / 协议，其余字段可照旧手填")
+                    .small()
+                    .weak(),
+            );
+            ui.separator();
+            for preset in crate::presets::PRESETS {
+                let text = format!("{}  ·  {}", preset.label, preset.key);
+                if ui.selectable_label(false, text).clicked() {
+                    crate::presets::apply(p, preset, dialect);
+                }
+            }
+        })
+        .response
+        .on_hover_text("预设不写密钥、不改动模型列表；第三方 / 中转站 / 自建端点请直接在下方手填");
+}
+
 /// api 下拉：omp 官方 9 值 / pi KnownApi 10 值；首项「(空)」与 opencode 页 npm 的空选项同义。
 pub(super) fn provider_api_combo(
     ui: &mut egui::Ui,
@@ -67,30 +99,11 @@ pub(super) fn provider_api_combo(
     show_omp: bool,
     id_salt: &str,
 ) {
-    const OMP_APIS: [&str; 9] = [
-        "openai-completions",
-        "openai-responses",
-        "openai-codex-responses",
-        "azure-openai-responses",
-        "anthropic-messages",
-        "bedrock-converse-stream",
-        "google-generative-ai",
-        "google-gemini-cli",
-        "google-vertex",
-    ];
-    const PI_APIS: [&str; 10] = [
-        "openai-completions",
-        "mistral-conversations",
-        "openai-responses",
-        "azure-openai-responses",
-        "openai-codex-responses",
-        "anthropic-messages",
-        "bedrock-converse-stream",
-        "google-generative-ai",
-        "google-vertex",
-        "pi-messages",
-    ];
-    let options: &[&str] = if show_omp { &OMP_APIS } else { &PI_APIS };
+    let options: &[&str] = if show_omp {
+        &convert::OMP_APIS
+    } else {
+        &convert::PI_APIS
+    };
     // 「(空)」= 未指定协议。四页共用同一份数据，故以 npm / pi_api / raw.api
     // 是否都为空判定，显示值统一走 effective_api()，与写盘、延迟测试同口径。
     let explicit = p.has_explicit_api();
@@ -697,6 +710,15 @@ impl App {
             ..
         } = ProviderFormFlags::new(self);
         ui.group(|ui| {
+            // 官方预设（可选）：一键填 key / baseUrl / 协议；不套用则完全手填。
+            ui.horizontal_wrapped(|ui| {
+                let dialect = if show_oc {
+                    crate::presets::PresetDialect::Opencode
+                } else {
+                    crate::presets::PresetDialect::PiLike
+                };
+                provider_preset_combo(ui, &mut self.new_provider, dialect, "new_provider_preset");
+            });
             ui.horizontal_wrapped(|ui| {
                 field_label(ui, 120.0, "key");
                 ui.add(

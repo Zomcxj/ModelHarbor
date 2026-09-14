@@ -74,6 +74,33 @@ pub fn npm_to_api(npm: &str) -> String {
     }
 }
 
+/// omp 官方 9 值（`google-gemini-cli` 为 omp 专属）。
+pub(crate) const OMP_APIS: [&str; 9] = [
+    "openai-completions",
+    "openai-responses",
+    "openai-codex-responses",
+    "azure-openai-responses",
+    "anthropic-messages",
+    "bedrock-converse-stream",
+    "google-generative-ai",
+    "google-gemini-cli",
+    "google-vertex",
+];
+
+/// pi KnownApi 10 值（`mistral-conversations` / `pi-messages` 为 pi 专属）。
+pub(crate) const PI_APIS: [&str; 10] = [
+    "openai-completions",
+    "mistral-conversations",
+    "openai-responses",
+    "azure-openai-responses",
+    "openai-codex-responses",
+    "anthropic-messages",
+    "bedrock-converse-stream",
+    "google-generative-ai",
+    "google-vertex",
+    "pi-messages",
+];
+
 /// pi / omp 的 api → opencode 的 npm 包：
 /// - `openai-completions` → `@ai-sdk/openai-compatible`（规范化写法；未写 npm 也是这个语义）；
 /// - `openai-responses` → `@ai-sdk/openai`；
