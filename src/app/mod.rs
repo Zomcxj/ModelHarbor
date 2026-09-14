@@ -1,9 +1,7 @@
 use crate::backends;
-use crate::credentials;
 use crate::format::{ConfigFormat, ConfigPaths};
 use crate::model::{AgentRow, ProviderRow};
 use crate::theme::Theme;
-use crate::util::{self, is_wsl_path, parse_number_text};
 use eframe::egui;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -30,6 +28,11 @@ mod providers;
 
 mod providers_form;
 
+mod save;
+
+use save::{PageTarget, SaveTarget};
+
+pub use save::{load_opencode_result, load_or_empty, load_pi_result, strip_cross_format_containers};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SaveFormat {
@@ -47,28 +50,10 @@ impl SaveFormat {
     }
 }
 
-/// 一个保存目标的运行时状态（可用性 / 解析路径 / 勾选）。
-struct SaveTarget {
-    backend: ConfigFormat,
-    available: bool,
-    path: String,
-}
-
 /// 预览编辑框的固定 id（切页时需要主动释放焦点，见 reset_preview_draft）。
 const PREVIEW_EDITOR_ID: &str = "preview_editor";
 /// 预览框内停止输入多久后，允许用组件状态重建草稿（秒）。
 const PREVIEW_EDIT_IDLE_SECS: f64 = 2.0;
-
-/// 本页写入路径的解析结果。
-#[derive(Clone)]
-enum PageTarget {
-    /// 当前文件（已加载）：整体替换 agent / provider。
-    Current(String),
-    /// 路径已修改但未重新加载：按“先读后合并”写入，不破坏目标文件已有配置。
-    Modified(String),
-    /// 该后端默认目标（Windows 本地路径；WSL 仅在勾选「WSL同步」后写入）。
-    Default(String),
-}
 
 pub struct App {
     root: Value,
@@ -355,142 +340,6 @@ impl App {
         self.refresh_targets();
     }
 
-    /// 当前 agent 文件是否使用某个 provider 级字段。
-    /// 判断范围是整个文件，不是单个 provider；切换到尚未加载的目标页时
-    /// 使用完整 schema，保证新增 provider 可以输入所有专属字段。
-    fn page_has_provider_field(&self, field: &str) -> bool {
-        if self.source_format != self.current_page {
-            return true;
-        }
-        self.providers
-            .iter()
-            .any(|provider| match self.current_page {
-                ConfigFormat::Opencode => match field {
-                    "base_url" => provider
-                        .raw
-                        .get("options")
-                        .and_then(|v| v.get("baseURL"))
-                        .is_some(),
-                    "timeout" => provider
-                        .raw
-                        .get("options")
-                        .and_then(|v| v.get("timeout"))
-                        .is_some(),
-                    _ => false,
-                },
-                ConfigFormat::Pi | ConfigFormat::OhMyPi => match field {
-                    "base_url" => provider.raw.get("baseUrl").is_some(),
-                    _ => false,
-                },
-                ConfigFormat::DeepSeekHarness => match field {
-                    "base_url" => provider.raw.get("baseURL").is_some(),
-                    _ => false,
-                },
-            })
-    }
-
-    /// 当前 agent 文件是否使用某个 model 级字段。字段存在性按整个
-    /// agent 文件判断，避免单个模型缺字段时导致同一页面布局跳变。
-    fn page_has_model_field(&self, field: &str) -> bool {
-        if self.source_format != self.current_page {
-            return true;
-        }
-        self.providers.iter().any(|provider| {
-            provider.models.iter().any(|model| match self.current_page {
-                ConfigFormat::Opencode => match field {
-                    "name" => model.raw.get("name").is_some(),
-                    "reasoning" => model.raw.get("reasoning").is_some(),
-                    "tool_call" => model.raw.get("tool_call").is_some(),
-                    "store" => model
-                        .raw
-                        .get("options")
-                        .and_then(|v| v.get("store"))
-                        .is_some(),
-                    "context" => model
-                        .raw
-                        .get("limit")
-                        .and_then(|v| v.get("context"))
-                        .is_some(),
-                    "output" => model
-                        .raw
-                        .get("limit")
-                        .and_then(|v| v.get("output"))
-                        .is_some(),
-                    "input" => model
-                        .raw
-                        .get("modalities")
-                        .and_then(|v| v.get("input"))
-                        .is_some(),
-                    "variants" => model.raw.get("variants").is_some(),
-                    _ => false,
-                },
-                ConfigFormat::Pi | ConfigFormat::OhMyPi => match field {
-                    "name" => model.raw.get("name").is_some(),
-                    // reasoning 也可由 pi/omp 的 thinking 块 / thinkingLevelMap 表达，
-                    // 只写了这些键时同样应显示（并勾选）reasoning。
-                    "reasoning" => {
-                        model.raw.get("reasoning").is_some()
-                            || model.raw.get("thinkingLevelMap").is_some()
-                            || model.raw.get("thinking").is_some()
-                            || model.raw.get("reasoningEfforts").is_some()
-                    }
-                    "context" => model.raw.get("contextWindow").is_some(),
-                    "output" => model.raw.get("maxTokens").is_some(),
-                    "input" => model.raw.get("input").is_some(),
-                    "variants" => {
-                        model.raw.get("thinkingLevelMap").is_some()
-                            || model.raw.get("thinking").is_some()
-                    }
-                    _ => false,
-                },
-                ConfigFormat::DeepSeekHarness => match field {
-                    "name" => model.raw.get("name").is_some(),
-                    "context" => model.raw.get("contextWindow").is_some(),
-                    "output" => model.raw.get("maxTokens").is_some(),
-                    "input" => model.raw.get("input").is_some(),
-                    "variants" => model.raw.get("reasoningEfforts").is_some(),
-                    _ => false,
-                },
-            })
-        })
-    }
-
-    /// 将已加载的公共 provider 凭据投影到 DSH 专属字段。
-    /// 只在进入 DSH 页面时执行一次，避免用户在页面内主动清空后被立即回填。
-    fn project_dsh_credentials(&mut self) {
-        for provider in &mut self.providers {
-            if provider.api_key_env.trim().is_empty() {
-                provider.api_key_env = credentials::default_env_name(&provider.key);
-            }
-        }
-    }
-
-    /// 页面切换时保持 provider 密钥一致：DSH 页使用 api_key_secret（对应
-    /// .credentials.yaml 的 refs），其他页面使用 api_key。切换时把非空值
-    /// 同步到目标页字段；若用户在 DSH 页明确清空过密钥（原本有、当前空），
-    /// 不再用其他页面的旧值覆盖。
-    fn sync_provider_secrets(&mut self, target: ConfigFormat) {
-        for provider in &mut self.providers {
-            if target == ConfigFormat::DeepSeekHarness {
-                let cleared_on_dsh = !provider.original_api_key_secret.is_empty()
-                    && provider.api_key_secret.is_empty();
-                if !provider.api_key.trim().is_empty() && !cleared_on_dsh {
-                    provider.api_key_secret = provider.api_key.clone();
-                }
-            } else {
-                let cleared_on_dsh = !provider.original_api_key_secret.is_empty()
-                    && provider.api_key_secret.is_empty();
-                if cleared_on_dsh {
-                    // 与 DSH 方向对称：在 DSH 页明确清空过的密钥（原本有、当前空）
-                    // 不再用旧值填充其他页面，避免已清空的密钥被写回 opencode 等配置。
-                    provider.api_key = String::new();
-                } else if !provider.api_key_secret.trim().is_empty() {
-                    provider.api_key = provider.api_key_secret.clone();
-                }
-            }
-        }
-    }
-
     fn reload(&mut self) {
         let (fmt, _) = ConfigPaths::detect_for_path(&self.config_path);
         self.source_format = fmt;
@@ -553,252 +402,6 @@ impl App {
             font_id,
             text_color,
         );
-    }
-
-    /// 统计非法数字字段数（非空且解析失败），保存后提示用户它们被忽略。
-    fn count_invalid_numeric_fields(&self) -> usize {
-        fn bad(s: &str) -> bool {
-            !s.trim().is_empty() && parse_number_text(s).is_none()
-        }
-        let mut n = 0;
-        for a in &self.agents {
-            if bad(&a.temperature) {
-                n += 1;
-            }
-        }
-        for p in &self.providers {
-            if bad(&p.timeout) {
-                n += 1;
-            }
-            for m in &p.models {
-                if bad(&m.context) || bad(&m.output) {
-                    n += 1;
-                }
-            }
-        }
-        n
-    }
-
-    /// 校验 agent / provider / model key 唯一性，返回首个冲突描述。
-    fn find_duplicate_keys(&self) -> Option<String> {
-        let mut seen = HashSet::new();
-        for a in &self.agents {
-            let k = a.key.trim();
-            if !k.is_empty() && !seen.insert(k.to_string()) {
-                return Some(format!("agent \"{}\"", k));
-            }
-        }
-        let mut seen_p = HashSet::new();
-        for p in &self.providers {
-            let k = p.key.trim();
-            if k.is_empty() {
-                continue;
-            }
-            if !seen_p.insert(k.to_string()) {
-                return Some(format!("provider \"{}\"", k));
-            }
-            let mut seen_m = HashSet::new();
-            for m in &p.models {
-                let mk = m.id.trim();
-                if !mk.is_empty() && !seen_m.insert(mk.to_string()) {
-                    return Some(format!("provider \"{}\" 的 model \"{}\"", k, mk));
-                }
-            }
-        }
-        None
-    }
-
-    /// 本页写入路径：
-    /// - 当前文件属于本页格式且已加载 → 当前文件（整体替换）；
-    /// - 路径已修改但未加载 → 仍写该路径，但按“先读后合并”（防止覆盖目标文件已有配置）；
-    /// - 其余 → 该后端默认目标（Windows 本地；WSL 需勾选「WSL同步」）。
-    fn page_save_path(&self, fmt: ConfigFormat) -> PageTarget {
-        if !self.config_path.is_empty() && self.config_path != self.loaded_path {
-            // 用户已经在路径框中明确指定了目标文件，即使尚未点击“加载”，
-            // 也必须使用该路径；保存流程会先读目标并按目标格式合并，不能静默回落默认路径。
-            return PageTarget::Modified(self.config_path.clone());
-        }
-        if self.source_format == fmt && !self.config_path.is_empty() {
-            return PageTarget::Current(self.config_path.clone());
-        }
-        let path = self
-            .targets
-            .iter()
-            .find(|t| t.backend == fmt)
-            .map(|t| t.path.clone())
-            .unwrap_or_default();
-        PageTarget::Default(path)
-    }
-
-    /// 保存当前页面：写入该页格式对应的路径，并按需同步 WSL。
-    fn save_page(&mut self, fmt: ConfigFormat) {
-        if let Some(dup) = self.find_duplicate_keys() {
-            self.status = format!("key 重复: {}，已取消保存", dup);
-            return;
-        }
-        let target = self.page_save_path(fmt);
-        let path = match &target {
-            PageTarget::Current(p) | PageTarget::Modified(p) | PageTarget::Default(p) => p.clone(),
-        };
-        match &target {
-            PageTarget::Current(_) => {
-                if let Some(err) = self.load_error.clone() {
-                    self.status = format!("当前文件: 加载失败({})，已跳过", err);
-                    return;
-                }
-            }
-            PageTarget::Default(_) => {
-                if !self.targets.iter().any(|t| t.backend == fmt && t.available) {
-                    self.status = format!("{}: 未安装（本地与 WSL 均未找到配置）", fmt.label());
-                    return;
-                }
-            }
-            PageTarget::Modified(_) => {}
-        }
-        let res = self.save_backend_to(fmt, &path);
-        let ok = res.is_ok();
-        self.status = match res {
-            Ok(backup) => {
-                let mut msg = format!("{}: 已保存", fmt.label());
-                if let Some(backup) = backup {
-                    msg.push_str(&format!("（跨格式转换，原文件已备份为 {}）", backup));
-                }
-                msg
-            }
-            Err(e) => format!("{}: 保存失败({})", fmt.label(), e),
-        };
-        if ok {
-            // 该格式不支持 agents 时明确告知，避免误以为已写入
-            if fmt != ConfigFormat::Opencode && !self.agents.is_empty() {
-                self.status.push_str(&format!(
-                    "（{} 个 agents 未写入：该格式不支持）",
-                    self.agents.len()
-                ));
-            }
-            let bad = self.count_invalid_numeric_fields();
-            if bad > 0 {
-                self.status
-                    .push_str(&format!("（已忽略 {} 个无效数字字段）", bad));
-            }
-        }
-        // WSL 同步：仅勾选“WSL同步”且写入路径为本地时，同步到 WSL 侧默认路径；
-        // 写入前检测对应 agent 是否已安装（未安装则跳过并提示）。
-        if self.sync_wsl && ok && !is_wsl_path(&path) {
-            match backends::wsl_target(fmt) {
-                Some(wsl_path) => match self.save_backend_to(fmt, &wsl_path) {
-                    Ok(_) => self
-                        .status
-                        .push_str(&format!("; {}(WSL): 已同步", fmt.label())),
-                    Err(e) => {
-                        self.status
-                            .push_str(&format!("; {}(WSL): 同步失败({})", fmt.label(), e))
-                    }
-                },
-                None => self
-                    .status
-                    .push_str(&format!("; {}(WSL): 未安装，跳过同步", fmt.label())),
-            }
-        }
-    }
-
-    /// 通用保存：按后端构造 root、渲染内容并写入。
-    fn save_backend_to(&mut self, fmt: ConfigFormat, path: &str) -> Result<Option<String>, String> {
-        let backend = backends::backend(fmt);
-        // 已加载的当前文件整体替换；同格式的其他路径（WSL 同步等）先读后合并；
-        // 跨格式目标（来源格式不同）做「干净转换」：目标文件里由组件状态接管的
-        // provider / agent 容器整体丢弃（条目与顺序都来自界面），其余顶层字段保留。
-        let is_current = self.source_format == fmt && path == self.loaded_path;
-        let cross_format = self.source_format != fmt;
-        let target_root: Option<Value> = if is_current {
-            None
-        } else {
-            let mut target = backend.load_target_root(path);
-            if cross_format {
-                strip_cross_format_containers(fmt, &mut target, !self.agents.is_empty());
-            }
-            Some(target)
-        };
-        let root = backend.serialize_root(
-            &self.agents,
-            &self.providers,
-            self.extras_for(fmt),
-            target_root.as_ref(),
-        );
-        let content = if fmt == ConfigFormat::DeepSeekHarness && is_current {
-            // 未发生任何结构化修改时直接保留原始 YAML，避免无意义的
-            // 缩进、引号、键顺序变化；实际修改后再使用稳定的 DSH 渲染器。
-            match util::read_config_content(path) {
-                Ok(original)
-                    if util::parse_yaml_content(&original).ok().as_ref() == Some(&root) =>
-                {
-                    original
-                }
-                _ => backend.render(&root, self.save_format == SaveFormat::Compact)?,
-            }
-        } else {
-            backend.render(&root, self.save_format == SaveFormat::Compact)?
-        };
-        let dsh_sidecar_backup = if fmt == ConfigFormat::DeepSeekHarness {
-            let sidecar = credentials::sidecar_path(path);
-            if util::config_exists(&sidecar) {
-                Some((sidecar.clone(), util::read_config_content(&sidecar)?))
-            } else {
-                Some((sidecar, String::new()))
-            }
-        } else {
-            None
-        };
-        // 跨格式转换会整体接管目标文件的 provider/agent：先把原文件滚动备份为 .bak，
-        // 备份失败则取消保存（宁可不让存，也不能把旧配置静默抵掉）。
-        let backup = if cross_format && !is_current {
-            match util::read_config_content(path) {
-                Ok(old) if !old.is_empty() && old != content => {
-                    let backup_path = format!("{}.bak", path);
-                    backends::write_config(&backup_path, &old).map_err(|e| {
-                        format!("跨格式转换前备份失败（{}），已取消保存: {}", backup_path, e)
-                    })?;
-                    Some(backup_path)
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
-        if fmt == ConfigFormat::DeepSeekHarness {
-            backend.save_sidecars(path, &self.providers)?;
-        }
-        if let Err(error) = backends::write_config(path, &content) {
-            if let Some((sidecar, old_content)) = dsh_sidecar_backup {
-                let restore = if old_content.is_empty() {
-                    if util::config_exists(&sidecar) {
-                        util::remove_config(&sidecar)
-                    } else {
-                        Ok(())
-                    }
-                } else {
-                    backends::write_config(&sidecar, &old_content)
-                };
-                if let Err(restore_error) = restore {
-                    return Err(format!("{}；凭据回滚失败: {}", error, restore_error));
-                }
-            }
-            return Err(error);
-        }
-        // 当前文件保存成功后，回填 opencode 的 extras 载体（self.root）保持与磁盘一致
-        if is_current && fmt == ConfigFormat::Opencode {
-            self.root = root;
-        }
-        Ok(backup)
-    }
-
-    /// 当前文件保存时使用的基底 extras（按后端取对应载体）。
-    fn extras_for(&self, fmt: ConfigFormat) -> &Value {
-        match fmt {
-            ConfigFormat::Opencode => &self.root,
-            // pi 系（pi / oh-my-pi）共用 extras 载体：providers 之外的顶层字段
-            ConfigFormat::Pi | ConfigFormat::OhMyPi => &self.pi_extras,
-            ConfigFormat::DeepSeekHarness => &self.root,
-        }
     }
 
     /// 预览面板左边缘的拖动分隔条：拖拽调整预览宽度比例（窗口缩放时按比例适配）。
@@ -1280,58 +883,6 @@ fn find_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
 // —— 兼容再导出：实现迁移至 util / backends，保持既有测试路径可用 ——
 pub use crate::backends::opencode::merge_opencode_root;
 pub use crate::util::parse_config_content;
-
-/// 跨格式转换前，从目标 root 中剔除由当前组件状态接管的容器：
-/// provider（opencode 的 provider / pi 系与 DSH 的 providers）与 opencode 的 agent。
-///
-/// 目的：跨格式保存/预览时，provider 条目与顺序完全以界面为准（干净转换），
-/// 同时目标文件的其他顶层字段（如 DSH 的 llm-pi-ai 下其他设置）原样保留。
-/// 同格式目标（WSL 同步等）不走这里，仍用保守合并。
-///
-/// `agents_owned` 表示界面确实持有 agents 数据。agents 只属于 opencode 页：
-/// 数据来自 pi / oh-my-pi / DSH（或空载启动）时界面无从表达 agents，
-/// 此时必须保留目标文件里的 agent 容器，否则会把它们静默删掉。
-pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents_owned: bool) {
-    let Some(obj) = root.as_object_mut() else {
-        return;
-    };
-    match fmt {
-        ConfigFormat::Opencode => {
-            obj.remove("provider");
-            if agents_owned {
-                obj.remove("agent");
-            }
-        }
-        ConfigFormat::Pi | ConfigFormat::OhMyPi => {
-            obj.remove("providers");
-        }
-        ConfigFormat::DeepSeekHarness => {
-            if let Some(llm) = obj.get_mut("llm-pi-ai").and_then(Value::as_object_mut) {
-                llm.remove("providers");
-            }
-        }
-    }
-}
-
-/// 加载 opencode 配置；读取/解析失败返回 Err。
-pub fn load_opencode_result(
-    path: &str,
-) -> Result<(Value, Vec<AgentRow>, Vec<ProviderRow>), String> {
-    let load = crate::backends::load_backend(ConfigFormat::Opencode, path)?;
-    Ok((load.root, load.agents, load.providers))
-}
-
-/// 兼容包装：失败时回退空状态（供测试与旧调用方使用）。
-pub fn load_or_empty(path: &str) -> (Value, Vec<AgentRow>, Vec<ProviderRow>) {
-    load_opencode_result(path)
-        .unwrap_or_else(|_| (Value::Object(Map::new()), Vec::new(), Vec::new()))
-}
-
-/// 加载 pi 配置（支持本地与 WSL 路径）；读取/解析失败返回 Err。
-pub fn load_pi_result(path: &str) -> Result<(Value, Vec<ProviderRow>, Value), String> {
-    let load = crate::backends::load_backend(ConfigFormat::Pi, path)?;
-    Ok((load.root, load.providers, load.extras))
-}
 
 #[cfg(test)]
 mod tests;
