@@ -6,32 +6,20 @@ use eframe::egui;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
+mod agents;
+mod bars;
+mod fetch;
+mod preview;
+mod providers;
+mod providers_form;
+mod save;
 mod serialize;
-
-pub(crate) use serialize::{compact_json, pretty_json};
-
 mod syntax;
 
-mod fetch;
-
-use fetch::{
-    LatencyState, ModelFetchState, ProbeGate,
-};
-
-mod bars;
-
-mod agents;
-
-mod providers;
-
-mod providers_form;
-
-mod save;
-
-mod preview;
-
+use fetch::{LatencyState, ModelFetchState, ProbeGate};
 use save::SaveTarget;
 
+pub(crate) use serialize::{compact_json, pretty_json};
 pub use save::{load_opencode_result, load_or_empty, load_pi_result, strip_cross_format_containers};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -406,10 +394,7 @@ impl App {
     }
 }
 
-// ---------- 配置加载 ----------
-
-/// 读取配置文件内容；本地与 WSL 路径统一处理，文件不存在视为新建场景返回空串。
-// —— 兼容再导出：实现迁移至 util / backends，保持既有测试路径可用 ——
+// ---------- 兼容再导出：保持既有外部路径（测试与 backends）可用 ----------
 pub use crate::backends::opencode::merge_opencode_root;
 pub use crate::util::parse_config_content;
 
