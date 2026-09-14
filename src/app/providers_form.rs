@@ -57,63 +57,6 @@ pub(super) fn provider_npm_combo(
     }
 }
 
-/// 高级字段提示：pi / omp 常见但界面未建模的字段（对照 pi-ai `Model` 接口）。
-const MODEL_ADV_HINT: &str = r#"例如 {"cost": {"input": 3, "output": 15}, "samplingParams": {"temperature": 0.7}, "headers": {"x-trace": "1"}}"#;
-
-/// provider 侧高级字段提示（对照 omp 官方 schema）。
-const PROVIDER_ADV_HINT: &str =
-    r#"例如 {"auth": "apiKey", "discovery": {"type": "ollama"}, "headers": {"x-trace": "1"}}"#;
-
-/// 「高级字段」折叠区：界面未建模的方言字段（cost / samplingParams / headers /
-/// tokenizer / auth / discovery 等）以 JSON 文本直接编辑。
-///
-/// 只提示解析错误、不写回非法内容：保存时仅在「文本被改过且可解析」时才合并
-/// （见 `model::merge_advanced_model` / `merge_advanced_provider`），
-/// 未编辑的字段保持 raw 原样，保证最小 diff。
-pub(super) fn advanced_fields_editor(
-    ui: &mut egui::Ui,
-    id_salt: &str,
-    text: &mut String,
-    hint: &str,
-) {
-    egui::CollapsingHeader::new("高级字段")
-        .id_salt(id_salt)
-        .default_open(false)
-        .show(ui, |ui| {
-            ui.add(
-                egui::TextEdit::multiline(text)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_rows(4)
-                    .desired_width(f32::INFINITY)
-                    .hint_text(hint),
-            );
-            match crate::model::parse_advanced_json(text) {
-                Ok(map) if map.is_empty() => {
-                    ui.label(egui::RichText::new("（暂无高级字段）").small().weak());
-                }
-                Ok(map) => {
-                    let keys: Vec<&str> = map.keys().map(String::as_str).collect();
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "保存时写入 {} 个字段：{}",
-                            map.len(),
-                            keys.join("、")
-                        ))
-                        .small()
-                        .weak(),
-                    );
-                }
-                Err(e) => {
-                    ui.label(
-                        egui::RichText::new(format!("⚠ {e}（保存时会忽略这段文本）"))
-                            .small()
-                            .color(egui::Color32::from_rgb(220, 90, 90)),
-                    );
-                }
-            }
-        });
-}
-
 /// api / npm 下拉里的「(空)」标签：表示未指定协议。
 pub(super) const EMPTY_API_LABEL: &str = "(空)";
 
@@ -433,12 +376,6 @@ impl App {
             }
         });
 
-        advanced_fields_editor(
-            ui,
-            &format!("adv_provider_{}", p.key),
-            &mut p.advanced,
-            PROVIDER_ADV_HINT,
-        );
         ui.add_space(6.0);
         let mut fetch_request: Option<(String, String, String, String)> = None;
         let mut close_fetch = false;
@@ -607,12 +544,6 @@ impl App {
                         field_label(ui, 120.0, variants_label);
                     }
                     let variant_key = format!("variant_open_{}_{}", p.key, j);
-                    advanced_fields_editor(
-                        ui,
-                        &format!("adv_model_{}_{}", p.key, j),
-                        &mut p.models[j].advanced,
-                        MODEL_ADV_HINT,
-                    );
                     variant_selector(
                         ui,
                         &mut p.models[j].variants,
@@ -727,12 +658,6 @@ impl App {
                 }
                 field_label(ui, 120.0, variants_label);
                 let variant_key = format!("new_model_variant_{}", p.key);
-                advanced_fields_editor(
-                    ui,
-                    &format!("adv_new_model_{}", p.key),
-                    &mut p.new_model.advanced,
-                    MODEL_ADV_HINT,
-                );
                 variant_selector(
                     ui,
                     &mut p.new_model.variants,
@@ -839,12 +764,6 @@ impl App {
                     );
                 }
             });
-            advanced_fields_editor(
-                ui,
-                "adv_new_provider",
-                &mut self.new_provider.advanced,
-                PROVIDER_ADV_HINT,
-            );
             ui.add_space(6.0);
             let mut fetch_request: Option<(String, String, String)> = None;
             let mut close_fetch = false;

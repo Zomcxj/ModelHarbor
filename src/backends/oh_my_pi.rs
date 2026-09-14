@@ -86,9 +86,6 @@ pub fn model_to_omp(m: &ModelRow) -> Value {
     } else if let Some(thinking) = omp_thinking(m) {
         obj.insert("thinking".into(), thinking);
     }
-    if !is_opencode_shaped_model(&m.raw) && !is_dsh_shaped_model(&m.raw) {
-        crate::model::merge_advanced_model(&mut obj, m);
-    }
     Value::Object(obj)
 }
 
@@ -211,9 +208,6 @@ pub fn provider_to_omp(p: &ProviderRow) -> Value {
 
     let models: Vec<Value> = p.models.iter().map(model_to_omp).collect();
     obj.insert("models".into(), Value::Array(models));
-    if !is_opencode_shaped_provider(&p.raw) && !is_dsh_shaped_provider(&p.raw) {
-        crate::model::merge_advanced_provider(&mut obj, p);
-    }
     Value::Object(convert::order_fields(
         obj,
         &["baseUrl", "apiKey", "api", "compat", "models"],

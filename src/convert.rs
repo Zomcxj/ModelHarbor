@@ -133,7 +133,6 @@ pub fn model_from_pi(v: &Value) -> ModelRow {
         || v.get("thinkingLevelMap").is_some()
         || v.get("thinking").is_some()
         || v.get("reasoningEfforts").is_some();
-    let advanced = crate::model::advanced_json_for_model(v);
     ModelRow {
         id: id.clone(),
         name: str_at(v, "name").to_string(),
@@ -152,8 +151,6 @@ pub fn model_from_pi(v: &Value) -> ModelRow {
             crate::format::ConfigFormat::Pi
         }),
         raw: v.clone(),
-        advanced: advanced.clone(),
-        original_advanced: advanced,
     }
 }
 
@@ -198,9 +195,6 @@ pub fn model_to_pi(m: &ModelRow) -> Value {
     }
     if m.variants.trim().is_empty() {
         obj.remove("thinkingLevelMap");
-        if !is_opencode_shaped_model(&m.raw) && !is_dsh_shaped_model(&m.raw) {
-            crate::model::merge_advanced_model(&mut obj, m);
-        }
         return Value::Object(obj);
     }
     let names: Vec<String> = crate::model::ordered_variants_text(&m.variants);
@@ -252,9 +246,6 @@ pub fn model_to_pi(m: &ModelRow) -> Value {
     if !thinking_map.is_empty() {
         obj.insert("thinkingLevelMap".into(), Value::Object(thinking_map));
     }
-    if !is_opencode_shaped_model(&m.raw) && !is_dsh_shaped_model(&m.raw) {
-        crate::model::merge_advanced_model(&mut obj, m);
-    }
     Value::Object(obj)
 }
 
@@ -285,7 +276,6 @@ pub fn provider_from_pi(key: &str, v: &Value) -> ProviderRow {
         })
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let advanced = crate::model::advanced_json_for_provider(v);
     let r = ProviderRow {
         key: key.to_string(),
         description: String::new(),
@@ -313,8 +303,6 @@ pub fn provider_from_pi(key: &str, v: &Value) -> ProviderRow {
         source_format: Some(crate::format::ConfigFormat::Pi),
         raw: v.clone(),
         pi_api: api.to_string(),
-        advanced: advanced.clone(),
-        original_advanced: advanced,
     };
     r
 }
@@ -395,9 +383,6 @@ pub fn provider_to_pi(p: &ProviderRow) -> Value {
     obj.insert("api".into(), Value::String(api));
     let models: Vec<Value> = p.models.iter().map(model_to_pi).collect();
     obj.insert("models".into(), Value::Array(models));
-    if !is_opencode_shaped_provider(&p.raw) && !is_dsh_shaped_provider(&p.raw) {
-        crate::model::merge_advanced_provider(&mut obj, p);
-    }
     Value::Object(order_fields(obj, PROVIDER_FIELD_ORDER))
 }
 
