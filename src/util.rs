@@ -451,3 +451,102 @@ pub fn parse_yaml_content(content: &str) -> Result<serde_json::Value, String> {
 pub fn to_yaml_string(value: &serde_json::Value) -> Result<String, String> {
     serde_yaml_ng::to_string(value).map_err(|e| format!("序列化失败: {}", e))
 }
+
+/// baseUrl 体检：返回可疑点标签（**仅供界面提示，绝不自动改写配置**）。
+///
+/// 覆盖 `https://host//v1` 这类真实踩过的坑（重复斜杠）、末尾多余斜杠、
+/// 缺少协议头与夹带空白字符；只做字符串体检，不联网、不依赖方言语义。
+pub fn url_suspicions(url: &str) -> Vec<&'static str> {
+    let trimmed = url.trim();
+    let mut out = Vec::new();
+    if trimmed.is_empty() {
+        return out;
+    }
+    // 空白检查基于原值：首尾空格会被 trim 抹掉，但那正是要提示的情况之一。
+    if url.chars().any(char::is_whitespace) {
+        out.push("含空白字符");
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        out.push("缺少 http(s):// 协议头");
+    }
+    // 只检查协议之后的路径部分，避免把 `https://` 自身的双斜杠算进来。
+    let after_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    if after_scheme.contains("//") {
+        out.push("路径中出现重复斜杠");
+    }
+    if after_scheme.ends_with('/') {
+        out.push("末尾有多余斜杠");
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::url_suspicions;
+
+    #[test]
+    fn url_suspicions_flags_double_slash() {
+        assert_eq!(
+            url_suspicions("https://7891vip.cc.cd//v1"),
+            vec!["路径中出现重复斜杠"]
+        );
+    }
+
+    #[test]
+    fn url_suspicions_flags_trailing_slash() {
+        assert_eq!(
+            url_suspicions("https://api.openai.com/v1/"),
+            vec!["末尾有多余斜杠"]
+        );
+    }
+
+    #[test]
+    fn url_suspicions_flags_missing_scheme() {
+        assert_eq!(
+            url_suspicions("api.example.com/v1"),
+            vec!["缺少 http(s):// 协议头"]
+        );
+    }
+
+    #[test]
+    fn url_suspicions_flags_whitespace() {
+        // 中间夹带空白（粘贴带空格）与首尾空格都要提示。
+        assert_eq!(
+            url_suspicions("https://api.example.com /v1"),
+            vec!["含空白字符"]
+        );
+        assert_eq!(
+            url_suspicions(" https://api.example.com/v1 "),
+            vec!["含空白字符"]
+        );
+    }
+
+    #[test]
+    fn url_suspicions_accepts_clean_urls() {
+        for url in [
+            "https://api.openai.com/v1",
+            "http://127.0.0.1:8080/v1",
+            "https://generativelanguage.googleapis.com",
+        ] {
+            assert!(url_suspicions(url).is_empty(), "{url} 不应被判为可疑");
+        }
+    }
+
+    #[test]
+    fn url_suspicions_ignores_empty() {
+        assert!(url_suspicions("").is_empty());
+        assert!(url_suspicions("   ").is_empty());
+    }
+
+    #[test]
+    fn url_suspicions_reports_multiple_reasons() {
+        assert_eq!(
+            url_suspicions("https://host//v1/"),
+            vec!["路径中出现重复斜杠", "末尾有多余斜杠"]
+        );
+    }
+}

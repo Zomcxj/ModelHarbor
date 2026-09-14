@@ -310,6 +310,19 @@ impl App {
                     }
                 }
                 ui.strong(&self.providers[idx].key);
+                // baseUrl 体检提示：`//v1` 这类笔误在卡片上直接可见（只提示，不自动改写）。
+                let suspicions = crate::util::url_suspicions(&self.providers[idx].base_url);
+                if !suspicions.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("⚠ baseUrl: {}", suspicions.join("、")))
+                            .small()
+                            .color(LATENCY_RED),
+                    )
+                    .on_hover_text(format!(
+                        "当前 baseUrl\n{}\n\n请核对协议头、重复斜杠与末尾斜杠；工具只提示，不会自动改写配置。",
+                        self.providers[idx].base_url
+                    ));
+                }
                 // 连通性测试结果：显示在厂商名字右侧，卡片收起时也可见。
                 if let Some(state) = self.latency.get(&key) {
                     if state.provider_rx.is_some() {

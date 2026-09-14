@@ -19,8 +19,10 @@ mod syntax;
 use fetch::{LatencyState, ModelFetchState, ProbeGate};
 use save::SaveTarget;
 
+pub use save::{
+    load_opencode_result, load_or_empty, load_pi_result, strip_cross_format_containers,
+};
 pub(crate) use serialize::{compact_json, pretty_json};
-pub use save::{load_opencode_result, load_or_empty, load_pi_result, strip_cross_format_containers};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SaveFormat {
@@ -311,6 +313,17 @@ impl App {
         }
         self.agent_open = self.agents.iter().map(|a| a.key.clone()).collect();
         self.provider_open = self.providers.iter().map(|p| p.key.clone()).collect();
+        // baseUrl 体检：加载后统计可疑 URL（如 `//v1` 重复斜杠），在状态栏提示，
+        // 详情看 provider 卡片上的 ⚠ 标签（仅提示，不自动改写）。
+        let suspicious = self
+            .providers
+            .iter()
+            .filter(|p| !crate::util::url_suspicions(&p.base_url).is_empty())
+            .count();
+        if suspicious > 0 {
+            self.status
+                .push_str(&format!("（{} 个 baseUrl 可疑，见卡片提示）", suspicious));
+        }
         // 重新加载后丢弃旧的模型获取状态
         self.model_fetch.clear();
         self.model_fetch_open.clear();
