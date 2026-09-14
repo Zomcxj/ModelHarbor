@@ -5,7 +5,7 @@ use crate::format::{ConfigFormat, ConfigPaths};
 use crate::model::{AgentRow, ModelRow, ProviderRow};
 use crate::theme::Theme;
 use crate::ui::{
-    card_frame, card_list, field_label, merge_drag_target, move_item, numeric_text_edit,
+    card_frame, field_label, merge_drag_target, move_item, numeric_text_edit,
     secret_text_edit, DragHandle,
 };
 use crate::util::{self, is_wsl_path, parse_number_text};
@@ -24,15 +24,18 @@ use syntax::{apply_find_background, syntax_tokens, PreviewSyntax};
 mod fetch;
 
 use fetch::{
-    fetch_models_remote, latency_color, matrix_label, model_latency_label, model_probe_button,
-    LatencyState, ModelFetchState, ProbeGate, LATENCY_RED, NEW_PROVIDER_FETCH_KEY,
+    fetch_models_remote, model_latency_label, model_probe_button,
+    LatencyState, ModelFetchState, ProbeGate, NEW_PROVIDER_FETCH_KEY,
 };
 
 mod bars;
 
-use bars::{short_err, sticky_begin, sticky_end};
 
 mod agents;
+
+mod providers;
+
+use providers::ProviderFormFlags;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SaveFormat {
@@ -294,73 +297,6 @@ impl eframe::App for App {
             || self.model_drag_src.is_some();
         #[cfg(target_os = "windows")]
         crate::cursor::set_custom_cursor_active(dragging);
-    }
-}
-
-/// provider / model 表单的字段可见性与方言标签（opencode / pi / omp / DSH 共用）。
-#[derive(Clone, Copy)]
-struct ProviderFormFlags {
-    show_oc: bool,
-    show_omp: bool,
-    show_dsh: bool,
-    show_provider_base_url: bool,
-    show_provider_timeout: bool,
-    show_model_name: bool,
-    show_model_context: bool,
-    show_model_output: bool,
-    show_model_input: bool,
-    show_model_variants: bool,
-    show_model_reasoning: bool,
-    show_model_tool_call: bool,
-    show_model_store: bool,
-    base_label: &'static str,
-    api_key_label: &'static str,
-    context_label: &'static str,
-    output_label: &'static str,
-    input_label: &'static str,
-}
-
-impl ProviderFormFlags {
-    fn new(app: &App) -> Self {
-        let show_oc = app.current_page == ConfigFormat::Opencode;
-        let show_dsh = app.current_page == ConfigFormat::DeepSeekHarness;
-        Self {
-            show_oc,
-            show_omp: app.current_page == ConfigFormat::OhMyPi,
-            show_dsh,
-            show_provider_base_url: app.page_has_provider_field("base_url"),
-            // opencode 的 options.timeout 始终显示（文件未写该字段时默认 180000ms）
-            show_provider_timeout: show_oc || app.page_has_provider_field("timeout"),
-            show_model_name: app.page_has_model_field("name"),
-            show_model_context: app.page_has_model_field("context"),
-            show_model_output: app.page_has_model_field("output"),
-            show_model_input: app.page_has_model_field("input"),
-            show_model_variants: app.page_has_model_field("variants"),
-            show_model_reasoning: app.page_has_model_field("reasoning"),
-            show_model_tool_call: app.page_has_model_field("tool_call"),
-            show_model_store: app.page_has_model_field("store"),
-            base_label: if show_oc {
-                "options.baseURL"
-            } else if show_dsh {
-                "baseURL"
-            } else {
-                "baseUrl"
-            },
-            api_key_label: if show_oc {
-                "options.apiKey"
-            } else if show_dsh {
-                "apiKeyEnv"
-            } else {
-                "apiKey"
-            },
-            context_label: if show_oc {
-                "limit.context"
-            } else {
-                "contextWindow"
-            },
-            output_label: if show_oc { "limit.output" } else { "maxTokens" },
-            input_label: if show_oc { "modalities.input" } else { "input" },
-        }
     }
 }
 
@@ -810,280 +746,6 @@ impl App {
                 } else if !provider.api_key_secret.trim().is_empty() {
                     provider.api_key = provider.api_key_secret.clone();
                 }
-            }
-        }
-    }
-
-    /// 当前页面的思考档位标签。
-    fn dialect_variants(&self) -> (&'static str, &'static [&'static str]) {
-        match self.current_page {
-            ConfigFormat::Opencode => (
-                "variants",
-                &["none", "low", "medium", "high", "xhigh", "max", "ultra"],
-            ),
-            ConfigFormat::Pi => (
-                "thinkingLevelMap",
-                &[
-                    "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-                ],
-            ),
-            ConfigFormat::OhMyPi => (
-                "thinking.efforts",
-                &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
-            ),
-            ConfigFormat::DeepSeekHarness => (
-                "reasoningEfforts",
-                &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
-            ),
-        }
-    }
-
-    /// Providers 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
-    fn ui_providers_section(&mut self, ui: &mut egui::Ui) {
-        let anchor = sticky_begin(ui, 30.0);
-        let matched: Vec<usize> = (0..self.providers.len()).collect();
-
-        if self.providers.is_empty() && !self.show_new_provider {
-            self.show_new_provider = true;
-        }
-
-        let mut to_remove: Option<usize> = None;
-        let mut to_copy: Option<usize> = None;
-        // 拖拽落点必须在**所有卡片渲染完之后**统一聚合再写入 self：
-        // 卡片各自赋值会被后渲染的卡片用 None 覆盖（模型卡片曾因此丢失绿色落点边框）。
-        let mut hover_target: Option<String> = None;
-        let mut model_hover_target: Option<String> = None;
-        card_list(ui, &matched, 0.0, |ui, idx| {
-            self.render_provider_card(
-                ui,
-                idx,
-                &mut to_remove,
-                &mut to_copy,
-                &mut hover_target,
-                &mut model_hover_target,
-            );
-        });
-        if let Some(idx) = to_remove {
-            self.providers.remove(idx);
-            self.status = "已删除 provider".into();
-        }
-        if let Some(idx) = to_copy {
-            let mut p = self.providers[idx].clone();
-            p.key = format!("{}_copy", p.key);
-            self.providers.push(p);
-            self.status = "已复制 provider".into();
-        }
-        if self.provider_drag_src.is_some() {
-            self.provider_drag_target = hover_target;
-        } else {
-            self.provider_drag_target = None;
-        }
-        // 模型拖拽落点：与 provider 同样在外层聚合，保证任意展开顺序下被拖到的
-        // 模型卡片都能拿到绿色边框（见 render_provider_form 里的说明）。
-        if self.model_drag_src.is_some() {
-            self.model_drag_target = model_hover_target;
-        } else {
-            self.model_drag_target = None;
-        }
-
-        ui.add_space(10.0);
-        if ui.button("新增 Provider").clicked() {
-            self.show_new_provider = !self.show_new_provider;
-        }
-        if self.show_new_provider {
-            self.ui_new_provider_form(ui);
-        }
-        sticky_end(ui, anchor, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong("Providers");
-                if !self.providers.is_empty() {
-                    let all_open = self
-                        .providers
-                        .iter()
-                        .all(|p| self.provider_open.contains(&p.key));
-                    if ui
-                        .button(if all_open {
-                            "收起全部卡片"
-                        } else {
-                            "展开全部卡片"
-                        })
-                        .clicked()
-                    {
-                        if all_open {
-                            self.provider_open.clear();
-                        } else {
-                            self.provider_open =
-                                self.providers.iter().map(|p| p.key.clone()).collect();
-                        }
-                    }
-                }
-                // 连通性测试：放在标题行右侧，收起全部卡片时也始终可见。
-                if ui
-                    .button("连通性测试")
-                    .on_hover_text("并发测试当前页面全部厂商的接口连通性")
-                    .clicked()
-                {
-                    let targets: Vec<(String, String, String, String)> = self
-                        .providers
-                        .iter()
-                        .map(|p| {
-                            let api = p.effective_api();
-                            (
-                                p.key.clone(),
-                                p.base_url.clone(),
-                                credentials::effective_secret(p),
-                                api,
-                            )
-                        })
-                        .collect();
-                    let count = targets.len();
-                    for (key, base, secret, api) in targets {
-                        Self::start_provider_latency(&mut self.latency, &key, &base, &secret, &api);
-                    }
-                    self.status = format!("已开始连通性测试（{} 个厂商）", count);
-                }
-                // 网络守卫提示：检测到系统代理 / VPN 时禁用模型延迟测试
-                //（中转站的「多 IP 检测 / 测活封号」可能因此触发）。
-                if let Some(reason) = self.net_guard.clone() {
-                    ui.label(
-                        egui::RichText::new(format!("{}：{reason}", crate::netguard::BLOCK_PREFIX))
-                            .small()
-                            .color(LATENCY_RED),
-                    )
-                    .on_hover_text(
-                        "中转站常见多 IP 检测 / 测活风控，经代理做推理探测可能被封号；\n\
-                         因此已禁用模型延迟测试。请关闭系统代理 / VPN 后重试。\n\
-                         （厂商「连通性测试」不受影响：它只拉模型列表，不做推理。）",
-                    );
-                }
-                // 全局 API Key 显示/隐藏：一键切换全部密钥的明文/掩码。
-                // 文案带「密钥」二字，与区块「隐藏/展开」、卡片 ▼/▶ 折叠按钮明确区分。
-                if ui
-                    .button(if self.show_api_keys {
-                        "隐藏密钥"
-                    } else {
-                        "显示密钥"
-                    })
-                    .on_hover_text(if self.show_api_keys {
-                        "点击掩码全部 API Key（默认状态）"
-                    } else {
-                        "点击显示全部 API Key 明文（注意防窥）"
-                    })
-                    .clicked()
-                {
-                    self.show_api_keys = !self.show_api_keys;
-                }
-                // 配置预览：右侧面板实时展示当前页面的序列化内容，可编辑并应用回组件。
-                if ui
-                    .button(if self.show_preview {
-                        "关闭预览"
-                    } else {
-                        "预览"
-                    })
-                    .on_hover_text(
-                        "在右侧打开当前页面「待保存文档」预览；可直接编辑，改动实时应用并自动保存",
-                    )
-                    .clicked()
-                {
-                    self.show_preview = !self.show_preview;
-                    if self.show_preview {
-                        // 打开时以组件状态重建待保存文档
-                        self.reset_preview_draft();
-                    }
-                }
-            });
-        });
-    }
-
-    fn render_provider_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        idx: usize,
-        to_remove: &mut Option<usize>,
-        to_copy: &mut Option<usize>,
-        hover_target: &mut Option<String>,
-        model_hover_target: &mut Option<String>,
-    ) {
-        let key = self.providers[idx].key.clone();
-        let open = self.provider_open.contains(&key);
-        let highlight = if self.provider_drag_target.as_deref() == Some(key.as_str()) {
-            2
-        } else if self.provider_drag_src.as_deref() == Some(key.as_str()) {
-            1
-        } else {
-            0
-        };
-        let resp = card_frame(ui, open, highlight, |ui| {
-            ui.horizontal(|ui| {
-                let h = ui.add(DragHandle);
-                if h.drag_started() {
-                    self.provider_drag_src = Some(key.clone());
-                    self.provider_drag_target = None;
-                }
-                if h.drag_stopped() {
-                    if self.provider_drag_src == Some(key.clone()) {
-                        if let Some(dst) = self.provider_drag_target.clone() {
-                            let s = self.providers.iter().position(|p| p.key == key);
-                            let d = self.providers.iter().position(|p| p.key == dst);
-                            if let (Some(s), Some(d)) = (s, d) {
-                                move_item(&mut self.providers, s, d);
-                            }
-                        }
-                    }
-                    self.provider_drag_src = None;
-                    self.provider_drag_target = None;
-                }
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(if open { "▼" } else { "▶" }).size(14.0),
-                        )
-                        .frame(false),
-                    )
-                    .clicked()
-                {
-                    if open {
-                        self.provider_open.remove(&key);
-                    } else {
-                        self.provider_open.insert(key.clone());
-                    }
-                }
-                ui.strong(&self.providers[idx].key);
-                // 连通性测试结果：显示在厂商名字右侧，卡片收起时也可见。
-                if let Some(state) = self.latency.get(&key) {
-                    if state.provider_rx.is_some() {
-                        matrix_label(ui, &key);
-                    } else if let Some(res) = &state.provider {
-                        match res {
-                            Ok(ms) => {
-                                ui.label(
-                                    egui::RichText::new(format!("{}ms", ms))
-                                        .color(latency_color(*ms)),
-                                );
-                            }
-                            Err(err) => {
-                                ui.label(egui::RichText::new(short_err(err)).color(LATENCY_RED))
-                                    .on_hover_text(err);
-                            }
-                        }
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("删除").clicked() {
-                        *to_remove = Some(idx);
-                    }
-                    if ui.button("复制").clicked() {
-                        *to_copy = Some(idx);
-                    }
-                });
-            });
-            if open {
-                self.render_provider_form(ui, idx, model_hover_target);
-            }
-        });
-        if let Some(src_key) = &self.provider_drag_src {
-            if src_key != &key && resp.contains_pointer() && hover_target.is_none() {
-                *hover_target = Some(key.clone());
             }
         }
     }
@@ -1882,22 +1544,6 @@ impl App {
             font_id,
             text_color,
         );
-    }
-
-    /// provider key 重命名后同步 UI 状态（展开集合 + 弹窗键）。
-    fn sync_provider_rename(&mut self, old: &str, new: &str) {
-        if old == new || new.is_empty() {
-            return;
-        }
-        if self.provider_open.remove(old) {
-            self.provider_open.insert(new.to_string());
-        }
-        // 下标型弹窗键直接关闭（避免前缀歧义），需要时重新打开即可
-        let variant_prefix = format!("variant_open_{}_", old);
-        let show_key = format!("show_new_model_{}", old);
-        let new_variant_key = format!("new_model_variant_{}", old);
-        self.variant_open
-            .retain(|k| !k.starts_with(&variant_prefix) && k != &show_key && k != &new_variant_key);
     }
 
     /// 统计非法数字字段数（非空且解析失败），保存后提示用户它们被忽略。
