@@ -428,8 +428,9 @@ impl App {
                 self.source_format = fmt;
                 self.preview_parse_ok = true;
                 self.preview_parse_error = None;
-                self.agent_open = self.agents.iter().map(|a| a.key.clone()).collect();
-                self.provider_open = self.providers.iter().map(|p| p.key.clone()).collect();
+                // 套用草稿后展开全部卡片（预览场景 = 我现在要看这些内容）
+                self.set_all_agents_collapsed(false);
+                self.set_all_providers_collapsed(false);
                 self.model_fetch.clear();
                 self.model_fetch_open.clear();
                 self.latency.clear();

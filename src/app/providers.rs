@@ -162,7 +162,7 @@ impl App {
                     let all_open = self
                         .providers
                         .iter()
-                        .all(|p| self.provider_open.contains(&p.key));
+                        .all(|p| !self.provider_collapsed(&p.key));
                     if ui
                         .button(if all_open {
                             "收起全部卡片"
@@ -171,12 +171,8 @@ impl App {
                         })
                         .clicked()
                     {
-                        if all_open {
-                            self.provider_open.clear();
-                        } else {
-                            self.provider_open =
-                                self.providers.iter().map(|p| p.key.clone()).collect();
-                        }
+                        // all_open 为真 = 现在全部展开 → 按钮是「收起全部」
+                        self.set_all_providers_collapsed(all_open);
                     }
                 }
                 // 连通性测试：放在标题行右侧，收起全部卡片时也始终可见。
@@ -303,7 +299,7 @@ impl App {
         model_hover_target: &mut Option<String>,
     ) {
         let key = self.providers[idx].key.clone();
-        let open = self.provider_open.contains(&key);
+        let open = !self.provider_collapsed(&key);
         let highlight = if self.provider_drag_target.as_deref() == Some(key.as_str()) {
             2
         } else if self.provider_drag_src.as_deref() == Some(key.as_str()) {
@@ -340,11 +336,7 @@ impl App {
                     )
                     .clicked()
                 {
-                    if open {
-                        self.provider_open.remove(&key);
-                    } else {
-                        self.provider_open.insert(key.clone());
-                    }
+                    self.set_provider_collapsed(&key, open);
                 }
                 ui.strong(&self.providers[idx].key);
                 // baseUrl 体检提示：`//v1` 这类笔误在卡片上直接可见（只提示，不自动改写）。
@@ -421,14 +413,12 @@ impl App {
         }
     }
 
-    /// provider key 重命名后同步 UI 状态（展开集合 + 弹窗键）。
+    /// provider key 重命名后同步 UI 状态（卡片折叠集合 + 弹窗键）。
     pub(super) fn sync_provider_rename(&mut self, old: &str, new: &str) {
         if old == new || new.is_empty() {
             return;
         }
-        if self.provider_open.remove(old) {
-            self.provider_open.insert(new.to_string());
-        }
+        self.rename_collapsed_card("providers", old, new);
         // 下标型弹窗键直接关闭（避免前缀歧义），需要时重新打开即可
         let variant_prefix = format!("variant_open_{}_", old);
         let show_key = format!("show_new_model_{}", old);

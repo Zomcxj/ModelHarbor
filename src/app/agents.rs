@@ -63,7 +63,7 @@ impl App {
                     );
                 }
                 if !self.agents.is_empty() {
-                    let all_open = self.agents.iter().all(|a| self.agent_open.contains(&a.key));
+                    let all_open = self.agents.iter().all(|a| !self.agent_collapsed(&a.key));
                     if ui
                         .button(if all_open {
                             "收起全部卡片"
@@ -72,11 +72,8 @@ impl App {
                         })
                         .clicked()
                     {
-                        if all_open {
-                            self.agent_open.clear();
-                        } else {
-                            self.agent_open = self.agents.iter().map(|a| a.key.clone()).collect();
-                        }
+                        // all_open 为真 = 现在全部展开 → 按钮是「收起全部」
+                        self.set_all_agents_collapsed(all_open);
                     }
                 }
             });
@@ -92,7 +89,7 @@ impl App {
         hover_target: &mut Option<String>,
     ) {
         let key = self.agents[idx].key.clone();
-        let open = self.agent_open.contains(&key);
+        let open = !self.agent_collapsed(&key);
         let highlight = if self.agent_drag_target.as_deref() == Some(key.as_str()) {
             2
         } else if self.agent_drag_src.as_deref() == Some(key.as_str()) {
@@ -129,11 +126,7 @@ impl App {
                     )
                     .clicked()
                 {
-                    if open {
-                        self.agent_open.remove(&key);
-                    } else {
-                        self.agent_open.insert(key.clone());
-                    }
+                    self.set_agent_collapsed(&key, open);
                 }
                 ui.strong(&self.agents[idx].key);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -377,13 +370,11 @@ impl App {
         });
     }
 
-    /// agent key 重命名后同步 UI 状态（卡片展开集合），避免改名后卡片收起。
+    /// agent key 重命名后同步 UI 状态（卡片折叠集合），避免改名后卡片收起。
     pub(super) fn sync_agent_rename(&mut self, old: &str, new: &str) {
         if old == new || new.is_empty() {
             return;
         }
-        if self.agent_open.remove(old) {
-            self.agent_open.insert(new.to_string());
-        }
+        self.rename_collapsed_card("agents", old, new);
     }
 }

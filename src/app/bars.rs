@@ -184,14 +184,23 @@ impl App {
             // 第二行：配置文件 / 保存格式
             ui.horizontal(|ui| {
                 ui.label("配置文件:");
-                let path_resp =
-                    ui.add(egui::TextEdit::singleline(&mut self.config_path).desired_width(420.0));
+                let path_resp = ui
+                    .add(egui::TextEdit::singleline(&mut self.config_path).desired_width(420.0))
+                    .on_hover_text(
+                        "回车加载该路径；留空后回车 = 清除本页路径覆盖，回到自动探测到的默认路径。\n手动指定过的路径按页面记住（存在 .modelharbor/settings.json）。",
+                    );
                 // 回车确认：按当前输入路径重新加载（egui 单行编辑回车即失焦）
                 if path_resp.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     && self.config_path != self.loaded_path
                 {
-                    self.reload();
+                    if self.config_path.trim().is_empty() {
+                        // 留空 + 回车 = 清除本页路径覆盖，回到默认路径
+                        let page = self.current_page;
+                        self.reset_page_path(page);
+                    } else {
+                        self.reload();
+                    }
                 }
                 // 文件来源显示在原本“加载”按钮的位置；加载改为回车或“浏览”。
                 // 只显示“来源：”+ 各后端官方图标（名称见悬停提示）。

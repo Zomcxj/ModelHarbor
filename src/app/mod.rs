@@ -69,8 +69,10 @@ pub struct App {
     status: String,
     show_new_agent: bool,
     show_new_provider: bool,
-    agent_open: HashSet<String>,
-    provider_open: HashSet<String>,
+    /// 已折叠的卡片（`页面/类别/名字`，见 `prefs::collapsed_id`）。
+    /// 用「折叠集合」而不是「展开集合」：新加载进来的卡片默认是展开的，
+    /// 而且这份状态能原样落盘、不会被「重新加载」清空。
+    collapsed: HashSet<String>,
     variant_open: HashSet<String>,
     agent_drag_src: Option<String>,
     agent_drag_target: Option<String>,
@@ -145,9 +147,13 @@ pub struct App {
 impl Default for App {
     fn default() -> Self {
         let prefs = crate::prefs::Prefs::load();
-        let paths = ConfigPaths::default();
-        let (format, path) =
-            ConfigPaths::detect().unwrap_or((ConfigFormat::Opencode, String::new()));
+        // 路径：先套用 prefs 里用户手动指定过的覆盖，再定位要打开的页面
+        // （覆盖过且文件存在的页面优先，其次才按默认路径自动探测）。
+        let mut paths = ConfigPaths::default();
+        paths.apply_overrides(&prefs.config_paths);
+        let (format, path) = paths
+            .detect_preferring_overrides(&prefs.config_paths)
+            .unwrap_or((ConfigFormat::Opencode, String::new()));
         let mut app = Self {
             root: Value::Object(Map::new()),
             agents: Vec::new(),
@@ -159,8 +165,7 @@ impl Default for App {
             status: String::new(),
             show_new_agent: false,
             show_new_provider: false,
-            agent_open: HashSet::new(),
-            provider_open: HashSet::new(),
+            collapsed: prefs.collapsed.iter().cloned().collect(),
             variant_open: HashSet::new(),
             agent_drag_src: None,
             agent_drag_target: None,
@@ -176,7 +181,7 @@ impl Default for App {
             probe: ProbeGate::default(),
             net_guard: crate::netguard::detect(),
             net_guard_at: 0.0,
-            // 界面偏好来自 %APPDATA%\.modelharbor\prefs.json（缺省即 App 默认）。
+            // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
             theme: Theme::from_key(&prefs.theme),
             // 交给第一帧的 apply_theme_if_changed 应用（保证 prefs 里的主题真正生效）
             applied_theme: None,
@@ -291,8 +296,6 @@ impl eframe::App for App {
                         self.ui_agents_section(ui);
                         ui.add_space(8.0);
                     }
-                    self.ui_providers_section(ui);
-                    ui.add_space(8.0);
                 });
         });
         self.paint_drag_ghost(ctx);
@@ -313,6 +316,107 @@ impl App {
             save_format: self.save_format.key().to_string(),
             theme: self.theme.key().to_string(),
             sync_wsl: self.sync_wsl,
+            config_paths: crate::prefs::ConfigPathPrefs {
+                opencode: self.path_override(ConfigFormat::Opencode),
+                pi: self.path_override(ConfigFormat::Pi),
+                oh_my_pi: self.path_override(ConfigFormat::OhMyPi),
+                deepseek_harness: self.path_override(ConfigFormat::DeepSeekHarness),
+            },
+            collapsed: self.collapsed.iter().cloned().collect(),
+        }
+    }
+
+    /// 某一页「相对默认路径」的覆盖值：与默认相同（或没改过）返回空串，
+    /// 这样 prefs 里只留真正手动指定过的路径，默认路径永远跟着自动探测走。
+    fn path_override(&self, format: ConfigFormat) -> String {
+        let current = self.config_paths.local_path(format);
+        let default = ConfigPaths::default_local_path(format);
+        if current.trim() == default.trim() {
+            String::new()
+        } else {
+            current
+        }
+    }
+
+    /// 卡片折叠状态的持久化键（按类别区分，避免 provider 与 agent 同名时互相影响）。
+    fn card_id(kind: &str, key: &str) -> String {
+        crate::prefs::collapsed_id(kind, key)
+    }
+
+    /// provider 卡片是否处于折叠状态。
+    pub(super) fn provider_collapsed(&self, key: &str) -> bool {
+        self.collapsed.contains(&Self::card_id("providers", key))
+    }
+
+    /// 设置 provider 卡片折叠状态。
+    pub(super) fn set_provider_collapsed(&mut self, key: &str, collapsed: bool) {
+        let id = Self::card_id("providers", key);
+        if collapsed {
+            self.collapsed.insert(id);
+        } else {
+            self.collapsed.remove(&id);
+        }
+    }
+
+    /// 当前页所有 provider 卡片：折叠或展开。
+    pub(super) fn set_all_providers_collapsed(&mut self, collapsed: bool) {
+        let keys: Vec<String> = self.providers.iter().map(|p| p.key.clone()).collect();
+        for key in keys {
+            self.set_provider_collapsed(&key, collapsed);
+        }
+    }
+
+    /// agent 卡片是否处于折叠状态。
+    pub(super) fn agent_collapsed(&self, key: &str) -> bool {
+        self.collapsed.contains(&Self::card_id("agents", key))
+    }
+
+    /// 设置 agent 卡片折叠状态。
+    pub(super) fn set_agent_collapsed(&mut self, key: &str, collapsed: bool) {
+        let id = Self::card_id("agents", key);
+        if collapsed {
+            self.collapsed.insert(id);
+        } else {
+            self.collapsed.remove(&id);
+        }
+    }
+
+    /// 当前页所有 agent 卡片：折叠或展开。
+    pub(super) fn set_all_agents_collapsed(&mut self, collapsed: bool) {
+        let keys: Vec<String> = self.agents.iter().map(|a| a.key.clone()).collect();
+        for key in keys {
+            self.set_agent_collapsed(&key, collapsed);
+        }
+    }
+
+    /// 卡片改名后同步折叠状态（否则改完名卡片会跳回展开）。
+    pub(super) fn rename_collapsed_card(&mut self, kind: &str, old: &str, new: &str) {
+        let from = Self::card_id(kind, old);
+        if self.collapsed.remove(&from) {
+            self.collapsed.insert(Self::card_id(kind, new));
+        }
+    }
+
+    /// 丢掉当前配置里已不存在的卡片折叠记录（删除 / 改名后不残留）。
+    /// 卡片集合来自刚加载的这份配置文件，所以换文件时旧记录会被清掉。
+    fn prune_collapsed(&mut self) {
+        let mut alive: HashSet<String> = self
+            .providers
+            .iter()
+            .map(|p| Self::card_id("providers", &p.key))
+            .collect();
+        alive.extend(self.agents.iter().map(|a| Self::card_id("agents", &a.key)));
+        self.collapsed.retain(|id| alive.contains(id));
+    }
+
+    /// 记住某一页手动指定过的配置路径（空串 = 清除覆盖，回到自动探测值）。
+    pub(super) fn remember_page_path(&mut self, format: ConfigFormat, path: &str) {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            let default = ConfigPaths::default_local_path(format);
+            self.config_paths.set_local_path(format, &default);
+        } else {
+            self.config_paths.set_local_path(format, trimmed);
         }
     }
 
@@ -324,7 +428,6 @@ impl App {
     }
 
     /// 界面设置变了就落盘（家目录 `.modelharbor/settings.json`）。
-    /// 界面偏好变了就落盘（%APPDATA%\.modelharbor\prefs.json）。
     fn persist_prefs_if_changed(&mut self) {
         let current = self.current_prefs();
         if current == self.prefs_saved {
@@ -383,8 +486,6 @@ impl App {
                 self.status = format!("加载失败: {}", e);
             }
         }
-        self.agent_open = self.agents.iter().map(|a| a.key.clone()).collect();
-        self.provider_open = self.providers.iter().map(|p| p.key.clone()).collect();
         // baseUrl 体检：加载后统计可疑 URL（如 `//v1` 重复斜杠），在状态栏提示，
         // 详情看 provider 卡片上的 ⚠ 标签（仅提示，不自动改写）。
         let suspicious = self
@@ -407,6 +508,11 @@ impl App {
         self.probe.release(None);
         // 加载后跳转到来源格式对应的页面
         self.current_page = self.source_format;
+        // 只在加载成功时清理折叠记录：读不到文件（路径写错 / 临时不可用）时
+        // providers/agents 是空的，照常清理会把用户存好的卡片状态抹掉。
+        if self.load_error.is_none() {
+            self.prune_collapsed();
+        }
         self.reset_preview_draft();
         self.refresh_targets();
     }
@@ -415,6 +521,20 @@ impl App {
         let (fmt, _) = ConfigPaths::detect_for_path(&self.config_path);
         self.source_format = fmt;
         self.apply_load();
+        // 记住该页手动指定过的路径（下次启动直接用它）；留空的情况由
+        // `reset_page_path` 处理，这里不会把空路径写成覆盖。
+        let path = self.config_path.trim().to_string();
+        if !path.is_empty() {
+            self.remember_page_path(self.source_format, &path);
+        }
+    }
+
+    /// 清除某一页的路径覆盖，切回自动探测到的默认路径并加载
+    /// （界面「留空 + 回车」的语义）。
+    pub(super) fn reset_page_path(&mut self, format: ConfigFormat) {
+        self.remember_page_path(format, "");
+        self.config_path = self.config_paths.target_path(format);
+        self.reload();
     }
 
     fn paint_drag_ghost(&self, ctx: &egui::Context) {

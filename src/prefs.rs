@@ -1,17 +1,118 @@
-//! UI 偏好持久化：`%APPDATA%\.modelharbor\prefs.json`。
+//! 工具自身设置持久化：家目录下的 `.modelharbor/settings.json`
+//! （Windows：`C:\Users\<用户名>\.modelharbor\settings.json`）。
 //!
-//! 只存**界面选择**（密钥显隐、保存格式、主题、同步 WSL）—— 配置内容永远以用户自己的
-//! agent 配置文件为真源，这里一个字段都不存：不存密钥、不存模型、不存路径内容。
+//! 只存**界面选择**（密钥显隐、保存格式、主题、同步 WSL、卡片折叠、各页配置路径覆盖）
+//! —— 配置内容永远以用户自己的 agent 配置文件为真源，这里一个字段都不存：
+//! 不存密钥、不存模型、不存配置内容。叫 settings 而不是 config，正是为了不和
+//! 那些「配置文件」混淆。
 //!
 //! 文件不存在 / 读不出 / 解析失败都用默认值（界面偏好坏了不该影响工具可用性）。
 //! 空字符串表示「没设置过」，由调用方回落到自己的默认值。
+//!
+//! 兼容：早期版本叫 `prefs.json`（先在家目录、更早还在 `%APPDATA%`）。
+//! 读取时按「新名字 → 旧名字」「家目录 → %APPDATA%」逐个回退，写盘只写新位置的新名字，
+//! 并在首次写入后清掉同目录的旧文件。
 
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
-/// 配置目录名（App 自己的目录，与任何 agent 配置目录无关）。
+/// 读取 `root.a.b` 形式的嵌套字符串（类型不符视为空）。
+fn nested_str(root: &Value, outer: &str, inner: &str) -> String {
+    root.get(outer)
+        .and_then(|value| value.get(inner))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 配置目录名（家目录下的点目录，与任何 agent 配置目录无关）。
 pub const DIR_NAME: &str = ".modelharbor";
-const FILE_NAME: &str = "prefs.json";
+const FILE_NAME: &str = "settings.json";
+/// 旧文件名（早期版本）：只用于读取时回退与写入后清理。
+const LEGACY_FILE_NAME: &str = "prefs.json";
+
+/// 家目录：Windows 用 `USERPROFILE`，其他平台用 `HOME`。
+fn home_dir() -> Option<PathBuf> {
+    ["USERPROFILE", "HOME"]
+        .into_iter()
+        .find_map(|key| std::env::var_os(key).map(PathBuf::from))
+        .filter(|dir| !dir.as_os_str().is_empty())
+}
+
+/// 旧位置（`%APPDATA%` 下同名目录）：早期版本放在这里。
+fn legacy_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join(DIR_NAME))
+}
+
+/// 读取候选路径，按优先级排列：
+/// 家目录 settings.json → 家目录 prefs.json → %APPDATA% 下两者。
+fn read_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(home) = home_dir() {
+        let dir = home.join(DIR_NAME);
+        out.push(dir.join(FILE_NAME));
+        out.push(dir.join(LEGACY_FILE_NAME));
+    }
+    if let Some(dir) = legacy_dir() {
+        out.push(dir.join(FILE_NAME));
+        out.push(dir.join(LEGACY_FILE_NAME));
+    }
+    out
+}
+
+/// 写入后清掉同目录下的旧文件名（一次性迁移收尾；失败不影响本次保存）。
+fn remove_legacy_next_to(path: &Path) {
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let legacy = dir.join(LEGACY_FILE_NAME);
+    if legacy != path && legacy.exists() {
+        let _ = std::fs::remove_file(&legacy);
+    }
+}
+
+/// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
+const SCHEMA_VERSION: u64 = 2;
+
+/// 折叠状态的持久化键：`类别/名字`。
+///
+/// 不带页面前缀：同一份配置在四个页面里是同一批卡片，折叠状态应当跟着卡片走
+/// （切页回来还是折叠的）；换加载另一份配置文件时才由 App 清理失效记录。
+pub fn collapsed_id(kind: &str, key: &str) -> String {
+    format!("{kind}/{key}")
+}
+
+/// 四个后端的配置路径覆盖（空字符串 = 不覆盖，用启动时自动探测到的默认路径）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfigPathPrefs {
+    pub opencode: String,
+    pub pi: String,
+    pub oh_my_pi: String,
+    pub deepseek_harness: String,
+}
+
+impl ConfigPathPrefs {
+    /// 按后端取值。
+    pub fn get(&self, format: crate::format::ConfigFormat) -> &str {
+        match format {
+            crate::format::ConfigFormat::Opencode => &self.opencode,
+            crate::format::ConfigFormat::Pi => &self.pi,
+            crate::format::ConfigFormat::OhMyPi => &self.oh_my_pi,
+            crate::format::ConfigFormat::DeepSeekHarness => &self.deepseek_harness,
+        }
+    }
+
+    /// 按后端写入（空串 = 清除覆盖）。
+    pub fn set(&mut self, format: crate::format::ConfigFormat, path: &str) {
+        let slot = match format {
+            crate::format::ConfigFormat::Opencode => &mut self.opencode,
+            crate::format::ConfigFormat::Pi => &mut self.pi,
+            crate::format::ConfigFormat::OhMyPi => &mut self.oh_my_pi,
+            crate::format::ConfigFormat::DeepSeekHarness => &mut self.deepseek_harness,
+        };
+        *slot = path.to_string();
+    }
+}
 
 /// 界面偏好。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -24,24 +125,41 @@ pub struct Prefs {
     pub theme: String,
     /// 是否同步写入 WSL 侧路径。
     pub sync_wsl: bool,
+    /// 四个后端各自的配置路径覆盖（用户手动指定过才非空）。
+    pub config_paths: ConfigPathPrefs,
+    /// 已折叠的卡片（`providers/名字`、`agents/名字`；不在表里的即展开）。
+    pub collapsed: Vec<String>,
 }
 
 impl Prefs {
-    /// 配置文件路径（`%APPDATA%\.modelharbor\prefs.json`）。
+    /// 设置文件路径（家目录下的 `.modelharbor/settings.json`）。
     pub fn path() -> PathBuf {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            return PathBuf::from(appdata).join(DIR_NAME).join(FILE_NAME);
+        if let Some(home) = home_dir() {
+            return home.join(DIR_NAME).join(FILE_NAME);
         }
-        // 非 Windows 或环境异常：退回 exe 同级目录，仍然不写进任何 agent 配置。
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join(FILE_NAME)))
-            .unwrap_or_else(|| PathBuf::from(FILE_NAME))
+        // 取不到家目录：退回旧的 %APPDATA% 位置，再退回 exe 同级目录；
+        // 任何情况下都不会写进 agent 配置目录。
+        legacy_dir()
+            .map(|dir| dir.join(FILE_NAME))
+            .unwrap_or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(|dir| dir.join(FILE_NAME)))
+                    .unwrap_or_else(|| PathBuf::from(FILE_NAME))
+            })
     }
 
-    /// 从默认路径加载（失败即默认值）。
+    /// 从默认路径加载（全读不到即默认值）。
+    ///
+    /// 按 [`read_candidates`] 顺序回退：新位置没有就读旧文件名、再读旧的
+    /// `%APPDATA%` 位置（一次性迁移：老设置不丢，下次写盘自动落到新位置）。
     pub fn load() -> Prefs {
-        Self::parse(&std::fs::read_to_string(Self::path()).unwrap_or_default())
+        for candidate in read_candidates() {
+            if let Ok(text) = std::fs::read_to_string(&candidate) {
+                return Self::parse(&text);
+            }
+        }
+        Prefs::default()
     }
 
     /// 解析已有内容（供加载与单测使用）。
@@ -66,13 +184,30 @@ impl Prefs {
                 .get("sync_wsl")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            config_paths: ConfigPathPrefs {
+                opencode: nested_str(&root, "config_paths", "opencode"),
+                pi: nested_str(&root, "config_paths", "pi"),
+                oh_my_pi: nested_str(&root, "config_paths", "oh_my_pi"),
+                deepseek_harness: nested_str(&root, "config_paths", "deepseek_harness"),
+            },
+            collapsed: root
+                .get("collapsed")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
     /// 序列化（固定字段顺序，便于人工核对 / diff）。
     pub fn to_json(&self) -> String {
         let mut root = Map::new();
-        root.insert("version".to_string(), Value::Number(1.into()));
+        root.insert("version".to_string(), Value::Number(SCHEMA_VERSION.into()));
         root.insert("show_api_keys".to_string(), Value::Bool(self.show_api_keys));
         root.insert(
             "save_format".to_string(),
@@ -80,12 +215,40 @@ impl Prefs {
         );
         root.insert("theme".to_string(), Value::String(self.theme.clone()));
         root.insert("sync_wsl".to_string(), Value::Bool(self.sync_wsl));
+        let mut paths = Map::new();
+        for (key, value) in [
+            ("opencode", &self.config_paths.opencode),
+            ("pi", &self.config_paths.pi),
+            ("oh_my_pi", &self.config_paths.oh_my_pi),
+            ("deepseek_harness", &self.config_paths.deepseek_harness),
+        ] {
+            paths.insert(key.to_string(), Value::String(value.clone()));
+        }
+        root.insert("config_paths".to_string(), Value::Object(paths));
+        // 折叠表排序去重后写出：内容一样就不产生 diff（避免无意义的写盘噪声）。
+        let mut collapsed: Vec<&String> = self.collapsed.iter().collect();
+        collapsed.sort();
+        collapsed.dedup();
+        root.insert(
+            "collapsed".to_string(),
+            Value::Array(
+                collapsed
+                    .into_iter()
+                    .map(|key| Value::String(key.clone()))
+                    .collect(),
+            ),
+        );
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// 落盘到默认路径。
+    /// 落盘到默认路径，并清掉同目录下的旧文件名（一次性迁移收尾）。
     pub fn save(&self) -> Result<(), String> {
-        self.save_to(&Self::path())
+        let path = Self::path();
+        let result = self.save_to(&path);
+        if result.is_ok() {
+            remove_legacy_next_to(&path);
+        }
+        result
     }
 
     /// 落盘到指定路径（单测用）。
@@ -132,8 +295,59 @@ mod tests {
             save_format: "compact".to_string(),
             theme: "rose".to_string(),
             sync_wsl: true,
+            config_paths: ConfigPathPrefs {
+                opencode: "D:\\conf\\opencode.json".to_string(),
+                pi: String::new(),
+                oh_my_pi: String::new(),
+                deepseek_harness: "D:\\conf\\dsh.yaml".to_string(),
+            },
+            // 按字母序给出：to_json 会排序写出，因此往返应完全相等
+            collapsed: vec![
+                collapsed_id("agents", "build"),
+                collapsed_id("providers", "openai"),
+            ],
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
+    }
+
+    #[test]
+    fn collapsed_is_written_sorted_and_deduped() {
+        let prefs = Prefs {
+            collapsed: vec!["b/2".into(), "a/1".into(), "b/2".into()],
+            ..Default::default()
+        };
+        let text = prefs.to_json();
+        assert!(text.contains("a/1"), "{text}");
+        assert_eq!(text.matches("b/2").count(), 1, "不应重复：{text}");
+        let back = Prefs::parse(&text);
+        assert_eq!(back.collapsed, vec!["a/1".to_string(), "b/2".to_string()]);
+        // 再次写出应完全相同（内容一致 → 不产生 diff）
+        assert_eq!(back.to_json(), text);
+    }
+
+    #[test]
+    fn wrong_types_fall_back_for_new_fields() {
+        for text in [
+            r#"{"collapsed":"nope"}"#,
+            r#"{"collapsed":[1,2,{"a":1}]}"#,
+            r#"{"config_paths":"nope"}"#,
+            r#"{"config_paths":{"opencode":42,"pi":null}}"#,
+        ] {
+            let prefs = Prefs::parse(text);
+            assert_eq!(prefs.collapsed, Vec::<String>::new(), "{text}");
+            assert_eq!(prefs.config_paths, ConfigPathPrefs::default(), "{text}");
+        }
+    }
+
+    #[test]
+    fn config_path_overrides_are_keyed_by_backend() {
+        use crate::format::ConfigFormat;
+        let mut paths = ConfigPathPrefs::default();
+        paths.set(ConfigFormat::OhMyPi, "D:\\conf\\models.yml");
+        assert_eq!(paths.get(ConfigFormat::OhMyPi), "D:\\conf\\models.yml");
+        assert_eq!(paths.get(ConfigFormat::Pi), "", "其他页不受影响");
+        paths.set(ConfigFormat::OhMyPi, "");
+        assert_eq!(paths.get(ConfigFormat::OhMyPi), "", "空串 = 清除覆盖");
     }
 
     #[test]
@@ -158,17 +372,71 @@ mod tests {
     }
 
     #[test]
+    fn read_candidates_try_new_name_and_home_first() {
+        let candidates: Vec<String> = read_candidates()
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        // 前两个候选必须是「家目录的新名字 → 家目录的旧名字」
+        assert_eq!(candidates.first().map(String::as_str), Some(FILE_NAME));
+        assert_eq!(
+            candidates.get(1).map(String::as_str),
+            Some(LEGACY_FILE_NAME)
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|name| name == FILE_NAME || name == LEGACY_FILE_NAME),
+            "只回退这两个文件名：{candidates:?}"
+        );
+        if let Some(home) = home_dir() {
+            assert!(
+                read_candidates()[0].starts_with(&home),
+                "新位置必须在家目录"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_file_is_removed_after_first_save() {
+        let dir = std::env::temp_dir().join(format!("{}-legacy-{}", DIR_NAME, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let new = dir.join(FILE_NAME);
+        let old = dir.join(LEGACY_FILE_NAME);
+        std::fs::write(&old, "{\"theme\":\"nord\"}").expect("写旧文件");
+        Prefs::default().save_to(&new).expect("写新位置");
+        remove_legacy_next_to(&new);
+        assert!(new.exists(), "新文件应保留");
+        assert!(!old.exists(), "旧文件应被清理");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn default_path_is_app_private() {
         let path = Prefs::path();
         assert_eq!(path.file_name().unwrap_or_default(), FILE_NAME);
+        assert_eq!(
+            path.parent().and_then(|dir| dir.file_name()),
+            Some(std::ffi::OsStr::new(DIR_NAME))
+        );
         let text = path.to_string_lossy().to_lowercase();
         for forbidden in [".config", ".pi", ".omp", ".dsh", "opencode"] {
             assert!(!text.contains(forbidden), "不应写进 agent 配置：{text}");
         }
-        #[cfg(windows)]
-        assert!(
-            text.contains(DIR_NAME) || text.contains("appdata"),
-            "{text}"
-        );
+        // 有家目录时必须在家里，而不是 %APPDATA%（按用户要求）
+        let has_home =
+            std::env::var_os("USERPROFILE").is_some() || std::env::var_os("HOME").is_some();
+        if has_home {
+            assert!(
+                !text.contains("roaming"),
+                "应放家目录而不是 %APPDATA%：{text}"
+            );
+        }
     }
 }
