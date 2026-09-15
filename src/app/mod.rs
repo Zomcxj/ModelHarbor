@@ -283,7 +283,10 @@ impl eframe::App for App {
                 })
                 .show(ui, |ui| {
                     ui.add_space(4.0);
-                    // Agents 仅属于 opencode 页面；区块标题吸顶，滚动时始终显示在顶部。
+                    // Providers 在上、Agents 在下：Agents 只属于 opencode 页面，
+                    // 且按需求放在 Providers 下方（只影响界面顺序，不动配置文件里的字段顺序）。
+                    self.ui_providers_section(ui);
+                    ui.add_space(8.0);
                     if self.current_page == ConfigFormat::Opencode {
                         self.ui_agents_section(ui);
                         ui.add_space(8.0);
