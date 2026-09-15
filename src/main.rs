@@ -2,7 +2,6 @@
 
 use eframe::egui;
 use model_harbor::app::App;
-use model_harbor::theme::Theme;
 
 const ICON_BYTES: &[u8] = include_bytes!("../assets/icon_rgba.bin");
 const ICON_W: u32 = 256;
@@ -26,7 +25,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_fonts(build_cjk_fonts());
-            Theme::default().apply(&cc.egui_ctx);
+            // 主题不在这里写死：App 第一帧会按 prefs 里保存的主题套用
+            // （这里若先套一个默认值，会和保存的主题打架，出现「按钮文字变了、界面没变」）。
             #[cfg(target_os = "windows")]
             {
                 use raw_window_handle::HasWindowHandle;

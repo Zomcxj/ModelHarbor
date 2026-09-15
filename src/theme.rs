@@ -91,6 +91,161 @@ impl Theme {
     }
 }
 
+/// 语义色（绿 = 正常 / 黄 = 注意 / 红 = 异常 / 蓝 = 信息）。
+///
+/// **跨主题统一**：五个主题共用同一套（黑白灰随主题变，彩色不变），
+/// 取中间调色，让同一支颜色在浅底和深底上都看得清（单测锁定对比度 ≥3:1）。
+/// 唯一的例外是「信息蓝」和主题强调色撞色时改用青蓝，见 [`semantics`]。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Semantics {
+    pub ok: Color32,
+    pub warn: Color32,
+    pub err: Color32,
+    pub info: Color32,
+}
+
+/// 全主题共用的一套语义色。
+pub const SEMANTICS: Semantics = Semantics {
+    ok: Color32::from_rgb(0x1F, 0x99, 0x50),
+    warn: Color32::from_rgb(0xA9, 0x79, 0x00),
+    err: Color32::from_rgb(0xD4, 0x5B, 0x52),
+    info: Color32::from_rgb(0x4A, 0x85, 0xD6),
+};
+
+/// 「信息蓝」与强调色撞色时的替代色（青蓝）。
+const SEMANTICS_INFO_ALT: Color32 = Color32::from_rgb(0x12, 0x93, 0x9E);
+
+/// 和强调色多近算「撞色」（RGB 空间欧氏距离）。
+const ACCENT_CLASH: f32 = 45.0;
+
+/// 取当前界面该用的语义色。
+///
+/// 正常就是 [`SEMANTICS`]（所有主题一致）；只有当前主题的强调色和信息蓝太接近时，
+/// 信息蓝换成青蓝 —— 否则用量文字会和按钮 / 链接糊成一片。
+pub fn semantics(ui: &egui::Ui) -> Semantics {
+    semantics_with_accent(ui.visuals().hyperlink_color)
+}
+
+/// 按强调色取语义色（拆出来便于单测）。
+fn semantics_with_accent(accent: Color32) -> Semantics {
+    let mut colors = SEMANTICS;
+    if distance(accent, colors.info) < ACCENT_CLASH {
+        colors.info = SEMANTICS_INFO_ALT;
+    }
+    colors
+}
+
+/// RGB 欧氏距离。
+fn distance(a: Color32, b: Color32) -> f32 {
+    let [ar, ag, ab, _] = a.to_array();
+    let [br, bg, bb, _] = b.to_array();
+    let d = |x: u8, y: u8| {
+        let diff = f32::from(x) - f32::from(y);
+        diff * diff
+    };
+    (d(ar, br) + d(ag, bg) + d(ab, bb)).sqrt()
+}
+
+/// 对比度（WCAG，1.0 ~ 21.0）。只在单测里用来锁定「五个主题都看得清」。
+#[cfg(test)]
+fn contrast(a: Color32, b: Color32) -> f32 {
+    let channel = |value: u8| {
+        let v = f32::from(value) / 255.0;
+        if v <= 0.039_28 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let rel = |color: Color32| {
+        let [r, g, b, _] = color.to_array();
+        0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+    };
+    let (la, lb) = (rel(a), rel(b));
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// 主题是否需要在本次应用（`applied` 记录已应用的主题，会被就地更新）。
+///
+/// 单独抽出来是为了能在单测里锁定「启动时必须应用一次」：
+/// egui 0.33 的 `set_style` 是**每个主题各存一份 style**（dark / light 两份，
+/// 按当前激活的主题取用），所以主题变了必须显式再调一次 `apply`，
+/// 否则界面颜色不会跟着变。
+pub fn needs_apply(applied: &mut Option<Theme>, theme: Theme) -> bool {
+    if *applied == Some(theme) {
+        return false;
+    }
+    *applied = Some(theme);
+    true
+}
+
+#[cfg(test)]
+mod semantics_tests {
+    use super::*;
+
+    #[test]
+    fn every_semantic_color_reads_on_every_theme() {
+        // ①的核心护栏：一套彩色要在五个主题的底色上都够清楚（对比度 ≥3:1）。
+        for theme in Theme::ALL {
+            let panel = theme.palette().panel;
+            for (name, color) in [
+                ("ok", SEMANTICS.ok),
+                ("warn", SEMANTICS.warn),
+                ("err", SEMANTICS.err),
+                ("info", SEMANTICS.info),
+                ("info_alt", SEMANTICS_INFO_ALT),
+            ] {
+                let ratio = contrast(color, panel);
+                assert!(
+                    ratio >= 3.0,
+                    "{} 的 {name} 对比度只有 {ratio:.2}（面板 {panel:?}）",
+                    theme.key()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn info_only_shifts_when_it_clashes_with_the_accent() {
+        for theme in Theme::ALL {
+            let colors = semantics_with_accent(theme.palette().accent);
+            let expected = if distance(theme.palette().accent, SEMANTICS.info) < ACCENT_CLASH {
+                SEMANTICS_INFO_ALT
+            } else {
+                SEMANTICS.info
+            };
+            assert_eq!(colors.info, expected, "{}", theme.key());
+            assert_eq!(colors.ok, SEMANTICS.ok, "绿黄红不随主题变：{}", theme.key());
+            assert_eq!(colors.warn, SEMANTICS.warn, "{}", theme.key());
+            assert_eq!(colors.err, SEMANTICS.err, "{}", theme.key());
+            // 换过之后必须真的拉开距离
+            assert!(
+                distance(colors.info, theme.palette().accent) >= ACCENT_CLASH,
+                "{} 的信息色仍与强调色撞色",
+                theme.key()
+            );
+        }
+    }
+
+    #[test]
+    fn apply_switches_the_active_palette() {
+        let ctx = egui::Context::default();
+        let mut applied: Option<Theme> = None;
+        for theme in Theme::ALL {
+            if needs_apply(&mut applied, theme) {
+                theme.apply(&ctx);
+            }
+            let visuals = ctx.style().visuals.clone();
+            assert_eq!(visuals.panel_fill, theme.palette().panel, "{}", theme.key());
+            assert_eq!(visuals.dark_mode, theme.palette().dark, "{}", theme.key());
+        }
+        // 同一主题不重复应用（每帧重设会白白丢掉 egui 的样式缓存）
+        assert!(!needs_apply(&mut applied, Theme::Rose));
+        assert!(needs_apply(&mut applied, Theme::Dark));
+    }
+}
+
 struct Palette {
     dark: bool,
     panel: Color32,

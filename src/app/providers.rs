@@ -2,7 +2,7 @@
 use super::balance;
 use super::App;
 use crate::app::bars::{short_err, sticky_begin, sticky_end};
-use crate::app::fetch::{latency_color, matrix_label, LATENCY_RED};
+use crate::app::fetch::{latency_color, matrix_label};
 use crate::credentials;
 use crate::format::ConfigFormat;
 use crate::ui::{card_frame, card_list, move_item, DragHandle};
@@ -246,7 +246,7 @@ impl App {
                     ui.label(
                         egui::RichText::new(format!("{}：{reason}", crate::netguard::BLOCK_PREFIX))
                             .small()
-                            .color(LATENCY_RED),
+                            .color(crate::theme::semantics(ui).err),
                     )
                     .on_hover_text(
                         "中转站常见多 IP 检测 / 测活风控，经代理做推理探测可能被封号；\n\
@@ -353,7 +353,7 @@ impl App {
                     ui.label(
                         egui::RichText::new(format!("⚠ baseUrl: {}", suspicions.join("、")))
                             .small()
-                            .color(LATENCY_RED),
+                            .color(crate::theme::semantics(ui).err),
                     )
                     .on_hover_text(format!(
                         "当前 baseUrl\n{}\n\n请核对协议头、重复斜杠与末尾斜杠；工具只提示，不会自动改写配置。",
@@ -369,11 +369,11 @@ impl App {
                             Ok(ms) => {
                                 ui.label(
                                     egui::RichText::new(format!("{}ms", ms))
-                                        .color(latency_color(*ms)),
+                                        .color(latency_color(*ms, crate::theme::semantics(ui))),
                                 );
                             }
                             Err(err) => {
-                                ui.label(egui::RichText::new(short_err(err)).color(LATENCY_RED))
+                                ui.label(egui::RichText::new(short_err(err)).color(crate::theme::semantics(ui).err))
                                     .on_hover_text(err);
                             }
                         }
@@ -401,7 +401,7 @@ impl App {
                             {
                                 ui.label(
                                     egui::RichText::new(info.inline_full())
-                                        .color(crate::app::balance::BALANCE_TEXT),
+                                        .color(crate::theme::semantics(ui).info),
                                 )
                                 .on_hover_text(info.detail());
                             }

@@ -44,10 +44,10 @@ pub(super) const LATENCY_GOOD_MS: u64 = 2_000;
 pub(super) const LATENCY_SLOW_MS: u64 = 5_000;
 
 /// 延迟配色：<2s 绿色、2~5s 黄色、≥5s 红色（超时同样显示红色错误）。
-pub(super) const LATENCY_GREEN: egui::Color32 = egui::Color32::from_rgb(90, 180, 110);
-pub(super) const LATENCY_YELLOW: egui::Color32 = egui::Color32::from_rgb(201, 162, 39);
-pub(super) const LATENCY_RED: egui::Color32 = egui::Color32::from_rgb(220, 90, 90);
-
+///
+/// 具体色值由 [`crate::theme::semantics`] 按当前主题的明暗给出：浅色主题下用更深的一档，
+/// 否则绿 / 黄 / 红在浅底上看着发淡。
+///
 /// 模型延迟探测的风控节流参数（中转站的「多 IP 检测 / 测活封号」）：
 /// **同一个 provider** 的任意两次探测（同模型、不同模型都算）间隔 ≥5 秒；
 /// **不同 provider 互不牵连**（不同中转站是不同站点，各自独立计数、可并行）。
@@ -227,13 +227,13 @@ pub(super) fn http_error(err: ureq::Error, elapsed: u64) -> String {
     }
 }
 
-pub(super) fn latency_color(ms: u64) -> egui::Color32 {
+pub(super) fn latency_color(ms: u64, colors: crate::theme::Semantics) -> egui::Color32 {
     if ms < LATENCY_GOOD_MS {
-        LATENCY_GREEN
+        colors.ok
     } else if ms < LATENCY_SLOW_MS {
-        LATENCY_YELLOW
+        colors.warn
     } else {
-        LATENCY_RED
+        colors.err
     }
 }
 
@@ -267,7 +267,7 @@ pub(super) fn matrix_label(ui: &mut egui::Ui, salt: &str) {
     ui.label(
         egui::RichText::new(matrix_glyphs(frame, salt, MATRIX_LEN))
             .monospace()
-            .color(LATENCY_GREEN),
+            .color(crate::theme::semantics(ui).ok),
     )
     .on_hover_text("延迟测试进行中");
     ui.ctx()
@@ -291,7 +291,7 @@ pub(super) fn model_latency_label(ui: &mut egui::Ui, state: Option<&LatencyState
                 egui::Align2::LEFT_CENTER,
                 format!("{}ms", ms),
                 egui::FontId::proportional(13.0),
-                latency_color(*ms),
+                latency_color(*ms, crate::theme::semantics(ui)),
             );
             response.on_hover_text(format!(
                 "最近一次首字延迟 {} ms（流式：请求发出 → 第一个字）",
@@ -299,7 +299,7 @@ pub(super) fn model_latency_label(ui: &mut egui::Ui, state: Option<&LatencyState
             ));
         }
         Some(Err(err)) => {
-            ui.label(egui::RichText::new(short_err(err)).color(LATENCY_RED))
+            ui.label(egui::RichText::new(short_err(err)).color(crate::theme::semantics(ui).err))
                 .on_hover_text(err);
         }
         None if state.pending.contains(model_id) => matrix_label(ui, model_id),

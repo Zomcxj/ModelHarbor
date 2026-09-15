@@ -174,7 +174,7 @@ impl App {
                 ui.label(
                     egui::RichText::new("⚠ 重复")
                         .small()
-                        .color(egui::Color32::from_rgb(220, 90, 90)),
+                        .color(crate::theme::semantics(ui).err),
                 );
             }
             field_label(ui, 120.0, "mode");

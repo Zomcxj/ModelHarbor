@@ -95,6 +95,9 @@ pub struct App {
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
+    /// 已应用到 egui 的主题：egui 0.33 的 `set_style` 是**每个主题各存一份 style**，
+    /// 所以主题一变就必须显式再 `apply` 一次，否则只有按钮文字变、界面颜色不跟着变。
+    applied_theme: Option<Theme>,
     save_format: SaveFormat,
     /// 滚轮切换保存格式的门门：一次连续滚动手势只切换一次。
     save_format_wheel_latch: bool,
@@ -175,6 +178,8 @@ impl Default for App {
             net_guard_at: 0.0,
             // 界面偏好来自 %APPDATA%\.modelharbor\prefs.json（缺省即 App 默认）。
             theme: Theme::from_key(&prefs.theme),
+            // 交给第一帧的 apply_theme_if_changed 应用（保证 prefs 里的主题真正生效）
+            applied_theme: None,
             save_format: SaveFormat::from_key(&prefs.save_format),
             prefs_saved: prefs.clone(),
             save_format_wheel_latch: false,
@@ -209,6 +214,9 @@ impl Default for App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 第一件事就是套用主题：启动时（applied_theme == None）与切换主题后都必须走这里，
+        // 否则会出现「按钮文字是浅色、界面还是深色」的错配。
+        self.apply_theme_if_changed(ctx);
         let dropped = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -305,6 +313,14 @@ impl App {
         }
     }
 
+    /// 主题变化（含首次启动）时重新套用样式。
+    fn apply_theme_if_changed(&mut self, ctx: &egui::Context) {
+        if crate::theme::needs_apply(&mut self.applied_theme, self.theme) {
+            self.theme.apply(ctx);
+        }
+    }
+
+    /// 界面设置变了就落盘（家目录 `.modelharbor/settings.json`）。
     /// 界面偏好变了就落盘（%APPDATA%\.modelharbor\prefs.json）。
     fn persist_prefs_if_changed(&mut self) {
         let current = self.current_prefs();

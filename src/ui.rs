@@ -151,7 +151,7 @@ pub fn numeric_text_edit(
     if valid {
         ui.add(edit)
     } else {
-        ui.add(edit.text_color(egui::Color32::from_rgb(220, 90, 90)))
+        ui.add(edit.text_color(crate::theme::semantics(ui).err))
             .on_hover_text("无效数字：保存时该字段将被忽略")
     }
 }

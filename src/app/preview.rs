@@ -168,7 +168,7 @@ impl App {
                     .on_hover_text("放弃预览里的修改，按左侧组件状态重新生成待保存文档")
                     .clicked();
             } else if let Err(e) = &doc {
-                ui.colored_label(egui::Color32::from_rgb(220, 90, 90), "生成失败")
+                ui.colored_label(crate::theme::semantics(ui).err, "生成失败")
                     .on_hover_text(e);
             }
         });
@@ -206,7 +206,7 @@ impl App {
                 let matches = find_matches(&self.preview_draft, &self.preview_find);
                 let total = matches.len();
                 if total == 0 {
-                    ui.colored_label(egui::Color32::from_rgb(220, 90, 90), "0 处");
+                    ui.colored_label(crate::theme::semantics(ui).err, "0 处");
                 } else {
                     if self.preview_find_index >= total {
                         self.preview_find_index = 0;

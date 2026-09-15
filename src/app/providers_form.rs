@@ -283,7 +283,7 @@ pub(super) fn model_fetch_popup<H: std::hash::Hash>(
         Err(err) => {
             ui.label(
                 egui::RichText::new(format!("获取失败：{}", err))
-                    .color(egui::Color32::from_rgb(220, 90, 90)),
+                    .color(crate::theme::semantics(ui).err),
             );
         }
     }
@@ -335,7 +335,7 @@ impl App {
                 ui.label(
                     egui::RichText::new("⚠ 重复")
                         .small()
-                        .color(egui::Color32::from_rgb(220, 90, 90)),
+                        .color(crate::theme::semantics(ui).err),
                 );
             }
             if show_oc {
@@ -512,7 +512,7 @@ impl App {
                         ui.label(
                             egui::RichText::new("⚠ 重复")
                                 .small()
-                                .color(egui::Color32::from_rgb(220, 90, 90)),
+                                .color(crate::theme::semantics(ui).err),
                         );
                     }
                     if show_model_name {

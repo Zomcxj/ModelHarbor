@@ -172,8 +172,9 @@ impl App {
                             ui.set_min_width(80.0);
                             for t in Theme::ALL {
                                 if ui.selectable_label(self.theme == t, t.label()).clicked() {
+                                    // 只改状态；样式统一由 App::apply_theme_if_changed
+                                    // 在下一帧套用（避免两处各自 apply 导致不一致）。
                                     self.theme = t;
-                                    t.apply(ctx);
                                 }
                             }
                         },
@@ -211,7 +212,7 @@ impl App {
                     }
                 }
                 if !self.config_path.is_empty() && self.config_path != self.loaded_path {
-                    ui.label(egui::RichText::new("未加载").small().color(egui::Color32::from_rgb(220, 160, 60)))
+                    ui.label(egui::RichText::new("未加载").small().color(crate::theme::semantics(ui).warn))
                         .on_hover_text("路径已修改但未加载：保存时将按“先读后合并”写入该路径（不破坏目标文件已有配置）。\n在此按回车可切换到该文件。");
                 }
                 ui.separator();
@@ -253,7 +254,7 @@ impl App {
                     if let Some(err) = &self.load_error {
                         ui.label(
                             egui::RichText::new(format!("⚠ 加载失败: {}", err))
-                                .color(egui::Color32::from_rgb(220, 90, 90)),
+                                .color(crate::theme::semantics(ui).err),
                         );
                     }
                     ui.label(egui::RichText::new(&self.status).weak());
@@ -312,7 +313,7 @@ impl App {
                         self.agents.len()
                     ))
                     .small()
-                    .color(egui::Color32::from_rgb(220, 160, 60)),
+                    .color(crate::theme::semantics(ui).warn),
                 )
                 .on_hover_text("该格式不支持 agent 定义，保存时将忽略");
             }

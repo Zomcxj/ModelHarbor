@@ -16,15 +16,11 @@
 use super::fetch::{apply_auth, latency_agent, AuthKind};
 use super::App;
 use crate::billing;
-use eframe::egui;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// 同一 provider 两次查询的最小间隔（毫秒）。
 pub(super) const BALANCE_COOLDOWN_MS: f64 = 5_000.0;
-
-/// 查询结果文本颜色（比正文稍亮的青蓝，和延迟结果的绿 / 红区分开）。
-pub(super) const BALANCE_TEXT: egui::Color32 = egui::Color32::from_rgb(120, 170, 210);
 
 /// 一次查询的输入（拥有所有权，便于 move 进后台线程）。
 #[derive(Clone, Default)]

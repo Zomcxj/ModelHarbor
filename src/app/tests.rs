@@ -766,17 +766,18 @@ mod syntax_highlight_tests {
 #[cfg(test)]
 mod latency_tests {
     use crate::app::fetch::{
-        latency_color, matrix_glyphs, LATENCY_GOOD_MS, LATENCY_GREEN, LATENCY_RED, LATENCY_SLOW_MS,
-        LATENCY_YELLOW, MATRIX_CHARS, MATRIX_LEN,
+        latency_color, matrix_glyphs, LATENCY_GOOD_MS, LATENCY_SLOW_MS, MATRIX_CHARS, MATRIX_LEN,
     };
+    use crate::theme::SEMANTICS;
 
     #[test]
     fn latency_color_thresholds() {
-        assert_eq!(latency_color(0), LATENCY_GREEN);
-        assert_eq!(latency_color(LATENCY_GOOD_MS - 1), LATENCY_GREEN);
-        assert_eq!(latency_color(LATENCY_GOOD_MS), LATENCY_YELLOW);
-        assert_eq!(latency_color(LATENCY_SLOW_MS - 1), LATENCY_YELLOW);
-        assert_eq!(latency_color(LATENCY_SLOW_MS), LATENCY_RED);
+        let colors = SEMANTICS;
+        assert_eq!(latency_color(0, colors), colors.ok);
+        assert_eq!(latency_color(LATENCY_GOOD_MS - 1, colors), colors.ok);
+        assert_eq!(latency_color(LATENCY_GOOD_MS, colors), colors.warn);
+        assert_eq!(latency_color(LATENCY_SLOW_MS - 1, colors), colors.warn);
+        assert_eq!(latency_color(LATENCY_SLOW_MS, colors), colors.err);
     }
 
     #[test]
