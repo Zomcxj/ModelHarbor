@@ -29,6 +29,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
+    # 用量查询的「今日」区间要本地时区 0 点：GetLocalTime
+    "Win32_System_SystemInformation",
 ]}
 rfd = "0.17"
 

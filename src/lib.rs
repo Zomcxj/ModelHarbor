@@ -1,5 +1,6 @@
 pub mod app;
 pub mod backends;
+pub mod billing;
 pub mod convert;
 pub mod credentials;
 #[cfg(target_os = "windows")]
@@ -8,6 +9,7 @@ pub mod format;
 pub mod http_status;
 pub mod model;
 pub mod netguard;
+pub mod prefs;
 pub mod presets;
 pub mod theme;
 pub mod ui;

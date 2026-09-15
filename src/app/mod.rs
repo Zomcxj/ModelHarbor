@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
 mod agents;
+mod balance;
 mod bars;
 mod fetch;
 mod preview;
@@ -38,6 +39,22 @@ impl SaveFormat {
             Self::Compact => "压缩格式",
         }
     }
+
+    /// 持久化用的稳定标识。
+    fn key(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Compact => "compact",
+        }
+    }
+
+    /// 由持久化标识还原；未知 / 空值回落默认格式。
+    fn from_key(key: &str) -> SaveFormat {
+        match key {
+            "current" => Self::Current,
+            _ => Self::default(),
+        }
+    }
 }
 
 pub struct App {
@@ -67,6 +84,10 @@ pub struct App {
     model_fetch_open: HashSet<String>,
     /// 每个 provider 的延迟测试状态（key → 状态）。
     latency: HashMap<String, LatencyState>,
+    /// 每个 provider 的「已用 / 余额」查询状态（key → 状态）。
+    balance: HashMap<String, balance::BalanceState>,
+    /// 正在跑「一键查询用量」批次：全部结束后在状态栏给一条汇总。
+    balance_batch: bool,
     /// 模型延迟探测的节流与串行状态（纯内存，重启清零）。
     probe: ProbeGate,
     /// 网络守卫结论：`Some(reason)` 表示检测到系统代理 / VPN，模型延迟测试被禁用。
@@ -84,6 +105,8 @@ pub struct App {
     sync_wsl: bool,
     /// 全局 API Key 显隐：一键控制所有密钥输入框的明文/掩码显示。
     show_api_keys: bool,
+    /// 已落盘的界面偏好快照：与当前值不同就写盘（避免每帧重复写文件）。
+    prefs_saved: crate::prefs::Prefs,
     /// 右侧配置预览/编辑面板是否打开。
     show_preview: bool,
     /// 预览面板宽度占窗口宽度的比例（拖动分隔条调整；窗口缩放时按此比例适配）。
@@ -118,6 +141,7 @@ pub struct App {
 
 impl Default for App {
     fn default() -> Self {
+        let prefs = crate::prefs::Prefs::load();
         let paths = ConfigPaths::default();
         let (format, path) =
             ConfigPaths::detect().unwrap_or((ConfigFormat::Opencode, String::new()));
@@ -144,18 +168,22 @@ impl Default for App {
             model_fetch: HashMap::new(),
             model_fetch_open: HashSet::new(),
             latency: HashMap::new(),
+            balance: HashMap::new(),
+            balance_batch: false,
             probe: ProbeGate::default(),
             net_guard: crate::netguard::detect(),
             net_guard_at: 0.0,
-            theme: Theme::default(),
-            save_format: SaveFormat::default(),
+            // 界面偏好来自 %APPDATA%\.modelharbor\prefs.json（缺省即 App 默认）。
+            theme: Theme::from_key(&prefs.theme),
+            save_format: SaveFormat::from_key(&prefs.save_format),
+            prefs_saved: prefs.clone(),
             save_format_wheel_latch: false,
             source_format: format,
             config_paths: paths,
             targets: Vec::new(),
             current_page: format,
-            sync_wsl: false,
-            show_api_keys: false,
+            sync_wsl: prefs.sync_wsl,
+            show_api_keys: prefs.show_api_keys,
             show_preview: false,
             preview_ratio: 0.38,
             preview_focused: false,
@@ -219,6 +247,8 @@ impl eframe::App for App {
         }
         self.poll_model_fetch();
         self.poll_latency();
+        self.poll_balance();
+        self.persist_prefs_if_changed();
         self.ui_top_bar(ctx);
         self.ui_status_bar(ctx);
         // 右侧配置预览/编辑面板：宽度由 preview_ratio 控制（拖动左边缘分隔条调整），
@@ -265,6 +295,29 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// 当前界面偏好。
+    fn current_prefs(&self) -> crate::prefs::Prefs {
+        crate::prefs::Prefs {
+            show_api_keys: self.show_api_keys,
+            save_format: self.save_format.key().to_string(),
+            theme: self.theme.key().to_string(),
+            sync_wsl: self.sync_wsl,
+        }
+    }
+
+    /// 界面偏好变了就落盘（%APPDATA%\.modelharbor\prefs.json）。
+    fn persist_prefs_if_changed(&mut self) {
+        let current = self.current_prefs();
+        if current == self.prefs_saved {
+            return;
+        }
+        // 即使写失败也更新快照：否则每帧重试会刷屏（状态栏已提示一次）。
+        if let Err(err) = current.save() {
+            self.status = format!("界面偏好保存失败：{err}");
+        }
+        self.prefs_saved = current;
+    }
+
     /// 解析各保存目标的可用性与实际路径（避免在渲染循环中频繁拉起 wsl 进程）。
     fn refresh_targets(&mut self) {
         // 默认目标固定为 Windows 本地路径；WSL 侧仅通过“WSL同步”勾选写入，
@@ -328,6 +381,9 @@ impl App {
         self.model_fetch.clear();
         self.model_fetch_open.clear();
         self.latency.clear();
+        // 用量查询结果同样跟着配置走，重新加载后重查。
+        self.balance.clear();
+        self.balance_batch = false;
         // 被丢弃的探测不会再回传结果：释放全局串行位，否则门控会一直卡在 Busy。
         self.probe.release(None);
         // 加载后跳转到来源格式对应的页面

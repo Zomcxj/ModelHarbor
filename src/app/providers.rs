@@ -1,4 +1,5 @@
 //! Providers 区块：厂商卡片列表、拖拽落点聚合、表单字段可见性标志与思考档位方言。
+use super::balance;
 use super::App;
 use crate::app::bars::{short_err, sticky_begin, sticky_end};
 use crate::app::fetch::{latency_color, matrix_label, LATENCY_RED};
@@ -203,6 +204,42 @@ impl App {
                     }
                     self.status = format!("已开始连通性测试（{} 个厂商）", count);
                 }
+                // 用量查询：一次查完当前页面全部厂商（只读管理接口，直连不走代理）。
+                // 查不到的站点不在卡片上显示，只在状态栏汇总（避免一堆红字噪音）。
+                if ui
+                    .button("查询用量")
+                    .on_hover_text(
+                        "查询全部厂商的「已用 / 余额」，显示在各卡片的厂商名右侧\n\
+                         只读管理接口（/dashboard/billing/*），直连不走代理；\
+                         同一站两次查询需间隔 5 秒\n\
+                         未开放该接口的站点不会在卡片上显示\n\
+                         注：公益站额度多是占位值，余额带「约」字表示仅供参考",
+                    )
+                    .clicked()
+                {
+                    let targets: Vec<balance::Query> = self
+                        .providers
+                        .iter()
+                        .map(|p| balance::Query {
+                            key: p.key.clone(),
+                            base_url: p.base_url.clone(),
+                            secret: credentials::effective_secret(p),
+                        })
+                        .collect();
+                    let now = ui.input(|i| i.time);
+                    let mut started = 0usize;
+                    for query in targets {
+                        if Self::start_balance_query(&mut self.balance, query, now).is_none() {
+                            started += 1;
+                        }
+                    }
+                    self.balance_batch = started > 0;
+                    self.status = if started == 0 {
+                        "所有厂商都还在冷却中，请几秒后再试".to_string()
+                    } else {
+                        format!("已开始查询 {} 个厂商的用量…", started)
+                    };
+                }
                 // 网络守卫提示：检测到系统代理 / VPN 时禁用模型延迟测试
                 //（中转站的「多 IP 检测 / 测活封号」可能因此触发）。
                 if let Some(reason) = self.net_guard.clone() {
@@ -348,6 +385,28 @@ impl App {
                     }
                     if ui.button("复制").clicked() {
                         *to_copy = Some(idx);
+                    }
+                    // 用量查询结果紧挨「复制」左侧（右对齐布局里越晚添加越靠左）。
+                    // 查不到的站点不显示（未开放接口 / WAF / 空数据），也不显示占位余额。
+                    if let Some(state) = self.balance.get(&key) {
+                        match (&state.rx, &state.result) {
+                            (Some(_), _) => {
+                                ui.add(egui::Spinner::new().size(14.0));
+                                // 字号与连通性结果（`123ms`）一致：默认正文号，不用 .small()。
+                                ui.label(egui::RichText::new("查询用量…").weak());
+                            }
+                            (None, Some(Ok(info)))
+                                if info.shape != crate::billing::Shape::Unknown
+                                    && !info.is_empty() =>
+                            {
+                                ui.label(
+                                    egui::RichText::new(info.inline_full())
+                                        .color(crate::app::balance::BALANCE_TEXT),
+                                )
+                                .on_hover_text(info.detail());
+                            }
+                            _ => {}
+                        }
                     }
                 });
             });

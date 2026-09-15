@@ -390,6 +390,7 @@ impl App {
         });
 
         ui.add_space(6.0);
+        ui.add_space(6.0);
         let mut fetch_request: Option<(String, String, String, String)> = None;
         let mut close_fetch = false;
         // 本帧用户点下的探测请求（provider key, model id），UI 循环外统一发起。

@@ -72,7 +72,9 @@ pub(super) fn short_err(err: &str) -> String {
 }
 
 /// 从 `HTTP 503 …` 形式的错误文本里取出状态码；取不到返回 `None`。
-fn http_status_code(err: &str) -> Option<u16> {
+///
+/// 供错误文本的消费方使用（避免从展示文本里再手写一遍解析）。
+pub(super) fn http_status_code(err: &str) -> Option<u16> {
     let rest = err.strip_prefix("HTTP ")?;
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()

@@ -29,6 +29,25 @@ impl Theme {
         }
     }
 
+    /// 持久化用的稳定标识（与界面文案解耦，文案改了不影响旧配置）。
+    pub fn key(&self) -> &'static str {
+        match self {
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+            Theme::Ocean => "ocean",
+            Theme::Nord => "nord",
+            Theme::Rose => "rose",
+        }
+    }
+
+    /// 由持久化标识还原；未知 / 空值回落默认主题。
+    pub fn from_key(key: &str) -> Theme {
+        Theme::ALL
+            .into_iter()
+            .find(|theme| theme.key() == key)
+            .unwrap_or_default()
+    }
+
     fn palette(&self) -> Palette {
         match self {
             // dark, panel, faint, extreme, widget, hover, accent, text
