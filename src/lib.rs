@@ -12,5 +12,6 @@ pub mod netguard;
 pub mod prefs;
 pub mod presets;
 pub mod theme;
+pub mod tokens;
 pub mod ui;
 pub mod util;

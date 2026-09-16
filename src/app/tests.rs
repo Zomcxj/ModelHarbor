@@ -42,10 +42,8 @@ mod path_reload_tests {
 
     #[test]
     fn existing_pi_file_is_remembered_only_by_detected_page() {
-        let path = std::env::temp_dir().join(format!(
-            "model-harbor-pi-owner-{}.json",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("model-harbor-pi-owner-{}.json", std::process::id()));
         std::fs::write(&path, r#"{"providers": {}}"#).expect("写 pi 临时配置");
         let path = path.to_string_lossy().into_owned();
         let mut app = App::default();
@@ -1025,5 +1023,81 @@ mod preview_sync_tests {
         // 上次解析失败：保留用户文本，等用户修正或点「重新生成」
         assert!(!preview_should_rebuild(true, None, 100.0));
         assert!(!preview_should_rebuild(true, Some(1.0), 100.0));
+    }
+}
+
+#[cfg(test)]
+mod station_token_tests {
+    use crate::app::App;
+    use crate::model::ProviderRow;
+
+    /// 造一个只含指定 provider 的 App（令牌表置空，不受宿主机真实 tokens.json 影响）。
+    fn app_with_providers(stations: &[(&str, &str)]) -> App {
+        let providers: Vec<ProviderRow> = stations
+            .iter()
+            .map(|(key, base_url)| {
+                let mut provider = ProviderRow::new();
+                provider.key = (*key).to_string();
+                provider.base_url = (*base_url).to_string();
+                provider
+            })
+            .collect();
+        App {
+            providers,
+            tokens: crate::tokens::StationTokens::default(),
+            ..App::default()
+        }
+    }
+
+    #[test]
+    fn station_token_is_shared_by_every_provider_on_the_same_site() {
+        let mut app = app_with_providers(&[
+            ("oc_gemai", "https://gemai.huchan.cn/v1"),
+            ("pi_gemai", "https://Gemai.Huchan.CN/v1/"),
+            ("other", "https://other.example.com/v1"),
+        ]);
+        // 站点级：只在站点 origin 上存一份。
+        app.tokens.set("https://gemai.huchan.cn", "pat-shared");
+
+        assert_eq!(app.station_pat("https://gemai.huchan.cn/v1"), "pat-shared");
+        assert_eq!(
+            app.station_pat("https://gemai.huchan.cn"),
+            "pat-shared",
+            "同一站点的不同写法必须命中同一份令牌"
+        );
+        assert_eq!(
+            app.station_pat("https://other.example.com/v1"),
+            "",
+            "别的站点不能被牵连"
+        );
+    }
+
+    #[test]
+    fn station_token_lookup_is_empty_when_never_configured() {
+        let app = app_with_providers(&[("a", "https://a.example.com/v1")]);
+        assert_eq!(app.station_pat("https://a.example.com/v1"), "");
+        // 没有 baseUrl 的 provider 不该 panic，也不该命中任何令牌。
+        assert_eq!(app.station_pat(""), "");
+    }
+
+    #[test]
+    fn removing_a_station_token_clears_it_for_all_its_providers() {
+        let mut app = app_with_providers(&[
+            ("a", "https://a.example.com/v1"),
+            ("b", "https://a.example.com/v2"),
+            ("keep", "https://keep.example.com/v1"),
+        ]);
+        app.tokens.set("https://a.example.com", "pat-a");
+        app.tokens.set("https://keep.example.com", "pat-keep");
+
+        app.tokens.remove("https://a.example.com");
+
+        assert_eq!(app.station_pat("https://a.example.com/v1"), "");
+        assert_eq!(app.station_pat("https://a.example.com/v2"), "");
+        assert_eq!(
+            app.station_pat("https://keep.example.com/v1"),
+            "pat-keep",
+            "其他站点的令牌不受影响"
+        );
     }
 }

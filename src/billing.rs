@@ -53,6 +53,23 @@ pub enum Source {
     Token,
 }
 
+/// 面板账号额度（`/api/user/self`，填了面板访问令牌才有）：**账号级**，不是令牌级。
+///
+/// 与令牌额度（`/api/usage/token/`）的区别：这里的数字属于**整个账号**，
+/// 同一个站点下的所有 `sk-` 令牌共用一份。因此它回答「我还剩多少钱」，
+/// 而令牌额度回答「这个 key 还能用多少」。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AccountInfo {
+    /// 账号剩余额度（美元）。
+    pub balance_usd: Option<f64>,
+    /// 账号累计已用（美元）。
+    pub used_usd: Option<f64>,
+    /// 历史请求次数。
+    pub requests: Option<u64>,
+    /// 所属分组（站点未给时为空串）。
+    pub group: String,
+}
+
 /// 一次用量查询的结果。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Billing {
@@ -89,6 +106,8 @@ pub struct Billing {
     pub unit_assumed: bool,
     /// 降级 / 缺数据时的说明（日志接口不可用、换算比缺失等），用干提示而不是静默降级。
     pub note: Option<String>,
+    /// 面板账号额度（`/api/user/self`）：填了面板访问令牌才有；有它时余额以它为准。
+    pub account: Option<AccountInfo>,
 }
 
 /// 由 baseUrl 推导出的端点（origin 用于面板管理接口与 `/api/status`）。
@@ -109,7 +128,10 @@ impl Endpoints {
     /// 该令牌的调用日志（用于算今日 / 近 7 天用量，**只需 `sk-` key**）。
     /// 显式请求首个大分页；未遍历后续页，因此展示层始终披露“统计可能不完整”。
     pub fn token_logs(&self) -> String {
-        format!("{}/api/log/token?p=0&page_size={LOG_PAGE_LIMIT}", self.origin)
+        format!(
+            "{}/api/log/token?p=0&page_size={LOG_PAGE_LIMIT}",
+            self.origin
+        )
     }
 }
 
@@ -331,6 +353,53 @@ pub fn parse_token_usage(json: &str) -> Option<TokenUsage> {
     (!empty).then_some(usage)
 }
 
+/// 解析 `/api/user/self`（**需要面板访问令牌/PAT**，普通登录用户即可）。
+///
+/// `data.quota` 是**剩余**额度、`used_quota` 是累计已用，两者都是 quota 点，
+/// 按 `/api/status` 给出的 [`Units`] 换算成金额（与令牌额度同一套换算，不另猜汇率）。
+///
+/// 以下情况返回 `None`（视为「没拿到账号数据」，由调用方决定降级或提示）：
+/// - 不是 JSON / 根不是对象；
+/// - `success` 显式为 `false`（令牌无效、未提供令牌时站点用 200 + `success:false` 报错）；
+/// - 一个可用字段都没有（只有 `group` 这类非数字字段不算数据）。
+pub fn parse_account_self(json: &str, units: &Units) -> Option<AccountInfo> {
+    let root = serde_json::from_str::<Value>(json).ok()?;
+    if root.get("success").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
+    // 站点都在 `data` 下返回；少数变体把字段放在根上，一并兼容。
+    let data = root
+        .get("data")
+        .filter(|value| value.is_object())
+        .unwrap_or(&root);
+    if !data.is_object() {
+        return None;
+    }
+    let quota = data.get("quota").and_then(Value::as_f64);
+    let used = data.get("used_quota").and_then(Value::as_f64);
+    // 次数容忍整数 / 浮点两种写法（站点实现不完全一致）。
+    let requests = data.get("request_count").and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_f64().filter(|n| *n >= 0.0).map(|n| n as u64))
+    });
+    // 全是 None 说明这不是一份可用的账号数据（例如 success:true 但 data 为空）。
+    if quota.is_none() && used.is_none() && requests.is_none() {
+        return None;
+    }
+    let to_money = |points: f64| points / units.quota_per_unit;
+    Some(AccountInfo {
+        balance_usd: quota.map(to_money),
+        used_usd: used.map(to_money),
+        requests,
+        group: data
+            .get("group")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
 /// 一条调用日志（只留统计要用的字段；`content` / `ip` 这类隐私字段不解析）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct LogEntry {
@@ -481,6 +550,40 @@ impl Billing {
 
     /// 卡片上的一行摘要（尽量短，卡片收起时也显示）。
     pub fn inline(&self) -> String {
+        // 账号级数据优先：它才是「我还剩多少钱」，令牌级降为补充。
+        if let Some(account) = &self.account {
+            return self.inline_account(account);
+        }
+        self.inline_token_or_compat()
+    }
+
+    /// 有账号数据时的短行：账号余额（没有余额时退而说已用 / 请求数），其次今日。
+    fn inline_account(&self, account: &AccountInfo) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(balance) = account.balance_usd {
+            parts.push(format!("账号余额 {}", money(balance)));
+        } else if let Some(used) = account.used_usd {
+            parts.push(format!("账号已用 {}", money(used)));
+        } else if let Some(requests) = account.requests {
+            parts.push(format!("账号请求 {} 次", requests));
+        }
+        if let Some(today) = self.today_usd {
+            parts.push(match self.today_calls {
+                Some(calls) => format!("今日 {}（{} 次）", money(today), calls),
+                None => format!("今日 {}", money(today)),
+            });
+        }
+        if let Some(week) = self.week_usd {
+            parts.push(format!("近 7 天 {}", money(week)));
+        }
+        if parts.is_empty() {
+            return "未返回额度信息".to_string();
+        }
+        parts.join(" · ")
+    }
+
+    /// 没有账号数据时的短行（令牌额度 / 兼容账单）。
+    fn inline_token_or_compat(&self) -> String {
         // 面板账户 / 令牌额度：数字是真实的（不是占位额度），最多显示两段：
         // 有余额就先显余额，其次今日用量（没有今日就用累计已用）。
         if self.source == Source::Token {
@@ -522,11 +625,23 @@ impl Billing {
     /// 与 [`Billing::inline`] 的区别：这里把能拿到的字段都列出来
     ///（余额 / 累计 / 今日 + 请求数 / 近 7 天），用于卡片正文那一行。
     /// 是否有可展示的用量结果（Unknown / 空数据隐藏）。
+    ///
+    /// 账号数据（面板令牌）单独就能让卡片显示：站点未开 `/api/usage/token/` 时，
+    /// 只要拿到账号额度就不该整块隐掉。
     pub fn is_displayable(&self) -> bool {
+        self.has_token_side() || self.account.is_some()
+    }
+
+    /// 令牌侧（令牌额度 / 兼容账单）是否真有可展示数据。
+    fn has_token_side(&self) -> bool {
         self.shape != Shape::Unknown && !self.is_empty()
     }
 
     pub fn inline_full(&self) -> String {
+        // 账号级余额优先，且不再把令牌级累计挤在同一行（降到 `detail`）。
+        if let Some(account) = &self.account {
+            return self.inline_account(account);
+        }
         let mut parts: Vec<String> = Vec::new();
         match (self.balance_usd, self.used_usd) {
             (Some(balance), _) => {
@@ -562,9 +677,42 @@ impl Billing {
         if !self.panel.is_empty() {
             lines.push(format!("面板：{}", self.panel));
         }
+        // 账号数据（面板令牌）与令牌数据是两套口径：同时存在时分节列出，不混在一起。
+        if let Some(account) = &self.account {
+            lines.extend(Self::account_lines(account));
+            if !self.has_token_side() {
+                // 只有账号数据：不写一个空的「本令牌」分节。
+                return lines.join("\n");
+            }
+            lines.push("—— 本令牌 ——".to_string());
+        }
         if self.source == Source::Token {
             return self.detail_token(lines);
         }
+        self.detail_compat(lines)
+    }
+
+    /// 账号级额度（`/api/user/self`）的悬停说明。
+    fn account_lines(account: &AccountInfo) -> Vec<String> {
+        let mut lines = vec!["账号（面板令牌）：账号级额度，同站点所有 sk- 令牌共用".to_string()];
+        if let Some(balance) = account.balance_usd {
+            lines.push(format!("余额：{}", money(balance)));
+        }
+        if let Some(used) = account.used_usd {
+            lines.push(format!("累计已用：{}", money(used)));
+        }
+        if let Some(requests) = account.requests {
+            lines.push(format!("请求次数：{}", requests));
+        }
+        if !account.group.is_empty() {
+            lines.push(format!("分组：{}", account.group));
+        }
+        lines.push("来源：/api/user/self（只读；需面板访问令牌）".to_string());
+        lines
+    }
+
+    /// 兼容账单（`/dashboard/billing/*`）的悬停说明。
+    fn detail_compat(&self, mut lines: Vec<String>) -> String {
         if let Some(used) = self.used_usd {
             lines.push(format!("已用：{}", money(used)));
         }
@@ -1011,9 +1159,7 @@ mod tests {
         let endpoints = endpoints("https://example.test/v1");
         assert_eq!(
             endpoints.token_logs(),
-            format!(
-                "https://example.test/api/log/token?p=0&page_size={LOG_PAGE_LIMIT}"
-            )
+            format!("https://example.test/api/log/token?p=0&page_size={LOG_PAGE_LIMIT}")
         );
     }
     #[test]
@@ -1068,5 +1214,130 @@ mod tests {
         let same = endpoints("https://host/api");
         let alt = endpoints_v1("https://host/api");
         assert_eq!(alt.subscription, same.subscription);
+    }
+
+    /// 真实响应形状：`/api/user/self`（需要面板 PAT，普通登录用户即可）。
+    /// 字段名取自 new-api `buildSelfUserData`（controller/user.go）。
+    const ACCOUNT_SELF: &str = r#"{"success":true,"message":"","data":{
+        "id":1,"username":"tester","display_name":"Tester","role":1,"status":1,
+        "group":"default","quota":6150000,"used_quota":10250000,"request_count":321}}"#;
+
+    /// 只有账号数据、没有令牌数据时的展示（站点未开 /api/usage/token/）。
+    fn account_only_billing() -> Billing {
+        let units = parse_units(Some(STATUS_UNITS));
+        Billing {
+            source: Source::Token,
+            account: parse_account_self(ACCOUNT_SELF, &units),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn account_self_parses_quota_used_and_requests() {
+        let units = parse_units(Some(STATUS_UNITS));
+        let account = parse_account_self(ACCOUNT_SELF, &units).expect("应能解析");
+        assert_eq!(account.balance_usd, Some(12.30), "6,150,000 quota = $12.30");
+        assert_eq!(account.used_usd, Some(20.50), "10,250,000 quota = $20.50");
+        assert_eq!(account.requests, Some(321));
+        assert_eq!(account.group, "default");
+    }
+
+    #[test]
+    fn account_self_rejects_failures_and_useless_payloads() {
+        let units = parse_units(Some(STATUS_UNITS));
+        for payload in [
+            "",
+            "not json",
+            "{}",
+            "[]",
+            // PAT 无效 / 未提供：new-api 把错误放在 200 响应的 success:false 里
+            r#"{"success":false,"message":"Unauthorized, invalid access token"}"#,
+            // 一个可用字段都没有
+            r#"{"success":true,"data":{}}"#,
+            // 只有分组，没有任何数字
+            r#"{"success":true,"data":{"group":"default"}}"#,
+            // 类型不符
+            r#"{"success":true,"data":{"quota":"nope"}}"#,
+        ] {
+            assert!(parse_account_self(payload, &units).is_none(), "{payload}");
+        }
+    }
+
+    #[test]
+    fn account_zero_quota_is_a_real_zero_balance() {
+        // 额度真为 0（用完了）必须显示 $0.00，而不是当成「没拿到数据」隐掉。
+        let units = parse_units(None);
+        let account = parse_account_self(
+            r#"{"success":true,"data":{"quota":0,"used_quota":500000,"request_count":3}}"#,
+            &units,
+        )
+        .expect("应能解析");
+        assert_eq!(account.balance_usd, Some(0.0));
+        assert_eq!(account.used_usd, Some(1.0));
+        assert_eq!(account.requests, Some(3));
+        assert!(account.group.is_empty(), "没给分组就是空串");
+    }
+
+    #[test]
+    fn account_balance_leads_the_summary_line() {
+        let units = parse_units(Some(STATUS_UNITS));
+        let usage = parse_token_usage(USAGE_TOKEN_UNLIMITED).expect("应能解析");
+        let logs = parse_token_logs(TOKEN_LOGS);
+        let mut info = parse_token_billing(TokenInputs {
+            usage: &usage,
+            logs: &logs,
+            units: &units,
+            status_json: Some(STATUS_UNITS),
+            now: 1_789_437_000,
+            today_from: 1_789_430_000,
+            note: None,
+        });
+        info.account = parse_account_self(ACCOUNT_SELF, &units);
+
+        let line = info.inline_full();
+        assert!(line.starts_with("账号余额 $12.30"), "账号余额优先：{line}");
+        assert!(line.contains("今日 $3.00"), "令牌侧凭据仍保留：{line}");
+        assert!(
+            !line.contains("已用 $274.00"),
+            "令牌级累计不该挤在主行（降到详情）：{line}"
+        );
+
+        let detail = info.detail();
+        assert!(detail.contains("账号（面板令牌）"), "{detail}");
+        assert!(detail.contains("余额：$12.30"), "{detail}");
+        assert!(detail.contains("累计已用：$20.50"), "{detail}");
+        assert!(detail.contains("请求次数：321"), "{detail}");
+        assert!(detail.contains("分组：default"), "{detail}");
+        assert!(detail.contains("本令牌"), "两套数据要分区：{detail}");
+    }
+
+    #[test]
+    fn account_only_result_is_still_displayable() {
+        let plain = Billing {
+            source: Source::Token,
+            ..Default::default()
+        };
+        assert!(!plain.is_displayable(), "没数据就不显示");
+
+        let info = account_only_billing();
+        assert!(info.is_displayable(), "有账号数据就必须显示");
+        assert_eq!(info.inline(), "账号余额 $12.30");
+        assert_eq!(info.inline_full(), "账号余额 $12.30");
+        assert!(info.detail().contains("账号（面板令牌）"));
+    }
+
+    #[test]
+    fn account_detail_is_disclosed_as_account_level_and_read_only() {
+        let info = account_only_billing();
+        let detail = info.detail();
+        assert!(
+            detail.contains("/api/user/self"),
+            "要说明来源端点：{detail}"
+        );
+        assert!(
+            detail.contains("面板访问令牌"),
+            "要说明靠面板令牌拿到：{detail}"
+        );
+        assert!(detail.contains("账号级"), "口径要说清是账号级：{detail}");
     }
 }

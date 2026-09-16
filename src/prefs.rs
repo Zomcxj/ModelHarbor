@@ -14,7 +14,6 @@
 //! 并在首次写入后清掉同目录的旧文件。
 
 use serde_json::{Map, Value};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// 读取 `root.a.b` 形式的嵌套字符串（类型不符视为空）。
@@ -147,21 +146,25 @@ pub struct Prefs {
 }
 
 impl Prefs {
+    /// 工具设置目录（家目录下的 `.modelharbor`）：自有文件都集中在这里
+    /// （`settings.json` 与站点令牌 `tokens.json`），不写进任何 agent 配置目录。
+    ///
+    /// 取不到家目录时回退 `%APPDATA%\.modelharbor`，再回退程序同级目录。
+    pub fn config_dir() -> PathBuf {
+        if let Some(home) = home_dir() {
+            return home.join(DIR_NAME);
+        }
+        legacy_dir().unwrap_or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(PathBuf::from))
+                .unwrap_or_else(|| PathBuf::from("."))
+        })
+    }
+
     /// 设置文件路径（家目录下的 `.modelharbor/settings.json`）。
     pub fn path() -> PathBuf {
-        if let Some(home) = home_dir() {
-            return home.join(DIR_NAME).join(FILE_NAME);
-        }
-        // 取不到家目录：退回旧的 %APPDATA% 位置，再退回 exe 同级目录；
-        // 任何情况下都不会写进 agent 配置目录。
-        legacy_dir()
-            .map(|dir| dir.join(FILE_NAME))
-            .unwrap_or_else(|| {
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|exe| exe.parent().map(|dir| dir.join(FILE_NAME)))
-                    .unwrap_or_else(|| PathBuf::from(FILE_NAME))
-            })
+        Self::config_dir().join(FILE_NAME)
     }
 
     /// 从默认路径加载（全读不到即默认值）。
@@ -267,60 +270,11 @@ impl Prefs {
     }
 
     /// 落盘到指定路径（单测用）。
+    ///
+    /// 原子写：先写同目录临时文件并同步，再替换正式文件；替换失败保留原设置
+    ///（实现见 [`crate::util::atomic_write_text`]，与站点令牌文件共用同一套策略）。
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|err| format!("创建目录失败（{}）：{}", dir.display(), err))?;
-        }
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(FILE_NAME);
-        let temp_path = path.with_file_name(format!("{file_name}.tmp"));
-        let result = (|| -> Result<(), String> {
-            let mut temp = std::fs::File::create(&temp_path).map_err(|err| {
-                format!("写入临时文件失败（{}）：{}", path.display(), err)
-            })?;
-            temp.write_all(self.to_json().as_bytes()).map_err(|err| {
-                format!("写入临时文件失败（{}）：{}", path.display(), err)
-            })?;
-            temp.sync_all().map_err(|err| {
-                format!("同步临时文件失败（{}）：{}", path.display(), err)
-            })?;
-            replace_file(&temp_path, path)
-                .map_err(|err| format!("替换设置文件失败（{}）：{}", path.display(), err))
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temp_path);
-        }
-        result
-    }
-}
-
-/// 用同目录临时文件替换设置。Windows 的 rename 不会覆盖现有文件，因此先把旧文件
-/// 移到备份名；如果新文件替换失败，立即把旧文件恢复，绝不留下半写设置。
-fn replace_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
-    if !path.exists() {
-        return std::fs::rename(temp_path, path);
-    }
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(FILE_NAME);
-    let backup_path = path.with_file_name(format!("{file_name}.replace-old"));
-    if backup_path.exists() {
-        std::fs::remove_file(&backup_path)?;
-    }
-    std::fs::rename(path, &backup_path)?;
-    match std::fs::rename(temp_path, path) {
-        Ok(()) => {
-            let _ = std::fs::remove_file(backup_path);
-            Ok(())
-        }
-        Err(error) => {
-            let _ = std::fs::rename(&backup_path, path);
-            Err(error)
-        }
+        crate::util::atomic_write_text(path, &self.to_json())
     }
 }
 

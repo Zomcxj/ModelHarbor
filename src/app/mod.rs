@@ -90,6 +90,14 @@ pub struct App {
     balance: HashMap<String, balance::BalanceState>,
     /// 正在跑「一键查询用量」批次：全部结束后在状态栏给一条汇总。
     balance_batch: bool,
+    /// 站点面板访问令牌（PAT，`.modelharbor/tokens.json`）：站点级，多个 provider 共用。
+    tokens: crate::tokens::StationTokens,
+    /// 「令牌」管理面板是否展开。
+    show_tokens: bool,
+    /// 令牌面板里正在编辑的文本（键 = 站点 origin），未保存的草稿。
+    token_draft: HashMap<String, String>,
+    /// 已点「显示」的站点（单条掩码开关，默认跟随全局「显示密钥」）。
+    token_reveal: HashSet<String>,
     /// 模型延迟探测的节流与串行状态（纯内存，重启清零）。
     probe: ProbeGate,
     /// 网络守卫结论：`Some(reason)` 表示检测到系统代理 / VPN，模型延迟测试被禁用。
@@ -178,6 +186,10 @@ impl Default for App {
             latency: HashMap::new(),
             balance: HashMap::new(),
             balance_batch: false,
+            tokens: crate::tokens::StationTokens::load(),
+            show_tokens: false,
+            token_draft: HashMap::new(),
+            token_reveal: HashSet::new(),
             probe: ProbeGate::default(),
             net_guard: crate::netguard::detect(),
             net_guard_at: 0.0,
@@ -353,6 +365,14 @@ impl App {
     /// 卡片折叠状态的持久化键（按配置与类别区分）。
     fn card_id(&self, kind: &str, key: &str) -> String {
         crate::prefs::collapsed_id(&self.config_id(), kind, key)
+    }
+
+    /// 某 baseUrl 所属站点的面板令牌（没设置则空串）。
+    ///
+    /// 键是规范化 origin：同一站点的多个 provider 共用一份令牌。
+    pub(super) fn station_pat(&self, base_url: &str) -> String {
+        let key = crate::tokens::station_key(base_url);
+        self.tokens.get(&key).to_string()
     }
 
     /// provider 卡片是否处于折叠状态。

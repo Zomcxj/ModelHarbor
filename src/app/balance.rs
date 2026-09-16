@@ -29,6 +29,8 @@ pub(super) struct Query {
     pub(super) base_url: String,
     /// `sk-` 形式的 API key（兼容账单接口用）。
     pub(super) secret: String,
+    /// 面板访问令牌（PAT，可选）：填了才能查账号级额度（`/api/user/self`）。
+    pub(super) pat: String,
 }
 
 /// 单个 provider 的用量查询状态。
@@ -140,16 +142,85 @@ impl BalanceState {
     }
 }
 
-/// 查询一个站点的用量：令牌额度接口优先，失败再退兼容账单。
+/// 查询一个站点的用量：令牌额度接口优先，失败再退兼容账单；
+/// 填了面板令牌则再补一份**账号级**额度（两套口径分区展示）。
 fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
     let endpoints = billing::endpoints(&query.base_url);
     // 站点信息（面板名）与换算比两条路径都用，失败可容忍。
     let status = http_get(&endpoints.status, None).ok();
     let units = billing::parse_units(status.as_deref());
-    if let Some(info) = fetch_token(&endpoints, &units, &query.secret, status.as_deref()) {
-        return Ok(info);
+    let mut result = match fetch_token(&endpoints, &units, &query.secret, status.as_deref()) {
+        Some(info) => Ok(info),
+        None => fetch_compat(&query.base_url, &query.secret, status.as_deref()),
+    };
+    // 面板令牌是可选增强：失败绝不影响已有结果，只往详情里补一行说明。
+    let pat = query.pat.trim();
+    if !pat.is_empty() {
+        let account = fetch_account(&endpoints, &units, pat);
+        merge_account(
+            &mut result,
+            account,
+            billing::parse_panel(status.as_deref()),
+        );
     }
-    fetch_compat(&query.base_url, &query.secret, status.as_deref())
+    result
+}
+
+/// 面板账号额度：`GET {origin}/api/user/self`（需面板访问令牌 PAT）。
+///
+/// 鉴权只用 `Authorization: Bearer <pat>`：new-api 不再要求 `New-Api-User`
+/// 请求头（见其 `middleware/auth.go` 的 `classifyDashboardCredential`），
+/// 因此不额外发送用户 ID。该接口是**只读**的。
+fn fetch_account(
+    endpoints: &billing::Endpoints,
+    units: &billing::Units,
+    pat: &str,
+) -> Result<billing::AccountInfo, String> {
+    let url = format!("{}/api/user/self", endpoints.origin);
+    let text = http_get(&url, Some(pat))?;
+    billing::parse_account_self(&text, units)
+        .ok_or_else(|| "返回内容不是可识别的账号额度".to_string())
+}
+
+/// 把账号查询结果并入已有结果：
+/// - 成功：写入 `account`；若令牌侧全军覆没（`Err`），用账号数据救回一条可展示结果；
+/// - 失败：**保留**已有结果不动，只在 `note` 里追加一行原因。
+fn merge_account(
+    result: &mut Result<billing::Billing, String>,
+    account: Result<billing::AccountInfo, String>,
+    panel: String,
+) {
+    match account {
+        Ok(account) => match result.as_mut() {
+            Ok(info) => info.account = Some(account),
+            Err(_) => {
+                *result = Ok(billing::Billing {
+                    panel,
+                    // 令牌侧没结果，但账号数据本身就是一份可展示结果。
+                    source: billing::Source::Token,
+                    account: Some(account),
+                    ..Default::default()
+                });
+            }
+        },
+        Err(err) => {
+            if let Ok(info) = result.as_mut() {
+                let message = format!("账号令牌查询失败：{}", account_error_message(&err));
+                info.note = Some(match info.note.take() {
+                    Some(existing) => format!("{existing}；{message}"),
+                    None => message,
+                });
+            }
+        }
+    }
+}
+
+/// 账号接口错误的人话：401/403 一般是令牌本身的问题，直说而不是把 HTTP 术语丢给用户。
+fn account_error_message(err: &str) -> String {
+    match crate::app::bars::http_status_code(err) {
+        Some(401) | Some(403) => "面板令牌无效或已撤销".to_string(),
+        _ => err.to_string(),
+    }
 }
 
 /// 令牌额度：`/api/usage/token/`（额度）+ `/api/log/token`（今日 / 近 7 天用量）。
@@ -359,5 +430,100 @@ mod tests {
         let now = unix_now();
         assert!(midnight <= now, "0 点不应晚于现在");
         assert!(now - midnight < 86_400 + 3_600, "0 点应落在过去 25 小时内");
+    }
+
+    /// 一份可展示的令牌侧结果（用于验证账号数据不会把它冲掉）。
+    fn token_side_result() -> billing::Billing {
+        billing::Billing {
+            source: billing::Source::Token,
+            shape: billing::Shape::TokenQuota,
+            used_usd: Some(5.0),
+            balance_usd: Some(15.0),
+            ..Default::default()
+        }
+    }
+
+    fn sample_account() -> billing::AccountInfo {
+        billing::AccountInfo {
+            balance_usd: Some(12.3),
+            used_usd: Some(20.5),
+            requests: Some(321),
+            group: "default".to_string(),
+        }
+    }
+
+    #[test]
+    fn account_401_message_is_plain_language() {
+        // 401/403 基本就是令牌本身的问题：直说，不让用户去读 HTTP 术语。
+        for code in [401, 403] {
+            let err = crate::http_status::label(code);
+            assert_eq!(account_error_message(&err), "面板令牌无效或已撤销", "{err}");
+        }
+        // 其他错误（如 404 未开放、网络错误）如实报出，不猜。
+        let not_found = crate::http_status::label(404);
+        assert_eq!(account_error_message(&not_found), not_found);
+        assert_eq!(
+            account_error_message("网络错误：连接被重置"),
+            "网络错误：连接被重置"
+        );
+    }
+
+    #[test]
+    fn account_success_fills_account_and_keeps_token_numbers() {
+        let mut result: Result<billing::Billing, String> = Ok(token_side_result());
+        merge_account(&mut result, Ok(sample_account()), "TestPanel".to_string());
+        let info = result.expect("仍是成功结果");
+        assert_eq!(info.account, Some(sample_account()));
+        assert_eq!(info.used_usd, Some(5.0), "令牌侧数字必须保留");
+        assert_eq!(info.balance_usd, Some(15.0));
+        assert!(info.note.is_none(), "成功不应该产生备注");
+    }
+
+    #[test]
+    fn account_failure_keeps_existing_result_and_appends_note() {
+        let mut result: Result<billing::Billing, String> = Ok(billing::Billing {
+            note: Some("调用日志不可用".to_string()),
+            ..token_side_result()
+        });
+        merge_account(
+            &mut result,
+            Err(crate::http_status::label(401)),
+            "TestPanel".to_string(),
+        );
+        let info = result.expect("账号查询失败不得影响已有结果");
+        assert_eq!(info.used_usd, Some(5.0), "已有数字必须原样保留");
+        assert!(info.account.is_none());
+        let note = info.note.clone().unwrap_or_default();
+        assert!(note.contains("调用日志不可用"), "原有说明不能丢：{note}");
+        assert!(note.contains("账号令牌查询失败"), "{note}");
+        assert!(note.contains("面板令牌无效或已撤销"), "{note}");
+    }
+
+    #[test]
+    fn account_success_rescues_a_failed_result() {
+        // 令牌侧两个接口都不可用（很多非 New-API 站），但账号数据拿到了 → 仍然可展示。
+        let mut result: Result<billing::Billing, String> = Err("HTTP 404 Not Found".to_string());
+        merge_account(&mut result, Ok(sample_account()), "TestPanel".to_string());
+        let info = result.expect("有账号数据就应救回成功结果");
+        assert_eq!(info.account, Some(sample_account()));
+        assert_eq!(info.panel, "TestPanel");
+        assert!(info.is_displayable(), "仅账号数据也要能显示");
+        assert!(
+            info.inline().contains("账号余额 $12.30"),
+            "{}",
+            info.inline()
+        );
+    }
+
+    #[test]
+    fn account_failure_on_a_failed_result_stays_failed() {
+        // 两边都没拿到：保持失败（卡片不显示），不该凭空造出一个空结果。
+        let mut result: Result<billing::Billing, String> = Err("HTTP 404 Not Found".to_string());
+        merge_account(
+            &mut result,
+            Err("返回内容不是可识别的账号额度".to_string()),
+            "TestPanel".to_string(),
+        );
+        assert!(result.is_err(), "不该把失败改写成成功");
     }
 }

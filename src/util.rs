@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -141,6 +142,62 @@ pub fn ensure_parent_dir(path: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 原子写入文本文件：先写同目录临时文件并 `sync_all`，再替换正式文件。
+///
+/// Windows 的 rename 不会覆盖已存在的文件，因此先把旧文件移到备份名，替换成功后删除
+/// 备份；替换失败立刻把旧文件移回，绝不留下半写内容。错误文本只含路径，不含正文
+/// （设置与令牌文件可能包含敏感内容，不能让诊断信息把它们带进日志）。
+pub fn atomic_write_text(path: &Path, content: &str) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            fs::create_dir_all(dir)
+                .map_err(|err| format!("创建目录失败（{}）：{}", dir.display(), err))?;
+        }
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let temp_path = path.with_file_name(format!("{file_name}.tmp"));
+    let result = (|| -> Result<(), String> {
+        let mut temp = fs::File::create(&temp_path)
+            .map_err(|err| format!("写入临时文件失败（{}）：{}", path.display(), err))?;
+        temp.write_all(content.as_bytes())
+            .map_err(|err| format!("写入临时文件失败（{}）：{}", path.display(), err))?;
+        temp.sync_all()
+            .map_err(|err| format!("同步临时文件失败（{}）：{}", path.display(), err))?;
+        replace_file(&temp_path, path, file_name)
+            .map_err(|err| format!("替换文件失败（{}）：{}", path.display(), err))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+/// 用同目录临时文件替换目标。已存在时先移到备份名，失败则回滚（Windows 的 rename
+/// 不覆盖现有文件）。
+fn replace_file(temp_path: &Path, path: &Path, file_name: &str) -> std::io::Result<()> {
+    if !path.exists() {
+        return fs::rename(temp_path, path);
+    }
+    let backup_path = path.with_file_name(format!("{file_name}.replace-old"));
+    if backup_path.exists() {
+        fs::remove_file(&backup_path)?;
+    }
+    fs::rename(path, &backup_path)?;
+    match fs::rename(temp_path, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(backup_path);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::rename(&backup_path, path);
+            Err(error)
+        }
+    }
 }
 
 pub fn is_wsl_path(path: &str) -> bool {
@@ -495,7 +552,9 @@ pub fn url_suspicions(url: &str) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{url_suspicions, CONFIG_FILE_EXTENSIONS};
+    use super::{atomic_write_text, url_suspicions, CONFIG_FILE_EXTENSIONS};
+    use std::fs;
+    use std::path::PathBuf;
 
     /// 反向守住对话框滤镜：每个后端的默认配置扩展名都必须在列表里。
     ///
@@ -591,5 +650,63 @@ mod tests {
             url_suspicions("https://host//v1/"),
             vec!["路径中出现重复斜杠", "末尾有多余斜杠"]
         );
+    }
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("modelharbor-util-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn atomic_write_creates_parents_and_leaves_no_temp() {
+        let dir = scratch_dir("atomic-ok");
+        let path = dir.join("nested").join("settings.json");
+        atomic_write_text(&path, "{\"a\":1}").expect("写入应成功");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"a\":1}");
+        assert!(
+            !path.with_file_name("settings.json.tmp").exists(),
+            "成功后不得残留临时文件"
+        );
+        assert!(
+            !path.with_file_name("settings.json.replace-old").exists(),
+            "成功后不得残留备份文件"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_content() {
+        let dir = scratch_dir("atomic-replace");
+        let path = dir.join("tokens.json");
+        atomic_write_text(&path, "first").expect("首次写入");
+        atomic_write_text(&path, "second").expect("覆盖写入");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_failure_keeps_previous_content() {
+        // 用目录占住临时文件路径，让原子写无法创建临时文件。
+        let dir = scratch_dir("atomic-fail");
+        fs::create_dir_all(&dir).expect("建目录");
+        let path = dir.join("tokens.json");
+        fs::write(&path, "previous").expect("写旧内容");
+        fs::create_dir(path.with_file_name("tokens.json.tmp")).expect("占住临时路径");
+
+        let err = atomic_write_text(&path, "next").expect_err("无法创建临时文件时应失败");
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "previous",
+            "旧内容必须保留"
+        );
+        assert!(
+            err.contains(&path.display().to_string()),
+            "错误要带路径：{err}"
+        );
+        assert!(!err.contains("next"), "错误不得泄露正文：{err}");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
