@@ -61,12 +61,16 @@ impl Theme {
                 true, 0x0D1B2A, 0x1B263B, 0x0A1622, 0x22384F, 0x2C4A66, 0x48CAE4, 0xE0E8F0,
             ),
             Theme::Nord => Palette::new(
-                true, 0x2E3440, 0x3B4252, 0x272C36, 0x434C5E, 0x4C566A, 0x88C0D0, 0xD8DEE9,
+                true, 0x2E3440, 0x323846, 0x272C36, 0x434C5E, 0x4C566A, 0x88C0D0, 0xD8DEE9,
             ),
             Theme::Rose => Palette::new(
-                false, 0xFBEEF0, 0xF5DCE1, 0xFFFFFF, 0xF0CDD4, 0xE8B9C2, 0xB5838D, 0x4A2E33,
+                false, 0xFBEEF0, 0xF8E5E8, 0xFFFFFF, 0xF0CDD4, 0xE8B9C2, 0xB5838D, 0x4A2E33,
             ),
         }
+    }
+
+    fn egui_theme(self) -> egui::Theme {
+        egui::Theme::from_dark_mode(self.palette().dark)
     }
 
     /// Builds a full Style (theme visuals + shared spacing/rounding) and applies it.
@@ -87,6 +91,7 @@ impl Theme {
         ] {
             w.corner_radius = r.into();
         }
+        ctx.set_theme(self.egui_theme());
         ctx.set_style(style);
     }
 }
@@ -106,14 +111,14 @@ pub struct Semantics {
 
 /// 全主题共用的一套语义色。
 pub const SEMANTICS: Semantics = Semantics {
-    ok: Color32::from_rgb(0x1F, 0x99, 0x50),
-    warn: Color32::from_rgb(0xA9, 0x79, 0x00),
-    err: Color32::from_rgb(0xD4, 0x5B, 0x52),
-    info: Color32::from_rgb(0x4A, 0x85, 0xD6),
+    ok: Color32::from_rgb(0x19, 0x94, 0x4D),
+    warn: Color32::from_rgb(0xA9, 0x7A, 0x00),
+    err: Color32::from_rgb(0xD9, 0x59, 0x50),
+    info: Color32::from_rgb(0x4F, 0x84, 0xCD),
 };
 
 /// 「信息蓝」与强调色撞色时的替代色（青蓝）。
-const SEMANTICS_INFO_ALT: Color32 = Color32::from_rgb(0x12, 0x93, 0x9E);
+const SEMANTICS_INFO_ALT: Color32 = Color32::from_rgb(0x15, 0x90, 0x9A);
 
 /// 和强调色多近算「撞色」（RGB 空间欧氏距离）。
 const ACCENT_CLASH: f32 = 45.0;
@@ -186,22 +191,28 @@ mod semantics_tests {
 
     #[test]
     fn every_semantic_color_reads_on_every_theme() {
-        // ①的核心护栏：一套彩色要在五个主题的底色上都够清楚（对比度 ≥3:1）。
+        // 语义文字会同时出现在面板、展开卡片和折叠卡片上，三种真实底色都必须清楚。
         for theme in Theme::ALL {
-            let panel = theme.palette().panel;
-            for (name, color) in [
-                ("ok", SEMANTICS.ok),
-                ("warn", SEMANTICS.warn),
-                ("err", SEMANTICS.err),
-                ("info", SEMANTICS.info),
-                ("info_alt", SEMANTICS_INFO_ALT),
+            let palette = theme.palette();
+            for (background_name, background) in [
+                ("panel", palette.panel),
+                ("faint", palette.faint),
+                ("extreme", palette.extreme),
             ] {
-                let ratio = contrast(color, panel);
-                assert!(
-                    ratio >= 3.0,
-                    "{} 的 {name} 对比度只有 {ratio:.2}（面板 {panel:?}）",
-                    theme.key()
-                );
+                for (color_name, color) in [
+                    ("ok", SEMANTICS.ok),
+                    ("warn", SEMANTICS.warn),
+                    ("err", SEMANTICS.err),
+                    ("info", SEMANTICS.info),
+                    ("info_alt", SEMANTICS_INFO_ALT),
+                ] {
+                    let ratio = contrast(color, background);
+                    assert!(
+                        ratio >= 3.0,
+                        "{} / {background_name} 的 {color_name} 对比度只有 {ratio:.2}（底色 {background:?}）",
+                        theme.key()
+                    );
+                }
             }
         }
     }
@@ -229,20 +240,48 @@ mod semantics_tests {
     }
 
     #[test]
-    fn apply_switches_the_active_palette() {
+    fn apply_switches_the_active_palette_and_pins_egui_theme() {
         let ctx = egui::Context::default();
         let mut applied: Option<Theme> = None;
         for theme in Theme::ALL {
             if needs_apply(&mut applied, theme) {
                 theme.apply(&ctx);
             }
+            let palette = theme.palette();
+            let expected_egui_theme = egui::Theme::from_dark_mode(palette.dark);
+            let expected_preference = egui::ThemePreference::from(expected_egui_theme);
             let visuals = ctx.style().visuals.clone();
-            assert_eq!(visuals.panel_fill, theme.palette().panel, "{}", theme.key());
-            assert_eq!(visuals.dark_mode, theme.palette().dark, "{}", theme.key());
+            assert_eq!(visuals.panel_fill, palette.panel, "{}", theme.key());
+            assert_eq!(visuals.dark_mode, palette.dark, "{}", theme.key());
+            assert_eq!(ctx.theme(), expected_egui_theme, "{}", theme.key());
+            assert_eq!(
+                ctx.options(|options| options.theme_preference),
+                expected_preference,
+                "{} 不应继续跟随系统主题",
+                theme.key()
+            );
         }
         // 同一主题不重复应用（每帧重设会白白丢掉 egui 的样式缓存）
         assert!(!needs_apply(&mut applied, Theme::Rose));
         assert!(needs_apply(&mut applied, Theme::Dark));
+    }
+
+    #[test]
+    fn system_theme_change_cannot_replace_the_applied_palette() {
+        let ctx = egui::Context::default();
+        Theme::Nord.apply(&ctx);
+        let expected_panel = Theme::Nord.palette().panel;
+
+        let _ = ctx.run(
+            egui::RawInput {
+                system_theme: Some(egui::Theme::Light),
+                ..Default::default()
+            },
+            |_| {},
+        );
+
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
+        assert_eq!(ctx.style().visuals.panel_fill, expected_panel);
     }
 }
 

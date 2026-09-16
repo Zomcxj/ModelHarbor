@@ -1,5 +1,74 @@
 //! `app` 模块的单元测试：序列化排版、预览查找/重建、语法高亮、
 //! 模型获取与延迟探测（协议分类、SSE 首字、节流门控）。
+
+#[cfg(test)]
+mod path_reload_tests {
+    use crate::app::App;
+    use crate::format::{ConfigFormat, ConfigPaths};
+
+    fn missing_json_path() -> String {
+        let path = std::env::temp_dir().join(format!(
+            "model-harbor-missing-pi-{}-models.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn missing_json_on_pi_page_does_not_overwrite_opencode_path() {
+        let mut app = App::default();
+        let opencode_path = r"D:\existing-opencode\opencode.json";
+        app.config_paths
+            .set_local_path(ConfigFormat::Opencode, opencode_path);
+        app.current_page = ConfigFormat::Pi;
+        app.config_path = missing_json_path();
+        app.loaded_path.clear();
+
+        app.reload();
+
+        assert_eq!(
+            app.config_paths.local_path(ConfigFormat::Opencode),
+            opencode_path,
+            "不存在的 .json 不能因探测回落污染 opencode 覆盖"
+        );
+        assert_eq!(app.current_page, ConfigFormat::Pi, "加载失败时应留在原页面");
+        assert_eq!(
+            app.config_paths.local_path(ConfigFormat::Pi),
+            ConfigPaths::default_local_path(ConfigFormat::Pi),
+            "加载失败也不能把不存在路径记到 pi 覆盖"
+        );
+    }
+
+    #[test]
+    fn existing_pi_file_is_remembered_only_by_detected_page() {
+        let path = std::env::temp_dir().join(format!(
+            "model-harbor-pi-owner-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"providers": {}}"#).expect("写 pi 临时配置");
+        let path = path.to_string_lossy().into_owned();
+        let mut app = App::default();
+        let opencode_path = r"D:\existing-opencode\opencode.json";
+        app.config_paths
+            .set_local_path(ConfigFormat::Opencode, opencode_path);
+        app.current_page = ConfigFormat::Opencode;
+        app.config_path = path.clone();
+        app.loaded_path.clear();
+
+        app.reload();
+
+        assert_eq!(app.source_format, ConfigFormat::Pi);
+        assert_eq!(app.current_page, ConfigFormat::Pi);
+        assert_eq!(app.config_paths.local_path(ConfigFormat::Pi), path);
+        assert_eq!(
+            app.config_paths.local_path(ConfigFormat::Opencode),
+            opencode_path,
+            "真实 pi 文件不应记到原来的 opencode 页面"
+        );
+        let _ = std::fs::remove_file(app.config_path);
+    }
+}
 #[cfg(test)]
 mod compact_tests {
     use crate::app::serialize::{compact_json, pretty_json, serialize_object, CompactRole};

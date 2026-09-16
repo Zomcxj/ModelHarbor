@@ -518,14 +518,46 @@ impl App {
     }
 
     fn reload(&mut self) {
-        let (fmt, _) = ConfigPaths::detect_for_path(&self.config_path);
-        self.source_format = fmt;
+        self.reload_for_page(self.current_page, true);
+    }
+
+    /// 重新加载路径，同时把“路径属于哪个页面”和“文件实际是什么格式”分开。
+    ///
+    /// 只有成功读出并解析文件后才记住路径；不存在的 `.json` 即使探测回落到
+    /// opencode，也不会污染任何页面的持久化覆盖。实际格式与发起页面不同时，
+    /// 页面跟随文件格式切换，路径只记到检测出的格式。
+    fn reload_for_page(&mut self, owner: ConfigFormat, remember: bool) {
+        if !crate::util::config_exists(&self.config_path) {
+            self.source_format = owner;
+            self.apply_load();
+            // 空内容在各后端可用于新建配置，因此 apply_load 会成功；但路径不存在时
+            // 没有格式证据，也绝不能据此新增或改写任何持久化覆盖。
+            self.current_page = owner;
+            self.load_error = Some("配置文件不存在".into());
+            self.status = format!("加载失败: 配置文件不存在 ({})", self.config_path);
+            return;
+        }
+
+        let (detected, _) = ConfigPaths::detect_for_path(&self.config_path);
+        self.source_format = detected;
         self.apply_load();
-        // 记住该页手动指定过的路径（下次启动直接用它）；留空的情况由
-        // `reset_page_path` 处理，这里不会把空路径写成覆盖。
+
+        if self.load_error.is_some() {
+            // apply_load 会在成功时跟随来源切页；失败时没有可信的格式证据，留在用户页面。
+            self.current_page = owner;
+            return;
+        }
+
         let path = self.config_path.trim().to_string();
-        if !path.is_empty() {
-            self.remember_page_path(self.source_format, &path);
+        if remember && !path.is_empty() {
+            self.remember_page_path(detected, &path);
+        }
+        if detected != owner {
+            self.status.push_str(&format!(
+                "（检测为 {}，未记作 {} 页路径）",
+                detected.label(),
+                owner.label()
+            ));
         }
     }
 
@@ -534,7 +566,7 @@ impl App {
     pub(super) fn reset_page_path(&mut self, format: ConfigFormat) {
         self.remember_page_path(format, "");
         self.config_path = self.config_paths.target_path(format);
-        self.reload();
+        self.reload_for_page(format, false);
     }
 
     fn paint_drag_ghost(&self, ctx: &egui::Context) {
