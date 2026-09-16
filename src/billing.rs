@@ -77,11 +77,13 @@ pub struct Billing {
     pub today_usd: Option<f64>,
     /// 今日请求数。
     pub today_calls: Option<u64>,
+    /// 今日数据已跨日失效；累计、余额和近 7 天继续展示。
+    pub today_stale: bool,
     /// 今日各模型消耗（美元，降序，最多 3 项）。
     pub today_models: Vec<(String, f64)>,
     /// 近 7 天已用（美元，含今日）。
     pub week_usd: Option<f64>,
-    /// 日志条数达到站点上限：统计可能偏小（悬停里说明）。
+    /// 日志查询只取有限的一页：统计可能偏小（悬停里说明）。
     pub log_capped: bool,
     /// 站点没给 `quota_per_unit`，换算按默认 500000 假设（悬停里说明）。
     pub unit_assumed: bool,
@@ -105,8 +107,9 @@ impl Endpoints {
     }
 
     /// 该令牌的调用日志（用于算今日 / 近 7 天用量，**只需 `sk-` key**）。
+    /// 显式请求首个大分页；未遍历后续页，因此展示层始终披露“统计可能不完整”。
     pub fn token_logs(&self) -> String {
-        format!("{}/api/log/token", self.origin)
+        format!("{}/api/log/token?p=0&page_size={LOG_PAGE_LIMIT}", self.origin)
     }
 }
 
@@ -418,7 +421,7 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
     let to_money = |points: f64| points / unit;
     let today = summarize_logs(inputs.logs, Some(inputs.today_from));
     let week = summarize_logs(inputs.logs, Some(inputs.now - 7 * 86_400));
-    let capped = inputs.logs.len() >= LOG_PAGE_LIMIT;
+    let capped = true; // 只请求首个分页，无法证明服务端没有后续页。
     Billing {
         panel: parse_panel(inputs.status_json),
         source: Source::Token,
@@ -458,6 +461,14 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
 }
 
 impl Billing {
+    /// 跨日本地快照隐藏“今日”字段，保留累计、余额与近 7 天。
+    pub fn expire_today(&mut self) {
+        self.today_usd = None;
+        self.today_calls = None;
+        self.today_models.clear();
+        self.today_stale = true;
+    }
+
     /// 是否一个可用数字都没有（没余额、没已用、没今日、没原值）。
     ///
     /// 界面用它配合 [`Shape::Unknown`] 把「查不到」的站点隐掉。
@@ -611,6 +622,9 @@ impl Billing {
             lines.push(format!("近 7 天：{}", money(week)));
         }
         lines.push("今日 = 本机时区 0 点至今（按该 key 的调用日志统计）".to_string());
+        if self.today_stale {
+            lines.push("今日数据已跨日，请重新查询".to_string());
+        }
         if self.unit_assumed {
             lines.push(
                 "换算：站点没给 quota_per_unit，按默认 1 美元 = 500,000 quota 估算".to_string(),
@@ -618,7 +632,7 @@ impl Billing {
         }
         if self.log_capped {
             lines.push(format!(
-                "日志：已达站点上限 {} 条，超出的部分统计不到（数字会偏小）",
+                "日志：只请求首个 {} 条分页，服务端若还有后续页则统计会偏小",
                 LOG_PAGE_LIMIT
             ));
         }
@@ -932,7 +946,11 @@ mod tests {
             note: None,
         });
         assert!(info.log_capped);
-        assert!(info.detail().contains("已达站点上限"), "{}", info.detail());
+        assert!(
+            info.detail().contains("服务端若还有后续页则统计会偏小"),
+            "{}",
+            info.detail()
+        );
     }
 
     #[test]
@@ -988,6 +1006,16 @@ mod tests {
         assert_eq!(money(999.999), "$1,000.00");
     }
 
+    #[test]
+    fn token_log_url_requests_a_bounded_page() {
+        let endpoints = endpoints("https://example.test/v1");
+        assert_eq!(
+            endpoints.token_logs(),
+            format!(
+                "https://example.test/api/log/token?p=0&page_size={LOG_PAGE_LIMIT}"
+            )
+        );
+    }
     #[test]
     fn endpoints_derive_origin_and_base() {
         let ep = endpoints("https://gemai.huchan.cn/v1");

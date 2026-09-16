@@ -340,19 +340,29 @@ impl App {
         }
     }
 
-    /// 卡片折叠状态的持久化键（按类别区分，避免 provider 与 agent 同名时互相影响）。
-    fn card_id(kind: &str, key: &str) -> String {
-        crate::prefs::collapsed_id(kind, key)
+    /// 当前配置文件身份。四个页面共享同一份加载数据，故只按路径分区，不按页面分区。
+    fn config_id(&self) -> String {
+        let path = if self.loaded_path.trim().is_empty() {
+            &self.config_path
+        } else {
+            &self.loaded_path
+        };
+        crate::prefs::config_identity(path)
+    }
+
+    /// 卡片折叠状态的持久化键（按配置与类别区分）。
+    fn card_id(&self, kind: &str, key: &str) -> String {
+        crate::prefs::collapsed_id(&self.config_id(), kind, key)
     }
 
     /// provider 卡片是否处于折叠状态。
     pub(super) fn provider_collapsed(&self, key: &str) -> bool {
-        self.collapsed.contains(&Self::card_id("providers", key))
+        self.collapsed.contains(&self.card_id("providers", key))
     }
 
     /// 设置 provider 卡片折叠状态。
     pub(super) fn set_provider_collapsed(&mut self, key: &str, collapsed: bool) {
-        let id = Self::card_id("providers", key);
+        let id = self.card_id("providers", key);
         if collapsed {
             self.collapsed.insert(id);
         } else {
@@ -370,12 +380,12 @@ impl App {
 
     /// agent 卡片是否处于折叠状态。
     pub(super) fn agent_collapsed(&self, key: &str) -> bool {
-        self.collapsed.contains(&Self::card_id("agents", key))
+        self.collapsed.contains(&self.card_id("agents", key))
     }
 
     /// 设置 agent 卡片折叠状态。
     pub(super) fn set_agent_collapsed(&mut self, key: &str, collapsed: bool) {
-        let id = Self::card_id("agents", key);
+        let id = self.card_id("agents", key);
         if collapsed {
             self.collapsed.insert(id);
         } else {
@@ -393,22 +403,45 @@ impl App {
 
     /// 卡片改名后同步折叠状态（否则改完名卡片会跳回展开）。
     pub(super) fn rename_collapsed_card(&mut self, kind: &str, old: &str, new: &str) {
-        let from = Self::card_id(kind, old);
+        let from = self.card_id(kind, old);
         if self.collapsed.remove(&from) {
-            self.collapsed.insert(Self::card_id(kind, new));
+            self.collapsed.insert(self.card_id(kind, new));
         }
     }
 
-    /// 丢掉当前配置里已不存在的卡片折叠记录（删除 / 改名后不残留）。
-    /// 卡片集合来自刚加载的这份配置文件，所以换文件时旧记录会被清掉。
+    /// 把 v2 全局折叠键迁到当前首次成功加载的配置身份。
+    fn migrate_legacy_collapsed(&mut self) {
+        let config_id = self.config_id();
+        for (kind, key) in self
+            .providers
+            .iter()
+            .map(|row| ("providers", row.key.as_str()))
+            .chain(self.agents.iter().map(|row| ("agents", row.key.as_str())))
+        {
+            let legacy = crate::prefs::legacy_collapsed_id(kind, key);
+            if self.collapsed.remove(&legacy) {
+                self.collapsed
+                    .insert(crate::prefs::collapsed_id(&config_id, kind, key));
+            }
+        }
+    }
+
+    /// 只清理当前配置身份下已经不存在的折叠记录；其他配置不受影响。
     fn prune_collapsed(&mut self) {
+        let config_id = self.config_id();
+        let prefix = format!("{config_id}/");
         let mut alive: HashSet<String> = self
             .providers
             .iter()
-            .map(|p| Self::card_id("providers", &p.key))
+            .map(|p| crate::prefs::collapsed_id(&config_id, "providers", &p.key))
             .collect();
-        alive.extend(self.agents.iter().map(|a| Self::card_id("agents", &a.key)));
-        self.collapsed.retain(|id| alive.contains(id));
+        alive.extend(
+            self.agents
+                .iter()
+                .map(|a| crate::prefs::collapsed_id(&config_id, "agents", &a.key)),
+        );
+        self.collapsed
+            .retain(|id| !id.starts_with(&prefix) || alive.contains(id));
     }
 
     /// 记住某一页手动指定过的配置路径（空串 = 清除覆盖，回到自动探测值）。
@@ -513,6 +546,7 @@ impl App {
         // 只在加载成功时清理折叠记录：读不到文件（路径写错 / 临时不可用）时
         // providers/agents 是空的，照常清理会把用户存好的卡片状态抹掉。
         if self.load_error.is_none() {
+            self.migrate_legacy_collapsed();
             self.prune_collapsed();
         }
         self.reset_preview_draft();

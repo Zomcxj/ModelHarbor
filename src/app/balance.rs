@@ -38,6 +38,8 @@ pub(super) struct BalanceState {
     pub(super) rx: Option<Receiver<Result<billing::Billing, String>>>,
     /// 上次发起查询的时间（egui 时间轴，秒）。
     pub(super) last_at: Option<f64>,
+    /// 本次成功结果的本地午夜标识；跨到下一天后隐藏 `today_*`。
+    pub(super) snapshot_midnight: Option<i64>,
 }
 
 impl App {
@@ -65,6 +67,7 @@ impl App {
             let _ = tx.send(fetch_billing(&query));
         });
         state.result = None;
+        state.snapshot_midnight = None;
         state.rx = Some(rx);
         state.last_at = Some(now);
         None
@@ -79,6 +82,11 @@ impl App {
             };
             match rx.try_recv() {
                 Ok(result) => {
+                    state.snapshot_midnight = result
+                        .as_ref()
+                        .ok()
+                        .filter(|billing| billing.source == billing::Source::Token)
+                        .and_then(|_| local_midnight_unix());
                     state.result = Some(result);
                     state.rx = None;
                     finished += 1;
@@ -109,6 +117,26 @@ impl App {
             ok,
             total - ok
         );
+    }
+}
+
+impl BalanceState {
+    /// 按当前本地日期返回展示副本；跨日只失效“今日”，累计/余额/近 7 天保留。
+    pub(super) fn display_result(
+        &self,
+        current_midnight: Option<i64>,
+    ) -> Option<Result<billing::Billing, String>> {
+        let mut result = self.result.clone()?;
+        if let Ok(info) = &mut result {
+            let stale = self
+                .snapshot_midnight
+                .zip(current_midnight)
+                .is_some_and(|(snapshot, current)| current > snapshot);
+            if stale {
+                info.expire_today();
+            }
+        }
+        Some(result)
     }
 }
 
@@ -219,7 +247,7 @@ fn unix_now() -> i64 {
 /// 做法：取本地墙上时间，用「先当成 UTC 换算」的方式得到两个数（当前墙上时间、
 /// 今天 0 点），差值就是时区偏移，再从今天 0 点里扣掉 —— 不需要时区数据库。
 #[cfg(windows)]
-fn local_midnight_unix() -> Option<i64> {
+pub(super) fn local_midnight_unix() -> Option<i64> {
     use windows_sys::Win32::Foundation::SYSTEMTIME;
     use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 
@@ -248,7 +276,7 @@ fn local_midnight_unix() -> Option<i64> {
 
 /// 非 Windows：拿不到本地时区，调用方回退为「近 24 小时」。
 #[cfg(not(windows))]
-fn local_midnight_unix() -> Option<i64> {
+pub(super) fn local_midnight_unix() -> Option<i64> {
     None
 }
 
@@ -270,6 +298,43 @@ fn wall_clock_unix(year: i64, month: i64, day: i64, hour: i64, minute: i64, seco
 mod tests {
     use super::*;
 
+    #[test]
+    fn stale_daily_snapshot_hides_today_but_keeps_other_totals() {
+        let billing = billing::Billing {
+            source: billing::Source::Token,
+            shape: billing::Shape::TokenQuota,
+            used_usd: Some(20.0),
+            balance_usd: Some(80.0),
+            today_usd: Some(3.0),
+            today_calls: Some(4),
+            today_models: vec![("m".into(), 3.0)],
+            week_usd: Some(9.0),
+            ..Default::default()
+        };
+        let state = BalanceState {
+            result: Some(Ok(billing)),
+            snapshot_midnight: Some(1_000),
+            ..Default::default()
+        };
+
+        let current = state
+            .display_result(Some(1_000))
+            .expect("有结果")
+            .expect("成功结果");
+        assert_eq!(current.today_usd, Some(3.0));
+
+        let stale = state
+            .display_result(Some(2_000))
+            .expect("有结果")
+            .expect("成功结果");
+        assert_eq!(stale.today_usd, None);
+        assert_eq!(stale.today_calls, None);
+        assert!(stale.today_models.is_empty());
+        assert_eq!(stale.used_usd, Some(20.0));
+        assert_eq!(stale.balance_usd, Some(80.0));
+        assert_eq!(stale.week_usd, Some(9.0));
+        assert!(stale.detail().contains("今日数据已跨日，请重新查询"));
+    }
     #[test]
     fn wall_clock_matches_known_epochs() {
         assert_eq!(wall_clock_unix(1970, 1, 1, 0, 0, 0), 0);

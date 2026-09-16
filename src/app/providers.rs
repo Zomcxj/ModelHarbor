@@ -382,7 +382,9 @@ impl App {
                     // 用量查询结果紧挨「复制」左侧（右对齐布局里越晚添加越靠左）。
                     // 查不到的站点不显示（未开放接口 / WAF / 空数据），也不显示占位余额。
                     if let Some(state) = self.balance.get(&key) {
-                        match (&state.rx, &state.result) {
+                        let display_result =
+                            state.display_result(super::balance::local_midnight_unix());
+                        match (&state.rx, display_result.as_ref()) {
                             (Some(_), _) => {
                                 ui.add(egui::Spinner::new().size(14.0));
                                 // 字号与连通性结果（`123ms`）一致：默认正文号，不用 .small()。

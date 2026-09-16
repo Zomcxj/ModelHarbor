@@ -73,13 +73,26 @@ fn remove_legacy_next_to(path: &Path) {
 }
 
 /// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
-const SCHEMA_VERSION: u64 = 2;
+const SCHEMA_VERSION: u64 = 3;
 
-/// 折叠状态的持久化键：`类别/名字`。
-///
-/// 不带页面前缀：同一份配置在四个页面里是同一批卡片，折叠状态应当跟着卡片走
-/// （切页回来还是折叠的）；换加载另一份配置文件时才由 App 清理失效记录。
-pub fn collapsed_id(kind: &str, key: &str) -> String {
+/// 配置身份：规范化路径后做稳定 FNV-1a 哈希，避免把用户目录明文写进设置键。
+pub fn config_identity(path: &str) -> String {
+    let normalized = path.trim().replace('\\', "/").to_lowercase();
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in normalized.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// 折叠状态的持久化键：`配置身份/类别/名字`。
+pub fn collapsed_id(config_id: &str, kind: &str, key: &str) -> String {
+    format!("{config_id}/{kind}/{key}")
+}
+
+/// v2 折叠键：`类别/名字`（仅供首次成功加载时迁移）。
+pub fn legacy_collapsed_id(kind: &str, key: &str) -> String {
     format!("{kind}/{key}")
 }
 
@@ -128,7 +141,8 @@ pub struct Prefs {
     pub sync_wsl: bool,
     /// 四个后端各自的配置路径覆盖（用户手动指定过才非空）。
     pub config_paths: ConfigPathPrefs,
-    /// 已折叠的卡片（`providers/名字`、`agents/名字`；不在表里的即展开）。
+    /// 已折叠的卡片（`配置身份/类别/名字`；不在表里的即展开）。
+    /// v2 的 `类别/名字` 旧键会在首次成功加载配置后迁入当前配置身份。
     pub collapsed: Vec<String>,
 }
 
@@ -351,8 +365,8 @@ mod tests {
             },
             // 按字母序给出：to_json 会排序写出，因此往返应完全相等
             collapsed: vec![
-                collapsed_id("agents", "build"),
-                collapsed_id("providers", "openai"),
+                collapsed_id("cfg", "agents", "build"),
+                collapsed_id("cfg", "providers", "openai"),
             ],
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
@@ -387,6 +401,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn config_identity_normalizes_case_and_path_separators() {
+        assert_eq!(
+            config_identity(r"C:\Users\Alice\.pi\agent\models.json"),
+            config_identity("c:/users/alice/.pi/agent/models.json")
+        );
+        assert_ne!(
+            config_identity(r"C:\configs\one.json"),
+            config_identity(r"C:\configs\two.json")
+        );
+    }
+
+    #[test]
+    fn legacy_v2_collapsed_keys_remain_available_for_app_migration() {
+        let prefs = Prefs::parse(r#"{"version":2,"collapsed":["providers/p","agents/a"]}"#);
+        assert_eq!(
+            prefs.collapsed,
+            vec!["providers/p".to_string(), "agents/a".to_string()]
+        );
+        assert!(prefs.to_json().contains(r#""version": 3"#));
+    }
     #[test]
     fn config_path_overrides_are_keyed_by_backend() {
         use crate::format::ConfigFormat;
