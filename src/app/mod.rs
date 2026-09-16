@@ -311,6 +311,8 @@ impl eframe::App for App {
 impl App {
     /// 当前界面偏好。
     fn current_prefs(&self) -> crate::prefs::Prefs {
+        let mut collapsed: Vec<String> = self.collapsed.iter().cloned().collect();
+        collapsed.sort();
         crate::prefs::Prefs {
             show_api_keys: self.show_api_keys,
             save_format: self.save_format.key().to_string(),
@@ -322,7 +324,7 @@ impl App {
                 oh_my_pi: self.path_override(ConfigFormat::OhMyPi),
                 deepseek_harness: self.path_override(ConfigFormat::DeepSeekHarness),
             },
-            collapsed: self.collapsed.iter().cloned().collect(),
+            collapsed,
         }
     }
 

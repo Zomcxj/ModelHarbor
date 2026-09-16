@@ -428,9 +428,8 @@ impl App {
                 self.source_format = fmt;
                 self.preview_parse_ok = true;
                 self.preview_parse_error = None;
-                // 套用草稿后展开全部卡片（预览场景 = 我现在要看这些内容）
-                self.set_all_agents_collapsed(false);
-                self.set_all_providers_collapsed(false);
+                // 存活卡片保留原折叠状态；新卡片不在集合中，天然展开。
+                self.prune_collapsed();
                 self.model_fetch.clear();
                 self.model_fetch_open.clear();
                 self.latency.clear();

@@ -14,6 +14,7 @@
 //! 并在首次写入后清掉同目录的旧文件。
 
 use serde_json::{Map, Value};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// 读取 `root.a.b` 形式的嵌套字符串（类型不符视为空）。
@@ -257,8 +258,55 @@ impl Prefs {
             std::fs::create_dir_all(dir)
                 .map_err(|err| format!("创建目录失败（{}）：{}", dir.display(), err))?;
         }
-        std::fs::write(path, self.to_json())
-            .map_err(|err| format!("写入失败（{}）：{}", path.display(), err))
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(FILE_NAME);
+        let temp_path = path.with_file_name(format!("{file_name}.tmp"));
+        let result = (|| -> Result<(), String> {
+            let mut temp = std::fs::File::create(&temp_path).map_err(|err| {
+                format!("写入临时文件失败（{}）：{}", path.display(), err)
+            })?;
+            temp.write_all(self.to_json().as_bytes()).map_err(|err| {
+                format!("写入临时文件失败（{}）：{}", path.display(), err)
+            })?;
+            temp.sync_all().map_err(|err| {
+                format!("同步临时文件失败（{}）：{}", path.display(), err)
+            })?;
+            replace_file(&temp_path, path)
+                .map_err(|err| format!("替换设置文件失败（{}）：{}", path.display(), err))
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+        result
+    }
+}
+
+/// 用同目录临时文件替换设置。Windows 的 rename 不会覆盖现有文件，因此先把旧文件
+/// 移到备份名；如果新文件替换失败，立即把旧文件恢复，绝不留下半写设置。
+fn replace_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return std::fs::rename(temp_path, path);
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(FILE_NAME);
+    let backup_path = path.with_file_name(format!("{file_name}.replace-old"));
+    if backup_path.exists() {
+        std::fs::remove_file(&backup_path)?;
+    }
+    std::fs::rename(path, &backup_path)?;
+    match std::fs::rename(temp_path, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(backup_path);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::rename(&backup_path, path);
+            Err(error)
+        }
     }
 }
 
@@ -368,7 +416,35 @@ mod tests {
             Prefs::parse(&std::fs::read_to_string(&path).unwrap()),
             prefs
         );
+        assert!(
+            !path.with_file_name(format!("{FILE_NAME}.tmp")).exists(),
+            "成功替换后不得残留临时文件"
+        );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn failed_atomic_replace_preserves_existing_settings() {
+        let dir = std::env::temp_dir().join(format!(
+            "{}-atomic-failure-{}",
+            DIR_NAME,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join(FILE_NAME);
+        std::fs::write(&path, "old settings").expect("写旧设置");
+        let temp_path = path.with_file_name(format!("{FILE_NAME}.tmp"));
+        std::fs::create_dir(&temp_path).expect("用目录占住临时文件路径");
+
+        let err = Prefs::default()
+            .save_to(&path)
+            .expect_err("无法创建临时文件时保存应失败");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old settings");
+        assert!(err.contains(&path.display().to_string()));
+        assert!(!err.contains("show_api_keys"), "错误不得包含设置正文");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

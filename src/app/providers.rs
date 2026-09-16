@@ -206,10 +206,11 @@ impl App {
                     .button("查询用量")
                     .on_hover_text(
                         "查询全部厂商的「已用 / 余额」，显示在各卡片的厂商名右侧\n\
-                         只读管理接口（/dashboard/billing/*），直连不走代理；\
-                         同一站两次查询需间隔 5 秒\n\
-                         未开放该接口的站点不会在卡片上显示\n\
-                         注：公益站额度多是占位值，余额带「约」字表示仅供参考",
+                         只读管理接口：优先 /api/usage/token/ + /api/log/token，\
+                         再回退 /dashboard/billing/*；直连不走代理\n\
+                         同一 provider 两次查询至少间隔 5 秒\n\
+                         未开放接口或没有有效数据时不会在卡片上显示\n\
+                         公益站占位额度不显示余额；余额带「约」字时仅供参考",
                     )
                     .clicked()
                 {
@@ -387,13 +388,13 @@ impl App {
                                 // 字号与连通性结果（`123ms`）一致：默认正文号，不用 .small()。
                                 ui.label(egui::RichText::new("查询用量…").weak());
                             }
-                            (None, Some(Ok(info)))
-                                if info.shape != crate::billing::Shape::Unknown
-                                    && !info.is_empty() =>
-                            {
-                                ui.label(
-                                    egui::RichText::new(info.inline_full())
-                                        .color(crate::theme::semantics(ui).info),
+                            (None, Some(Ok(info))) if info.is_displayable() => {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(info.inline_full())
+                                            .color(crate::theme::semantics(ui).info),
+                                    )
+                                    .truncate(),
                                 )
                                 .on_hover_text(info.detail());
                             }

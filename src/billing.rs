@@ -510,6 +510,11 @@ impl Billing {
     ///
     /// 与 [`Billing::inline`] 的区别：这里把能拿到的字段都列出来
     ///（余额 / 累计 / 今日 + 请求数 / 近 7 天），用于卡片正文那一行。
+    /// 是否有可展示的用量结果（Unknown / 空数据隐藏）。
+    pub fn is_displayable(&self) -> bool {
+        self.shape != Shape::Unknown && !self.is_empty()
+    }
+
     pub fn inline_full(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         match (self.balance_usd, self.used_usd) {
@@ -941,6 +946,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn usage_card_visibility_hides_unknown_and_empty_results() {
+        let unknown = Billing::default();
+        assert!(!unknown.is_displayable());
+
+        let empty_known = Billing {
+            shape: Shape::Subscription,
+            ..Default::default()
+        };
+        assert!(!empty_known.is_displayable());
+
+        let visible = Billing {
+            shape: Shape::Subscription,
+            used_usd: Some(12.5),
+            ..Default::default()
+        };
+        assert!(visible.is_displayable());
+        assert_eq!(visible.inline_full(), "已用 $12.50");
+        assert!(visible.detail().contains("已用：$12.50"));
+    }
     #[test]
     fn usage_without_limit_still_reports_used() {
         let billing = parse(
