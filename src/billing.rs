@@ -907,21 +907,33 @@ impl Billing {
     }
 
     /// 账号级额度（`/api/user/self`）的悬停说明。
+    ///
+    /// 悬停小窗是「扫一眼」的地方：每项占一行、外加一句解释，会把数字挤到
+    /// 视线之外。这里按「额度一行、计数与分组一行」合并；但「同站点共用」
+    /// 这层含义要留个短标记——否则读者会以为这是某个 sk- 令牌的余额。
     fn account_lines(account: &AccountInfo) -> Vec<String> {
-        let mut lines = vec!["账号（面板令牌）：账号级额度，同站点所有 sk- 令牌共用".to_string()];
+        let mut lines = vec!["账号级额度（面板访问令牌，同站点共用）".to_string()];
+        let mut amounts: Vec<String> = Vec::new();
         if let Some(balance) = account.balance_usd {
-            lines.push(format!("余额：{}", money(balance)));
+            amounts.push(format!("余额 {}", money(balance)));
         }
         if let Some(used) = account.used_usd {
-            lines.push(format!("累计已用：{}", money(used)));
+            amounts.push(format!("已用 {}", money(used)));
         }
+        if !amounts.is_empty() {
+            lines.push(amounts.join(" · "));
+        }
+        let mut meta: Vec<String> = Vec::new();
         if let Some(requests) = account.requests {
-            lines.push(format!("请求次数：{}", requests));
+            meta.push(format!("请求 {} 次", requests));
         }
         if !account.group.is_empty() {
-            lines.push(format!("分组：{}", account.group));
+            meta.push(format!("分组 {}", account.group));
         }
-        lines.push("来源：/api/user/self（只读；需面板访问令牌）".to_string());
+        if !meta.is_empty() {
+            lines.push(meta.join(" · "));
+        }
+        lines.push("来源：/api/user/self（只读，需面板令牌）".to_string());
         lines
     }
 
@@ -1509,7 +1521,10 @@ mod tests {
         let info = account_only_billing();
         let line = info.inline();
         assert!(line.contains("账号余额 $12.30"), "{line}");
-        assert!(line.contains("已用 $20.50"), "用量要跟着余额一起显示：{line}");
+        assert!(
+            line.contains("已用 $20.50"),
+            "用量要跟着余额一起显示：{line}"
+        );
     }
 
     #[test]
@@ -1530,7 +1545,10 @@ mod tests {
 
         let line = info.inline_full();
         assert!(line.starts_with("账号余额 $12.30"), "账号余额优先：{line}");
-        assert!(line.contains("已用 $20.50"), "账号侧的用量要跟着余额：{line}");
+        assert!(
+            line.contains("已用 $20.50"),
+            "账号侧的用量要跟着余额：{line}"
+        );
         assert!(line.contains("今日 $3.00"), "令牌侧凭据仍保留：{line}");
         assert!(
             !line.contains("已用 $274.00"),
@@ -1538,11 +1556,11 @@ mod tests {
         );
 
         let detail = info.detail();
-        assert!(detail.contains("账号（面板令牌）"), "{detail}");
-        assert!(detail.contains("余额：$12.30"), "{detail}");
-        assert!(detail.contains("累计已用：$20.50"), "{detail}");
-        assert!(detail.contains("请求次数：321"), "{detail}");
-        assert!(detail.contains("分组：default"), "{detail}");
+        // 悬停小窗求紧凑：解释长句去掉、数字合并成行，但「同站点共用」这层
+        // 含义要留一个短标记（否则读者会以为这是某个 sk- 令牌的余额）。
+        assert!(detail.contains("账号级额度（面板访问令牌，同站点共用）"), "{detail}");
+        assert!(detail.contains("余额 $12.30 · 已用 $20.50"), "{detail}");
+        assert!(detail.contains("请求 321 次 · 分组 default"), "{detail}");
         assert!(detail.contains("本令牌"), "两套数据要分区：{detail}");
     }
 
@@ -1558,7 +1576,7 @@ mod tests {
         assert!(info.is_displayable(), "有账号数据就必须显示");
         assert_eq!(info.inline(), "账号余额 $12.30 · 已用 $20.50");
         assert_eq!(info.inline_full(), "账号余额 $12.30 · 已用 $20.50");
-        assert!(info.detail().contains("账号（面板令牌）"));
+        assert!(info.detail().contains("账号级额度（面板访问令牌"));
     }
 
     #[test]

@@ -1,5 +1,13 @@
 use eframe::egui::{self, Color32, Stroke, Visuals};
 
+/// 提示 / 淡色小字的颜色（输入框占位提示、`.weak()` 小字）。
+///
+/// egui 默认取 `text × weak_text_alpha(0.6)`，在本主题的正文色（暗色 `#E4E4E4`）
+/// 上算出来约 `#898989`——和正文只差一点点，用户会把输入框的占位提示
+/// 当成已经填好的值。显式给一个中灰：明暗两套主题上都读得清，
+/// 又能一眼看出「这是提示，不是值」。
+pub const HINT_GREY: Color32 = Color32::from_gray(102);
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
     #[default]
@@ -267,6 +275,36 @@ mod semantics_tests {
     }
 
     #[test]
+    fn hint_text_is_a_real_grey_not_a_dimmed_body_color() {
+        // 要保证的性质不是「提示色比正文暗」——浅色主题的正文本来就是深色，
+        // 提示比它**浅**才对——而是「提示对背景的对比度明显低于正文」，
+        // 同时不能淡到读不清。下面按 WCAG 对比度查。
+        let ctx = egui::Context::default();
+        let mut applied: Option<Theme> = None;
+        for theme in Theme::ALL {
+            if needs_apply(&mut applied, theme) {
+                theme.apply(&ctx);
+            }
+            let visuals = ctx.style().visuals.clone();
+            assert_eq!(visuals.weak_text_color(), HINT_GREY, "{}", theme.key());
+
+            let panel = visuals.panel_fill;
+            let body = contrast(visuals.text_color(), panel);
+            let hint = contrast(HINT_GREY, panel);
+            assert!(
+                hint < body * 0.6,
+                "{} 的提示色不够淡：正文 {body:.1}:1 vs 提示 {hint:.1}:1",
+                theme.key()
+            );
+            assert!(
+                hint >= 2.0,
+                "{} 的提示色太淡，读不清：{hint:.1}:1",
+                theme.key()
+            );
+        }
+    }
+
+    #[test]
     fn system_theme_change_cannot_replace_the_applied_palette() {
         let ctx = egui::Context::default();
         Theme::Nord.apply(&ctx);
@@ -331,6 +369,10 @@ impl Palette {
         v.faint_bg_color = self.faint;
         v.extreme_bg_color = self.extreme;
         v.override_text_color = Some(self.text);
+        // 提示 / 淡色小字：egui 默认取 `text × weak_text_alpha(0.6)`，在本主题的
+        // 正文色（如暗色 #E4E4E4）上算出来约 #898989 —— 和正文只差一点点，
+        // 用户会把输入框的占位提示当成已经填好的值。显式给一个中灰。
+        v.weak_text_color = Some(HINT_GREY);
         v.hyperlink_color = self.accent;
         v.selection.bg_fill = self.accent.gamma_multiply(0.45);
         v.selection.stroke = Stroke::new(1.0, self.accent);

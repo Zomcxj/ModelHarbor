@@ -9,13 +9,6 @@ use crate::format::ConfigFormat;
 use crate::ui::{card_frame, card_list, move_item, DragHandle};
 use eframe::egui;
 
-/// 令牌面板输入框的提示文字颜色。
-///
-/// egui 的 hint 默认用 `weak_text_color()`，但在部分主题下和正文太接近，
-/// 容易被当成「已经填了内容」；这里显式给一个中灰，把提示和真实值区分开。
-/// 中灰在亮 / 暗两种主题上都能读，所以不跟着主题走。
-pub(super) const HINT_GRAY: egui::Color32 = egui::Color32::from_gray(128);
-
 /// 卡片渲染时向外收集的动作与落点。
 ///
 /// 打包成一个结构而不是一串 `&mut Option<_>`：出参一多，函数签名就超出
@@ -128,11 +121,11 @@ impl App {
 
     /// Providers 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
     pub(super) fn ui_providers_section(&mut self, ui: &mut egui::Ui) {
-        // 吸顶区是**固定高度矩形**（sticky_end 用 max_rect 建子 ui），
-        // 标题行下方还挂着「代理支持」行，所以要给足两行的高度：
-        // 高度不够时第二行不会撑开矩形，而是直接画到下面的卡片区上。
-        const HEADER_HEIGHT: f32 = 52.0;
-        let anchor = sticky_begin(ui, HEADER_HEIGHT);
+        // 吸顶区是**固定高度矩形**（sticky_end 用 max_rect 建子 ui）：
+        // 里面所有内容都必须装在这一个高度里，多出来的行不会撑开矩形，
+        // 而是直接画到下面的卡片区上。所以「代理支持」是并回标题行、
+        // 而不是另起一行。
+        let anchor = sticky_begin(ui, 30.0);
         let matched: Vec<usize> = (0..self.providers.len()).collect();
 
         if self.providers.is_empty() && !self.show_new_provider {
@@ -243,12 +236,8 @@ impl App {
                 if ui
                     .button("查询用量")
                     .on_hover_text(
-                        "查询全部厂商的「已用 / 余额」，显示在各卡片的厂商名右侧\n\
-                         只读管理接口：优先 /api/usage/token/ + /api/log/token，\
-                         再回退 /dashboard/billing/*；直连不走代理\n\
-                         同一 provider 两次查询至少间隔 5 秒\n\
-                         未开放接口或没有有效数据时不会在卡片上显示\n\
-                         公益站占位额度不显示余额；余额带「约」字时仅供参考",
+                        "查询全部厂商的账号数据（已用 / 余额 / 签到状态），显示在卡片上\n\
+                         只读接口、直连不走代理；同一站点两次查询至少间隔 5 秒",
                     )
                     .clicked()
                 {
@@ -282,52 +271,46 @@ impl App {
                 // 「令牌」「预览」「显示密钥」都搬到了页头「保存」那一行右端
                 // （见 `bars::ui_page_header`）：它们都跟「保存 / 看」这个动作有关，
                 // 放在 Providers 标题行只有切到该页才看得到。
-                // 「代理支持」开关则移到标题行**下方单独一行、右对齐**：
-                // 它是个安全开关，和这排视图按钮混在一起容易误点、也读不出因果。
-            });
-            // 网络守卫：单独一行、右对齐。它是个安全开关（放行「模型延迟测试」），
-            // 挤在标题行那排视图按钮里既容易误点，也读不出因果关系。
-            // 右对齐布局里越晚添加越靠左，所以先放开关、再把说明文字放它左边。
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let allow_probe = self.allow_model_test_with_proxy;
-                let mut allow_checked = allow_probe;
-                if ui
-                    .checkbox(&mut allow_checked, "代理支持")
-                    .on_hover_text(
-                        "勾选后即使检测到系统代理 / VPN 也允许「模型延迟测试」。\n\
-                         默认关闭：中转站的多 IP 检测 / 测活风控可能因此封号。\n\
-                         本工具的探测请求始终直连、不走系统代理，\n\
-                         所以仅开着系统代理（如 Clash）时勾选是安全的；\n\
-                         真正需要警惕的是 VPN / TUN 已改变出口 IP 的情况。\n\
-                         该选择写入 settings.json（allow_model_test_with_proxy）。",
-                    )
-                    .changed()
-                {
-                    self.allow_model_test_with_proxy = allow_checked;
-                }
-                // 只有在没放行时才报「已禁用」：放行后显示中性提示，避免自相矛盾。
-                if let Some(reason) = self.net_guard.clone() {
-                    let semantics = crate::theme::semantics(ui);
-                    ui.label(
-                        egui::RichText::new(if allow_probe {
-                            format!("已放行模型测试：{reason}")
-                        } else {
-                            format!("{}：{reason}", crate::netguard::BLOCK_PREFIX)
-                        })
-                        .small()
-                        .color(if allow_probe {
-                            semantics.warn
-                        } else {
-                            semantics.err
-                        }),
-                    )
-                    .on_hover_text(
-                        "中转站常见多 IP 检测 / 测活风控，经代理做推理探测可能被封号；\n\
-                         默认已禁用「模型延迟测试」。若你的探测本来就直连\n\
-                         （本工具不走系统代理，仅 VPN / TUN 改变出口 IP），可勾选右侧开关放行。\n\
-                         （厂商「连通性测试」与「查询用量」不受影响：它们不做推理。）",
-                    );
-                }
+                //
+                // 「代理支持」留在同一行、靠右：它是个安全开关，靠右能与这排视图
+                // 按钮分开；右对齐布局里越晚添加越靠左，所以先放开关、再放文字。
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let allow_probe = self.allow_model_test_with_proxy;
+                    let mut allow_checked = allow_probe;
+                    if ui
+                        .checkbox(&mut allow_checked, "代理支持")
+                        .on_hover_text(
+                            "勾选后即使检测到代理 / VPN 也允许「模型延迟测试」。\n\
+                             默认关闭：中转站的多 IP 检测 / 测活风控可能因此封号。\n\
+                             本工具探测始终直连、不走系统代理；要警惕的是 VPN / TUN
+                             已改变出口 IP。选择写入 settings.json。",
+                        )
+                        .changed()
+                    {
+                        self.allow_model_test_with_proxy = allow_checked;
+                    }
+                    // 只有在没放行时才报「已禁用」：放行后显示中性提示，避免自相矛盾。
+                    if let Some(reason) = self.net_guard.clone() {
+                        let semantics = crate::theme::semantics(ui);
+                        ui.label(
+                            egui::RichText::new(if allow_probe {
+                                format!("已放行模型测试：{reason}")
+                            } else {
+                                format!("{}：{reason}", crate::netguard::BLOCK_PREFIX)
+                            })
+                            .small()
+                            .color(if allow_probe {
+                                semantics.warn
+                            } else {
+                                semantics.err
+                            }),
+                        )
+                        .on_hover_text(
+                            "中转站普遍有多 IP 检测 / 测活风控，经代理做推理探测可能被封号。\n\
+                             「连通性测试」不做推理，不受影响。",
+                        );
+                    }
+                });
             });
         });
     }
@@ -392,7 +375,9 @@ impl App {
                             .color(crate::theme::semantics(ui).err),
                     )
                     .on_hover_text(format!(
-                        "当前 baseUrl\n{}\n\n请核对协议头、重复斜杠与末尾斜杠；工具只提示，不会自动改写配置。",
+                        "当前 baseUrl
+{}
+只提示，不自动改写配置",
                         self.providers[idx].base_url
                     ));
                 }
@@ -429,10 +414,8 @@ impl App {
                         && ui
                             .button("签到")
                             .on_hover_text(
-                                "先读签到状态，今天没签才执行签到\n\
-                                 用该站点的「面板访问令牌」（在「令牌」面板填）\n\
-                                 站点若开了 Cloudflare 人机验证，只能在浏览器里签到\n\
-                                 这是写操作：会改变账号额度并让站点记一条系统日志",
+                                "先读签到状态，今天没签才执行签到（写操作：会改账号额度）\n\
+                                 用该站点的「面板访问令牌」；站点开了人机验证时只能到浏览器签",
                             )
                             .clicked()
                         {
@@ -568,20 +551,19 @@ impl App {
                 }
             });
             ui.horizontal(|ui| {
+                // 提示文字颜色由主题统一给定（见 `theme::HINT_GREY`），
+                // 不再在这里逐个控件覆盖：一处改、全应用一致。
                 if let Some(draft) = self.token_draft.get_mut(origin) {
-                    ui.scope(|ui| {
-                        ui.visuals_mut().weak_text_color = Some(HINT_GRAY);
-                        ui.add(
-                            egui::TextEdit::singleline(draft)
-                                .password(!revealed)
-                                .desired_width(280.0)
-                                .hint_text(if configured {
-                                    "留空不改变；要清除请点「删除」"
-                                } else {
-                                    "粘贴面板访问令牌"
-                                }),
-                        );
-                    });
+                    ui.add(
+                        egui::TextEdit::singleline(draft)
+                            .password(!revealed)
+                            .desired_width(280.0)
+                            .hint_text(if configured {
+                                "留空不改变；要清除请点「删除」"
+                            } else {
+                                "粘贴面板访问令牌"
+                            }),
+                    );
                 }
                 if ui.button(if revealed { "隐藏" } else { "显示" }).clicked() {
                     toggle_reveal = Some(origin.clone());
@@ -609,14 +591,11 @@ impl App {
                         .color(ui.visuals().weak_text_color()),
                 );
                 if let Some(draft) = self.token_uid_draft.get_mut(origin) {
-                    ui.scope(|ui| {
-                        ui.visuals_mut().weak_text_color = Some(HINT_GRAY);
-                        ui.add(
-                            egui::TextEdit::singleline(draft)
-                                .desired_width(90.0)
-                                .hint_text("可留空"),
-                        );
-                    });
+                    ui.add(
+                        egui::TextEdit::singleline(draft)
+                            .desired_width(90.0)
+                            .hint_text("可留空"),
+                    );
                 }
                 if needs_id {
                     ui.label(

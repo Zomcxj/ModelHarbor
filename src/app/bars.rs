@@ -370,11 +370,8 @@ impl App {
                 if ui
                     .button("令牌")
                     .on_hover_text(
-                        "管理站点的面板访问令牌（PAT）\n\
-                         在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成\n\
-                         令牌是站点级的：同一站点的多个 provider 共用一份\n\
-                         只用于只读查询账号余额（/api/user/self），不参与配置保存\n\
-                         存在 %USERPROFILE%\\.modelharbor\\tokens.json（含凭证，勿提交、勿共享）",
+                        "管理站点的面板访问令牌（PAT）：同一站点的 provider 共用一份\n\
+                         只用于只读查询账号数据，不参与配置保存；存在 .modelharbor/tokens.json",
                     )
                     .clicked()
                 {
