@@ -116,8 +116,10 @@ impl App {
             .filter(|state| matches!(state.result, Some(Ok(_))))
             .count();
         self.balance_batch = false;
+        // 只报数，不报原因：追不到的原因（401 / WAF / 超时 / 站点未开该接口）
+        // 属于站点侧的事，统一静默；这里凭空断言「未开放该接口」反而是假的。
         self.status = format!(
-            "用户数据查询完成：{} 个查到，{} 个未开放该接口（已隐藏）",
+            "用户数据查询完成：{} 个查到，{} 个没查到",
             ok,
             total - ok
         );

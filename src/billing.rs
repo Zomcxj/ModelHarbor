@@ -938,19 +938,17 @@ impl Billing {
         if lines.is_empty() {
             lines.push("该站没有返回可识别的账单信息".to_string());
         }
-        lines.push("已用为账号累计值（接口忽略日期参数，取不到日用量）".to_string());
+        // 口径只说一句：这是账号累计值（不是今日），不扯接口怎么实现。
+        lines.push("已用为账号累计值".to_string());
         lines.join("\n")
     }
 
     /// 令牌额度（`/api/usage/token/` + `/api/log/token`）的悬停详情。
     fn detail_token(&self, mut lines: Vec<String>) -> String {
-        if self.shape == Shape::TokenLogsOnly {
-            lines.push(
-                "额度：该站点未提供令牌额度接口（/api/usage/token/），只有调用日志统计".to_string(),
-            );
-        }
+        // 额度接口缺失（`Shape::TokenLogsOnly`）时不写任何一行：
+        // 缺数据本身不产生数字，写一句解释只是噪音。
         if self.unlimited {
-            lines.push("额度：不限（该令牌不计额度，只有「已用」有意义，不存在余额）".to_string());
+            lines.push("额度：不限".to_string());
         }
         if let Some(used) = self.used_usd {
             lines.push(format!("累计已用：{}", money(used)));
@@ -1679,10 +1677,10 @@ mod tests {
 
         let detail = info.detail();
         assert!(detail.contains("今日已用：$3.00（2 次请求）"), "{detail}");
-        assert!(
-            detail.contains("未提供令牌额度接口"),
-            "要说清为什么没有额度：{detail}"
-        );
+        // 额度缺失不再写一行解释（小窗只放数据）。
+        assert!(!detail.contains("额度"), "没有额度就不该有额度行：{detail}");
+        assert!(!detail.contains("接口"), "{detail}");
+        assert!(!detail.contains("/api/"), "{detail}");
     }
 
     #[test]
