@@ -14,9 +14,9 @@
 //! 鉴权与用量查询同一套：`Authorization: Bearer <面板令牌>`（旧版站点再带
 //! `New-Api-User`）。凭证只进请求头，不进日志与状态栏文本。
 
-use super::App;
-use super::balance::{ACCOUNT_NEEDS_USER_ID, body_requests_user_id, user_id_header};
+use super::balance::{body_requests_user_id, user_id_header, ACCOUNT_NEEDS_USER_ID};
 use super::fetch::{apply_auth, latency_agent, AuthKind};
+use super::App;
 use crate::billing;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -79,20 +79,6 @@ impl App {
         }
     }
 
-    /// 该 provider 是否被勾选允许签到（按配置身份分区，与卡片折叠同一套键）。
-    pub(super) fn checkin_enabled(&self, key: &str) -> bool {
-        self.collapsed.contains(&self.card_id("checkin", key))
-    }
-
-    /// 设置 / 取消某 provider 的签到勾选。
-    pub(super) fn set_checkin_enabled(&mut self, key: &str, enabled: bool) {
-        let id = self.card_id("checkin", key);
-        if enabled {
-            self.collapsed.insert(id);
-        } else {
-            self.collapsed.remove(&id);
-        }
-    }
 }
 
 /// 签到全流程：先读状态，今天没签才执行。

@@ -9,6 +9,13 @@ use crate::format::ConfigFormat;
 use crate::ui::{card_frame, card_list, move_item, DragHandle};
 use eframe::egui;
 
+/// 令牌面板输入框的提示文字颜色。
+///
+/// egui 的 hint 默认用 `weak_text_color()`，但在部分主题下和正文太接近，
+/// 容易被当成「已经填了内容」；这里显式给一个中灰，把提示和真实值区分开。
+/// 中灰在亮 / 暗两种主题上都能读，所以不跟着主题走。
+pub(super) const HINT_GRAY: egui::Color32 = egui::Color32::from_gray(128);
+
 /// 卡片渲染时向外收集的动作与落点。
 ///
 /// 打包成一个结构而不是一串 `&mut Option<_>`：出参一多，函数签名就超出
@@ -21,8 +28,7 @@ pub(super) struct CardActions {
     pub(super) copy: Option<usize>,
     /// 点了「签到」的 provider key（写操作，勾选后才可用）。
     pub(super) checkin: Option<String>,
-    /// 签到勾选状态变更：(provider key, 是否允许签到)。
-    pub(super) toggle_checkin: Option<(String, bool)>,
+    /// 签到的 provider key（写操作：只在用户点按钮时发生）。
     /// provider 卡片的拖拽落点。
     pub(super) hover: Option<String>,
     /// model 卡片的拖拽落点。
@@ -136,15 +142,6 @@ impl App {
         card_list(ui, &matched, 0.0, |ui, idx| {
             self.render_provider_card(ui, idx, &mut actions);
         });
-        if let Some((key, enabled)) = actions.toggle_checkin {
-            self.set_checkin_enabled(&key, enabled);
-            self.status = if enabled {
-                format!("已允许 {} 签到：点它卡片上的「签到」按钮执行", key)
-            } else {
-                format!("已取消 {} 的签到勾选", key)
-            };
-        }
-        // 签到是写操作：只在用户点按钮时发生，不并发、不批量。
         if let Some(key) = actions.checkin {
             let target = self
                 .providers
@@ -300,8 +297,52 @@ impl App {
                 }
                 // 网络守卫：检测到系统代理 / VPN 时默认禁用模型延迟测试
                 //（中转站的「多 IP 检测 / 测活封号」可能因此触发）。
-                // 只有在没放行时才报“已禁用”：放行后显示中性提示，避免自相矛盾。
+                //
+                // 开关与文案已移到标题行下方**单独一行右对齐**（见 `ui_providers_section`）：
+                // 它是个安全开关，和标题行那堆按钮混在一起容易误点、也读不出因果。
+                // 全局 API Key 显隐按钮原本在这里，已移到页头「保存」那一行右端
+                // （见 `bars::ui_page_header`）：它管的是所有页面的密钥显示，
+                // 放在 Providers 标题行只有切到该页才看得到，也不便与保存操作一起用。
+                // 配置预览：右侧面板实时展示当前页面的序列化内容，可编辑并应用回组件。
+                if ui
+                    .button(if self.show_preview {
+                        "关闭预览"
+                    } else {
+                        "预览"
+                    })
+                    .on_hover_text(
+                        "在右侧打开当前页面「待保存文档」预览；可直接编辑，改动实时应用并自动保存",
+                    )
+                    .clicked()
+                {
+                    self.show_preview = !self.show_preview;
+                    if self.show_preview {
+                        // 打开时以组件状态重建待保存文档
+                        self.reset_preview_draft();
+                    }
+                }
+            });
+            // 网络守卫：单独一行、右对齐。它是个安全开关（放行「模型延迟测试」），
+            // 挤在标题行那排视图按钮里既容易误点，也读不出因果关系。
+            // 右对齐布局里越晚添加越靠左，所以先放开关、再把说明文字放它左边。
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let allow_probe = self.allow_model_test_with_proxy;
+                let mut allow_checked = allow_probe;
+                if ui
+                    .checkbox(&mut allow_checked, "代理支持")
+                    .on_hover_text(
+                        "勾选后即使检测到系统代理 / VPN 也允许「模型延迟测试」。\n\
+                         默认关闭：中转站的多 IP 检测 / 测活风控可能因此封号。\n\
+                         本工具的探测请求始终直连、不走系统代理，\n\
+                         所以仅开着系统代理（如 Clash）时勾选是安全的；\n\
+                         真正需要警惕的是 VPN / TUN 已改变出口 IP 的情况。\n\
+                         该选择写入 settings.json（allow_model_test_with_proxy）。",
+                    )
+                    .changed()
+                {
+                    self.allow_model_test_with_proxy = allow_checked;
+                }
+                // 只有在没放行时才报「已禁用」：放行后显示中性提示，避免自相矛盾。
                 if let Some(reason) = self.net_guard.clone() {
                     let semantics = crate::theme::semantics(ui);
                     ui.label(
@@ -324,58 +365,6 @@ impl App {
                          （厂商「连通性测试」与「查询用量」不受影响：它们不做推理。）",
                     );
                 }
-                // 放行开关：写进 settings.json，重启后仍生效。
-                // 不用 `self.allow_model_test_with_proxy` 直接取地址：借用冲突且不便回写。
-                let mut allow_checked = allow_probe;
-                if ui
-                    .checkbox(&mut allow_checked, "代理下测试模型")
-                    .on_hover_text(
-                        "勾选后即使检测到系统代理 / VPN 也允许「模型延迟测试」。\n\
-                         默认关闭：中转站的多 IP 检测 / 测活风控可能因此封号。\n\
-                         本工具的探测请求始终直连、不走系统代理，\n\
-                         所以仅开看系统代理（如 Clash）时勾选是安全的；\n\
-                         真正需要警惕的是 VPN / TUN 已改变出口 IP 的情况。\n\
-                         该选择写入 settings.json（allow_model_test_with_proxy）。",
-                    )
-                    .changed()
-                {
-                    self.allow_model_test_with_proxy = allow_checked;
-                }
-                // 全局 API Key 显示/隐藏：一键切换全部密钥的明文/掩码。
-                // 文案带「密钥」二字，与区块「隐藏/展开」、卡片 ▼/▶ 折叠按钮明确区分。
-                if ui
-                    .button(if self.show_api_keys {
-                        "隐藏密钥"
-                    } else {
-                        "显示密钥"
-                    })
-                    .on_hover_text(if self.show_api_keys {
-                        "点击掩码全部 API Key（默认状态）"
-                    } else {
-                        "点击显示全部 API Key 明文（注意防窥）"
-                    })
-                    .clicked()
-                {
-                    self.show_api_keys = !self.show_api_keys;
-                }
-                // 配置预览：右侧面板实时展示当前页面的序列化内容，可编辑并应用回组件。
-                if ui
-                    .button(if self.show_preview {
-                        "关闭预览"
-                    } else {
-                        "预览"
-                    })
-                    .on_hover_text(
-                        "在右侧打开当前页面「待保存文档」预览；可直接编辑，改动实时应用并自动保存",
-                    )
-                    .clicked()
-                {
-                    self.show_preview = !self.show_preview;
-                    if self.show_preview {
-                        // 打开时以组件状态重建待保存文档
-                        self.reset_preview_draft();
-                    }
-                }
             });
         });
     }
@@ -388,6 +377,10 @@ impl App {
     ) {
         let key = self.providers[idx].key.clone();
         let open = !self.provider_collapsed(&key);
+        // 签到只认**面板访问令牌**（`sk-` key 不够，站点要的是用户身份），
+        // 所以按钮能不能出现只看这一个条件；需要用户 ID 的站点在点击后会把
+        // 站点原话报出来（缺头时提示去令牌面板填）。
+        let station_has_pat = self.station_can_checkin(&self.providers[idx].base_url);
         let highlight = if self.provider_drag_target.as_deref() == Some(key.as_str()) {
             2
         } else if self.provider_drag_src.as_deref() == Some(key.as_str()) {
@@ -490,11 +483,21 @@ impl App {
                             _ => {}
                         }
                     }
-                    // 签到：**写操作**（会改账号额度、产生系统日志），所以必须
-                    // 逐个 provider 手动勾选，且完全不参与「查询用量」的批处理。
-                    // 勾选框与按钮成对，放在「复制」左侧（右对齐布局里越晚添加越靠左）。
-                    let checkin_on = self.checkin_enabled(&key);
-                    if checkin_on {
+                    // 签到：该站点填了面板令牌就出现，**不需要额外勾选**；
+                    // 位置固定在「复制」左侧，结果文字再往左（右对齐布局里越晚添加越靠左）。
+                    if station_has_pat {
+                        if ui
+                            .button("签到")
+                            .on_hover_text(
+                                "先读签到状态，今天没签才执行签到\n\
+                                 用该站点的「面板访问令牌」（在「令牌」面板填）\n\
+                                 站点若开了 Cloudflare 人机验证，只能在浏览器里签到\n\
+                                 这是写操作：会改变账号额度并让站点记一条系统日志",
+                            )
+                            .clicked()
+                        {
+                            actions.checkin = Some(key.clone());
+                        }
                         if let Some(state) = self.checkin.get(&key) {
                             if state.rx.is_some() {
                                 ui.add(egui::Spinner::new().size(14.0));
@@ -510,30 +513,6 @@ impl App {
                                 );
                             }
                         }
-                        if ui
-                            .button("签到")
-                            .on_hover_text(
-                                "先读签到状态，今天没签才执行签到\n\
-                                 需要该站点的「面板访问令牌」（在「令牌」面板填）\n\
-                                 站点若开了 Cloudflare 人机验证，只能在浏览器里签到\n\
-                                 这是写操作：会改变账号额度并让站点记一条系统日志",
-                            )
-                            .clicked()
-                        {
-                            actions.checkin = Some(key.clone());
-                        }
-                    }
-                    let mut checkin_checked = checkin_on;
-                    if ui
-                        .checkbox(&mut checkin_checked, "签到")
-                        .on_hover_text(
-                            "勾选后才允许对这个 provider 执行签到。\n\
-                             默认不勾选：签到是写操作（会改账号额度）。\n\
-                             勾选状态按配置文件分区保存到 settings.json。",
-                        )
-                        .changed()
-                    {
-                        actions.toggle_checkin = Some((key.clone(), checkin_checked));
                     }
                 });
             });
@@ -572,7 +551,8 @@ impl App {
             egui::RichText::new(
                 "在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成；\
                  令牌是站点级的，同一站点的多个 provider 共用一份。\
-                 只用于只读查询账号余额。",            )
+                 只用于只读查询账号余额。",
+            )
             .small()
             .color(ui.visuals().weak_text_color()),
         );
@@ -626,16 +606,19 @@ impl App {
             });
             ui.horizontal(|ui| {
                 if let Some(draft) = self.token_draft.get_mut(origin) {
-                    ui.add(
-                        egui::TextEdit::singleline(draft)
-                            .password(!revealed)
-                            .desired_width(280.0)
-                            .hint_text(if configured {
-                                "留空不改变；要清除请点「删除」"
-                            } else {
-                                "粘贴面板访问令牌"
-                            }),
-                    );
+                    ui.scope(|ui| {
+                        ui.visuals_mut().weak_text_color = Some(HINT_GRAY);
+                        ui.add(
+                            egui::TextEdit::singleline(draft)
+                                .password(!revealed)
+                                .desired_width(280.0)
+                                .hint_text(if configured {
+                                    "留空不改变；要清除请点「删除」"
+                                } else {
+                                    "粘贴面板访问令牌"
+                                }),
+                        );
+                    });
                 }
                 if ui.button(if revealed { "隐藏" } else { "显示" }).clicked() {
                     toggle_reveal = Some(origin.clone());
@@ -663,11 +646,14 @@ impl App {
                         .color(ui.visuals().weak_text_color()),
                 );
                 if let Some(draft) = self.token_uid_draft.get_mut(origin) {
-                    ui.add(
-                        egui::TextEdit::singleline(draft)
-                            .desired_width(90.0)
-                            .hint_text("可留空"),
-                    );
+                    ui.scope(|ui| {
+                        ui.visuals_mut().weak_text_color = Some(HINT_GRAY);
+                        ui.add(
+                            egui::TextEdit::singleline(draft)
+                                .desired_width(90.0)
+                                .hint_text("可留空"),
+                        );
+                    });
                 }
                 if needs_id {
                     ui.label(
@@ -694,7 +680,11 @@ impl App {
         }
         if let Some(origin) = save {
             let token = self.token_draft.get(&origin).cloned().unwrap_or_default();
-            let uid = self.token_uid_draft.get(&origin).cloned().unwrap_or_default();
+            let uid = self
+                .token_uid_draft
+                .get(&origin)
+                .cloned()
+                .unwrap_or_default();
             if token.trim().is_empty() {
                 self.status = format!("{} 的令牌为空：要清除请点「删除」", origin);
             } else {
@@ -738,9 +728,7 @@ impl App {
         provider_keys.iter().any(|key| {
             self.balance
                 .get(key)
-                .and_then(|state| {
-                    state.display_result(super::balance::local_midnight_unix())
-                })
+                .and_then(|state| state.display_result(super::balance::local_midnight_unix()))
                 .is_some_and(|result| match result {
                     Err(err) => err.contains(super::balance::NEEDS_USER_ID_MARK),
                     Ok(info) => info

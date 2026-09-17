@@ -74,9 +74,6 @@ pub struct App {
     /// 用「折叠集合」而不是「展开集合」：新加载进来的卡片默认是展开的，
     /// 而且这份状态能原样落盘、不会被「重新加载」清空。
     collapsed: HashSet<String>,
-    /// 已勾选「允许签到」的 provider key（独立于折叠状态：签到是写操作，
-    /// 折叠状态被清理时不该连带清掉授权）。
-    checkin_enabled: HashSet<String>,
     variant_open: HashSet<String>,
     agent_drag_src: Option<String>,
     agent_drag_target: Option<String>,
@@ -184,7 +181,6 @@ impl Default for App {
             show_new_agent: false,
             show_new_provider: false,
             collapsed: prefs.collapsed.iter().cloned().collect(),
-            checkin_enabled: prefs.checkin_enabled.iter().cloned().collect(),
             variant_open: HashSet::new(),
             agent_drag_src: None,
             agent_drag_target: None,
@@ -342,8 +338,6 @@ impl App {
     fn current_prefs(&self) -> crate::prefs::Prefs {
         let mut collapsed: Vec<String> = self.collapsed.iter().cloned().collect();
         collapsed.sort();
-        let mut checkin_enabled: Vec<String> = self.checkin_enabled.iter().cloned().collect();
-        checkin_enabled.sort();
         crate::prefs::Prefs {
             show_api_keys: self.show_api_keys,
             save_format: self.save_format.key().to_string(),
@@ -356,7 +350,6 @@ impl App {
                 deepseek_harness: self.path_override(ConfigFormat::DeepSeekHarness),
             },
             collapsed,
-            checkin_enabled,
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
         }
     }
@@ -394,6 +387,14 @@ impl App {
     pub(super) fn station_pat(&self, base_url: &str) -> String {
         let key = crate::tokens::station_key(base_url);
         self.tokens.get(&key).to_string()
+    }
+
+    /// 该站点能否签到：只看有没有面板访问令牌。
+    ///
+    /// `sk-` key 不够（站点要的是用户身份），所以这一个条件就是
+    /// 「卡片上「签到」按钮什么时候出现」的全部依据；抽成函数是为了能被测试钉住。
+    pub(super) fn station_can_checkin(&self, base_url: &str) -> bool {
+        !self.station_pat(base_url).is_empty()
     }
 
     /// 某 baseUrl 所属站点的用户 ID（没设置则空串；空串 = 不发 `New-Api-User`）。
@@ -488,15 +489,6 @@ impl App {
         );
         self.collapsed
             .retain(|id| !id.starts_with(&prefix) || alive.contains(id));
-        // 签到授权：provider 被删后同样要清（否则文件只增不减）。
-        // 用独立的 alive 集合，不能借用折叠表的集合：两者键的类别不同。
-        let alive_checkin: HashSet<String> = self
-            .providers
-            .iter()
-            .map(|p| crate::prefs::collapsed_id(&config_id, "checkin", &p.key))
-            .collect();
-        self.checkin_enabled
-            .retain(|id| !id.starts_with(&prefix) || alive_checkin.contains(id));
     }
 
     /// 记住某一页手动指定过的配置路径（空串 = 清除覆盖，回到自动探测值）。

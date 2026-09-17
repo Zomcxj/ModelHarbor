@@ -326,6 +326,27 @@ impl App {
                 )
                 .on_hover_text("该格式不支持 agent 定义，保存时将忽略");
             }
+            // 全局密钥显隐：放在「保存」这一行的最右端。
+            // 嵌套的右对齐布局会占掉本行剩余宽度，所以它紧贴右边缘；
+            // 写入路径太长把本行占满时，它会落到下一行并同样靠右。
+            // 放在页头而不是 Providers 标题行：它管的是所有页面的密钥显示。
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(if self.show_api_keys {
+                        "隐藏密钥"
+                    } else {
+                        "显示密钥"
+                    })
+                    .on_hover_text(if self.show_api_keys {
+                        "点击掩码全部 API Key（默认状态）"
+                    } else {
+                        "点击显示全部 API Key 明文（注意防窥）"
+                    })
+                    .clicked()
+                {
+                    self.show_api_keys = !self.show_api_keys;
+                }
+            });
         });
         ui.separator();
     }

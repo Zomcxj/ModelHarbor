@@ -416,6 +416,9 @@ pub struct CheckinStatus {
     pub enabled: bool,
     /// 今天是否已签到。
     pub today: bool,
+    /// **今天**签到的额度（美元）：站点只在 `records` 里逐日给，取最大日期那条。
+    /// 今天没签（或站点没给明细）时为 `None`。
+    pub today_usd: Option<f64>,
     /// 本月签到次数。
     pub month_count: u64,
     /// 累计签到次数。
@@ -473,6 +476,33 @@ pub fn parse_checkin_status(json: &str, units: &Units) -> Result<CheckinStatus, 
             .unwrap_or(0)
     };
     let to_money = |points: f64| points / units.quota_per_unit;
+    let today = stats
+        .and_then(|stats| stats.get("checked_in_today"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // 今日金额：站点只在 `records` 里逐日给额度。取**最大日期**那条
+    // （`YYYY-MM-DD` 的字典序就是时间序），不依赖站点给的先后顺序；
+    // 且只在 `checked_in_today` 为真时才算「今天」——否则最大日期未必是今天，
+    // 把别的日子当成今日会误导。
+    let today_usd = if today {
+        stats
+            .and_then(|stats| stats.get("records"))
+            .and_then(Value::as_array)
+            .and_then(|records| {
+                records
+                    .iter()
+                    .filter_map(|record| {
+                        let date = record.get("checkin_date").and_then(Value::as_str)?;
+                        let quota = record.get("quota_awarded").and_then(Value::as_f64)?;
+                        Some((date, quota))
+                    })
+                    .max_by_key(|(date, _)| *date)
+                    .map(|(_, quota)| quota)
+            })
+            .map(to_money)
+    } else {
+        None
+    };
     // 0 表示站点没配置这一项：显示「额度 $0.00」只会误导。
     let positive_usd = |key: &str| {
         data.get(key)
@@ -485,10 +515,8 @@ pub fn parse_checkin_status(json: &str, units: &Units) -> Result<CheckinStatus, 
             .get("enabled")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        today: stats
-            .and_then(|stats| stats.get("checked_in_today"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        today,
+        today_usd,
         month_count: count("checkin_count"),
         total_count: count("total_checkins"),
         total_usd: stats
@@ -552,6 +580,11 @@ pub fn checkin_message(status: &CheckinStatus, outcome: Option<&CheckinOutcome>)
     if !status.today {
         return "今日未签到".to_string();
     }
+    // 今日金额放在最前面：用户最想知道「今天签了多少」。
+    let mut headline = String::from("今日已签到");
+    if let Some(today) = status.today_usd {
+        headline.push_str(&format!("，获得 {}", money(today)));
+    }
     let mut extra: Vec<String> = Vec::new();
     if status.month_count > 0 {
         extra.push(format!("本月 {} 次", status.month_count));
@@ -560,8 +593,8 @@ pub fn checkin_message(status: &CheckinStatus, outcome: Option<&CheckinOutcome>)
         extra.push(format!("累计获得 {}", money(total)));
     }
     match extra.is_empty() {
-        true => "今日已签到".to_string(),
-        false => format!("今日已签到（{}）", extra.join("，")),
+        true => headline,
+        false => format!("{headline}（{}）", extra.join("，")),
     }
 }
 
@@ -1629,9 +1662,11 @@ mod tests {
             .expect_err("已签到应报错");
         assert!(already.contains("今日已签到"), "{already}");
         // 开了 Cloudflare 人机验证的站点会这样回：要让用户看懂为什么做不了。
-        let captcha =
-            parse_checkin_result(r#"{"success":false,"message":"Turnstile token 为空"}"#, &units)
-                .expect_err("人机验证应报错");
+        let captcha = parse_checkin_result(
+            r#"{"success":false,"message":"Turnstile token 为空"}"#,
+            &units,
+        )
+        .expect_err("人机验证应报错");
         assert!(captcha.contains("Turnstile"), "{captcha}");
     }
 
@@ -1707,5 +1742,50 @@ mod tests {
             checkin_error_hint("网络错误：连接被重置"),
             "网络错误：连接被重置"
         );
+    }
+
+    #[test]
+    fn checkin_status_reports_todays_amount_from_the_records() {
+        let units = parse_units(Some(STATUS_UNITS));
+        let status = parse_checkin_status(CHECKIN_STATUS, &units).expect("应能解析");
+        // fixture 的最新一条是 2026-09-17 / 150000 → $0.30。
+        assert_eq!(status.today_usd, Some(0.3), "今日签到的金额");
+        let text = checkin_message(&status, None);
+        assert!(text.contains("获得 $0.30"), "要能说清今天签了多少：{text}");
+    }
+
+    #[test]
+    fn checkin_status_has_no_today_amount_when_not_signed_today() {
+        let units = parse_units(Some(STATUS_UNITS));
+        // 今天没签：即使有历史记录，也不能把昨天/上一条的金额当成今天。
+        let not_today = parse_checkin_status(
+            r#"{"success":true,"data":{"enabled":true,"stats":{"checked_in_today":false,
+                "checkin_count":3,"records":[{"checkin_date":"2026-09-16","quota_awarded":150000}]}}}"#,
+            &units,
+        )
+        .expect("应能解析");
+        assert_eq!(not_today.today_usd, None);
+        let text = checkin_message(&not_today, None);
+        assert!(text.contains("今日未签到"), "{text}");
+        assert!(!text.contains("获得"), "没签就不该提获得：{text}");
+
+        // 今天签了但记录为空（站点只给标记不给明细）：同样不编金额。
+        let no_records = parse_checkin_status(
+            r#"{"success":true,"data":{"enabled":true,"stats":{"checked_in_today":true,"checkin_count":1}}}"#,
+            &units,
+        )
+        .expect("应能解析");
+        assert_eq!(no_records.today_usd, None);
+        assert!(checkin_message(&no_records, None).contains("今日已签到"));
+
+        // 记录顺序被打乱时按最大日期取，不依赖站点给的先后。
+        let shuffled = parse_checkin_status(
+            r#"{"success":true,"data":{"enabled":true,"stats":{"checked_in_today":true,
+                "checkin_count":2,"records":[{"checkin_date":"2026-09-10","quota_awarded":50000},
+                {"checkin_date":"2026-09-17","quota_awarded":250000}]}}}"#,
+            &units,
+        )
+        .expect("应能解析");
+        assert_eq!(shuffled.today_usd, Some(0.5), "取最大日期那条");
     }
 }
