@@ -103,7 +103,9 @@ Providers 标题行的「查询用量」按钮会对当前页面的 provider 查
 - 它是**站点 / 账号级**的，不是 provider 级：同一个站点的多个 provider 共用一份，面板里按站点列一行并标注共用的 provider
 - 站点只挂了中转路由（`/api/usage/token/` 不存在）时，面板令牌是拿到余额的**唯一途径**：账号接口 `/api/user/self` 通常仍在该域名下可用，只有调用日志、没有额度的局面因此可以补上余额
 - 与 `sk-` 是两套凭证：`sk-` 用于推理与 `/api/usage/token/`，面板令牌用于 `/api/user/self`（只读）。把 `sk-` 填到面板令牌里会得到「令牌无效或已撤销」
-- 鉴权只用 `Authorization: Bearer <令牌>`；新版 new-api 不再要求 `New-Api-User` 请求头
+- 鉴权只用 `Authorization: Bearer <令牌>`
+- **用户 ID（可选）**：部署的是**旧版 new-api** 的站点会在 `/api/user/self` 上回 `401 Unauthorized, New-Api-User header not provided`——令牌本身没问题，缺的是防跳站校验头。此时在令牌行下方的「用户 ID」里填上你的用户 ID（面板里 F12 看任意一次 `/api/user/self` 请求的 `New-Api-User` 值），工具就会带上该头。新版不需要它，**留空就不发这个头**（发空值反而会被判“与登录用户不匹配”）。填错时站点会回 `does not match logged in user`
+- 令牌面板会在该站点上次查询回了「缺 `New-Api-User`」时把那行提示标成黄色（判断依据是上次查询结果，不是持久化配置）
 - 拿到后卡片主行变成「账号余额 …」，令牌级已用/余额降到悬停详情，两套口径分节列出不混算
 - 令牌无效（401/403）、站点未开该接口、返回内容不可识别都**只**在悬停详情追加一行原因，**不影响**原有的 `sk-` 结果；只有账号数据时卡片照样显示
 
@@ -314,4 +316,4 @@ llm-pi-ai:
 - 当前**仅支持 Windows**
 - 配置文件中的 `apiKey` 为**明文**，DSH 的 `.credentials.yaml` 同样为明文，请勿提交到公开仓库
 - 界面设置文件（`%USERPROFILE%\.modelharbor\settings.json`）只保存界面选择，不含密钥；可以安全删除（会恢复默认界面设置）
-- 站点面板令牌存在 `%USERPROFILE%\.modelharbor\tokens.json`，**含凭证且为明文**（与你的 agent 配置文件同级风险），请勿提交或同步到共享目录；里面只有你主动填过的站点，在「令牌」面板点「删除」或直接删除该文件即可清空。工具不会把令牌写进 `settings.json`、也不会写进任何 agent 配置文件，接口请求只把它放进请求头（不进 URL、不进日志与状态栏文本）
+- 站点面板令牌存在 `%USERPROFILE%\.modelharbor\tokens.json`，**含凭证且为明文**（与你的 agent 配置文件同级风险），请勿提交或同步到共享目录；里面只有你主动填过的站点，在「令牌」面板点「删除」或直接删除该文件即可清空。文件里 `tokens` 段存令牌、`user_ids` 段存可选的用户 ID（旧版站点才需要，同样视为凭证）；工具不会把它们写进 `settings.json`、也不会写进任何 agent 配置文件，接口请求只把令牌放进 `Authorization` 头、用户 ID 放进 `New-Api-User` 头（都不进 URL、不进日志与状态栏文本）

@@ -96,6 +96,8 @@ pub struct App {
     show_tokens: bool,
     /// 令牌面板里正在编辑的文本（键 = 站点 origin），未保存的草稿。
     token_draft: HashMap<String, String>,
+    /// 令牌面板里「用户 ID」的草稿（旧版 new-api 的 `New-Api-User` 头，可留空）。
+    token_uid_draft: HashMap<String, String>,
     /// 已点「显示」的站点（单条掩码开关，默认跟随全局「显示密钥」）。
     token_reveal: HashSet<String>,
     /// 模型延迟探测的节流与串行状态（纯内存，重启清零）。
@@ -191,6 +193,7 @@ impl Default for App {
             tokens: crate::tokens::StationTokens::load(),
             show_tokens: false,
             token_draft: HashMap::new(),
+            token_uid_draft: HashMap::new(),
             token_reveal: HashSet::new(),
             probe: ProbeGate::default(),
             net_guard: crate::netguard::detect(),
@@ -379,6 +382,12 @@ impl App {
     pub(super) fn station_pat(&self, base_url: &str) -> String {
         let key = crate::tokens::station_key(base_url);
         self.tokens.get(&key).to_string()
+    }
+
+    /// 某 baseUrl 所属站点的用户 ID（没设置则空串；空串 = 不发 `New-Api-User`）。
+    pub(super) fn station_user_id(&self, base_url: &str) -> String {
+        let key = crate::tokens::station_key(base_url);
+        self.tokens.user_id(&key).to_string()
     }
 
     /// provider 卡片是否处于折叠状态。

@@ -223,6 +223,8 @@ impl App {
                             secret: credentials::effective_secret(p),
                             // 站点级面板令牌：没设置就是空串（只查 sk- 那两个接口）。
                             pat: self.station_pat(&p.base_url),
+                            // 旧版 new-api 要的用户 ID：没填就是空串（不发该头）。
+                            user_id: self.station_user_id(&p.base_url),
                         })
                         .collect();
                     let now = ui.input(|i| i.time);
@@ -255,6 +257,7 @@ impl App {
                     if self.show_tokens {
                         // 重新打开时按已保存的值重填草稿（避免残留上次未保存的改动）。
                         self.token_draft.clear();
+                        self.token_uid_draft.clear();
                     }
                 }
                 // 网络守卫：检测到系统代理 / VPN 时默认禁用模型延迟测试
@@ -270,7 +273,11 @@ impl App {
                             format!("{}：{reason}", crate::netguard::BLOCK_PREFIX)
                         })
                         .small()
-                        .color(if allow_probe { semantics.warn } else { semantics.err }),
+                        .color(if allow_probe {
+                            semantics.warn
+                        } else {
+                            semantics.err
+                        }),
                     )
                     .on_hover_text(
                         "中转站常见多 IP 检测 / 测活风控，经代理做推理探测可能被封号；\n\
@@ -485,8 +492,7 @@ impl App {
             egui::RichText::new(
                 "在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成；\
                  令牌是站点级的，同一站点的多个 provider 共用一份。\
-                 只用于只读查询账号余额。",
-            )
+                 只用于只读查询账号余额。",            )
             .small()
             .color(ui.visuals().weak_text_color()),
         );
@@ -503,6 +509,10 @@ impl App {
             if !self.token_draft.contains_key(origin) {
                 let existing = self.tokens.get(origin).to_string();
                 self.token_draft.insert(origin.clone(), existing);
+            }
+            if !self.token_uid_draft.contains_key(origin) {
+                let existing = self.tokens.user_id(origin).to_string();
+                self.token_uid_draft.insert(origin.clone(), existing);
             }
         }
 
@@ -560,6 +570,39 @@ impl App {
                     remove = Some(origin.clone());
                 }
             });
+            // 用户 ID：只有部分站点（部署的是旧版 new-api）需要它，
+            // 所以放在令牌下一行，并说明什么情况下才填。
+            // 先算好再进闭包：`station_needs_user_id` 借整个 self，
+            // 不能在已经借了 `token_uid_draft` 的闭包里调用。
+            let needs_id = self.station_needs_user_id(keys);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("用户 ID")
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+                if let Some(draft) = self.token_uid_draft.get_mut(origin) {
+                    ui.add(
+                        egui::TextEdit::singleline(draft)
+                            .desired_width(90.0)
+                            .hint_text("可留空"),
+                    );
+                }
+                if needs_id {
+                    ui.label(
+                        egui::RichText::new("上次查询提示缺 New-Api-User，填你的用户 ID")
+                            .small()
+                            .color(crate::theme::semantics(ui).warn),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new("站点提示缺 New-Api-User 时才需填")
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+            });
             ui.add_space(2.0);
         }
 
@@ -571,13 +614,21 @@ impl App {
         }
         if let Some(origin) = save {
             let token = self.token_draft.get(&origin).cloned().unwrap_or_default();
+            let uid = self.token_uid_draft.get(&origin).cloned().unwrap_or_default();
             if token.trim().is_empty() {
                 self.status = format!("{} 的令牌为空：要清除请点「删除」", origin);
             } else {
                 self.tokens.set(&origin, &token);
+                // 用户 ID 是可选项：空串 = 不发 New-Api-User（新版站点不需要）。
+                self.tokens.set_user_id(&origin, &uid);
+                let with_uid = !uid.trim().is_empty();
                 match self.tokens.save() {
                     Ok(()) => {
-                        self.status = format!("已保存 {} 的面板令牌", origin);
+                        self.status = if with_uid {
+                            format!("已保存 {} 的面板令牌与用户 ID", origin)
+                        } else {
+                            format!("已保存 {} 的面板令牌", origin)
+                        };
                         self.forget_station_balance(&origin);
                     }
                     // 错误只带路径，不带令牌内容（见 tokens::save_to）。
@@ -588,6 +639,7 @@ impl App {
         if let Some(origin) = remove {
             self.tokens.remove(&origin);
             self.token_draft.remove(&origin);
+            self.token_uid_draft.remove(&origin);
             match self.tokens.save() {
                 Ok(()) => {
                     self.status = format!("已删除 {} 的面板令牌", origin);
@@ -596,6 +648,27 @@ impl App {
                 Err(err) => self.status = format!("令牌删除失败：{err}"),
             }
         }
+    }
+
+    /// 该站点的上次查询是否回了「缺 New-Api-User」。
+    ///
+    /// 从已有的用量结果推导，不额外记状态：错误可能落在 `Err`（令牌侧也失败）
+    /// 或成功结果的 `note`（令牌侧成功、只有账号部分失败）两处，两边都要看。
+    pub(super) fn station_needs_user_id(&self, provider_keys: &[String]) -> bool {
+        provider_keys.iter().any(|key| {
+            self.balance
+                .get(key)
+                .and_then(|state| {
+                    state.display_result(super::balance::local_midnight_unix())
+                })
+                .is_some_and(|result| match result {
+                    Err(err) => err.contains(super::balance::NEEDS_USER_ID_MARK),
+                    Ok(info) => info
+                        .note
+                        .as_deref()
+                        .is_some_and(|note| note.contains(super::balance::NEEDS_USER_ID_MARK)),
+                })
+        })
     }
 
     /// 令牌变更后丢弃该站点各 provider 的用量缓存：下次查询重新取账号数据，

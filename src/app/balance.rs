@@ -31,6 +31,8 @@ pub(super) struct Query {
     pub(super) secret: String,
     /// 面板访问令牌（PAT，可选）：填了才能查账号级额度（`/api/user/self`）。
     pub(super) pat: String,
+    /// 旧版 new-api 要求的用户 ID（`New-Api-User` 头）；空串 = 不发送该头。
+    pub(super) user_id: String,
 }
 
 /// 单个 provider 的用量查询状态。
@@ -156,7 +158,7 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
     // 面板令牌是可选增强：失败绝不影响已有结果，只往详情里补一行说明。
     let pat = query.pat.trim();
     if !pat.is_empty() {
-        let account = fetch_account(&endpoints, &units, pat);
+        let account = fetch_account(&endpoints, &units, pat, &query.user_id);
         merge_account(
             &mut result,
             account,
@@ -177,17 +179,32 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
 /// 取值必须等于登录用户的 ID（实测错值会回 “does not match logged in user”）。
 /// 只拿到状态码时会把这种 401 说成“令牌无效”，所以必须按正文分类。
 const ACCOUNT_NEEDS_USER_ID: &str =
-    "该站点要求 New-Api-User（用户 ID）头：令牌有效，但缺用户 ID";
+    "该站点要求 New-Api-User（用户 ID）头：请在「令牌」面板为它补填用户 ID（可在站点面板 F12 看 /api/user/self 请求的 New-Api-User 值）";
+
+/// 账号查询因缺 `New-Api-User` 头失败时，错误文本里一定含这个标记。
+///
+/// 令牌面板用它判断「是否该提醒用户补填用户 ID」——判断依据是**上次查询结果**，
+/// 而不是持久化的配置（站点要不要这个头是运行时才知道的）。
+pub(super) const NEEDS_USER_ID_MARK: &str = "New-Api-User";
 
 fn fetch_account(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
     pat: &str,
+    user_id: &str,
 ) -> Result<billing::AccountInfo, String> {
     let url = format!("{}/api/user/self", endpoints.origin);
-    let text = account_get(&url, pat)?;
+    let text = account_get(&url, pat, user_id)?;
     billing::parse_account_self(&text, units)
         .ok_or_else(|| "返回内容不是可识别的账号额度".to_string())
+}
+
+/// `New-Api-User` 头的取值：空串（没填）表示**不发这个头**。
+///
+/// 不能发空值：旧版会把它当成“与登录用户不匹配”，反而把本来能通的站点弄坏。
+fn user_id_header(user_id: &str) -> Option<&str> {
+    let id = user_id.trim();
+    (!id.is_empty()).then_some(id)
 }
 
 /// 账号接口专用请求：与 [`http_get`] 的区别是**保留错误响应正文**用于分类。
@@ -195,13 +212,18 @@ fn fetch_account(
 /// 旧版 new-api 用「401 + 正文里提到 `New-Api-User`」表达「令牌没问题，缺用户 ID」，
 /// 只拿到状态码就会把它误报成「令牌无效」。正文只在本地用于判断，
 /// **绝不进入错误文本**（避免把站点回显的内容带到状态栏）。
-fn account_get(url: &str, pat: &str) -> Result<String, String> {
+fn account_get(url: &str, pat: &str, user_id: &str) -> Result<String, String> {
     let request = latency_agent()
         .get(url)
         .set("Accept", "application/json")
         // 与 http_get 一致：ureq 默认 UA 会被部分站点的 WAF 直接拒掉。
         .set("User-Agent", "Mozilla/5.0");
-    let request = apply_auth(request, AuthKind::Bearer, pat);
+    let mut request = apply_auth(request, AuthKind::Bearer, pat);
+    // 旧版 new-api 用这个头做防跳站校验，值必须等于登录用户 ID；
+    // 新版不需要，所以只在用户真的填了的时候发。
+    if let Some(id) = user_id_header(user_id) {
+        request = request.set("New-Api-User", id);
+    }
     match request.call() {
         Ok(response) => response
             .into_string()
@@ -573,6 +595,15 @@ mod tests {
             message.contains("New-Api-User") && message.contains("用户 ID"),
             "要说清缺什么、怎么补：{message}"
         );
+    }
+
+    #[test]
+    fn user_id_header_is_sent_only_when_filled_in() {
+        // 空串 = 站点不需要这个头（新版 new-api），绝不能发一个空值，
+        // 否则反而会被判“与登录用户不匹配”。
+        assert_eq!(user_id_header(""), None);
+        assert_eq!(user_id_header("   "), None);
+        assert_eq!(user_id_header(" 777 "), Some("777"));
     }
 
     #[test]

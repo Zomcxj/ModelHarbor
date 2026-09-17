@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 const FILE_NAME: &str = "tokens.json";
 /// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
-const SCHEMA_VERSION: u64 = 1;
+const SCHEMA_VERSION: u64 = 2;
 
 /// 站点令牌表（键 = 规范化 origin，值 = PAT）。
 ///
@@ -25,6 +25,9 @@ const SCHEMA_VERSION: u64 = 1;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StationTokens {
     tokens: BTreeMap<String, String>,
+    /// 旧版 new-api 要求的用户 ID（`New-Api-User` 头），与 `tokens` 同键。
+    /// 新版不需要，所以大多数站点这里是空的。
+    user_ids: BTreeMap<String, String>,
 }
 
 /// 站点身份：把 baseUrl 归一到「站点根」，作为令牌表的键。
@@ -73,7 +76,25 @@ impl StationTokens {
                     .collect()
             })
             .unwrap_or_default();
-        StationTokens { tokens }
+        // 用户 ID：键不存在（v1 老文件）就是空表，不影响令牌读取。
+        let user_ids = root
+            .get("user_ids")
+            .and_then(Value::as_object)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        let id = value.as_str()?.trim();
+                        let key = key.trim();
+                        if key.is_empty() || id.is_empty() {
+                            return None;
+                        }
+                        Some((key.to_string(), id.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        StationTokens { tokens, user_ids }
     }
 
     /// 序列化（键序固定，便于人工核对 / diff）。
@@ -85,6 +106,13 @@ impl StationTokens {
             tokens.insert(key.clone(), Value::String(token.clone()));
         }
         root.insert("tokens".to_string(), Value::Object(tokens));
+        // 用户 ID 单独一段，与令牌平行：老版本读这个文件时忽略未知键，
+        // 所以不需要改已有令牌的存储形态（也不需要迁移）。
+        let mut user_ids = Map::new();
+        for (key, id) in &self.user_ids {
+            user_ids.insert(key.clone(), Value::String(id.clone()));
+        }
+        root.insert("user_ids".to_string(), Value::Object(user_ids));
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -108,6 +136,30 @@ impl StationTokens {
         !self.get(origin).is_empty()
     }
 
+    /// 取某站点的用户 ID（旧版 new-api 的 `New-Api-User` 头，没有则空串）。
+    ///
+    /// 只在站点回了「缺 `New-Api-User`」时才需要填；新版不需要它。
+    pub fn user_id(&self, origin: &str) -> &str {
+        self.user_ids
+            .get(origin.trim().to_lowercase().as_str())
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
+    /// 写入用户 ID；空串（或纯空白）等于删除该站点这一项。
+    pub fn set_user_id(&mut self, origin: &str, id: &str) {
+        let origin = origin.trim().to_lowercase();
+        if origin.is_empty() {
+            return;
+        }
+        let id = id.trim();
+        if id.is_empty() {
+            self.user_ids.remove(&origin);
+        } else {
+            self.user_ids.insert(origin, id.to_string());
+        }
+    }
+
     /// 写入令牌；空串（或纯空白）等于删除该站点条目。
     pub fn set(&mut self, origin: &str, token: &str) {
         let origin = origin.trim().to_lowercase();
@@ -122,9 +174,11 @@ impl StationTokens {
         }
     }
 
-    /// 删除某站点的令牌。
+    /// 删除某站点的令牌（连同用户 ID：两者同属一个站点的凭证）。
     pub fn remove(&mut self, origin: &str) {
-        self.tokens.remove(&origin.trim().to_lowercase());
+        let origin = origin.trim().to_lowercase();
+        self.tokens.remove(&origin);
+        self.user_ids.remove(&origin);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -168,6 +222,50 @@ mod tests {
             station_key("https://a.example.com/v1"),
             station_key("https://b.example.com/v1")
         );
+    }
+
+    #[test]
+    fn user_id_is_per_station_and_normalized() {
+        let mut tokens = StationTokens::default();
+        assert_eq!(tokens.user_id("https://a.example.com"), "", "没设置就是空串");
+        tokens.set_user_id("  https://A.Example.com  ", " 12345 ");
+        assert_eq!(tokens.user_id("https://a.example.com"), "12345");
+        // 空串 / 纯空白 = 删除（与 set 对令牌的语义一致）。
+        tokens.set_user_id("https://a.example.com", "   ");
+        assert_eq!(tokens.user_id("https://a.example.com"), "");
+        assert!(tokens.is_empty(), "只剩空用户 ID 不该算“有配置”");
+    }
+
+    #[test]
+    fn user_id_round_trips_and_v1_files_still_load() {
+        let mut tokens = StationTokens::default();
+        tokens.set("https://a.example.com", "pat-value");
+        tokens.set_user_id("https://a.example.com", "777");
+        let text = tokens.to_json();
+        assert!(text.contains("user_ids"), "用户 ID 要落盘：{text}");
+        let back = StationTokens::parse(&text);
+        assert_eq!(back.get("https://a.example.com"), "pat-value");
+        assert_eq!(back.user_id("https://a.example.com"), "777");
+
+        // v1 老文件（没有 user_ids 键）必须照常读出令牌，用户 ID 为空。
+        let legacy = r#"{"version":1,"tokens":{"https://a.example.com":"old-pat"}}"#;
+        let old = StationTokens::parse(legacy);
+        assert_eq!(old.get("https://a.example.com"), "old-pat");
+        assert_eq!(old.user_id("https://a.example.com"), "");
+        // 非字符串 / 空串的 user_id 一律不收。
+        let junk = r#"{"tokens":{},"user_ids":{"https://a.example.com":123,"https://b.example.com":""}}"#;
+        assert_eq!(StationTokens::parse(junk).user_id("https://a.example.com"), "");
+        assert_eq!(StationTokens::parse(junk).user_id("https://b.example.com"), "");
+    }
+
+    #[test]
+    fn removing_a_station_also_clears_its_user_id() {
+        let mut tokens = StationTokens::default();
+        tokens.set("https://a.example.com", "pat-value");
+        tokens.set_user_id("https://a.example.com", "777");
+        tokens.remove("https://a.example.com");
+        assert_eq!(tokens.user_id("https://a.example.com"), "");
+        assert_eq!(tokens.get("https://a.example.com"), "");
     }
 
     #[test]
@@ -235,7 +333,9 @@ mod tests {
         assert_eq!(back, tokens);
         // 键序稳定：再次序列化必须完全一致（内容没变就不产生 diff）
         assert_eq!(back.to_json(), text);
-        assert!(text.contains(r#""version": 1"#), "{text}");
+        assert!(text.contains(r#""version": 2"#), "{text}");
+        // 没有用户 ID 时也写出空段：结构固定才好人工核对 / diff。
+        assert!(text.contains(r#""user_ids": {}"#), "{text}");
     }
 
     #[test]

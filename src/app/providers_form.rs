@@ -1,8 +1,8 @@
 //! Provider 编辑 / 新增表单、模型获取弹层与表单字段控件。
 use super::App;
 use crate::app::fetch::{
-    fetch_models_remote, model_latency_label, model_probe_button, net_guard_gate,
-    ModelFetchState, NEW_PROVIDER_FETCH_KEY,
+    fetch_models_remote, model_latency_label, model_probe_button, net_guard_gate, ModelFetchState,
+    NEW_PROVIDER_FETCH_KEY,
 };
 use crate::app::providers::ProviderFormFlags;
 use crate::convert;
