@@ -103,8 +103,6 @@ pub struct Billing {
     pub today_models: Vec<(String, f64)>,
     /// 近 7 天已用（美元，含今日）。
     pub week_usd: Option<f64>,
-    /// 日志查询只取有限的一页：统计可能偏小（悬停里说明）。
-    pub log_capped: bool,
     /// 站点没给 `quota_per_unit`，换算按默认 500000 假设（悬停里说明）。
     pub unit_assumed: bool,
     /// 签到状态（`GET /api/user/checkin`，只读，需面板令牌）。
@@ -657,9 +655,11 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
     let to_money = |points: f64| points / unit;
     let today = summarize_logs(inputs.logs, Some(inputs.today_from));
     let week = summarize_logs(inputs.logs, Some(inputs.now - 7 * 86_400));
-    let capped = true; // 只请求首个分页，无法证明服务端没有后续页。
-                       // 额度接口可能整个不存在（把 baseUrl 指向中转域名的站点就没有这个面板路由）：
-                       // 此时日志统计照常出，额度三项留空，绝不编数字。
+    // 只请求首个分页，无法证明服务端没有后续页（即今日 / 近 7 天统计可能偏小）。
+    // 这一点不再写进悬停小窗：那里只放数字与影响读数的口径（换算比、跳日），
+    // 接口来源与分页上限属于实现细节，用户看的是额度。
+    // 额度接口可能整个不存在（把 baseUrl 指向中转域名的站点就没有这个面板路由）：
+    // 此时日志统计照常出，额度三项留空，绝不编数字。
     let unlimited = inputs.usage.is_some_and(|usage| usage.unlimited);
     Billing {
         panel: parse_panel(inputs.status_json),
@@ -691,7 +691,6 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
             .map(|(name, quota)| (name.clone(), to_money(*quota)))
             .collect(),
         week_usd: (week.count > 0).then(|| to_money(week.quota)),
-        log_capped: capped,
         unit_assumed: inputs.units.assumed,
         note: inputs.note,
         ..Default::default()
@@ -912,7 +911,6 @@ impl Billing {
         if !meta.is_empty() {
             lines.push(meta.join(" · "));
         }
-        lines.push("来源：/api/user/self（只读，需面板令牌）".to_string());
         lines
     }
 
@@ -937,7 +935,6 @@ impl Billing {
             lines.push("该站没有返回可识别的账单信息".to_string());
         }
         lines.push("已用为账号累计值（接口忽略日期参数，取不到日用量）".to_string());
-        lines.push("来源：/dashboard/billing/subscription + /usage（只读管理接口）".to_string());
         lines.join("\n")
     }
 
@@ -988,19 +985,9 @@ impl Billing {
                 "换算：站点没给 quota_per_unit，按默认 1 美元 = 500,000 quota 估算".to_string(),
             );
         }
-        if self.log_capped {
-            lines.push(format!(
-                "日志：只请求首个 {} 条分页，服务端若还有后续页则统计会偏小",
-                LOG_PAGE_LIMIT
-            ));
-        }
         if let Some(note) = &self.note {
             lines.push(format!("备注：{}", note));
         }
-        lines.push(match self.shape {
-            Shape::TokenLogsOnly => "来源：/api/log/token（只需 API key，只读）".to_string(),
-            _ => "来源：/api/usage/token/ + /api/log/token（只需 API key，只读）".to_string(),
-        });
         lines.join("\n")
     }
 }
@@ -1282,8 +1269,9 @@ mod tests {
     }
 
     #[test]
-    fn log_cap_is_disclosed() {
-        // 站点日志上限 1000 条：到顶了要说清楚，别让人以为算全了。
+    fn detail_keeps_numbers_and_drops_the_endpoint_footnotes() {
+        // 悬停小窗只放「数字 + 会影响读数的口径」（换算比、跳日）。
+        // 接口来源、分页上限、只读这类实现细节在卡片上只是噪音，一律不写。
         let items: Vec<String> = (0..LOG_PAGE_LIMIT)
             .map(|i| {
                 format!(
@@ -1306,12 +1294,14 @@ mod tests {
             today_from: 1_789_430_000,
             note: None,
         });
-        assert!(info.log_capped);
-        assert!(
-            info.detail().contains("服务端若还有后续页则统计会偏小"),
-            "{}",
-            info.detail()
-        );
+        let detail = info.detail();
+        for noise in ["来源", "/api/", "分页", "只读", "接口"] {
+            assert!(
+                !detail.contains(noise),
+                "「{noise}」是实现细节，不该进小窗：{detail}"
+            );
+        }
+        assert!(detail.contains("近 7 天"), "数字要留着：{detail}");
     }
 
     #[test]
@@ -1624,13 +1614,11 @@ mod tests {
     }
 
     #[test]
-    fn account_detail_is_disclosed_as_account_level_and_read_only() {
+    fn account_detail_is_disclosed_as_account_level() {
+        // 小窗不再写接口路径（用户不要来源信息），但「账号级」与
+        // 「面板访问令牌」两项口径披露必须留住：否则会被读成某个 sk- 令牌的余额。
         let info = account_only_billing();
         let detail = info.detail();
-        assert!(
-            detail.contains("/api/user/self"),
-            "要说明来源端点：{detail}"
-        );
         assert!(
             detail.contains("面板访问令牌"),
             "要说明靠面板令牌拿到：{detail}"

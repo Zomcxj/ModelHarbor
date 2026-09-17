@@ -1,12 +1,28 @@
 use eframe::egui::{self, Color32, Stroke, Visuals};
 
-/// 提示 / 淡色小字的颜色（输入框占位提示、`.weak()` 小字）。
+/// 淡化禁用控件时用的 alpha（即 `Visuals::disabled_alpha` 的默认值）。
 ///
-/// egui 默认取 `text × weak_text_alpha(0.6)`，在本主题的正文色（暗色 `#E4E4E4`）
-/// 上算出来约 `#898989`——和正文只差一点点，用户会把输入框的占位提示
-/// 当成已经填好的值。显式给一个中灰：明暗两套主题上都读得清，
-/// 又能一眼看出「这是提示，不是值」。
-pub const HINT_GREY: Color32 = Color32::from_gray(102);
+/// 这里写常量而不是去问 egui：主题构造时手上只有调色板。单测会拿
+/// `Visuals::disabled_alpha()` 核对，egui 改了默认值就会红。
+const DISABLED_ALPHA: f32 = 0.5;
+
+/// 把一个**预乘 alpha** 的颜色合成到不透明底色上。
+///
+/// egui 的 `Color32` 是预乘的，wgpu 侧的混合因子也是 `One / OneMinusSrcAlpha`，
+/// 所以公式就是 `结果 = 源 + 底 × (1 − α)`。
+fn over(dst: Color32, src: Color32) -> Color32 {
+    let keep = 1.0 - f32::from(src.a()) / 255.0;
+    let mix = |s: u8, d: u8| {
+        (f32::from(s) + f32::from(d) * keep)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(
+        mix(src.r(), dst.r()),
+        mix(src.g(), dst.g()),
+        mix(src.b(), dst.b()),
+    )
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
@@ -286,11 +302,12 @@ mod semantics_tests {
                 theme.apply(&ctx);
             }
             let visuals = ctx.style().visuals.clone();
-            assert_eq!(visuals.weak_text_color(), HINT_GREY, "{}", theme.key());
+            let hint_color = theme.palette().hint_color();
+            assert_eq!(visuals.weak_text_color(), hint_color, "{}", theme.key());
 
             let panel = visuals.panel_fill;
             let body = contrast(visuals.text_color(), panel);
-            let hint = contrast(HINT_GREY, panel);
+            let hint = contrast(hint_color, panel);
             assert!(
                 hint < body * 0.6,
                 "{} 的提示色不够淡：正文 {body:.1}:1 vs 提示 {hint:.1}:1",
@@ -299,6 +316,109 @@ mod semantics_tests {
             assert!(
                 hint >= 2.0,
                 "{} 的提示色太淡，读不清：{hint:.1}:1",
+                theme.key()
+            );
+        }
+    }
+
+    /// 一次丢弃式渲染：取回本帧所有顶点色（含数量）。
+    ///
+    /// 画三帧：egui 第一帧还没有字体，文字要等下一帧才画得出来。
+    fn render_colors(theme: Theme, draw: impl Fn(&mut egui::Ui)) -> Vec<(Color32, usize)> {
+        let ctx = egui::Context::default();
+        theme.apply(&ctx);
+        let mut out = None;
+        for _ in 0..3 {
+            out = Some(ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(320.0, 120.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| draw(ui));
+                },
+            ));
+        }
+        // 用 `[r,g,b,a]` 当键：`Color32` 自己没有 `Ord`。
+        let mut counts: std::collections::BTreeMap<[u8; 4], usize> = Default::default();
+        for prim in ctx.tessellate(out.expect("应有一帧").shapes, 1.0) {
+            if let egui::epaint::Primitive::Mesh(mesh) = prim.primitive {
+                for v in mesh.vertices {
+                    *counts
+                        .entry([v.color.r(), v.color.g(), v.color.b(), v.color.a()])
+                        .or_default() += 1;
+                }
+            }
+        }
+        counts
+            .into_iter()
+            .map(|(k, n)| {
+                (
+                    Color32::from_rgba_premultiplied(k[0], k[1], k[2], k[3]),
+                    n,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hint_color_matches_a_disabled_widget_as_rendered() {
+        // 提示色不是拍出来的常数，而是「禁用控件文字叠出来的观感」。
+        // 那就不能只验算式：要拿 egui **真实画出来的顶点色**核对
+        // 算式踩的是不是那两层色（按钮底、文字），否则 egui 换了
+        // 禁用按钮用哪个 WidgetVisuals，算式再对也是错的。
+        for theme in Theme::ALL {
+            let palette = theme.palette();
+            let faded = |color: Color32| color.gamma_multiply(DISABLED_ALPHA);
+            let colors: Vec<Color32> = render_colors(theme, |ui| {
+                ui.add_enabled(false, egui::Button::new("删除"));
+            })
+            .into_iter()
+            .map(|(color, _)| color)
+            .collect();
+            assert!(
+                colors.contains(&faded(palette.widget)),
+                "{} 的禁用按钮底应是控件底色淡化",
+                theme.key()
+            );
+            assert!(
+                colors.contains(&faded(palette.text)),
+                "{} 的禁用按钮文字应是正文色淡化",
+                theme.key()
+            );
+            assert_eq!(
+                over(over(palette.panel, faded(palette.widget)), faded(palette.text)),
+                palette.hint_color(),
+                "{} 的提示色与禁用按钮文字不一致",
+                theme.key()
+            );
+        }
+    }
+
+    #[test]
+    fn a_text_edit_hint_actually_renders_in_the_hint_color() {
+        // 曾经的坑：主题用 `override_text_color` 统一正文色，而纯文本
+        // `WidgetText` 取色是 `override_text_color.unwrap_or(PLACEHOLDER)`，
+        // 于是 `hint_text` 的淡色（作为 `Painter::galley` 的兜底色传入）
+        // 被挡住，占位提示画成了正文色——看上去像已经填好的值。
+        // 这一条钉住它：渲染出来的提示字样必须是提示色，而不是正文色。
+        for theme in Theme::ALL {
+            let palette = theme.palette();
+            let colors = render_colors(theme, |ui| {
+                let mut text = String::new();
+                ui.add(egui::TextEdit::singleline(&mut text).hint_text("粘贴面板访问令牌"));
+            });
+            assert!(
+                colors.iter().any(|(color, _)| *color == palette.hint_color()),
+                "{} 的占位提示没有用提示色",
+                theme.key()
+            );
+            assert!(
+                !colors.iter().any(|(color, _)| *color == palette.text),
+                "{} 的占位提示被正文色盖住了",
                 theme.key()
             );
         }
@@ -358,7 +478,23 @@ impl Palette {
         }
     }
 
+    /// 提示 / 淡色小字（输入框占位提示、`.weak()` 小字）的颜色。
+    ///
+    /// 标准是用户给的：「和禁用的删除一个颜色」。egui 的禁用不是换一个灰，
+    /// 而是 [`egui::Ui::disable`] 把整棵子树按 `disabled_alpha` 淡化——
+    /// 颜色的 RGB 与 alpha 都乘上它（`Color32` 预乘，这正是「50% 不透明」的写法），
+    /// 然后按 alpha 混合到底色上。所以这里把同一个算式一路算到**不透明**：
+    /// 提示文字是画在别处（输入框底色）的，只有预先合成成同一个 RGB，
+    /// 看上去才会真的是一个颜色。
+    ///
+    /// 顺序照抄渲染：按钮底（`widget`）先淡化叠到面板底，文字再淡化叠到那层底上。
+    fn hint_color(&self) -> Color32 {
+        let faded = |color: Color32| color.gamma_multiply(DISABLED_ALPHA);
+        over(over(self.panel, faded(self.widget)), faded(self.text))
+    }
+
     fn into_visuals(self) -> Visuals {
+        let hint = self.hint_color();
         let mut v = if self.dark {
             Visuals::dark()
         } else {
@@ -368,11 +504,23 @@ impl Palette {
         v.window_fill = self.panel;
         v.faint_bg_color = self.faint;
         v.extreme_bg_color = self.extreme;
-        v.override_text_color = Some(self.text);
-        // 提示 / 淡色小字：egui 默认取 `text × weak_text_alpha(0.6)`，在本主题的
-        // 正文色（如暗色 #E4E4E4）上算出来约 #898989 —— 和正文只差一点点，
-        // 用户会把输入框的占位提示当成已经填好的值。显式给一个中灰。
-        v.weak_text_color = Some(HINT_GREY);
+        // 正文色写进各状态的 `fg_stroke`，**不用** `override_text_color`：
+        // 后者会连纯文本 `WidgetText` 的颜色一起钉死（`WidgetText::into_galley`
+        // 对纯文本是 `override_text_color.unwrap_or(PLACEHOLDER)`），于是
+        // `TextEdit::hint_text` 拿不到 `weak_text_color`——它的淡色是作为
+        // 「galley 没给色时的兜底色」传进 `Painter::galley` 的，被 override 一挡，
+        // 提示就画成了正文色，看上去像已经填好的值。
+        // 写 `fg_stroke` 效果完全一样（`Visuals::text_color` 读的就是它），
+        // 但不再拦住兜底色，占位提示与 `.weak()` 小字才能各自拿到淡色。
+        for widget in [
+            &mut v.widgets.noninteractive,
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+        ] {
+            widget.fg_stroke.color = self.text;
+        }
+        v.weak_text_color = Some(hint);
         v.hyperlink_color = self.accent;
         v.selection.bg_fill = self.accent.gamma_multiply(0.45);
         v.selection.stroke = Stroke::new(1.0, self.accent);

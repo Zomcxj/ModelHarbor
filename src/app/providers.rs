@@ -502,7 +502,7 @@ impl App {
                 }
             });
             ui.horizontal(|ui| {
-                // 提示文字颜色由主题统一给定（见 `theme::HINT_GREY`），
+                // 提示文字颜色由主题统一给定（见 `theme::Palette::hint_color`），
                 // 不再在这里逐个控件覆盖：一处改、全应用一致。
                 if let Some(draft) = self.token_draft.get_mut(origin) {
                     ui.add(
