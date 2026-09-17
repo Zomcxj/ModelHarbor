@@ -35,7 +35,7 @@ pub(super) struct Query {
     pub(super) user_id: String,
 }
 
-/// 单个 provider 的用量查询状态。
+/// 单个 provider 的用户数据查询状态。
 #[derive(Default)]
 pub(super) struct BalanceState {
     pub(super) result: Option<Result<billing::Billing, String>>,
@@ -47,7 +47,7 @@ pub(super) struct BalanceState {
 }
 
 impl App {
-    /// 发起一次用量查询（字段拆分借用，便于在卡片内部调用）。
+    /// 发起一次用户数据查询（字段拆分借用，便于在卡片内部调用）。
     ///
     /// 返回 `Some(提示文本)` 表示**没有**发起请求（正在查询中，或还在冷却期）。
     pub(super) fn start_balance_query(
@@ -58,7 +58,7 @@ impl App {
         let key = query.key.clone();
         let state = balance.entry(key.clone()).or_default();
         if state.rx.is_some() {
-            return Some(format!("{} 的用量查询还在进行中", key));
+            return Some(format!("{} 的用户数据查询还在进行中", key));
         }
         if let Some(last) = state.last_at {
             let remain = BALANCE_COOLDOWN_MS / 1000.0 - (now - last);
@@ -77,7 +77,7 @@ impl App {
         None
     }
 
-    /// 收割用量查询结果（在 `update` 里每帧调用，与 `poll_latency` 同批）。
+    /// 收割用户数据查询结果（在 `update` 里每帧调用，与 `poll_latency` 同批）。
     pub(super) fn poll_balance(&mut self) {
         let mut finished = 0usize;
         for state in self.balance.values_mut() {
@@ -117,7 +117,7 @@ impl App {
             .count();
         self.balance_batch = false;
         self.status = format!(
-            "用量查询完成：{} 个查到，{} 个未开放该接口（已隐藏）",
+            "用户数据查询完成：{} 个查到，{} 个未开放该接口（已隐藏）",
             ok,
             total - ok
         );
@@ -159,11 +159,10 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
     let pat = query.pat.trim();
     if !pat.is_empty() {
         let account = fetch_account(&endpoints, &units, pat, &query.user_id);
-        merge_account(
-            &mut result,
-            account,
-            billing::parse_panel(status.as_deref()),
-        );
+        let checkin = fetch_checkin(&endpoints, &units, pat, &query.user_id);
+        let panel = billing::parse_panel(status.as_deref());
+        merge_account(&mut result, account, panel.clone());
+        merge_checkin(&mut result, checkin, panel);
     }
     result
 }
@@ -197,6 +196,47 @@ fn fetch_account(
     let text = account_get(&url, pat, user_id)?;
     billing::parse_account_self(&text, units)
         .ok_or_else(|| "返回内容不是可识别的账号额度".to_string())
+}
+
+/// 签到状态：`GET /api/user/checkin`（**只读**，需面板访问令牌）。
+///
+/// 本工具**不代签**：签到会改账号额度。所以这里只把状态读回来展示，
+/// 站点没开签到、没填令牌、或接口读不到一律回 `None`（卡片上就不写这一项）。
+fn fetch_checkin(
+    endpoints: &billing::Endpoints,
+    units: &billing::Units,
+    pat: &str,
+    user_id: &str,
+) -> Option<billing::CheckinStatus> {
+    let body = account_get(&endpoints.checkin(), pat, user_id).ok()?;
+    billing::parse_checkin_status(&body, units).ok()
+}
+
+/// 把签到状态并进结果。
+///
+/// 签到是**附加信息**，所以：
+/// - 读不到就不写（绝不写占位、也不报错——用户只是没得到这一项）；
+/// - 账号接口挂了但签到读到了，照样要显示（「有就输出」）：
+///   这时自己拼一份只有签到的结果。
+fn merge_checkin(
+    result: &mut Result<billing::Billing, String>,
+    checkin: Option<billing::CheckinStatus>,
+    panel: String,
+) {
+    let Some(status) = checkin else {
+        return;
+    };
+    match result.as_mut() {
+        Ok(info) => info.checkin = Some(status),
+        Err(_) => {
+            *result = Ok(billing::Billing {
+                panel,
+                source: billing::Source::Token,
+                checkin: Some(status),
+                ..Default::default()
+            });
+        }
+    }
 }
 
 /// `New-Api-User` 头的取值：空串（没填）表示**不发这个头**。
@@ -663,5 +703,53 @@ mod tests {
             "TestPanel".to_string(),
         );
         assert!(result.is_err(), "不该把失败改写成成功");
+    }
+
+    fn sample_checkin() -> billing::CheckinStatus {
+        billing::CheckinStatus {
+            enabled: true,
+            today: true,
+            today_usd: Some(0.3),
+            month_count: 14,
+            total_usd: Some(13.0),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn checkin_rides_along_with_the_token_result() {
+        // 令牌侧本来就能展示：签到是附加信息，不能把已有结果冲掉。
+        let mut result = Ok(token_side_result());
+        merge_checkin(&mut result, Some(sample_checkin()), "TestPanel".to_string());
+        let info = result.expect("应保持成功");
+        assert_eq!(info.used_usd, Some(5.0), "令牌侧数据要留着");
+        assert!(info.checkin.is_some(), "签到要挂上去");
+        assert!(info.inline().contains("签到"), "{}", info.inline());
+    }
+
+    #[test]
+    fn checkin_rescues_a_failed_result() {
+        // 账号接口挂了（要 `New-Api-User` 的站点很常见），但签到读到了：
+        // 「有就输出」——这一项本身就该能显示，不该整条丢掉。
+        let mut result: Result<billing::Billing, String> = Err("HTTP 401 Unauthorized".to_string());
+        merge_checkin(&mut result, Some(sample_checkin()), "TestPanel".to_string());
+        let info = result.expect("签到读到了就不算全失败");
+        assert!(info.is_displayable());
+        assert_eq!(info.panel, "TestPanel", "面板名照旧要带上");
+        assert!(info.inline().contains("签到 今日已签"), "{}", info.inline());
+    }
+
+    #[test]
+    fn missing_checkin_changes_nothing() {
+        // 站点没开签到 / 没填面板令牌：结果原样保留。
+        let mut result = Ok(token_side_result());
+        merge_checkin(&mut result, None, "TestPanel".to_string());
+        let info = result.expect("不该动");
+        assert!(info.checkin.is_none());
+        assert!(!info.inline().contains("签到"), "{}", info.inline());
+
+        let mut failed: Result<billing::Billing, String> = Err("HTTP 404 Not Found".to_string());
+        merge_checkin(&mut failed, None, String::new());
+        assert!(failed.is_err(), "没签到数据就不该把失败改写成成功");
     }
 }

@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 mod agents;
 mod balance;
 mod bars;
-mod checkin;
 mod fetch;
 mod preview;
 mod providers;
@@ -89,9 +88,7 @@ pub struct App {
     latency: HashMap<String, LatencyState>,
     /// 每个 provider 的「已用 / 余额」查询状态（key → 状态）。
     balance: HashMap<String, balance::BalanceState>,
-    /// 各 provider 的签到状态（写操作，与批量的用量查询完全分开）。
-    checkin: checkin::States,
-    /// 正在跑「一键查询用量」批次：全部结束后在状态栏给一条汇总。
+    /// 正在跑「一键查询用户数据」批次：全部结束后在状态栏给一条汇总。
     balance_batch: bool,
     /// 站点面板访问令牌（PAT，`.modelharbor/tokens.json`）：站点级，多个 provider 共用。
     tokens: crate::tokens::StationTokens,
@@ -192,7 +189,6 @@ impl Default for App {
             model_fetch_open: HashSet::new(),
             latency: HashMap::new(),
             balance: HashMap::new(),
-            checkin: HashMap::new(),
             balance_batch: false,
             tokens: crate::tokens::StationTokens::load(),
             show_tokens: false,
@@ -283,7 +279,6 @@ impl eframe::App for App {
         self.poll_model_fetch();
         self.poll_latency();
         self.poll_balance();
-        self.poll_checkin();
         self.persist_prefs_if_changed();
         self.ui_top_bar(ctx);
         self.ui_status_bar(ctx);
@@ -387,14 +382,6 @@ impl App {
     pub(super) fn station_pat(&self, base_url: &str) -> String {
         let key = crate::tokens::station_key(base_url);
         self.tokens.get(&key).to_string()
-    }
-
-    /// 该站点能否签到：只看有没有面板访问令牌。
-    ///
-    /// `sk-` key 不够（站点要的是用户身份），所以这一个条件就是
-    /// 「卡片上「签到」按钮什么时候出现」的全部依据；抽成函数是为了能被测试钉住。
-    pub(super) fn station_can_checkin(&self, base_url: &str) -> bool {
-        !self.station_pat(base_url).is_empty()
     }
 
     /// 某 baseUrl 所属站点的用户 ID（没设置则空串；空串 = 不发 `New-Api-User`）。
@@ -583,7 +570,7 @@ impl App {
         self.model_fetch.clear();
         self.model_fetch_open.clear();
         self.latency.clear();
-        // 用量查询结果同样跟着配置走，重新加载后重查。
+        // 用户数据查询结果同样跟着配置走，重新加载后重查。
         self.balance.clear();
         self.balance_batch = false;
         // 被丢弃的探测不会再回传结果：释放全局串行位，否则门控会一直卡在 Busy。

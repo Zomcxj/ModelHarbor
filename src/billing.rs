@@ -107,6 +107,11 @@ pub struct Billing {
     pub log_capped: bool,
     /// 站点没给 `quota_per_unit`，换算按默认 500000 假设（悬停里说明）。
     pub unit_assumed: bool,
+    /// 签到状态（`GET /api/user/checkin`，只读，需面板令牌）。
+    ///
+    /// 与额度无关，是「今天领没领」这类信息：站点没开签到、没填面板令牌、
+    /// 或接口读不到时都是 `None`——卡片上就**不写这一项**（有就输出，没有就不输出）。
+    pub checkin: Option<CheckinStatus>,
     /// 降级 / 缺数据时的说明（日志接口不可用、换算比缺失等），用干提示而不是静默降级。
     pub note: Option<String>,
     /// 面板账号额度（`/api/user/self`）：填了面板访问令牌才有；有它时余额以它为准。
@@ -126,6 +131,13 @@ impl Endpoints {
     /// 令牌额度信息（**只需 `sk-` key**）：`total_granted` / `total_used` / `total_available`。
     pub fn token_usage(&self) -> String {
         format!("{}/api/usage/token/", self.origin)
+    }
+
+    /// 签到状态（**只读**，需面板访问令牌）：`GET /api/user/checkin`。
+    ///
+    /// 只读是有意的：签到会改账号额度，本工具不代签，只把状态查回来展示。
+    pub fn checkin(&self) -> String {
+        format!("{}/api/user/checkin", self.origin)
     }
 
     /// 该令牌的调用日志（用于算今日 / 近 7 天用量，**只需 `sk-` key**）。
@@ -430,15 +442,6 @@ pub struct CheckinStatus {
     pub max_usd: Option<f64>,
 }
 
-/// 一次签到的结果（`POST /api/user/checkin`）。
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct CheckinOutcome {
-    /// 本次获得的额度（美元）；站点没给就是 `None`。
-    pub awarded_usd: Option<f64>,
-    /// 签到日期（站点给的 `YYYY-MM-DD`）。
-    pub date: String,
-}
-
 /// 取站点自己给的错误消息（`message` 字段），取不到就用一句兜底。
 ///
 /// 站点的话比我们猜的准：「签到功能未启用」「今日已签到」
@@ -529,62 +532,28 @@ pub fn parse_checkin_status(json: &str, units: &Units) -> Result<CheckinStatus, 
     })
 }
 
-/// 解析 `POST /api/user/checkin`。
+/// 签到状态的**短**描述（卡片那一行里用，越短越好）。
 ///
-/// `success:false` 时把站点原话作为错误返回——「今日已签到」与
-/// 「Turnstile token 为空」要向用户说的事完全不同，不能混成一句。
-pub fn parse_checkin_result(json: &str, units: &Units) -> Result<CheckinOutcome, String> {
-    let root = serde_json::from_str::<Value>(json).map_err(|_| "返回内容不是 JSON".to_string())?;
-    if !root.is_object() {
-        return Err("返回内容不是可识别的签到结果".to_string());
+/// 站点没给的数字一律不提：不编 `$0.00`、不编「本月 0 次」。
+pub fn checkin_short(status: &CheckinStatus) -> String {
+    if !status.enabled {
+        return "未启用".to_string();
     }
-    if root.get("success").and_then(Value::as_bool) == Some(false) {
-        return Err(site_message(&root, "站点拒绝了签到"));
+    if !status.today {
+        return "未签".to_string();
     }
-    let data = root
-        .get("data")
-        .filter(|value| value.is_object())
-        .ok_or_else(|| "站点未返回签到结果".to_string())?;
-    Ok(CheckinOutcome {
-        awarded_usd: data
-            .get("quota_awarded")
-            .and_then(Value::as_f64)
-            .map(|points| points / units.quota_per_unit),
-        date: data
-            .get("checkin_date")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-    })
+    match status.today_usd {
+        Some(today) => format!("今日已签 {}", money(today)),
+        None => "今日已签".to_string(),
+    }
 }
 
-/// 签到结果的展示文案。
-///
-/// `outcome` 为 `None` 表示「这次只读了状态、没执行签到」：
-/// 此时今天已签到就如实说已签到，绝不假装刚签成。
-/// 站点没给的数字一律不提（不编 `$0.00`、不编「本月 0 次」）。
-pub fn checkin_message(status: &CheckinStatus, outcome: Option<&CheckinOutcome>) -> String {
-    if let Some(outcome) = outcome {
-        let mut text = String::from("签到成功");
-        if let Some(awarded) = outcome.awarded_usd {
-            text.push_str(&format!("，获得 {}", money(awarded)));
-        }
-        if status.month_count > 0 {
-            text.push_str(&format!("（本月 {} 次）", status.month_count));
-        }
-        return text;
-    }
+/// 签到状态的**完整**描述（悬停说明里用）。
+pub fn checkin_long(status: &CheckinStatus) -> String {
     if !status.enabled {
         return "该站点未启用签到".to_string();
     }
-    if !status.today {
-        return "今日未签到".to_string();
-    }
-    // 今日金额放在最前面：用户最想知道「今天签了多少」。
-    let mut headline = String::from("今日已签到");
-    if let Some(today) = status.today_usd {
-        headline.push_str(&format!("，获得 {}", money(today)));
-    }
+    let mut text = checkin_short(status);
     let mut extra: Vec<String> = Vec::new();
     if status.month_count > 0 {
         extra.push(format!("本月 {} 次", status.month_count));
@@ -592,18 +561,10 @@ pub fn checkin_message(status: &CheckinStatus, outcome: Option<&CheckinOutcome>)
     if let Some(total) = status.total_usd {
         extra.push(format!("累计获得 {}", money(total)));
     }
-    match extra.is_empty() {
-        true => headline,
-        false => format!("{headline}（{}）", extra.join("，")),
+    if !extra.is_empty() {
+        text.push_str(&format!("（{}）", extra.join("，")));
     }
-}
-
-/// 给站点错误补一句人话：被人机验证挡住时要说明原因与出路。
-pub fn checkin_error_hint(message: &str) -> String {
-    if message.to_lowercase().contains("turnstile") {
-        return format!("{message}（该站点开了 Cloudflare 人机验证，只能在浏览器里签到）");
-    }
-    message.to_string()
+    text
 }
 
 /// 一条调用日志（只留统计要用的字段；`content` / `ip` 这类隐私字段不解析）。#[derive(Clone, Debug, PartialEq)]
@@ -765,6 +726,13 @@ impl Billing {
         self.inline_token_or_compat()
     }
 
+    /// 把签到段接到摘要行末尾（没数据就不接，绝不写占位）。
+    fn push_checkin(&self, parts: &mut Vec<String>) {
+        if let Some(status) = &self.checkin {
+            parts.push(format!("签到 {}", checkin_short(status)));
+        }
+    }
+
     /// 有账号数据时的短行：账号余额 + 已用（没余额时才退而单说已用 / 请求数），其次今日。
     fn inline_account(&self, account: &AccountInfo) -> String {
         let mut parts: Vec<String> = Vec::new();
@@ -790,6 +758,7 @@ impl Billing {
         if let Some(week) = self.week_usd {
             parts.push(format!("近 7 天 {}", money(week)));
         }
+        self.push_checkin(&mut parts);
         if parts.is_empty() {
             return "未返回额度信息".to_string();
         }
@@ -816,6 +785,7 @@ impl Billing {
                 }
                 (None, _) => {}
             }
+            self.push_checkin(&mut parts);
             if parts.is_empty() {
                 return "未返回额度信息".to_string();
             }
@@ -843,7 +813,8 @@ impl Billing {
     /// 账号数据（面板令牌）单独就能让卡片显示：站点未开 `/api/usage/token/` 时，
     /// 只要拿到账号额度就不该整块隐掉。
     pub fn is_displayable(&self) -> bool {
-        self.has_token_side() || self.account.is_some()
+        // 签到状态也算可展示数据：有些站点只有签到读得到（有就输出，没有就不输出）。
+        self.has_token_side() || self.account.is_some() || self.checkin.is_some()
     }
 
     /// 令牌侧（令牌额度 / 兼容账单）是否真有可展示数据。
@@ -879,6 +850,7 @@ impl Billing {
         if let Some(raw) = &self.raw_credit {
             parts.push(raw.clone());
         }
+        self.push_checkin(&mut parts);
         if parts.is_empty() {
             return self.inline();
         }
@@ -894,10 +866,17 @@ impl Billing {
         // 账号数据（面板令牌）与令牌数据是两套口径：同时存在时分节列出，不混在一起。
         if let Some(account) = &self.account {
             lines.extend(Self::account_lines(account));
-            if !self.has_token_side() {
-                // 只有账号数据：不写一个空的「本令牌」分节。
-                return lines.join("\n");
-            }
+        }
+        // 签到也是账号级信息（靠同一个面板令牌读），就跟账号那节排在一起。
+        if let Some(status) = &self.checkin {
+            lines.push(format!("签到：{}", checkin_long(status)));
+        }
+        let has_account_side = self.account.is_some() || self.checkin.is_some();
+        if has_account_side && !self.has_token_side() {
+            // 只有账号 / 签到数据：不写一个空的「本令牌」分节。
+            return lines.join("\n");
+        }
+        if has_account_side {
             lines.push("—— 本令牌 ——".to_string());
         }
         if self.source == Source::Token {
@@ -1527,6 +1506,68 @@ mod tests {
         );
     }
 
+    /// 账号数据 + 签到状态同一条结果（「查询用户数据」的正常形态）。
+    fn account_with_checkin_billing() -> Billing {
+        let units = parse_units(Some(STATUS_UNITS));
+        Billing {
+            source: Source::Token,
+            account: parse_account_self(ACCOUNT_SELF, &units),
+            checkin: parse_checkin_status(CHECKIN_STATUS, &units).ok(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn checkin_state_joins_the_summary_line() {
+        let line = account_with_checkin_billing().inline();
+        assert!(line.contains("账号余额 $12.30"), "{line}");
+        assert!(
+            line.contains("签到 今日已签 $0.30"),
+            "签到要和余额同一条报出来：{line}"
+        );
+    }
+
+    #[test]
+    fn checkin_state_gets_its_own_detail_line() {
+        let text = account_with_checkin_billing().detail();
+        assert!(
+            text.contains("签到：今日已签 $0.30（本月 14 次，累计获得 $13.00）"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn checkin_alone_counts_as_displayable_data() {
+        // 账号接口挂了（要 New-Api-User 的站点很常见）、只有签到读得到：
+        // 「有就输出」——这一项也要能显示出来。
+        let units = parse_units(Some(STATUS_UNITS));
+        let info = Billing {
+            source: Source::Token,
+            checkin: parse_checkin_status(CHECKIN_STATUS, &units).ok(),
+            ..Default::default()
+        };
+        assert!(info.is_displayable(), "只有签到数据也要显示");
+        let line = info.inline();
+        assert!(line.contains("签到 今日已签 $0.30"), "{line}");
+        assert!(
+            !line.contains("未返回额度信息"),
+            "有签到就不该说没数据：{line}"
+        );
+        // 签到是账号级信息（同一个面板令牌读的），不能被塞进「本令牌」分节。
+        let text = info.detail();
+        assert!(text.contains("签到：今日已签"), "{text}");
+        assert!(!text.contains("本令牌"), "{text}");
+    }
+
+    #[test]
+    fn no_checkin_data_means_no_checkin_word() {
+        // 站点没开签到、或用户没填面板令牌：卡片上不该出现「签到」这两个字。
+        // 「有就输出，没有就不输出」——不写死占位。
+        let info = account_only_billing();
+        assert!(!info.inline().contains("签到"), "{}", info.inline());
+        assert!(!info.detail().contains("签到"), "{}", info.detail());
+    }
+
     #[test]
     fn account_balance_leads_the_summary_line() {
         let units = parse_units(Some(STATUS_UNITS));
@@ -1558,7 +1599,10 @@ mod tests {
         let detail = info.detail();
         // 悬停小窗求紧凑：解释长句去掉、数字合并成行，但「同站点共用」这层
         // 含义要留一个短标记（否则读者会以为这是某个 sk- 令牌的余额）。
-        assert!(detail.contains("账号级额度（面板访问令牌，同站点共用）"), "{detail}");
+        assert!(
+            detail.contains("账号级额度（面板访问令牌，同站点共用）"),
+            "{detail}"
+        );
         assert!(detail.contains("余额 $12.30 · 已用 $20.50"), "{detail}");
         assert!(detail.contains("请求 321 次 · 分组 default"), "{detail}");
         assert!(detail.contains("本令牌"), "两套数据要分区：{detail}");
@@ -1655,10 +1699,6 @@ mod tests {
         "checkin_count":14,"total_checkins":45,"total_quota":6500000,
         "records":[{"checkin_date":"2026-09-17","quota_awarded":150000},
                    {"checkin_date":"2026-09-16","quota_awarded":100000}]}}}"#;
-    /// 真实际形状：`POST /api/user/checkin` 成功响应。
-    const CHECKIN_DONE: &str = r#"{"success":true,"message":"签到成功",
-        "data":{"quota_awarded":150000,"checkin_date":"2026-09-17"}}"#;
-
     #[test]
     fn checkin_status_reads_the_real_payload() {
         let units = parse_units(Some(STATUS_UNITS));
@@ -1684,30 +1724,6 @@ mod tests {
     }
 
     #[test]
-    fn checkin_result_reports_the_awarded_quota() {
-        let units = parse_units(Some(STATUS_UNITS));
-        let done = parse_checkin_result(CHECKIN_DONE, &units).expect("应能解析");
-        assert_eq!(done.awarded_usd, Some(0.3), "150_000 / 500_000");
-        assert_eq!(done.date, "2026-09-17");
-    }
-
-    #[test]
-    fn checkin_result_surfaces_refusals_including_captcha() {
-        let units = parse_units(Some(STATUS_UNITS));
-        // 已经签过：把站点原话带出来，而不是自己编一个结论。
-        let already = parse_checkin_result(r#"{"success":false,"message":"今日已签到"}"#, &units)
-            .expect_err("已签到应报错");
-        assert!(already.contains("今日已签到"), "{already}");
-        // 开了 Cloudflare 人机验证的站点会这样回：要让用户看懂为什么做不了。
-        let captcha = parse_checkin_result(
-            r#"{"success":false,"message":"Turnstile token 为空"}"#,
-            &units,
-        )
-        .expect_err("人机验证应报错");
-        assert!(captcha.contains("Turnstile"), "{captcha}");
-    }
-
-    #[test]
     fn checkin_parsers_survive_missing_fields() {
         let units = parse_units(None);
         let status = parse_checkin_status(r#"{"success":true,"data":{"enabled":true}}"#, &units)
@@ -1721,64 +1737,47 @@ mod tests {
             parse_checkin_status(r#"{"success":true}"#, &units).is_err(),
             "没有 data 不算签到状态"
         );
-        // 成功但没有 data：不能假装签到成功。
-        assert!(parse_checkin_result(r#"{"success":true,"message":"签到成功"}"#, &units).is_err());
     }
 
     #[test]
-    fn checkin_message_describes_both_outcomes() {
+    fn checkin_short_and_long_describe_the_same_state() {
         let units = parse_units(Some(STATUS_UNITS));
         let status = parse_checkin_status(CHECKIN_STATUS, &units).expect("应能解析");
-        // 已签到：只说状态，不假装刚签成。
-        let already = checkin_message(&status, None);
-        assert!(already.contains("今日已签到"), "{already}");
-        assert!(already.contains("本月 14 次"), "{already}");
-        assert!(already.contains("$13.00"), "累计获得要带上：{already}");
-        // 刚签成：说清拿到多少。
-        let outcome = parse_checkin_result(CHECKIN_DONE, &units).expect("应能解析");
-        let fresh = checkin_message(&status, Some(&outcome));
-        assert!(fresh.contains("签到成功"), "{fresh}");
-        assert!(fresh.contains("$0.30"), "{fresh}");
-        assert!(!fresh.contains("今日已签到"), "刚签成不该说已签到：{fresh}");
+        // 短描述给卡片那一行：只说状态与今日金额。
+        let short = checkin_short(&status);
+        assert!(short.contains("今日已签"), "{short}");
+        assert!(short.contains("$0.30"), "今日金额要带上：{short}");
+        assert!(!short.contains("累计"), "短描述不放累计：{short}");
+        // 长描述给悬停说明：短描述的内容 + 本月 / 累计。
+        let long = checkin_long(&status);
+        assert!(long.contains("今日已签"), "{long}");
+        assert!(long.contains("本月 14 次"), "{long}");
+        assert!(long.contains("累计获得 $13.00"), "{long}");
     }
 
     #[test]
-    fn checkin_message_omits_numbers_the_site_did_not_give() {
+    fn checkin_descriptions_omit_numbers_the_site_did_not_give() {
         let bare = CheckinStatus {
             enabled: true,
             ..Default::default()
         };
-        let text = checkin_message(&bare, None);
-        assert!(text.contains("今日未签到"), "{text}");
-        assert!(!text.contains("累计获得"), "没给累计就不提：{text}");
-        assert!(!text.contains("本月"), "没给本月次数就不提：{text}");
-        // 刚签成但站点没给额度：不能编一个 $0.00。
-        let outcome = CheckinOutcome {
-            awarded_usd: None,
-            date: "2026-09-17".to_string(),
-        };
-        let no_amount = checkin_message(&bare, Some(&outcome));
-        assert!(no_amount.contains("签到成功"), "{no_amount}");
-        assert!(!no_amount.contains("$"), "没给额度就不编金额：{no_amount}");
-    }
+        assert_eq!(checkin_short(&bare), "未签");
+        let text = checkin_long(&bare);
+        assert_eq!(text, "未签", "没给本月 / 累计就不提：{text}");
 
-    #[test]
-    fn checkin_error_hint_explains_the_captcha_case() {
-        // 站点开了 Cloudflare 人机验证：要说清为什么工具做不了，
-        // 而不是把「Turnstile token 为空」原样丢给用户。
-        let hinted = checkin_error_hint("Turnstile token 为空");
-        assert!(
-            hinted.contains("Turnstile token 为空"),
-            "保留站点原话：{hinted}"
-        );
-        assert!(hinted.contains("人机验证"), "{hinted}");
-        assert!(hinted.contains("浏览器"), "要给出路：{hinted}");
-        // 其他错误原样返回，不加戏。
-        assert_eq!(checkin_error_hint("今日已签到"), "今日已签到");
-        assert_eq!(
-            checkin_error_hint("网络错误：连接被重置"),
-            "网络错误：连接被重置"
-        );
+        // 今天签了但站点没给金额：不能编一个 $0.00。
+        let no_amount = CheckinStatus {
+            enabled: true,
+            today: true,
+            ..Default::default()
+        };
+        assert_eq!(checkin_short(&no_amount), "今日已签");
+        assert!(!checkin_long(&no_amount).contains('$'), "没给就不编金额");
+
+        // 站点没开签到：明确说未启用，不显示成「未签」（那是两件事）。
+        let disabled = CheckinStatus::default();
+        assert_eq!(checkin_short(&disabled), "未启用");
+        assert_eq!(checkin_long(&disabled), "该站点未启用签到");
     }
 
     #[test]
@@ -1787,8 +1786,8 @@ mod tests {
         let status = parse_checkin_status(CHECKIN_STATUS, &units).expect("应能解析");
         // fixture 的最新一条是 2026-09-17 / 150000 → $0.30。
         assert_eq!(status.today_usd, Some(0.3), "今日签到的金额");
-        let text = checkin_message(&status, None);
-        assert!(text.contains("获得 $0.30"), "要能说清今天签了多少：{text}");
+        let text = checkin_short(&status);
+        assert!(text.contains("$0.30"), "要能说清今天签了多少：{text}");
     }
 
     #[test]
@@ -1802,9 +1801,9 @@ mod tests {
         )
         .expect("应能解析");
         assert_eq!(not_today.today_usd, None);
-        let text = checkin_message(&not_today, None);
-        assert!(text.contains("今日未签到"), "{text}");
-        assert!(!text.contains("获得"), "没签就不该提获得：{text}");
+        let text = checkin_short(&not_today);
+        assert_eq!(text, "未签", "今天没签就直说未签");
+        assert!(!text.contains('$'), "没签就不该提金额：{text}");
 
         // 今天签了但记录为空（站点只给标记不给明细）：同样不编金额。
         let no_records = parse_checkin_status(
@@ -1813,7 +1812,7 @@ mod tests {
         )
         .expect("应能解析");
         assert_eq!(no_records.today_usd, None);
-        assert!(checkin_message(&no_records, None).contains("今日已签到"));
+        assert_eq!(checkin_short(&no_records), "今日已签", "只有标记、没金额");
 
         // 记录顺序被打乱时按最大日期取，不依赖站点给的先后。
         let shuffled = parse_checkin_status(

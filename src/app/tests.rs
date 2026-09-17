@@ -1050,34 +1050,6 @@ mod station_token_tests {
     }
 
     #[test]
-    fn checkin_button_shows_up_once_the_station_has_a_token() {
-        // 卡片上「签到」按钮的出现条件：该站点填了面板访问令牌。
-        // 这里钉住「不需要勾选、也没有要记住的开关」这条规则。
-        let mut app = app_with_providers(&[
-            ("cf", "https://cf.sheapi.cc/v1"),
-            ("bare", "https://bare.example.com/v1"),
-        ]);
-        assert!(
-            !app.station_can_checkin("https://cf.sheapi.cc/v1"),
-            "没填令牌就不该出现签到按钮"
-        );
-
-        app.tokens.set("https://cf.sheapi.cc", "pat-cf");
-        assert!(
-            app.station_can_checkin("https://cf.sheapi.cc/v1"),
-            "填了令牌就该出现"
-        );
-        // 令牌是站点级的：带子路径的 baseUrl 同样认。
-        assert!(app.station_can_checkin("https://cf.sheapi.cc/v1/chat/completions"));
-        // 别的站点不受影响。
-        assert!(!app.station_can_checkin("https://bare.example.com/v1"));
-
-        // 删掉令牌后按钮不再出现（删除会同时清掉 PAT 与用户 ID）。
-        app.tokens.remove("https://cf.sheapi.cc");
-        assert!(!app.station_can_checkin("https://cf.sheapi.cc/v1"));
-    }
-
-    #[test]
     fn station_token_is_shared_by_every_provider_on_the_same_site() {
         let mut app = app_with_providers(&[
             ("oc_gemai", "https://gemai.huchan.cn/v1"),

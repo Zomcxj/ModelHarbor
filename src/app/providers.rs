@@ -1,6 +1,5 @@
 //! Providers 区块：厂商卡片列表、拖拽落点聚合、表单字段可见性标志与思考档位方言。
 use super::balance;
-use super::checkin;
 use super::App;
 use crate::app::bars::{short_err, sticky_begin, sticky_end};
 use crate::app::fetch::{latency_color, matrix_label};
@@ -19,8 +18,6 @@ pub(super) struct CardActions {
     pub(super) remove: Option<usize>,
     /// 要复制的 provider 下标。
     pub(super) copy: Option<usize>,
-    /// 点了「签到」的 provider key（写操作：只在用户点按钮时发生）。
-    pub(super) checkin: Option<String>,
     /// provider 卡片的拖拽落点。
     pub(super) hover: Option<String>,
     /// model 卡片的拖拽落点。
@@ -138,24 +135,6 @@ impl App {
         card_list(ui, &matched, 0.0, |ui, idx| {
             self.render_provider_card(ui, idx, &mut actions);
         });
-        if let Some(key) = actions.checkin {
-            let target = self
-                .providers
-                .iter()
-                .find(|p| p.key == key)
-                .map(|p| (p.key.clone(), p.base_url.clone()));
-            if let Some((key, base_url)) = target {
-                let query = checkin::Query {
-                    key,
-                    pat: self.station_pat(&base_url),
-                    user_id: self.station_user_id(&base_url),
-                    base_url,
-                };
-                if let Some(message) = self.start_checkin(query) {
-                    self.status = message;
-                }
-            }
-        }
         if let Some(idx) = actions.remove {
             self.providers.remove(idx);
             self.status = "已删除 provider".into();
@@ -231,10 +210,11 @@ impl App {
                     }
                     self.status = format!("已开始连通性测试（{} 个厂商）", count);
                 }
-                // 用量查询：一次查完当前页面全部厂商（只读管理接口，直连不走代理）。
+                // 查询用户数据：一次查完当前页面全部厂商（只读管理接口，直连不走代理）。
+                // 一份结果里能有什么就显示什么：余额 / 已用 / 今日 / 近 7 天 / 签到状态。
                 // 查不到的站点不在卡片上显示，只在状态栏汇总（避免一堆红字噪音）。
                 if ui
-                    .button("查询用量")
+                    .button("查询用户数据")
                     .on_hover_text(
                         "查询全部厂商的账号数据（已用 / 余额 / 签到状态），显示在卡片上\n\
                          只读接口、直连不走代理；同一站点两次查询至少间隔 5 秒",
@@ -265,7 +245,7 @@ impl App {
                     self.status = if started == 0 {
                         "所有厂商都还在冷却中，请几秒后再试".to_string()
                     } else {
-                        format!("已开始查询 {} 个厂商的用量…", started)
+                        format!("已开始查询 {} 个厂商的用户数据…", started)
                     };
                 }
                 // 「令牌」「预览」「显示密钥」都搬到了页头「保存」那一行右端
@@ -323,10 +303,6 @@ impl App {
     ) {
         let key = self.providers[idx].key.clone();
         let open = !self.provider_collapsed(&key);
-        // 签到只认**面板访问令牌**（`sk-` key 不够，站点要的是用户身份），
-        // 所以按钮能不能出现只看这一个条件；需要用户 ID 的站点在点击后会把
-        // 站点原话报出来（缺头时提示去令牌面板填）。
-        let station_has_pat = self.station_can_checkin(&self.providers[idx].base_url);
         let highlight = if self.provider_drag_target.as_deref() == Some(key.as_str()) {
             2
         } else if self.provider_drag_src.as_deref() == Some(key.as_str()) {
@@ -394,8 +370,11 @@ impl App {
                                 );
                             }
                             Err(err) => {
-                                ui.label(egui::RichText::new(short_err(err)).color(crate::theme::semantics(ui).err))
-                                    .on_hover_text(err);
+                                ui.label(
+                                    egui::RichText::new(short_err(err))
+                                        .color(crate::theme::semantics(ui).err),
+                                )
+                                .on_hover_text(err);
                             }
                         }
                     }
@@ -407,21 +386,8 @@ impl App {
                     if ui.button("复制").clicked() {
                         actions.copy = Some(idx);
                     }
-                    // 右对齐布局里越晚添加越靠左，所以这一行的视觉顺序是
-                    // [签到结果] [用量] [签到] [复制] [删除]：用量紧挨「签到」，
-                    // 签到结果文字最长、也最临时，放到最左。
-                    if station_has_pat
-                        && ui
-                            .button("签到")
-                            .on_hover_text(
-                                "先读签到状态，今天没签才执行签到（写操作：会改账号额度）\n\
-                                 用该站点的「面板访问令牌」；站点开了人机验证时只能到浏览器签",
-                            )
-                            .clicked()
-                        {
-                            actions.checkin = Some(key.clone());
-                        }
-                    // 用量查询结果紧挨「签到」左侧。
+                    // 查询结果紧挨「复制」左侧：余额 / 已用 / 今日 / 签到状态都在这
+                    // 一行里（有就输出，没有就不输出）。
                     // 查不到的站点不显示（未开放接口 / WAF / 空数据），也不显示占位余额。
                     if let Some(state) = self.balance.get(&key) {
                         let display_result =
@@ -430,7 +396,7 @@ impl App {
                             (Some(_), _) => {
                                 ui.add(egui::Spinner::new().size(14.0));
                                 // 字号与连通性结果（`123ms`）一致：默认正文号，不用 .small()。
-                                ui.label(egui::RichText::new("查询用量…").weak());
+                                ui.label(egui::RichText::new("查询中…").weak());
                             }
                             (None, Some(Ok(info))) if info.is_displayable() => {
                                 ui.add(
@@ -443,21 +409,6 @@ impl App {
                                 .on_hover_text(info.detail());
                             }
                             _ => {}
-                        }
-                    }
-                    // 签到结果：先读状态后得出的话（含进行中的 Spinner）。
-                    if let Some(state) = self.checkin.get(&key) {
-                        if state.rx.is_some() {
-                            ui.add(egui::Spinner::new().size(14.0));
-                        } else if let Some(result) = &state.result {
-                            let semantics = crate::theme::semantics(ui);
-                            let (text, color) = match result {
-                                Ok(text) => (text.clone(), semantics.ok),
-                                Err(err) => (err.clone(), semantics.err),
-                            };
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(text).color(color)).truncate(),
-                            );
                         }
                     }
                 });
