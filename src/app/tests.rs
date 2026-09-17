@@ -62,7 +62,7 @@ mod path_reload_tests {
         assert_eq!(
             app.config_paths.local_path(ConfigFormat::Opencode),
             opencode_path,
-            "真实 pi 文件不应记到原来的 opencode 页面"
+            "真实 pi 文件应记到 pi 页面"
         );
         let _ = std::fs::remove_file(app.config_path);
     }

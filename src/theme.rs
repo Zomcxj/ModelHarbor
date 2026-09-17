@@ -398,11 +398,9 @@ mod semantics_tests {
 
     #[test]
     fn a_text_edit_hint_actually_renders_in_the_hint_color() {
-        // 曾经的坑：主题用 `override_text_color` 统一正文色，而纯文本
-        // `WidgetText` 取色是 `override_text_color.unwrap_or(PLACEHOLDER)`，
-        // 于是 `hint_text` 的淡色（作为 `Painter::galley` 的兜底色传入）
-        // 被挡住，占位提示画成了正文色——看上去像已经填好的值。
-        // 这一条钉住它：渲染出来的提示字样必须是提示色，而不是正文色。
+        // 钉住渲染结果：占位提示画出来的必须是提示色，不能是正文色。
+        // （纯文本取色是 `override_text_color.unwrap_or(PLACEHOLDER)`，
+        // 正文色若走 override，就会连 `hint_text` 的兜底色一起挡掉。）
         for theme in Theme::ALL {
             let palette = theme.palette();
             let colors = render_colors(theme, |ui| {
@@ -480,7 +478,7 @@ impl Palette {
 
     /// 提示 / 淡色小字（输入框占位提示、`.weak()` 小字）的颜色。
     ///
-    /// 标准是用户给的：「和禁用的删除一个颜色」。egui 的禁用不是换一个灰，
+    /// 取的是「禁用控件文字」的观感：egui 的禁用不是换一个灰，
     /// 而是 [`egui::Ui::disable`] 把整棵子树按 `disabled_alpha` 淡化——
     /// 颜色的 RGB 与 alpha 都乘上它（`Color32` 预乘，这正是「50% 不透明」的写法），
     /// 然后按 alpha 混合到底色上。所以这里把同一个算式一路算到**不透明**：

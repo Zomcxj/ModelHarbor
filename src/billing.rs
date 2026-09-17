@@ -87,8 +87,7 @@ pub struct Billing {
     pub balance_usd: Option<f64>,
     /// 额度是占位值（公益站常见 1e8）：**不算、不显示余额**，只说清已用。
     ///
-    /// 卡片小窗不解释这一点（用户要求小窗只放数据），所以只看这一个标记的
-    /// 话界面不会提它；它仍然是解析结果里的事实（调用方 / 测试靠它）。
+    /// 界面据此只显示「已用」；标记本身是解析结果的一部分，供调用方与测试判断。
     pub placeholder_limit: bool,
     /// 该令牌是「不计额度」的（公益站常见）：只有已用有意义，没有余额概念。
     pub unlimited: bool,
@@ -115,9 +114,8 @@ pub struct Billing {
     pub checkin: Option<CheckinStatus>,
     /// 降级 / 缺数据时的原因（调用日志不可用、面板令牌失效等）。
     ///
-    /// **卡片小窗不再显示它**：用户要小窗只放数据，不许出现「备注」这类行。
-    /// 字段留着，因为「为什么降级」本身是解析结果的一部分：调用方（状态栏、
-    /// 将来的提示）与测试靠它，也避免静默降级——数据缺了总得在某个层面说得清。
+    /// 卡片小窗只显示数字，不渲染这一项；原因本身是解析结果的一部分，
+    /// 供调用方与测试判断某次查询为什么少了数据。
     pub note: Option<String>,
     /// 面板账号额度（`/api/user/self`）：填了面板访问令牌才有；有它时余额以它为准。
     pub account: Option<AccountInfo>,
@@ -662,9 +660,7 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
     let to_money = |points: f64| points / unit;
     let today = summarize_logs(inputs.logs, Some(inputs.today_from));
     let week = summarize_logs(inputs.logs, Some(inputs.now - 7 * 86_400));
-    // 只请求首个分页，无法证明服务端没有后续页（即今日 / 近 7 天统计可能偏小）。
-    // 这一点不再写进悬停小窗：那里只放数字与影响读数的口径（换算比、跳日），
-    // 接口来源与分页上限属于实现细节，用户看的是额度。
+    // 只请求首个分页，无法证明服务端没有后续页（今日 / 近 7 天统计可能偏小）。
     // 额度接口可能整个不存在（把 baseUrl 指向中转域名的站点就没有这个面板路由）：
     // 此时日志统计照常出，额度三项留空，绝不编数字。
     let unlimited = inputs.usage.is_some_and(|usage| usage.unlimited);
@@ -938,8 +934,6 @@ impl Billing {
         if lines.is_empty() {
             lines.push("该站没有返回可识别的账单信息".to_string());
         }
-        // 口径只说一句：这是账号累计值（不是今日），不扯接口怎么实现。
-        lines.push("已用为账号累计值".to_string());
         lines.join("\n")
     }
 
@@ -978,7 +972,6 @@ impl Billing {
         if let Some(week) = self.week_usd {
             lines.push(format!("近 7 天：{}", money(week)));
         }
-        lines.push("今日 = 本机时区 0 点至今（按该 key 的调用日志统计）".to_string());
         if self.today_stale {
             lines.push("今日数据已跨日，请重新查询".to_string());
         }
@@ -1084,7 +1077,7 @@ mod tests {
         );
         assert_eq!(billing.inline_full(), "已用 $216.00");
         let detail = billing.detail();
-        // 小窗只放数据：占位额度既不显示数字，也不再写一行解释。
+        // 占位额度只显示已用：既没有额度数字，也没有余额。
         assert!(!detail.contains("占位值"), "不再解释占位：{detail}");
         assert!(!detail.contains("额度"), "占位额度下不该有额度行：{detail}");
         assert!(!detail.contains("余额"), "占位额度下不该给余额行：{detail}");
@@ -1304,8 +1297,7 @@ mod tests {
 
     #[test]
     fn a_degraded_result_shows_no_note_line() {
-        // 降级原因（调用日志不可用、面板令牌失效）不再写进小窗：
-        // 小窗只放数据，不写「备注」。
+        // 降级原因（调用日志不可用、面板令牌失效）留在结果里，小窗只显示数字。
         let units = parse_units(Some(STATUS_UNITS));
         let usage = parse_token_usage(USAGE_TOKEN_UNLIMITED).expect("应能解析");
         let info = parse_token_billing(TokenInputs {
@@ -1634,8 +1626,8 @@ mod tests {
 
     #[test]
     fn account_detail_is_disclosed_as_account_level() {
-        // 小窗不再写接口路径（用户不要来源信息），但「账号级」与
-        // 「面板访问令牌」两项口径披露必须留住：否则会被读成某个 sk- 令牌的余额。
+        // 小窗不写接口路径，但「账号级」与「面板访问令牌」两项口径披露必须留住：
+        // 否则会被读成某个 sk- 令牌的余额。
         let info = account_only_billing();
         let detail = info.detail();
         assert!(
@@ -1677,7 +1669,7 @@ mod tests {
 
         let detail = info.detail();
         assert!(detail.contains("今日已用：$3.00（2 次请求）"), "{detail}");
-        // 额度缺失不再写一行解释（小窗只放数据）。
+        // 额度缺失时不留额度行。
         assert!(!detail.contains("额度"), "没有额度就不该有额度行：{detail}");
         assert!(!detail.contains("接口"), "{detail}");
         assert!(!detail.contains("/api/"), "{detail}");

@@ -536,7 +536,7 @@ mod tests {
         for forbidden in [".config", ".pi", ".omp", ".dsh", "opencode"] {
             assert!(!text.contains(forbidden), "不应写进 agent 配置：{text}");
         }
-        // 有家目录时必须在家里，而不是 %APPDATA%（按用户要求）
+        // 有家目录时必须在家里，而不是 %APPDATA%
         let has_home =
             std::env::var_os("USERPROFILE").is_some() || std::env::var_os("HOME").is_some();
         if has_home {

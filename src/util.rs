@@ -520,8 +520,8 @@ pub fn to_yaml_string(value: &serde_json::Value) -> Result<String, String> {
 
 /// baseUrl 体检：返回可疑点标签（**仅供界面提示，绝不自动改写配置**）。
 ///
-/// 覆盖 `https://host//v1` 这类真实踩过的坑（重复斜杠）、末尾多余斜杠、
-/// 缺少协议头与夹带空白字符；只做字符串体检，不联网、不依赖方言语义。
+/// 覆盖重复斜杠（`https://host//v1`）、末尾多余斜杠、缺少协议头与夹带空白字符；
+/// 只做字符串体检，不联网、不依赖方言语义。
 pub fn url_suspicions(url: &str) -> Vec<&'static str> {
     let trimmed = url.trim();
     let mut out = Vec::new();
@@ -558,8 +558,8 @@ mod tests {
 
     /// 反向守住对话框滤镜：每个后端的默认配置扩展名都必须在列表里。
     ///
-    /// 曾经的 Bug：首项滤镜只有 json，Windows 对话框默认按它过滤，
-    /// `.yml` / `.yaml`（oh-my-pi / DSH 的配置文件）在「浏览」时不可见。
+    /// Windows 对话框按首项滤镜过滤列表：首项必须覆盖 json / jsonc / yml / yaml，
+    /// 否则 oh-my-pi / DSH 的 `.yml` / `.yaml` 在「浏览」时看不到。
     #[test]
     fn dialog_extensions_cover_backend_defaults() {
         for backend in crate::backends::BACKENDS {
