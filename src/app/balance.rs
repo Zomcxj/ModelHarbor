@@ -178,7 +178,7 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
 /// 这**不是令牌的问题**：部署版本较旧的 new-api 用该头做一层防跨站校验，
 /// 取值必须等于登录用户的 ID（实测错值会回 “does not match logged in user”）。
 /// 只拿到状态码时会把这种 401 说成“令牌无效”，所以必须按正文分类。
-const ACCOUNT_NEEDS_USER_ID: &str =
+pub(super) const ACCOUNT_NEEDS_USER_ID: &str =
     "该站点要求 New-Api-User（用户 ID）头：请在「令牌」面板为它补填用户 ID（可在站点面板 F12 看 /api/user/self 请求的 New-Api-User 值）";
 
 /// 账号查询因缺 `New-Api-User` 头失败时，错误文本里一定含这个标记。
@@ -202,7 +202,7 @@ fn fetch_account(
 /// `New-Api-User` 头的取值：空串（没填）表示**不发这个头**。
 ///
 /// 不能发空值：旧版会把它当成“与登录用户不匹配”，反而把本来能通的站点弄坏。
-fn user_id_header(user_id: &str) -> Option<&str> {
+pub(super) fn user_id_header(user_id: &str) -> Option<&str> {
     let id = user_id.trim();
     (!id.is_empty()).then_some(id)
 }
@@ -247,7 +247,7 @@ fn account_get(url: &str, pat: &str, user_id: &str) -> Result<String, String> {
 ///
 /// 各站文案不统一（英文 `header not provided` / 中文 `未提供 New-Api-User`），
 /// 所以只认头名本身、大小写不敏感，不去匹配整句。
-fn body_requests_user_id(body: &str) -> bool {
+pub(super) fn body_requests_user_id(body: &str) -> bool {
     body.to_lowercase().contains("new-api-user")
 }
 

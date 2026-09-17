@@ -72,7 +72,7 @@ fn remove_legacy_next_to(path: &Path) {
 }
 
 /// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
-const SCHEMA_VERSION: u64 = 4;
+const SCHEMA_VERSION: u64 = 5;
 
 /// 配置身份：规范化路径后做稳定 FNV-1a 哈希，避免把用户目录明文写进设置键。
 pub fn config_identity(path: &str) -> String {
@@ -143,6 +143,11 @@ pub struct Prefs {
     /// 已折叠的卡片（`配置身份/类别/名字`；不在表里的即展开）。
     /// v2 的 `类别/名字` 旧键会在首次成功加载配置后迁入当前配置身份。
     pub collapsed: Vec<String>,
+    /// 已勾选「允许签到」的 provider（键格式与 `collapsed` 相同）。
+    ///
+    /// 与折叠状态**分开存**：签到是写操作，折叠状态被清理（如卡片被删）
+    /// 时不该连带清掉授权，反之亦然。
+    pub checkin_enabled: Vec<String>,
     /// 检测到系统代理 / VPN 时是否仍允许「模型延迟测试」。
     ///
     /// 中转站普遍有多 IP 检测 / 测活风控，默认 `false` 保持拦截；
@@ -196,6 +201,19 @@ impl Prefs {
                 .unwrap_or("")
                 .to_string()
         };
+        // 字符串数组字段（折叠表 / 签到授权）读取方式一致，提一个闭包。
+        let get_list = |key: &str| {
+            root.get(key)
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         Prefs {
             show_api_keys: root
                 .get("show_api_keys")
@@ -213,17 +231,8 @@ impl Prefs {
                 oh_my_pi: nested_str(&root, "config_paths", "oh_my_pi"),
                 deepseek_harness: nested_str(&root, "config_paths", "deepseek_harness"),
             },
-            collapsed: root
-                .get("collapsed")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            collapsed: get_list("collapsed"),
+            checkin_enabled: get_list("checkin_enabled"),
             // 只有真正的布尔 true 才放行：缺字段、字符串 "true" 都按拦截处理。
             allow_model_test_with_proxy: root
                 .get("allow_model_test_with_proxy")
@@ -253,18 +262,21 @@ impl Prefs {
             paths.insert(key.to_string(), Value::String(value.clone()));
         }
         root.insert("config_paths".to_string(), Value::Object(paths));
-        // 折叠表排序去重后写出：内容一样就不产生 diff（避免无意义的写盘噪声）。
-        let mut collapsed: Vec<&String> = self.collapsed.iter().collect();
-        collapsed.sort();
-        collapsed.dedup();
-        root.insert(
-            "collapsed".to_string(),
+        // 两个字符串数组都排序去重后写出：内容一样就不产生 diff（避免写盘噪声）。
+        let sorted_array = |items: &[String]| {
+            let mut list: Vec<&String> = items.iter().collect();
+            list.sort();
+            list.dedup();
             Value::Array(
-                collapsed
-                    .into_iter()
+                list.into_iter()
                     .map(|key| Value::String(key.clone()))
                     .collect(),
-            ),
+            )
+        };
+        root.insert("collapsed".to_string(), sorted_array(&self.collapsed));
+        root.insert(
+            "checkin_enabled".to_string(),
+            sorted_array(&self.checkin_enabled),
         );
         root.insert(
             "allow_model_test_with_proxy".to_string(),
@@ -336,6 +348,11 @@ mod tests {
                 collapsed_id("cfg", "agents", "build"),
                 collapsed_id("cfg", "providers", "openai"),
             ],
+            // 同样按字母序：写出时会排序，往返应完全相等
+            checkin_enabled: vec![
+                collapsed_id("cfg", "checkin", "openai"),
+                collapsed_id("cfg", "checkin", "zhipu"),
+            ],
             allow_model_test_with_proxy: true,
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
@@ -389,7 +406,7 @@ mod tests {
             prefs.collapsed,
             vec!["providers/p".to_string(), "agents/a".to_string()]
         );
-        assert!(prefs.to_json().contains(r#""version": 4"#));
+        assert!(prefs.to_json().contains(r#""version": 5"#));
     }
 
     #[test]

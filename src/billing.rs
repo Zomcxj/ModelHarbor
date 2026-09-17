@@ -381,11 +381,7 @@ pub fn parse_account_self(json: &str, units: &Units) -> Option<AccountInfo> {
     let quota = data.get("quota").and_then(Value::as_f64);
     let used = data.get("used_quota").and_then(Value::as_f64);
     // 次数容忍整数 / 浮点两种写法（站点实现不完全一致）。
-    let requests = data.get("request_count").and_then(|value| {
-        value
-            .as_u64()
-            .or_else(|| value.as_f64().filter(|n| *n >= 0.0).map(|n| n as u64))
-    });
+    let requests = data.get("request_count").and_then(value_as_u64);
     // 全是 None 说明这不是一份可用的账号数据（例如 success:true 但 data 为空）。
     if quota.is_none() && used.is_none() && requests.is_none() {
         return None;
@@ -403,8 +399,181 @@ pub fn parse_account_self(json: &str, units: &Units) -> Option<AccountInfo> {
     })
 }
 
-/// 一条调用日志（只留统计要用的字段；`content` / `ip` 这类隐私字段不解析）。
-#[derive(Clone, Debug, PartialEq)]
+/// 读一个非负整数（容忍整数 / 浮点两种写法：站点实现不完全一致）。
+fn value_as_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_f64().filter(|n| *n >= 0.0).map(|n| n as u64))
+}
+
+/// 签到状态（`GET /api/user/checkin`，只需面板令牌/PAT，**只读**）。
+///
+/// 不是每个站点都开这个功能：未启用时站点用 `200 + success:false` 报
+/// 「签到功能未启用」，[`parse_checkin_status`] 会把原话作为错误返回。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CheckinStatus {
+    /// 站点是否启用签到。
+    pub enabled: bool,
+    /// 今天是否已签到。
+    pub today: bool,
+    /// 本月签到次数。
+    pub month_count: u64,
+    /// 累计签到次数。
+    pub total_count: u64,
+    /// 累计获得的额度（美元）；站点没给就是 `None`。
+    pub total_usd: Option<f64>,
+    /// 单次签到额度区间（美元）；站点未配置（0）时为 `None`。
+    pub min_usd: Option<f64>,
+    pub max_usd: Option<f64>,
+}
+
+/// 一次签到的结果（`POST /api/user/checkin`）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CheckinOutcome {
+    /// 本次获得的额度（美元）；站点没给就是 `None`。
+    pub awarded_usd: Option<f64>,
+    /// 签到日期（站点给的 `YYYY-MM-DD`）。
+    pub date: String,
+}
+
+/// 取站点自己给的错误消息（`message` 字段），取不到就用一句兜底。
+///
+/// 站点的话比我们猜的准：「签到功能未启用」「今日已签到」
+/// 「Turnstile token 为空」都是它自己说的，要原样带给用户。
+fn site_message(root: &Value, fallback: &str) -> String {
+    root.get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+/// 解析 `GET /api/user/checkin`。
+///
+/// 失败情形一律返回 `Err`（而不是 `None`）：未启用、被拒绝、结构不认识
+/// 都需要给用户一句具体的话，不能被当成「这个站点没有签到」而静默。
+pub fn parse_checkin_status(json: &str, units: &Units) -> Result<CheckinStatus, String> {
+    let root = serde_json::from_str::<Value>(json).map_err(|_| "返回内容不是 JSON".to_string())?;
+    if !root.is_object() {
+        return Err("返回内容不是可识别的签到状态".to_string());
+    }
+    if root.get("success").and_then(Value::as_bool) == Some(false) {
+        return Err(site_message(&root, "站点拒绝了签到状态查询"));
+    }
+    let data = root
+        .get("data")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "返回内容不是可识别的签到状态".to_string())?;
+    let stats = data.get("stats").filter(|value| value.is_object());
+    let count = |key: &str| {
+        stats
+            .and_then(|stats| stats.get(key))
+            .and_then(value_as_u64)
+            .unwrap_or(0)
+    };
+    let to_money = |points: f64| points / units.quota_per_unit;
+    // 0 表示站点没配置这一项：显示「额度 $0.00」只会误导。
+    let positive_usd = |key: &str| {
+        data.get(key)
+            .and_then(Value::as_f64)
+            .filter(|points| *points > 0.0)
+            .map(to_money)
+    };
+    Ok(CheckinStatus {
+        enabled: data
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        today: stats
+            .and_then(|stats| stats.get("checked_in_today"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        month_count: count("checkin_count"),
+        total_count: count("total_checkins"),
+        total_usd: stats
+            .and_then(|stats| stats.get("total_quota"))
+            .and_then(Value::as_f64)
+            .filter(|points| *points > 0.0)
+            .map(to_money),
+        min_usd: positive_usd("min_quota"),
+        max_usd: positive_usd("max_quota"),
+    })
+}
+
+/// 解析 `POST /api/user/checkin`。
+///
+/// `success:false` 时把站点原话作为错误返回——「今日已签到」与
+/// 「Turnstile token 为空」要向用户说的事完全不同，不能混成一句。
+pub fn parse_checkin_result(json: &str, units: &Units) -> Result<CheckinOutcome, String> {
+    let root = serde_json::from_str::<Value>(json).map_err(|_| "返回内容不是 JSON".to_string())?;
+    if !root.is_object() {
+        return Err("返回内容不是可识别的签到结果".to_string());
+    }
+    if root.get("success").and_then(Value::as_bool) == Some(false) {
+        return Err(site_message(&root, "站点拒绝了签到"));
+    }
+    let data = root
+        .get("data")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "站点未返回签到结果".to_string())?;
+    Ok(CheckinOutcome {
+        awarded_usd: data
+            .get("quota_awarded")
+            .and_then(Value::as_f64)
+            .map(|points| points / units.quota_per_unit),
+        date: data
+            .get("checkin_date")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+/// 签到结果的展示文案。
+///
+/// `outcome` 为 `None` 表示「这次只读了状态、没执行签到」：
+/// 此时今天已签到就如实说已签到，绝不假装刚签成。
+/// 站点没给的数字一律不提（不编 `$0.00`、不编「本月 0 次」）。
+pub fn checkin_message(status: &CheckinStatus, outcome: Option<&CheckinOutcome>) -> String {
+    if let Some(outcome) = outcome {
+        let mut text = String::from("签到成功");
+        if let Some(awarded) = outcome.awarded_usd {
+            text.push_str(&format!("，获得 {}", money(awarded)));
+        }
+        if status.month_count > 0 {
+            text.push_str(&format!("（本月 {} 次）", status.month_count));
+        }
+        return text;
+    }
+    if !status.enabled {
+        return "该站点未启用签到".to_string();
+    }
+    if !status.today {
+        return "今日未签到".to_string();
+    }
+    let mut extra: Vec<String> = Vec::new();
+    if status.month_count > 0 {
+        extra.push(format!("本月 {} 次", status.month_count));
+    }
+    if let Some(total) = status.total_usd {
+        extra.push(format!("累计获得 {}", money(total)));
+    }
+    match extra.is_empty() {
+        true => "今日已签到".to_string(),
+        false => format!("今日已签到（{}）", extra.join("，")),
+    }
+}
+
+/// 给站点错误补一句人话：被人机验证挡住时要说明原因与出路。
+pub fn checkin_error_hint(message: &str) -> String {
+    if message.to_lowercase().contains("turnstile") {
+        return format!("{message}（该站点开了 Cloudflare 人机验证，只能在浏览器里签到）");
+    }
+    message.to_string()
+}
+
+/// 一条调用日志（只留统计要用的字段；`content` / `ip` 这类隐私字段不解析）。#[derive(Clone, Debug, PartialEq)]
 pub struct LogEntry {
     /// 发生时间（秒级 Unix 时间戳）。
     pub at: i64,
@@ -1408,5 +1577,135 @@ mod tests {
         });
         assert_eq!(info.shape, Shape::TokenLogsOnly);
         assert!(!info.is_displayable(), "没有任何数据就不该显示");
+    }
+
+    /// 真实际形状：`GET /api/user/checkin`（字段取自实测；records 只留两条）。
+    const CHECKIN_STATUS: &str = r#"{"success":true,"data":{"enabled":true,
+        "max_quota":250000,"min_quota":50000,"stats":{"checked_in_today":true,
+        "checkin_count":14,"total_checkins":45,"total_quota":6500000,
+        "records":[{"checkin_date":"2026-09-17","quota_awarded":150000},
+                   {"checkin_date":"2026-09-16","quota_awarded":100000}]}}}"#;
+    /// 真实际形状：`POST /api/user/checkin` 成功响应。
+    const CHECKIN_DONE: &str = r#"{"success":true,"message":"签到成功",
+        "data":{"quota_awarded":150000,"checkin_date":"2026-09-17"}}"#;
+
+    #[test]
+    fn checkin_status_reads_the_real_payload() {
+        let units = parse_units(Some(STATUS_UNITS));
+        let status = parse_checkin_status(CHECKIN_STATUS, &units).expect("应能解析");
+        assert!(status.enabled);
+        assert!(status.today, "今天已签到");
+        assert_eq!(status.month_count, 14);
+        assert_eq!(status.total_count, 45);
+        assert_eq!(status.total_usd, Some(13.0), "6_500_000 / 500_000");
+        assert_eq!(status.min_usd, Some(0.1), "50_000 / 500_000");
+        assert_eq!(status.max_usd, Some(0.5), "250_000 / 500_000");
+    }
+
+    #[test]
+    fn checkin_status_keeps_the_site_own_refusal_message() {
+        // 站点没开签到：new-api 用 200 + success:false + 这句中文报错。
+        let units = parse_units(Some(STATUS_UNITS));
+        let err = parse_checkin_status(r#"{"message":"签到功能未启用","success":false}"#, &units)
+            .expect_err("未启用应报错");
+        assert!(err.contains("签到功能未启用"), "{err}");
+        // 不是 JSON 也不能当成「已签到」。
+        assert!(parse_checkin_status("not json", &units).is_err());
+    }
+
+    #[test]
+    fn checkin_result_reports_the_awarded_quota() {
+        let units = parse_units(Some(STATUS_UNITS));
+        let done = parse_checkin_result(CHECKIN_DONE, &units).expect("应能解析");
+        assert_eq!(done.awarded_usd, Some(0.3), "150_000 / 500_000");
+        assert_eq!(done.date, "2026-09-17");
+    }
+
+    #[test]
+    fn checkin_result_surfaces_refusals_including_captcha() {
+        let units = parse_units(Some(STATUS_UNITS));
+        // 已经签过：把站点原话带出来，而不是自己编一个结论。
+        let already = parse_checkin_result(r#"{"success":false,"message":"今日已签到"}"#, &units)
+            .expect_err("已签到应报错");
+        assert!(already.contains("今日已签到"), "{already}");
+        // 开了 Cloudflare 人机验证的站点会这样回：要让用户看懂为什么做不了。
+        let captcha =
+            parse_checkin_result(r#"{"success":false,"message":"Turnstile token 为空"}"#, &units)
+                .expect_err("人机验证应报错");
+        assert!(captcha.contains("Turnstile"), "{captcha}");
+    }
+
+    #[test]
+    fn checkin_parsers_survive_missing_fields() {
+        let units = parse_units(None);
+        let status = parse_checkin_status(r#"{"success":true,"data":{"enabled":true}}"#, &units)
+            .expect("缺 stats 也要能解析");
+        assert!(status.enabled);
+        assert!(!status.today);
+        assert_eq!(status.month_count, 0);
+        assert_eq!(status.total_usd, None, "没给累计就不编数字");
+        assert_eq!(status.min_usd, None, "额度区间缺省不编");
+        assert!(
+            parse_checkin_status(r#"{"success":true}"#, &units).is_err(),
+            "没有 data 不算签到状态"
+        );
+        // 成功但没有 data：不能假装签到成功。
+        assert!(parse_checkin_result(r#"{"success":true,"message":"签到成功"}"#, &units).is_err());
+    }
+
+    #[test]
+    fn checkin_message_describes_both_outcomes() {
+        let units = parse_units(Some(STATUS_UNITS));
+        let status = parse_checkin_status(CHECKIN_STATUS, &units).expect("应能解析");
+        // 已签到：只说状态，不假装刚签成。
+        let already = checkin_message(&status, None);
+        assert!(already.contains("今日已签到"), "{already}");
+        assert!(already.contains("本月 14 次"), "{already}");
+        assert!(already.contains("$13.00"), "累计获得要带上：{already}");
+        // 刚签成：说清拿到多少。
+        let outcome = parse_checkin_result(CHECKIN_DONE, &units).expect("应能解析");
+        let fresh = checkin_message(&status, Some(&outcome));
+        assert!(fresh.contains("签到成功"), "{fresh}");
+        assert!(fresh.contains("$0.30"), "{fresh}");
+        assert!(!fresh.contains("今日已签到"), "刚签成不该说已签到：{fresh}");
+    }
+
+    #[test]
+    fn checkin_message_omits_numbers_the_site_did_not_give() {
+        let bare = CheckinStatus {
+            enabled: true,
+            ..Default::default()
+        };
+        let text = checkin_message(&bare, None);
+        assert!(text.contains("今日未签到"), "{text}");
+        assert!(!text.contains("累计获得"), "没给累计就不提：{text}");
+        assert!(!text.contains("本月"), "没给本月次数就不提：{text}");
+        // 刚签成但站点没给额度：不能编一个 $0.00。
+        let outcome = CheckinOutcome {
+            awarded_usd: None,
+            date: "2026-09-17".to_string(),
+        };
+        let no_amount = checkin_message(&bare, Some(&outcome));
+        assert!(no_amount.contains("签到成功"), "{no_amount}");
+        assert!(!no_amount.contains("$"), "没给额度就不编金额：{no_amount}");
+    }
+
+    #[test]
+    fn checkin_error_hint_explains_the_captcha_case() {
+        // 站点开了 Cloudflare 人机验证：要说清为什么工具做不了，
+        // 而不是把「Turnstile token 为空」原样丢给用户。
+        let hinted = checkin_error_hint("Turnstile token 为空");
+        assert!(
+            hinted.contains("Turnstile token 为空"),
+            "保留站点原话：{hinted}"
+        );
+        assert!(hinted.contains("人机验证"), "{hinted}");
+        assert!(hinted.contains("浏览器"), "要给出路：{hinted}");
+        // 其他错误原样返回，不加戏。
+        assert_eq!(checkin_error_hint("今日已签到"), "今日已签到");
+        assert_eq!(
+            checkin_error_hint("网络错误：连接被重置"),
+            "网络错误：连接被重置"
+        );
     }
 }

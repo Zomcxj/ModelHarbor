@@ -1,5 +1,6 @@
 //! Providers 区块：厂商卡片列表、拖拽落点聚合、表单字段可见性标志与思考档位方言。
 use super::balance;
+use super::checkin;
 use super::App;
 use crate::app::bars::{short_err, sticky_begin, sticky_end};
 use crate::app::fetch::{latency_color, matrix_label};
@@ -7,6 +8,26 @@ use crate::credentials;
 use crate::format::ConfigFormat;
 use crate::ui::{card_frame, card_list, move_item, DragHandle};
 use eframe::egui;
+
+/// 卡片渲染时向外收集的动作与落点。
+///
+/// 打包成一个结构而不是一串 `&mut Option<_>`：出参一多，函数签名就超出
+/// clippy 的参数上限，而且调用处一长串 `&mut` 也读不出哪个对应哪个。
+#[derive(Default)]
+pub(super) struct CardActions {
+    /// 要删除的 provider 下标。
+    pub(super) remove: Option<usize>,
+    /// 要复制的 provider 下标。
+    pub(super) copy: Option<usize>,
+    /// 点了「签到」的 provider key（写操作，勾选后才可用）。
+    pub(super) checkin: Option<String>,
+    /// 签到勾选状态变更：(provider key, 是否允许签到)。
+    pub(super) toggle_checkin: Option<(String, bool)>,
+    /// provider 卡片的拖拽落点。
+    pub(super) hover: Option<String>,
+    /// model 卡片的拖拽落点。
+    pub(super) model_hover: Option<String>,
+}
 
 /// provider / model 表单的字段可见性与方言标签（opencode / pi / omp / DSH 共用）。
 #[derive(Clone, Copy)]
@@ -109,41 +130,58 @@ impl App {
             self.show_new_provider = true;
         }
 
-        let mut to_remove: Option<usize> = None;
-        let mut to_copy: Option<usize> = None;
         // 拖拽落点必须在**所有卡片渲染完之后**统一聚合再写入 self：
         // 卡片各自赋值会被后渲染的卡片用 None 覆盖（模型卡片曾因此丢失绿色落点边框）。
-        let mut hover_target: Option<String> = None;
-        let mut model_hover_target: Option<String> = None;
+        let mut actions = CardActions::default();
         card_list(ui, &matched, 0.0, |ui, idx| {
-            self.render_provider_card(
-                ui,
-                idx,
-                &mut to_remove,
-                &mut to_copy,
-                &mut hover_target,
-                &mut model_hover_target,
-            );
+            self.render_provider_card(ui, idx, &mut actions);
         });
-        if let Some(idx) = to_remove {
+        if let Some((key, enabled)) = actions.toggle_checkin {
+            self.set_checkin_enabled(&key, enabled);
+            self.status = if enabled {
+                format!("已允许 {} 签到：点它卡片上的「签到」按钮执行", key)
+            } else {
+                format!("已取消 {} 的签到勾选", key)
+            };
+        }
+        // 签到是写操作：只在用户点按钮时发生，不并发、不批量。
+        if let Some(key) = actions.checkin {
+            let target = self
+                .providers
+                .iter()
+                .find(|p| p.key == key)
+                .map(|p| (p.key.clone(), p.base_url.clone()));
+            if let Some((key, base_url)) = target {
+                let query = checkin::Query {
+                    key,
+                    pat: self.station_pat(&base_url),
+                    user_id: self.station_user_id(&base_url),
+                    base_url,
+                };
+                if let Some(message) = self.start_checkin(query) {
+                    self.status = message;
+                }
+            }
+        }
+        if let Some(idx) = actions.remove {
             self.providers.remove(idx);
             self.status = "已删除 provider".into();
         }
-        if let Some(idx) = to_copy {
+        if let Some(idx) = actions.copy {
             let mut p = self.providers[idx].clone();
             p.key = format!("{}_copy", p.key);
             self.providers.push(p);
             self.status = "已复制 provider".into();
         }
         if self.provider_drag_src.is_some() {
-            self.provider_drag_target = hover_target;
+            self.provider_drag_target = actions.hover;
         } else {
             self.provider_drag_target = None;
         }
         // 模型拖拽落点：与 provider 同样在外层聚合，保证任意展开顺序下被拖到的
         // 模型卡片都能拿到绿色边框（见 render_provider_form 里的说明）。
         if self.model_drag_src.is_some() {
-            self.model_drag_target = model_hover_target;
+            self.model_drag_target = actions.model_hover;
         } else {
             self.model_drag_target = None;
         }
@@ -346,10 +384,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         idx: usize,
-        to_remove: &mut Option<usize>,
-        to_copy: &mut Option<usize>,
-        hover_target: &mut Option<String>,
-        model_hover_target: &mut Option<String>,
+        actions: &mut CardActions,
     ) {
         let key = self.providers[idx].key.clone();
         let open = !self.provider_collapsed(&key);
@@ -426,10 +461,10 @@ impl App {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("删除").clicked() {
-                        *to_remove = Some(idx);
+                        actions.remove = Some(idx);
                     }
                     if ui.button("复制").clicked() {
-                        *to_copy = Some(idx);
+                        actions.copy = Some(idx);
                     }
                     // 用量查询结果紧挨「复制」左侧（右对齐布局里越晚添加越靠左）。
                     // 查不到的站点不显示（未开放接口 / WAF / 空数据），也不显示占位余额。
@@ -455,15 +490,60 @@ impl App {
                             _ => {}
                         }
                     }
+                    // 签到：**写操作**（会改账号额度、产生系统日志），所以必须
+                    // 逐个 provider 手动勾选，且完全不参与「查询用量」的批处理。
+                    // 勾选框与按钮成对，放在「复制」左侧（右对齐布局里越晚添加越靠左）。
+                    let checkin_on = self.checkin_enabled(&key);
+                    if checkin_on {
+                        if let Some(state) = self.checkin.get(&key) {
+                            if state.rx.is_some() {
+                                ui.add(egui::Spinner::new().size(14.0));
+                            } else if let Some(result) = &state.result {
+                                let semantics = crate::theme::semantics(ui);
+                                let (text, color) = match result {
+                                    Ok(text) => (text.clone(), semantics.ok),
+                                    Err(err) => (err.clone(), semantics.err),
+                                };
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(text).color(color))
+                                        .truncate(),
+                                );
+                            }
+                        }
+                        if ui
+                            .button("签到")
+                            .on_hover_text(
+                                "先读签到状态，今天没签才执行签到\n\
+                                 需要该站点的「面板访问令牌」（在「令牌」面板填）\n\
+                                 站点若开了 Cloudflare 人机验证，只能在浏览器里签到\n\
+                                 这是写操作：会改变账号额度并让站点记一条系统日志",
+                            )
+                            .clicked()
+                        {
+                            actions.checkin = Some(key.clone());
+                        }
+                    }
+                    let mut checkin_checked = checkin_on;
+                    if ui
+                        .checkbox(&mut checkin_checked, "签到")
+                        .on_hover_text(
+                            "勾选后才允许对这个 provider 执行签到。\n\
+                             默认不勾选：签到是写操作（会改账号额度）。\n\
+                             勾选状态按配置文件分区保存到 settings.json。",
+                        )
+                        .changed()
+                    {
+                        actions.toggle_checkin = Some((key.clone(), checkin_checked));
+                    }
                 });
             });
             if open {
-                self.render_provider_form(ui, idx, model_hover_target);
+                self.render_provider_form(ui, idx, &mut actions.model_hover);
             }
         });
         if let Some(src_key) = &self.provider_drag_src {
-            if src_key != &key && resp.contains_pointer() && hover_target.is_none() {
-                *hover_target = Some(key.clone());
+            if src_key != &key && resp.contains_pointer() && actions.hover.is_none() {
+                actions.hover = Some(key.clone());
             }
         }
     }

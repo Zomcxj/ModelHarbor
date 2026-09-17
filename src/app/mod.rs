@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 mod agents;
 mod balance;
 mod bars;
+mod checkin;
 mod fetch;
 mod preview;
 mod providers;
@@ -73,6 +74,9 @@ pub struct App {
     /// 用「折叠集合」而不是「展开集合」：新加载进来的卡片默认是展开的，
     /// 而且这份状态能原样落盘、不会被「重新加载」清空。
     collapsed: HashSet<String>,
+    /// 已勾选「允许签到」的 provider key（独立于折叠状态：签到是写操作，
+    /// 折叠状态被清理时不该连带清掉授权）。
+    checkin_enabled: HashSet<String>,
     variant_open: HashSet<String>,
     agent_drag_src: Option<String>,
     agent_drag_target: Option<String>,
@@ -88,6 +92,8 @@ pub struct App {
     latency: HashMap<String, LatencyState>,
     /// 每个 provider 的「已用 / 余额」查询状态（key → 状态）。
     balance: HashMap<String, balance::BalanceState>,
+    /// 各 provider 的签到状态（写操作，与批量的用量查询完全分开）。
+    checkin: checkin::States,
     /// 正在跑「一键查询用量」批次：全部结束后在状态栏给一条汇总。
     balance_batch: bool,
     /// 站点面板访问令牌（PAT，`.modelharbor/tokens.json`）：站点级，多个 provider 共用。
@@ -178,6 +184,7 @@ impl Default for App {
             show_new_agent: false,
             show_new_provider: false,
             collapsed: prefs.collapsed.iter().cloned().collect(),
+            checkin_enabled: prefs.checkin_enabled.iter().cloned().collect(),
             variant_open: HashSet::new(),
             agent_drag_src: None,
             agent_drag_target: None,
@@ -189,6 +196,7 @@ impl Default for App {
             model_fetch_open: HashSet::new(),
             latency: HashMap::new(),
             balance: HashMap::new(),
+            checkin: HashMap::new(),
             balance_batch: false,
             tokens: crate::tokens::StationTokens::load(),
             show_tokens: false,
@@ -279,6 +287,7 @@ impl eframe::App for App {
         self.poll_model_fetch();
         self.poll_latency();
         self.poll_balance();
+        self.poll_checkin();
         self.persist_prefs_if_changed();
         self.ui_top_bar(ctx);
         self.ui_status_bar(ctx);
@@ -333,6 +342,8 @@ impl App {
     fn current_prefs(&self) -> crate::prefs::Prefs {
         let mut collapsed: Vec<String> = self.collapsed.iter().cloned().collect();
         collapsed.sort();
+        let mut checkin_enabled: Vec<String> = self.checkin_enabled.iter().cloned().collect();
+        checkin_enabled.sort();
         crate::prefs::Prefs {
             show_api_keys: self.show_api_keys,
             save_format: self.save_format.key().to_string(),
@@ -345,6 +356,7 @@ impl App {
                 deepseek_harness: self.path_override(ConfigFormat::DeepSeekHarness),
             },
             collapsed,
+            checkin_enabled,
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
         }
     }
@@ -394,7 +406,6 @@ impl App {
     pub(super) fn provider_collapsed(&self, key: &str) -> bool {
         self.collapsed.contains(&self.card_id("providers", key))
     }
-
     /// 设置 provider 卡片折叠状态。
     pub(super) fn set_provider_collapsed(&mut self, key: &str, collapsed: bool) {
         let id = self.card_id("providers", key);
@@ -477,6 +488,15 @@ impl App {
         );
         self.collapsed
             .retain(|id| !id.starts_with(&prefix) || alive.contains(id));
+        // 签到授权：provider 被删后同样要清（否则文件只增不减）。
+        // 用独立的 alive 集合，不能借用折叠表的集合：两者键的类别不同。
+        let alive_checkin: HashSet<String> = self
+            .providers
+            .iter()
+            .map(|p| crate::prefs::collapsed_id(&config_id, "checkin", &p.key))
+            .collect();
+        self.checkin_enabled
+            .retain(|id| !id.starts_with(&prefix) || alive_checkin.contains(id));
     }
 
     /// 记住某一页手动指定过的配置路径（空串 = 清除覆盖，回到自动探测值）。
