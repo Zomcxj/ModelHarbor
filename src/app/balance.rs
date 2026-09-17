@@ -171,15 +171,62 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
 /// 鉴权只用 `Authorization: Bearer <pat>`：new-api 不再要求 `New-Api-User`
 /// 请求头（见其 `middleware/auth.go` 的 `classifyDashboardCredential`），
 /// 因此不额外发送用户 ID。该接口是**只读**的。
+/// 站点要求 `New-Api-User`（用户 ID）头时的提示。
+///
+/// 这**不是令牌的问题**：部署版本较旧的 new-api 用该头做一层防跨站校验，
+/// 取值必须等于登录用户的 ID（实测错值会回 “does not match logged in user”）。
+/// 只拿到状态码时会把这种 401 说成“令牌无效”，所以必须按正文分类。
+const ACCOUNT_NEEDS_USER_ID: &str =
+    "该站点要求 New-Api-User（用户 ID）头：令牌有效，但缺用户 ID";
+
 fn fetch_account(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
     pat: &str,
 ) -> Result<billing::AccountInfo, String> {
     let url = format!("{}/api/user/self", endpoints.origin);
-    let text = http_get(&url, Some(pat))?;
+    let text = account_get(&url, pat)?;
     billing::parse_account_self(&text, units)
         .ok_or_else(|| "返回内容不是可识别的账号额度".to_string())
+}
+
+/// 账号接口专用请求：与 [`http_get`] 的区别是**保留错误响应正文**用于分类。
+///
+/// 旧版 new-api 用「401 + 正文里提到 `New-Api-User`」表达「令牌没问题，缺用户 ID」，
+/// 只拿到状态码就会把它误报成「令牌无效」。正文只在本地用于判断，
+/// **绝不进入错误文本**（避免把站点回显的内容带到状态栏）。
+fn account_get(url: &str, pat: &str) -> Result<String, String> {
+    let request = latency_agent()
+        .get(url)
+        .set("Accept", "application/json")
+        // 与 http_get 一致：ureq 默认 UA 会被部分站点的 WAF 直接拒掉。
+        .set("User-Agent", "Mozilla/5.0");
+    let request = apply_auth(request, AuthKind::Bearer, pat);
+    match request.call() {
+        Ok(response) => response
+            .into_string()
+            .map_err(|err| format!("读取响应失败：{}", err)),
+        Err(ureq::Error::Status(code, response)) => {
+            // 正文读失败就当作“没线索”：按状态码报，不能因此改变结论。
+            let body = response.into_string().unwrap_or_default();
+            if body_requests_user_id(&body) {
+                return Err(ACCOUNT_NEEDS_USER_ID.to_string());
+            }
+            Err(crate::http_status::label(code))
+        }
+        Err(ureq::Error::Transport(transport)) => Err(format!(
+            "网络错误：{}",
+            crate::app::bars::sanitize_network_error(&transport.to_string())
+        )),
+    }
+}
+
+/// 站点是否在错误正文里要求 `New-Api-User`。
+///
+/// 各站文案不统一（英文 `header not provided` / 中文 `未提供 New-Api-User`），
+/// 所以只认头名本身、大小写不敏感，不去匹配整句。
+fn body_requests_user_id(body: &str) -> bool {
+    body.to_lowercase().contains("new-api-user")
 }
 
 /// 把账号查询结果并入已有结果：
@@ -488,6 +535,43 @@ mod tests {
         assert_eq!(
             account_error_message("网络错误：连接被重置"),
             "网络错误：连接被重置"
+        );
+    }
+
+    #[test]
+    fn user_id_requirement_is_not_reported_as_a_bad_token() {
+        // 实测两家的文案不一样，都要认出来。
+        for body in [
+            r#"{"message":"Unauthorized, New-Api-User header not provided","success":false}"#,
+            r#"{"message":"无权进行此操作，未提供 New-Api-User","success":false}"#,
+            r#"{"message":"Unauthorized, New-Api-User does not match logged in user"}"#,
+            // 大小写不敏感：头名本身才是判据。
+            r#"{"message":"new-api-user missing"}"#,
+        ] {
+            assert!(body_requests_user_id(body), "应识别：{body}");
+        }
+        // 普通令牌错误不能误判成「缺用户 ID」。
+        for body in [
+            r#"{"message":"Invalid token","success":false}"#,
+            r#"{"message":"无权进行此操作，未登录且未提供 access token"}"#,
+            "",
+        ] {
+            assert!(!body_requests_user_id(body), "不应误判：{body}");
+        }
+    }
+
+    #[test]
+    fn user_id_message_survives_the_error_mapping() {
+        // 缺用户 ID 不是令牌问题：不能被 401 的兜底文案盖成「令牌无效」。
+        let message = account_error_message(ACCOUNT_NEEDS_USER_ID);
+        assert_eq!(message, ACCOUNT_NEEDS_USER_ID);
+        assert!(
+            !message.contains("令牌无效"),
+            "不能把缺用户 ID 说成令牌无效：{message}"
+        );
+        assert!(
+            message.contains("New-Api-User") && message.contains("用户 ID"),
+            "要说清缺什么、怎么补：{message}"
         );
     }
 

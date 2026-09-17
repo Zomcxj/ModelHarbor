@@ -629,23 +629,34 @@ impl App {
 
     /// 站点面板令牌的悬浮窗外壳（内容见 `ui_tokens_panel`）。
     ///
-    /// 用独立窗口而不是内联面板：它只在配置令牌时用一下，没必要长期占着正文空间；
-    /// 可拖动、可缩放，也能和右侧预览面板同时开着。
+    /// 用独立窗口而不是内联面板：它只在配置令牌时用一下，没必要长期占着正文空间。
+    /// 窗口被限制在主窗口内（不允许拖出去后看不到），高度固定、内容超出用滚轮。
     fn ui_tokens_window(&mut self, ctx: &egui::Context) {
         if !self.show_tokens {
             return;
         }
+        // 固定高度：站点多了也不让窗口无限撑高，内容交给内部滚动区。
+        // 上限取当前窗口高度减去边距，避免在矮窗口下把按钮顶到屏幕外。
+        let area = ctx.content_rect();
+        let height = (area.height() - 140.0).clamp(240.0, 520.0);
         // `.open()` 要借一个局部变量：直接传 `&mut self.show_tokens`
         // 会与闭包里的 `&mut self` 冲突。
         let mut open = true;
         egui::Window::new("站点面板令牌")
             .open(&mut open)
             .collapsible(false)
-            .resizable(true)
-            .default_width(600.0)
-            .default_pos(egui::pos2(90.0, 120.0))
+            .resizable(false)
+            .fixed_size([620.0, height])
+            // 不允许拖到主窗口外：拖出去后标题栏可能落到屏幕外，窗口就找不回来了。
+            .constrain_to(area)
+            .default_pos(egui::pos2(area.left() + 90.0, area.top() + 90.0))
             .show(ctx, |ui| {
-                self.ui_tokens_panel(ui);
+                egui::ScrollArea::vertical()
+                    // 撑满固定高度（不随内容缩），滚动条才是“内容超出才出现”。
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        self.ui_tokens_panel(ui);
+                    });
             });
         if !open {
             self.show_tokens = false;
