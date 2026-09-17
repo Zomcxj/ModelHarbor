@@ -310,6 +310,8 @@ impl eframe::App for App {
                     }
                 });
         });
+        // 令牌管理：独立悬浮窗（可拖动 / 可关闭），不占正文布局。
+        self.ui_tokens_window(ctx);
         self.paint_drag_ghost(ctx);
         // 仅拖拽中显示抓取光标（避免任意控件按下时全局变光标）
         let dragging = self.agent_drag_src.is_some()
@@ -623,6 +625,31 @@ impl App {
         self.remember_page_path(format, "");
         self.config_path = self.config_paths.target_path(format);
         self.reload_for_page(format, false);
+    }
+
+    /// 站点面板令牌的悬浮窗外壳（内容见 `ui_tokens_panel`）。
+    ///
+    /// 用独立窗口而不是内联面板：它只在配置令牌时用一下，没必要长期占着正文空间；
+    /// 可拖动、可缩放，也能和右侧预览面板同时开着。
+    fn ui_tokens_window(&mut self, ctx: &egui::Context) {
+        if !self.show_tokens {
+            return;
+        }
+        // `.open()` 要借一个局部变量：直接传 `&mut self.show_tokens`
+        // 会与闭包里的 `&mut self` 冲突。
+        let mut open = true;
+        egui::Window::new("站点面板令牌")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(600.0)
+            .default_pos(egui::pos2(90.0, 120.0))
+            .show(ctx, |ui| {
+                self.ui_tokens_panel(ui);
+            });
+        if !open {
+            self.show_tokens = false;
+        }
     }
 
     fn paint_drag_ghost(&self, ctx: &egui::Context) {

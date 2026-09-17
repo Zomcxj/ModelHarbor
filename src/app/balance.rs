@@ -226,20 +226,26 @@ fn account_error_message(err: &str) -> String {
 /// 令牌额度：`/api/usage/token/`（额度）+ `/api/log/token`（今日 / 近 7 天用量）。
 ///
 /// 这两个接口直接用 `sk-` key 就能读，公益站（不限额度）也能拿到真实已用。
-/// 额度接口不可用时返回 `None`（交给调用方继续降级）。
+/// 两边都没拿到时返回 `None`（交给调用方继续降级）。
 fn fetch_token(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
     secret: &str,
     status_json: Option<&str>,
 ) -> Option<billing::Billing> {
-    let usage_json = http_get(&endpoints.token_usage(), Some(secret)).ok()?;
-    let usage = billing::parse_token_usage(&usage_json)?;
     let now = unix_now();
     let fallback_from = now - 86_400;
     let today_from = local_midnight_unix().unwrap_or(fallback_from);
     let mut note = (today_from == fallback_from)
         .then(|| "非 Windows 或读不到本地时间：今日按近 24 小时统计".to_string());
+
+    // 两个接口互相独立：把 baseUrl 指向中转域名的站点只有 relay 路由，
+    // `/api/usage/token/` 会回「Invalid URL」，但 `/api/log/token` 照样可用——
+    // 不能因为额度接口缺失就把今日 / 近 7 天一起丢掉。
+    let (usage, usage_error) = match http_get(&endpoints.token_usage(), Some(secret)) {
+        Ok(text) => (billing::parse_token_usage(&text), None),
+        Err(err) => (None, Some(err)),
+    };
     let logs = match http_get(&endpoints.token_logs(), Some(secret)) {
         Ok(text) => billing::parse_token_logs(&text),
         Err(err) => {
@@ -248,8 +254,25 @@ fn fetch_token(
             Vec::new()
         }
     };
+
+    // 两边都没拿到才算这个站点读不出来：沿用原有的兼容账单降级。
+    if usage.is_none() && logs.is_empty() {
+        return None;
+    }
+    if usage.is_none() {
+        // 日志可用、额度不可用：说清是哪一步缺，而不是笼统报“失败”。
+        // 接口回了 200 但结构不认得的情况不再另加备注：详情里的
+        // 「未提供令牌额度接口」已经把结论说清了，重复一次只是噪音。
+        if let Some(err) = usage_error {
+            let reason = format!("令牌额度接口不可用（{err}）");
+            note = Some(match note {
+                Some(existing) => format!("{reason}；{existing}"),
+                None => reason,
+            });
+        }
+    }
     Some(billing::parse_token_billing(billing::TokenInputs {
-        usage: &usage,
+        usage: usage.as_ref(),
         logs: &logs,
         units,
         status_json,

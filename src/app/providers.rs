@@ -155,9 +155,6 @@ impl App {
         if self.show_new_provider {
             self.ui_new_provider_form(ui);
         }
-        if self.show_tokens {
-            self.ui_tokens_panel(ui);
-        }
         sticky_end(ui, anchor, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("Providers");
@@ -439,10 +436,11 @@ impl App {
         }
     }
 
-    /// 令牌面板：列出当前页面所有站点（按 origin 归并），填 / 改 / 删面板访问令牌。
+    /// 令牌面板内容：列出当前页面所有站点（按 origin 归并），填 / 改 / 删面板访问令牌。
     ///
     /// 令牌是**站点级**的：同一站点的多个 provider 共用一份，所以这里按站点一行，
     /// 并标注哪些 provider 在用。只用于只读查询，不写进任何 agent 配置文件。
+    /// 由 [`super::App::ui_tokens_window`] 装进悬浮窗渲染，不再占正文布局。
     pub(super) fn ui_tokens_panel(&mut self, ui: &mut egui::Ui) {
         // 站点 → 使用它的 provider key（按首次出现顺序，保持与卡片列表一致）。
         let mut stations: Vec<(String, Vec<String>)> = Vec::new();
@@ -457,124 +455,122 @@ impl App {
             }
         }
 
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.strong("站点面板令牌");
+        // 标题由悬浮窗提供，此处不再重复。
+        ui.label(
+            egui::RichText::new(
+                "在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成；\
+                 令牌是站点级的，同一站点的多个 provider 共用一份。\
+                 只用于只读查询账号余额。",
+            )
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+        if stations.is_empty() {
             ui.label(
-                egui::RichText::new(
-                    "在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成；\
-                     令牌是站点级的，同一站点的多个 provider 共用一份。\
-                     只用于只读查询账号余额。",
-                )
-                .small()
-                .color(ui.visuals().weak_text_color()),
+                egui::RichText::new("当前页面没有带 baseUrl 的 provider")
+                    .color(ui.visuals().weak_text_color()),
             );
-            if stations.is_empty() {
+            return;
+        }
+
+        // 打开面板时按已保存值补齐草稿（掩码显示；缺省为空 = 未设置）。
+        for (origin, _) in &stations {
+            if !self.token_draft.contains_key(origin) {
+                let existing = self.tokens.get(origin).to_string();
+                self.token_draft.insert(origin.clone(), existing);
+            }
+        }
+
+        // 按钮动作先收集、循环后统一写入 self（避免渲染中的借用冲突）。
+        let mut save: Option<String> = None;
+        let mut remove: Option<String> = None;
+        let mut toggle_reveal: Option<String> = None;
+        for (origin, keys) in &stations {
+            let configured = self.tokens.has(origin);
+            let revealed = self.show_api_keys || self.token_reveal.contains(origin);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(origin).monospace());
+                let semantics = crate::theme::semantics(ui);
                 ui.label(
-                    egui::RichText::new("当前页面没有带 baseUrl 的 provider")
-                        .color(ui.visuals().weak_text_color()),
+                    egui::RichText::new(if configured { "已设置" } else { "未设置" })
+                        .small()
+                        .color(if configured {
+                            semantics.ok
+                        } else {
+                            semantics.warn
+                        }),
                 );
-                return;
-            }
-
-            // 打开面板时按已保存值补齐草稿（掩码显示；缺省为空 = 未设置）。
-            for (origin, _) in &stations {
-                if !self.token_draft.contains_key(origin) {
-                    let existing = self.tokens.get(origin).to_string();
-                    self.token_draft.insert(origin.clone(), existing);
-                }
-            }
-
-            // 按钮动作先收集、循环后统一写入 self（避免渲染中的借用冲突）。
-            let mut save: Option<String> = None;
-            let mut remove: Option<String> = None;
-            let mut toggle_reveal: Option<String> = None;
-            for (origin, keys) in &stations {
-                let configured = self.tokens.has(origin);
-                let revealed = self.show_api_keys || self.token_reveal.contains(origin);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(origin).monospace());
-                    let semantics = crate::theme::semantics(ui);
+                if keys.len() > 1 {
                     ui.label(
-                        egui::RichText::new(if configured { "已设置" } else { "未设置" })
+                        egui::RichText::new(format!("{} 个 provider 共用", keys.len()))
                             .small()
-                            .color(if configured {
-                                semantics.ok
+                            .color(ui.visuals().weak_text_color()),
+                    )
+                    .on_hover_text(keys.join("、"));
+                }
+            });
+            ui.horizontal(|ui| {
+                if let Some(draft) = self.token_draft.get_mut(origin) {
+                    ui.add(
+                        egui::TextEdit::singleline(draft)
+                            .password(!revealed)
+                            .desired_width(280.0)
+                            .hint_text(if configured {
+                                "留空不改变；要清除请点「删除」"
                             } else {
-                                semantics.warn
+                                "粘贴面板访问令牌"
                             }),
                     );
-                    if keys.len() > 1 {
-                        ui.label(
-                            egui::RichText::new(format!("{} 个 provider 共用", keys.len()))
-                                .small()
-                                .color(ui.visuals().weak_text_color()),
-                        )
-                        .on_hover_text(keys.join("、"));
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if let Some(draft) = self.token_draft.get_mut(origin) {
-                        ui.add(
-                            egui::TextEdit::singleline(draft)
-                                .password(!revealed)
-                                .desired_width(280.0)
-                                .hint_text(if configured {
-                                    "留空不改变；要清除请点「删除」"
-                                } else {
-                                    "粘贴面板访问令牌"
-                                }),
-                        );
-                    }
-                    if ui.button(if revealed { "隐藏" } else { "显示" }).clicked() {
-                        toggle_reveal = Some(origin.clone());
-                    }
-                    if ui.button("保存").clicked() {
-                        save = Some(origin.clone());
-                    }
-                    if ui
-                        .add_enabled(configured, egui::Button::new("删除"))
-                        .clicked()
-                    {
-                        remove = Some(origin.clone());
-                    }
-                });
-                ui.add_space(2.0);
-            }
+                }
+                if ui.button(if revealed { "隐藏" } else { "显示" }).clicked() {
+                    toggle_reveal = Some(origin.clone());
+                }
+                if ui.button("保存").clicked() {
+                    save = Some(origin.clone());
+                }
+                if ui
+                    .add_enabled(configured, egui::Button::new("删除"))
+                    .clicked()
+                {
+                    remove = Some(origin.clone());
+                }
+            });
+            ui.add_space(2.0);
+        }
 
-            // 单条显隐：与全局「显示密钥」是「或」的关系，互不干扰。
-            if let Some(origin) = toggle_reveal {
-                if !self.token_reveal.remove(&origin) {
-                    self.token_reveal.insert(origin);
-                }
+        // 单条显隐：与全局「显示密钥」是「或」的关系，互不干扰。
+        if let Some(origin) = toggle_reveal {
+            if !self.token_reveal.remove(&origin) {
+                self.token_reveal.insert(origin);
             }
-            if let Some(origin) = save {
-                let token = self.token_draft.get(&origin).cloned().unwrap_or_default();
-                if token.trim().is_empty() {
-                    self.status = format!("{} 的令牌为空：要清除请点「删除」", origin);
-                } else {
-                    self.tokens.set(&origin, &token);
-                    match self.tokens.save() {
-                        Ok(()) => {
-                            self.status = format!("已保存 {} 的面板令牌", origin);
-                            self.forget_station_balance(&origin);
-                        }
-                        // 错误只带路径，不带令牌内容（见 tokens::save_to）。
-                        Err(err) => self.status = format!("令牌保存失败：{err}"),
-                    }
-                }
-            }
-            if let Some(origin) = remove {
-                self.tokens.remove(&origin);
-                self.token_draft.remove(&origin);
+        }
+        if let Some(origin) = save {
+            let token = self.token_draft.get(&origin).cloned().unwrap_or_default();
+            if token.trim().is_empty() {
+                self.status = format!("{} 的令牌为空：要清除请点「删除」", origin);
+            } else {
+                self.tokens.set(&origin, &token);
                 match self.tokens.save() {
                     Ok(()) => {
-                        self.status = format!("已删除 {} 的面板令牌", origin);
+                        self.status = format!("已保存 {} 的面板令牌", origin);
                         self.forget_station_balance(&origin);
                     }
-                    Err(err) => self.status = format!("令牌删除失败：{err}"),
+                    // 错误只带路径，不带令牌内容（见 tokens::save_to）。
+                    Err(err) => self.status = format!("令牌保存失败：{err}"),
                 }
             }
-        });
+        }
+        if let Some(origin) = remove {
+            self.tokens.remove(&origin);
+            self.token_draft.remove(&origin);
+            match self.tokens.save() {
+                Ok(()) => {
+                    self.status = format!("已删除 {} 的面板令牌", origin);
+                    self.forget_station_balance(&origin);
+                }
+                Err(err) => self.status = format!("令牌删除失败：{err}"),
+            }
+        }
     }
 
     /// 令牌变更后丢弃该站点各 provider 的用量缓存：下次查询重新取账号数据，

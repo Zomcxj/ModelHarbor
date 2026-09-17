@@ -38,6 +38,9 @@ pub enum Shape {
     TokenUnlimited,
     /// 令牌额度（`/api/usage/token/`）：有具体额度与余额。
     TokenQuota,
+    /// 只有调用日志（站点未提供 `/api/usage/token/`，如把 baseUrl 指向中转域名）。
+    /// 今日 / 近 7 天仍可用；额度三项为空，不编数字。
+    TokenLogsOnly,
     /// 无法识别（站点不支持，或返回了别的结构）。
     #[default]
     Unknown,
@@ -473,7 +476,8 @@ pub fn summarize_logs(entries: &[LogEntry], from: Option<i64>) -> LogSummary {
 
 /// [`parse_token_billing`] 的输入（字段多，打包成一个结构）。
 pub struct TokenInputs<'a> {
-    pub usage: &'a TokenUsage,
+    /// 令牌额度接口的结果；该接口整个不存在时为 `None`（日志统计照常出）。
+    pub usage: Option<&'a TokenUsage>,
     pub logs: &'a [LogEntry],
     pub units: &'a Units,
     pub status_json: Option<&'a str>,
@@ -491,29 +495,31 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
     let today = summarize_logs(inputs.logs, Some(inputs.today_from));
     let week = summarize_logs(inputs.logs, Some(inputs.now - 7 * 86_400));
     let capped = true; // 只请求首个分页，无法证明服务端没有后续页。
+                       // 额度接口可能整个不存在（把 baseUrl 指向中转域名的站点就没有这个面板路由）：
+                       // 此时日志统计照常出，额度三项留空，绝不编数字。
+    let unlimited = inputs.usage.is_some_and(|usage| usage.unlimited);
     Billing {
         panel: parse_panel(inputs.status_json),
         source: Source::Token,
-        shape: if inputs.usage.unlimited {
-            Shape::TokenUnlimited
-        } else {
-            Shape::TokenQuota
+        shape: match inputs.usage {
+            None => Shape::TokenLogsOnly,
+            Some(usage) if usage.unlimited => Shape::TokenUnlimited,
+            Some(_) => Shape::TokenQuota,
         },
-        used_usd: inputs.usage.used.map(to_money),
+        used_usd: inputs.usage.and_then(|usage| usage.used).map(to_money),
         // 不限额度时没有「余额 / 上限」可言，不编数字。
-        balance_usd: (!inputs.usage.unlimited)
-            .then(|| inputs.usage.available.map(to_money))
-            .flatten(),
-        limit_usd: (!inputs.usage.unlimited)
-            .then(|| {
-                inputs
-                    .usage
-                    .granted
-                    .filter(|value| *value > 0.0)
-                    .map(to_money)
-            })
-            .flatten(),
-        unlimited: inputs.usage.unlimited,
+        balance_usd: inputs
+            .usage
+            .filter(|usage| !usage.unlimited)
+            .and_then(|usage| usage.available)
+            .map(to_money),
+        limit_usd: inputs
+            .usage
+            .filter(|usage| !usage.unlimited)
+            .and_then(|usage| usage.granted)
+            .filter(|value| *value > 0.0)
+            .map(to_money),
+        unlimited,
         today_usd: (!today.models.is_empty() || today.count > 0).then(|| to_money(today.quota)),
         today_calls: (today.count > 0).then_some(today.calls),
         today_models: today
@@ -738,6 +744,11 @@ impl Billing {
 
     /// 令牌额度（`/api/usage/token/` + `/api/log/token`）的悬停详情。
     fn detail_token(&self, mut lines: Vec<String>) -> String {
+        if self.shape == Shape::TokenLogsOnly {
+            lines.push(
+                "额度：该站点未提供令牌额度接口（/api/usage/token/），只有调用日志统计".to_string(),
+            );
+        }
         if self.unlimited {
             lines.push("额度：不限（该令牌不计额度，只有「已用」有意义，不存在余额）".to_string());
         }
@@ -787,7 +798,10 @@ impl Billing {
         if let Some(note) = &self.note {
             lines.push(format!("备注：{}", note));
         }
-        lines.push("来源：/api/usage/token/ + /api/log/token（只需 API key，只读）".to_string());
+        lines.push(match self.shape {
+            Shape::TokenLogsOnly => "来源：/api/log/token（只需 API key，只读）".to_string(),
+            _ => "来源：/api/usage/token/ + /api/log/token（只需 API key，只读）".to_string(),
+        });
         lines.join("\n")
     }
 }
@@ -1014,7 +1028,7 @@ mod tests {
         let usage = parse_token_usage(USAGE_TOKEN_UNLIMITED).expect("应能解析");
         let logs = parse_token_logs(TOKEN_LOGS);
         let info = parse_token_billing(TokenInputs {
-            usage: &usage,
+            usage: Some(&usage),
             logs: &logs,
             units: &units,
             status_json: Some(STATUS_UNITS),
@@ -1049,7 +1063,7 @@ mod tests {
         // 站点没给换算比 → 按默认并标记假设
         let units = parse_units(None);
         let info = parse_token_billing(TokenInputs {
-            usage: &usage,
+            usage: Some(&usage),
             logs: &[],
             units: &units,
             status_json: None,
@@ -1085,7 +1099,7 @@ mod tests {
         let usage = parse_token_usage(USAGE_TOKEN_UNLIMITED).expect("应能解析");
         let units = parse_units(Some(STATUS_UNITS));
         let info = parse_token_billing(TokenInputs {
-            usage: &usage,
+            usage: Some(&usage),
             logs: &logs,
             units: &units,
             status_json: None,
@@ -1284,7 +1298,7 @@ mod tests {
         let usage = parse_token_usage(USAGE_TOKEN_UNLIMITED).expect("应能解析");
         let logs = parse_token_logs(TOKEN_LOGS);
         let mut info = parse_token_billing(TokenInputs {
-            usage: &usage,
+            usage: Some(&usage),
             logs: &logs,
             units: &units,
             status_json: Some(STATUS_UNITS),
@@ -1339,5 +1353,60 @@ mod tests {
             "要说明靠面板令牌拿到：{detail}"
         );
         assert!(detail.contains("账号级"), "口径要说清是账号级：{detail}");
+    }
+
+    #[test]
+    fn logs_only_result_still_reports_today_and_week() {
+        // 部分站点（如把 baseUrl 指向中转域名）没有 /api/usage/token/ 这个面板路由，
+        // 但 /api/log/token 仍可用：今日 / 近 7 天用量必须单独拿出来，
+        // 不能因为额度接口缺失就把日志统计一起丢掉。
+        let units = parse_units(Some(STATUS_UNITS));
+        let logs = parse_token_logs(TOKEN_LOGS);
+        let info = parse_token_billing(TokenInputs {
+            usage: None,
+            logs: &logs,
+            units: &units,
+            status_json: Some(STATUS_UNITS),
+            now: 1_789_437_000,
+            today_from: 1_789_430_000,
+            note: None,
+        });
+        assert_eq!(info.shape, Shape::TokenLogsOnly);
+        assert_eq!(info.today_usd, Some(3.0), "今日仍要算出来");
+        assert_eq!(info.today_calls, Some(2));
+        assert_eq!(info.week_usd, Some(7.0), "近 7 天仍要算出来");
+        assert_eq!(info.today_models.len(), 2);
+        assert_eq!(info.used_usd, None, "没有额度接口就不编累计");
+        assert_eq!(info.balance_usd, None, "更不能编余额");
+        assert_eq!(info.limit_usd, None);
+        assert!(info.is_displayable(), "只有日志数据也要能显示");
+
+        let inline = info.inline();
+        assert!(inline.contains("今日 $3.00"), "{inline}");
+        assert!(!inline.contains("余额"), "没有额度就不该出现余额：{inline}");
+
+        let detail = info.detail();
+        assert!(detail.contains("今日已用：$3.00（2 次请求）"), "{detail}");
+        assert!(
+            detail.contains("未提供令牌额度接口"),
+            "要说清为什么没有额度：{detail}"
+        );
+    }
+
+    #[test]
+    fn logs_only_result_without_logs_is_not_displayable() {
+        // 两边都没拿到：保持“无数据”，不要凭空造出一个空结果。
+        let units = parse_units(None);
+        let info = parse_token_billing(TokenInputs {
+            usage: None,
+            logs: &[],
+            units: &units,
+            status_json: None,
+            now: 1,
+            today_from: 0,
+            note: None,
+        });
+        assert_eq!(info.shape, Shape::TokenLogsOnly);
+        assert!(!info.is_displayable(), "没有任何数据就不该显示");
     }
 }
