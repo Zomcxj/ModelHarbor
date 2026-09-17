@@ -86,6 +86,9 @@ pub struct Billing {
     /// 余额（美元）= 额度 − 已用。
     pub balance_usd: Option<f64>,
     /// 额度是占位值（公益站常见 1e8）：**不算、不显示余额**，只说清已用。
+    ///
+    /// 卡片小窗不解释这一点（用户要求小窗只放数据），所以只看这一个标记的
+    /// 话界面不会提它；它仍然是解析结果里的事实（调用方 / 测试靠它）。
     pub placeholder_limit: bool,
     /// 该令牌是「不计额度」的（公益站常见）：只有已用有意义，没有余额概念。
     pub unlimited: bool,
@@ -110,7 +113,11 @@ pub struct Billing {
     /// 与额度无关，是「今天领没领」这类信息：站点没开签到、没填面板令牌、
     /// 或接口读不到时都是 `None`——卡片上就**不写这一项**（有就输出，没有就不输出）。
     pub checkin: Option<CheckinStatus>,
-    /// 降级 / 缺数据时的说明（日志接口不可用、换算比缺失等），用干提示而不是静默降级。
+    /// 降级 / 缺数据时的原因（调用日志不可用、面板令牌失效等）。
+    ///
+    /// **卡片小窗不再显示它**：用户要小窗只放数据，不许出现「备注」这类行。
+    /// 字段留着，因为「为什么降级」本身是解析结果的一部分：调用方（状态栏、
+    /// 将来的提示）与测试靠它，也避免静默降级——数据缺了总得在某个层面说得清。
     pub note: Option<String>,
     /// 面板账号额度（`/api/user/self`）：填了面板访问令牌才有；有它时余额以它为准。
     pub account: Option<AccountInfo>,
@@ -922,9 +929,6 @@ impl Billing {
         if let Some(limit) = self.limit_usd {
             lines.push(format!("额度：{}", money(limit)));
         }
-        if self.placeholder_limit {
-            lines.push("额度：站点给的是占位值（公益站常见），所以不显示余额".to_string());
-        }
         if let Some(balance) = self.balance_usd {
             lines.push(format!("余额：{}", money(balance)));
         }
@@ -984,9 +988,6 @@ impl Billing {
             lines.push(
                 "换算：站点没给 quota_per_unit，按默认 1 美元 = 500,000 quota 估算".to_string(),
             );
-        }
-        if let Some(note) = &self.note {
-            lines.push(format!("备注：{}", note));
         }
         lines.join("\n")
     }
@@ -1085,11 +1086,10 @@ mod tests {
         );
         assert_eq!(billing.inline_full(), "已用 $216.00");
         let detail = billing.detail();
-        assert!(detail.contains("占位值"), "detail 要说明占位：{detail}");
-        assert!(
-            !detail.contains("余额："),
-            "占位额度下不该给余额行：{detail}"
-        );
+        // 小窗只放数据：占位额度既不显示数字，也不再写一行解释。
+        assert!(!detail.contains("占位值"), "不再解释占位：{detail}");
+        assert!(!detail.contains("额度"), "占位额度下不该有额度行：{detail}");
+        assert!(!detail.contains("余额"), "占位额度下不该给余额行：{detail}");
         assert!(
             detail.contains("哈基米API站"),
             "detail 要带面板名：{detail}"
@@ -1302,6 +1302,27 @@ mod tests {
             );
         }
         assert!(detail.contains("近 7 天"), "数字要留着：{detail}");
+    }
+
+    #[test]
+    fn a_degraded_result_shows_no_note_line() {
+        // 降级原因（调用日志不可用、面板令牌失效）不再写进小窗：
+        // 小窗只放数据，不写「备注」。
+        let units = parse_units(Some(STATUS_UNITS));
+        let usage = parse_token_usage(USAGE_TOKEN_UNLIMITED).expect("应能解析");
+        let info = parse_token_billing(TokenInputs {
+            usage: Some(&usage),
+            logs: &[],
+            units: &units,
+            status_json: None,
+            now: 1_789_430_000,
+            today_from: 1_789_430_000,
+            note: Some("调用日志不可用（HTTP 404 Not Found），今日用量取不到".to_string()),
+        });
+        assert!(info.note.is_some(), "原因本身要留在结果里，不当场丢掉");
+        let detail = info.detail();
+        assert!(!detail.contains("备注"), "{detail}");
+        assert!(!detail.contains("不可用"), "{detail}");
     }
 
     #[test]

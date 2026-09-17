@@ -355,12 +355,7 @@ mod semantics_tests {
         }
         counts
             .into_iter()
-            .map(|(k, n)| {
-                (
-                    Color32::from_rgba_premultiplied(k[0], k[1], k[2], k[3]),
-                    n,
-                )
-            })
+            .map(|(k, n)| (Color32::from_rgba_premultiplied(k[0], k[1], k[2], k[3]), n))
             .collect()
     }
 
@@ -390,7 +385,10 @@ mod semantics_tests {
                 theme.key()
             );
             assert_eq!(
-                over(over(palette.panel, faded(palette.widget)), faded(palette.text)),
+                over(
+                    over(palette.panel, faded(palette.widget)),
+                    faded(palette.text)
+                ),
                 palette.hint_color(),
                 "{} 的提示色与禁用按钮文字不一致",
                 theme.key()
@@ -412,7 +410,9 @@ mod semantics_tests {
                 ui.add(egui::TextEdit::singleline(&mut text).hint_text("粘贴面板访问令牌"));
             });
             assert!(
-                colors.iter().any(|(color, _)| *color == palette.hint_color()),
+                colors
+                    .iter()
+                    .any(|(color, _)| *color == palette.hint_color()),
                 "{} 的占位提示没有用提示色",
                 theme.key()
             );
