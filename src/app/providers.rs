@@ -26,9 +26,8 @@ pub(super) struct CardActions {
     pub(super) remove: Option<usize>,
     /// 要复制的 provider 下标。
     pub(super) copy: Option<usize>,
-    /// 点了「签到」的 provider key（写操作，勾选后才可用）。
+    /// 点了「签到」的 provider key（写操作：只在用户点按钮时发生）。
     pub(super) checkin: Option<String>,
-    /// 签到的 provider key（写操作：只在用户点按钮时发生）。
     /// provider 卡片的拖拽落点。
     pub(super) hover: Option<String>,
     /// model 卡片的拖拽落点。
@@ -129,7 +128,11 @@ impl App {
 
     /// Providers 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
     pub(super) fn ui_providers_section(&mut self, ui: &mut egui::Ui) {
-        let anchor = sticky_begin(ui, 30.0);
+        // 吸顶区是**固定高度矩形**（sticky_end 用 max_rect 建子 ui），
+        // 标题行下方还挂着「代理支持」行，所以要给足两行的高度：
+        // 高度不够时第二行不会撑开矩形，而是直接画到下面的卡片区上。
+        const HEADER_HEIGHT: f32 = 52.0;
+        let anchor = sticky_begin(ui, HEADER_HEIGHT);
         let matched: Vec<usize> = (0..self.providers.len()).collect();
 
         if self.providers.is_empty() && !self.show_new_provider {
@@ -276,51 +279,11 @@ impl App {
                         format!("已开始查询 {} 个厂商的用量…", started)
                     };
                 }
-                // 令牌：站点面板访问令牌（PAT）管理；填了才能查账号级真实余额。
-                if ui
-                    .button("令牌")
-                    .on_hover_text(
-                        "管理站点的面板访问令牌（PAT）\n\
-                         在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成\n\
-                         令牌是站点级的：同一站点的多个 provider 共用一份\n\
-                         只用于只读查询账号余额（/api/user/self），不参与配置保存\n\
-                         存在 %USERPROFILE%\\.modelharbor\\tokens.json（含凭证，勿提交、勿共享）",
-                    )
-                    .clicked()
-                {
-                    self.show_tokens = !self.show_tokens;
-                    if self.show_tokens {
-                        // 重新打开时按已保存的值重填草稿（避免残留上次未保存的改动）。
-                        self.token_draft.clear();
-                        self.token_uid_draft.clear();
-                    }
-                }
-                // 网络守卫：检测到系统代理 / VPN 时默认禁用模型延迟测试
-                //（中转站的「多 IP 检测 / 测活封号」可能因此触发）。
-                //
-                // 开关与文案已移到标题行下方**单独一行右对齐**（见 `ui_providers_section`）：
-                // 它是个安全开关，和标题行那堆按钮混在一起容易误点、也读不出因果。
-                // 全局 API Key 显隐按钮原本在这里，已移到页头「保存」那一行右端
-                // （见 `bars::ui_page_header`）：它管的是所有页面的密钥显示，
-                // 放在 Providers 标题行只有切到该页才看得到，也不便与保存操作一起用。
-                // 配置预览：右侧面板实时展示当前页面的序列化内容，可编辑并应用回组件。
-                if ui
-                    .button(if self.show_preview {
-                        "关闭预览"
-                    } else {
-                        "预览"
-                    })
-                    .on_hover_text(
-                        "在右侧打开当前页面「待保存文档」预览；可直接编辑，改动实时应用并自动保存",
-                    )
-                    .clicked()
-                {
-                    self.show_preview = !self.show_preview;
-                    if self.show_preview {
-                        // 打开时以组件状态重建待保存文档
-                        self.reset_preview_draft();
-                    }
-                }
+                // 「令牌」「预览」「显示密钥」都搬到了页头「保存」那一行右端
+                // （见 `bars::ui_page_header`）：它们都跟「保存 / 看」这个动作有关，
+                // 放在 Providers 标题行只有切到该页才看得到。
+                // 「代理支持」开关则移到标题行**下方单独一行、右对齐**：
+                // 它是个安全开关，和这排视图按钮混在一起容易误点、也读不出因果。
             });
             // 网络守卫：单独一行、右对齐。它是个安全开关（放行「模型延迟测试」），
             // 挤在标题行那排视图按钮里既容易误点，也读不出因果关系。
@@ -459,7 +422,23 @@ impl App {
                     if ui.button("复制").clicked() {
                         actions.copy = Some(idx);
                     }
-                    // 用量查询结果紧挨「复制」左侧（右对齐布局里越晚添加越靠左）。
+                    // 右对齐布局里越晚添加越靠左，所以这一行的视觉顺序是
+                    // [签到结果] [用量] [签到] [复制] [删除]：用量紧挨「签到」，
+                    // 签到结果文字最长、也最临时，放到最左。
+                    if station_has_pat
+                        && ui
+                            .button("签到")
+                            .on_hover_text(
+                                "先读签到状态，今天没签才执行签到\n\
+                                 用该站点的「面板访问令牌」（在「令牌」面板填）\n\
+                                 站点若开了 Cloudflare 人机验证，只能在浏览器里签到\n\
+                                 这是写操作：会改变账号额度并让站点记一条系统日志",
+                            )
+                            .clicked()
+                        {
+                            actions.checkin = Some(key.clone());
+                        }
+                    // 用量查询结果紧挨「签到」左侧。
                     // 查不到的站点不显示（未开放接口 / WAF / 空数据），也不显示占位余额。
                     if let Some(state) = self.balance.get(&key) {
                         let display_result =
@@ -483,35 +462,19 @@ impl App {
                             _ => {}
                         }
                     }
-                    // 签到：该站点填了面板令牌就出现，**不需要额外勾选**；
-                    // 位置固定在「复制」左侧，结果文字再往左（右对齐布局里越晚添加越靠左）。
-                    if station_has_pat {
-                        if ui
-                            .button("签到")
-                            .on_hover_text(
-                                "先读签到状态，今天没签才执行签到\n\
-                                 用该站点的「面板访问令牌」（在「令牌」面板填）\n\
-                                 站点若开了 Cloudflare 人机验证，只能在浏览器里签到\n\
-                                 这是写操作：会改变账号额度并让站点记一条系统日志",
-                            )
-                            .clicked()
-                        {
-                            actions.checkin = Some(key.clone());
-                        }
-                        if let Some(state) = self.checkin.get(&key) {
-                            if state.rx.is_some() {
-                                ui.add(egui::Spinner::new().size(14.0));
-                            } else if let Some(result) = &state.result {
-                                let semantics = crate::theme::semantics(ui);
-                                let (text, color) = match result {
-                                    Ok(text) => (text.clone(), semantics.ok),
-                                    Err(err) => (err.clone(), semantics.err),
-                                };
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(text).color(color))
-                                        .truncate(),
-                                );
-                            }
+                    // 签到结果：先读状态后得出的话（含进行中的 Spinner）。
+                    if let Some(state) = self.checkin.get(&key) {
+                        if state.rx.is_some() {
+                            ui.add(egui::Spinner::new().size(14.0));
+                        } else if let Some(result) = &state.result {
+                            let semantics = crate::theme::semantics(ui);
+                            let (text, color) = match result {
+                                Ok(text) => (text.clone(), semantics.ok),
+                                Err(err) => (err.clone(), semantics.err),
+                            };
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(text).color(color)).truncate(),
+                            );
                         }
                     }
                 });

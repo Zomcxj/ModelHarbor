@@ -326,11 +326,31 @@ impl App {
                 )
                 .on_hover_text("该格式不支持 agent 定义，保存时将忽略");
             }
-            // 全局密钥显隐：放在「保存」这一行的最右端。
-            // 嵌套的右对齐布局会占掉本行剩余宽度，所以它紧贴右边缘；
-            // 写入路径太长把本行占满时，它会落到下一行并同样靠右。
-            // 放在页头而不是 Providers 标题行：它管的是所有页面的密钥显示。
+            // 右端按钮组：「令牌 · 显示密钥 · 预览」（右对齐布局里越晚添加越靠左，
+            // 所以按倒序加）。三个都跟「保存 / 看」同一个动作有关，放在保存这一行；
+            // 嵌套的右对齐布局会占掉本行剩余宽度，所以它们紧贴右边缘，
+            // 写入路径太长把本行占满时会落到下一行并同样靠右。
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // 预览：右侧面板实时展示当前页面的序列化内容，可编辑并应用回组件。
+                if ui
+                    .button(if self.show_preview {
+                        "关闭预览"
+                    } else {
+                        "预览"
+                    })
+                    .on_hover_text(
+                        "在右侧打开当前页面「待保存文档」预览；可直接编辑，改动实时应用并自动保存",
+                    )
+                    .clicked()
+                {
+                    self.show_preview = !self.show_preview;
+                    if self.show_preview {
+                        // 打开时以组件状态重建待保存文档
+                        self.reset_preview_draft();
+                    }
+                }
+                // 全局密钥显隐：一键切换全部 API Key 的明文 / 掩码。
+                // 文案带「密钥」二字，与区块「隐藏/展开」、卡片 ▼/▶ 折叠按钮明确区分。
                 if ui
                     .button(if self.show_api_keys {
                         "隐藏密钥"
@@ -345,6 +365,25 @@ impl App {
                     .clicked()
                 {
                     self.show_api_keys = !self.show_api_keys;
+                }
+                // 令牌：站点面板访问令牌（PAT）管理；填了才能查账号级真实余额。
+                if ui
+                    .button("令牌")
+                    .on_hover_text(
+                        "管理站点的面板访问令牌（PAT）\n\
+                         在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成\n\
+                         令牌是站点级的：同一站点的多个 provider 共用一份\n\
+                         只用于只读查询账号余额（/api/user/self），不参与配置保存\n\
+                         存在 %USERPROFILE%\\.modelharbor\\tokens.json（含凭证，勿提交、勿共享）",
+                    )
+                    .clicked()
+                {
+                    self.show_tokens = !self.show_tokens;
+                    if self.show_tokens {
+                        // 重新打开时按已保存的值重填草稿（避免残留上次未保存的改动）。
+                        self.token_draft.clear();
+                        self.token_uid_draft.clear();
+                    }
                 }
             });
         });

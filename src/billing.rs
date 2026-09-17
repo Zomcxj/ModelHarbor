@@ -765,11 +765,17 @@ impl Billing {
         self.inline_token_or_compat()
     }
 
-    /// 有账号数据时的短行：账号余额（没有余额时退而说已用 / 请求数），其次今日。
+    /// 有账号数据时的短行：账号余额 + 已用（没余额时才退而单说已用 / 请求数），其次今日。
     fn inline_account(&self, account: &AccountInfo) -> String {
         let mut parts: Vec<String> = Vec::new();
         if let Some(balance) = account.balance_usd {
             parts.push(format!("账号余额 {}", money(balance)));
+            // 已用紧跟余额：只看余额看不出「用掉多少」，而对那些令牌额度接口缺失、
+            // 调用日志又为空的中转站（如 ps.air-outer.com）来说，
+            // 这个数字是唯一拿得到的用量。
+            if let Some(used) = account.used_usd {
+                parts.push(format!("已用 {}", money(used)));
+            }
         } else if let Some(used) = account.used_usd {
             parts.push(format!("账号已用 {}", money(used)));
         } else if let Some(requests) = account.requests {
@@ -1495,6 +1501,18 @@ mod tests {
     }
 
     #[test]
+    fn account_only_result_still_shows_how_much_was_used() {
+        // 实测站点（ps.air-outer.com）：`/api/usage/token/` 是 404、
+        // `/api/log/token` 回 200 但 `data:[]`，所以令牌侧整条都是空的，
+        // 只有 `/api/user/self` 可用——它的 `used_quota` 是这一站**唯一**的
+        // 用量数字。主行只报余额的话，用户会以为连使用量都读不到了。
+        let info = account_only_billing();
+        let line = info.inline();
+        assert!(line.contains("账号余额 $12.30"), "{line}");
+        assert!(line.contains("已用 $20.50"), "用量要跟着余额一起显示：{line}");
+    }
+
+    #[test]
     fn account_balance_leads_the_summary_line() {
         let units = parse_units(Some(STATUS_UNITS));
         let usage = parse_token_usage(USAGE_TOKEN_UNLIMITED).expect("应能解析");
@@ -1512,6 +1530,7 @@ mod tests {
 
         let line = info.inline_full();
         assert!(line.starts_with("账号余额 $12.30"), "账号余额优先：{line}");
+        assert!(line.contains("已用 $20.50"), "账号侧的用量要跟着余额：{line}");
         assert!(line.contains("今日 $3.00"), "令牌侧凭据仍保留：{line}");
         assert!(
             !line.contains("已用 $274.00"),
@@ -1537,8 +1556,8 @@ mod tests {
 
         let info = account_only_billing();
         assert!(info.is_displayable(), "有账号数据就必须显示");
-        assert_eq!(info.inline(), "账号余额 $12.30");
-        assert_eq!(info.inline_full(), "账号余额 $12.30");
+        assert_eq!(info.inline(), "账号余额 $12.30 · 已用 $20.50");
+        assert_eq!(info.inline_full(), "账号余额 $12.30 · 已用 $20.50");
         assert!(info.detail().contains("账号（面板令牌）"));
     }
 
