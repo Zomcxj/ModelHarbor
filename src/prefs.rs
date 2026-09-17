@@ -72,7 +72,7 @@ fn remove_legacy_next_to(path: &Path) {
 }
 
 /// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
-const SCHEMA_VERSION: u64 = 3;
+const SCHEMA_VERSION: u64 = 4;
 
 /// 配置身份：规范化路径后做稳定 FNV-1a 哈希，避免把用户目录明文写进设置键。
 pub fn config_identity(path: &str) -> String {
@@ -143,6 +143,11 @@ pub struct Prefs {
     /// 已折叠的卡片（`配置身份/类别/名字`；不在表里的即展开）。
     /// v2 的 `类别/名字` 旧键会在首次成功加载配置后迁入当前配置身份。
     pub collapsed: Vec<String>,
+    /// 检测到系统代理 / VPN 时是否仍允许「模型延迟测试」。
+    ///
+    /// 中转站普遍有多 IP 检测 / 测活风控，默认 `false` 保持拦截；
+    /// 用户明确知道风险时可以打开（会影响延迟测试，不影响连通性测试与用量查询）。
+    pub allow_model_test_with_proxy: bool,
 }
 
 impl Prefs {
@@ -219,6 +224,11 @@ impl Prefs {
                         .collect()
                 })
                 .unwrap_or_default(),
+            // 只有真正的布尔 true 才放行：缺字段、字符串 "true" 都按拦截处理。
+            allow_model_test_with_proxy: root
+                .get("allow_model_test_with_proxy")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         }
     }
 
@@ -255,6 +265,10 @@ impl Prefs {
                     .map(|key| Value::String(key.clone()))
                     .collect(),
             ),
+        );
+        root.insert(
+            "allow_model_test_with_proxy".to_string(),
+            Value::Bool(self.allow_model_test_with_proxy),
         );
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
@@ -322,6 +336,7 @@ mod tests {
                 collapsed_id("cfg", "agents", "build"),
                 collapsed_id("cfg", "providers", "openai"),
             ],
+            allow_model_test_with_proxy: true,
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
     }
@@ -374,7 +389,29 @@ mod tests {
             prefs.collapsed,
             vec!["providers/p".to_string(), "agents/a".to_string()]
         );
-        assert!(prefs.to_json().contains(r#""version": 3"#));
+        assert!(prefs.to_json().contains(r#""version": 4"#));
+    }
+
+    #[test]
+    fn proxy_model_test_override_defaults_off_and_round_trips() {
+        // 默认必须是拦截：老设置文件里没有这个键时，绝不能变成“默认放行”。
+        assert!(
+            !Prefs::default().allow_model_test_with_proxy,
+            "默认要保持拦截"
+        );
+        assert!(!Prefs::parse(r#"{"version":3,"show_api_keys":true}"#).allow_model_test_with_proxy);
+        assert!(!Prefs::parse(r#"{"allow_model_test_with_proxy":"true"}"#).allow_model_test_with_proxy, "非布尔值不能当开放行");
+
+        let text = Prefs {
+            allow_model_test_with_proxy: true,
+            ..Default::default()
+        }
+        .to_json();
+        assert!(
+            text.contains(r#""allow_model_test_with_proxy": true"#),
+            "开关要落盘：{text}"
+        );
+        assert!(Prefs::parse(&text).allow_model_test_with_proxy);
     }
     #[test]
     fn config_path_overrides_are_keyed_by_backend() {

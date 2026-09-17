@@ -19,6 +19,21 @@ pub(super) struct ModelFetchState {
 /// 新增 Provider 表单使用固定的内部 key 保存获取状态。
 pub(super) const NEW_PROVIDER_FETCH_KEY: &str = "__new_provider__";
 
+/// 传给延迟测试门控的守卫值：`Some(原因)` = 拦截，`None` = 放行。
+///
+/// 用户打开 `allow_model_test_with_proxy` 后，检测到的代理不再拦截模型探测
+/// （中转站的多 IP / 测活风控风险由用户自己承担，见 `crate::netguard` 说明）。
+///
+/// 写成只吃两个字段的自由函数而不是 `&self` 方法：调用处往往正持有
+/// `&mut self.providers[idx]`（甚至在还需要独占 `*self` 的闭包里），
+/// 整结构借用会直接编译不过；只借这两个字段则不受影响。
+pub(super) fn net_guard_gate(net_guard: &Option<String>, allow: bool) -> Option<String> {
+    if allow {
+        return None;
+    }
+    net_guard.clone()
+}
+
 /// 单个 provider 的延迟测试状态（provider 级 + 模型级并发）。
 #[derive(Default)]
 pub(super) struct LatencyState {

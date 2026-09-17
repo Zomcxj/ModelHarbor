@@ -1,8 +1,8 @@
 //! Provider 编辑 / 新增表单、模型获取弹层与表单字段控件。
 use super::App;
 use crate::app::fetch::{
-    fetch_models_remote, model_latency_label, model_probe_button, ModelFetchState,
-    NEW_PROVIDER_FETCH_KEY,
+    fetch_models_remote, model_latency_label, model_probe_button, net_guard_gate,
+    ModelFetchState, NEW_PROVIDER_FETCH_KEY,
 };
 use crate::app::providers::ProviderFormFlags;
 use crate::convert;
@@ -484,12 +484,15 @@ impl App {
                     }
                     // 单模型延迟测试：按钮在拖动按钮右侧，结果显示在按钮右侧。
                     let model_id = p.models[j].id.trim().to_string();
+                    // 只借两个字段（不是 `&self` 方法）：此处 `p` 还借着 providers，
+                    // 且外层闭包需要独占 `*self`，整结构借用编译不过。
+                    let gate = net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
                     if model_probe_button(
                         ui,
                         &self.probe,
                         &p.key,
                         ui.input(|i| i.time),
-                        self.net_guard.as_deref(),
+                        gate.as_deref(),
                     ) {
                         probe_request = Some((p.key.clone(), model_id.clone()));
                     }
@@ -582,10 +585,12 @@ impl App {
             let base_url = p.base_url.clone();
             let secret = credentials::effective_secret(p);
             let api = p.effective_api();
+            // 先取出门控值：`p` 还借着 providers，整结构借用的方法在这里也会冲突。
+            let gate = net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
             self.status = Self::run_model_probe(
                 &mut self.probe,
                 &mut self.latency,
-                self.net_guard.as_deref(),
+                gate.as_deref(),
                 &provider_key,
                 &model_id,
                 now,
@@ -850,12 +855,14 @@ impl App {
                         }
                         // 单模型延迟测试：按钮在调整按钮右侧，结果显示在按钮右侧。
                         let model_id = self.new_provider.models[j].id.trim().to_string();
+                        let gate =
+                            net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
                         if model_probe_button(
                             ui,
                             &self.probe,
                             NEW_PROVIDER_FETCH_KEY,
                             ui.input(|i| i.time),
-                            self.net_guard.as_deref(),
+                            gate.as_deref(),
                         ) {
                             probe_request =
                                 Some((NEW_PROVIDER_FETCH_KEY.to_string(), model_id.clone()));
@@ -898,10 +905,11 @@ impl App {
                 let base_url = self.new_provider.base_url.clone();
                 let secret = credentials::effective_secret(&self.new_provider);
                 let api = self.new_provider.effective_api();
+                let gate = net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
                 self.status = Self::run_model_probe(
                     &mut self.probe,
                     &mut self.latency,
-                    self.net_guard.as_deref(),
+                    gate.as_deref(),
                     &provider_key,
                     &model_id,
                     now,

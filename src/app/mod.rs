@@ -102,6 +102,8 @@ pub struct App {
     probe: ProbeGate,
     /// 网络守卫结论：`Some(reason)` 表示检测到系统代理 / VPN，模型延迟测试被禁用。
     net_guard: Option<String>,
+    /// 检测到代理时是否仍允许模型延迟测试（来自 settings.json，默认拦截）。
+    allow_model_test_with_proxy: bool,
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
@@ -192,6 +194,7 @@ impl Default for App {
             token_reveal: HashSet::new(),
             probe: ProbeGate::default(),
             net_guard: crate::netguard::detect(),
+            allow_model_test_with_proxy: prefs.allow_model_test_with_proxy,
             net_guard_at: 0.0,
             // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
             theme: Theme::from_key(&prefs.theme),
@@ -339,6 +342,7 @@ impl App {
                 deepseek_harness: self.path_override(ConfigFormat::DeepSeekHarness),
             },
             collapsed,
+            allow_model_test_with_proxy: self.allow_model_test_with_proxy,
         }
     }
 

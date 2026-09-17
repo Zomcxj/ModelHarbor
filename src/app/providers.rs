@@ -257,19 +257,44 @@ impl App {
                         self.token_draft.clear();
                     }
                 }
-                // 网络守卫提示：检测到系统代理 / VPN 时禁用模型延迟测试
+                // 网络守卫：检测到系统代理 / VPN 时默认禁用模型延迟测试
                 //（中转站的「多 IP 检测 / 测活封号」可能因此触发）。
+                // 只有在没放行时才报“已禁用”：放行后显示中性提示，避免自相矛盾。
+                let allow_probe = self.allow_model_test_with_proxy;
                 if let Some(reason) = self.net_guard.clone() {
+                    let semantics = crate::theme::semantics(ui);
                     ui.label(
-                        egui::RichText::new(format!("{}：{reason}", crate::netguard::BLOCK_PREFIX))
-                            .small()
-                            .color(crate::theme::semantics(ui).err),
+                        egui::RichText::new(if allow_probe {
+                            format!("已放行模型测试：{reason}")
+                        } else {
+                            format!("{}：{reason}", crate::netguard::BLOCK_PREFIX)
+                        })
+                        .small()
+                        .color(if allow_probe { semantics.warn } else { semantics.err }),
                     )
                     .on_hover_text(
                         "中转站常见多 IP 检测 / 测活风控，经代理做推理探测可能被封号；\n\
-                         因此已禁用模型延迟测试。请关闭系统代理 / VPN 后重试。\n\
-                         （厂商「连通性测试」不受影响：它只拉模型列表，不做推理。）",
+                         默认已禁用「模型延迟测试」。若你的探测本来就直连\n\
+                         （本工具不走系统代理，仅 VPN / TUN 改变出口 IP），可勾选右侧开关放行。\n\
+                         （厂商「连通性测试」与「查询用量」不受影响：它们不做推理。）",
                     );
+                }
+                // 放行开关：写进 settings.json，重启后仍生效。
+                // 不用 `self.allow_model_test_with_proxy` 直接取地址：借用冲突且不便回写。
+                let mut allow_checked = allow_probe;
+                if ui
+                    .checkbox(&mut allow_checked, "代理下测试模型")
+                    .on_hover_text(
+                        "勾选后即使检测到系统代理 / VPN 也允许「模型延迟测试」。\n\
+                         默认关闭：中转站的多 IP 检测 / 测活风控可能因此封号。\n\
+                         本工具的探测请求始终直连、不走系统代理，\n\
+                         所以仅开看系统代理（如 Clash）时勾选是安全的；\n\
+                         真正需要警惕的是 VPN / TUN 已改变出口 IP 的情况。\n\
+                         该选择写入 settings.json（allow_model_test_with_proxy）。",
+                    )
+                    .changed()
+                {
+                    self.allow_model_test_with_proxy = allow_checked;
                 }
                 // 全局 API Key 显示/隐藏：一键切换全部密钥的明文/掩码。
                 // 文案带「密钥」二字，与区块「隐藏/展开」、卡片 ▼/▶ 折叠按钮明确区分。
