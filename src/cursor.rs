@@ -46,6 +46,8 @@ pub fn set_custom_cursor_active(active: bool) {
     if active {
         let ptr = CURSOR_HANDLE.load(Ordering::Relaxed);
         if !ptr.is_null() {
+            // SAFETY: `ptr` 只在 `init_grabbing_cursor` 里由 `CreateIconIndirect` 的返回值
+            // 写入，此处已排除空指针；非空即为本进程拥有的 HICON，`SetCursor` 只读取它。
             unsafe {
                 debug_log(&format!("Win32 SetCursor custom {:?}\r\n", ptr));
                 SetCursor(ptr);
@@ -66,7 +68,14 @@ const GRAB_CURSOR_HY: i32 = 10;
 const GRAB_CURSOR_RGBA: &[u8] = include_bytes!("../assets/grab_rgba.bin");
 
 /// Create a cursor from BGRA pixel data using Win32 GDI.
+///
+/// # Safety
+///
+/// `rgba` 必须有至少 `w * h * 4` 字节；不足时只拷贝实际长度（GDI 缓冲区剩余部分保持零初始化）。
+/// 返回的 HICON 归调用方所有，不再使用时需 `DestroyIcon`。
 unsafe fn create_icon_from_rgba(rgba: &[u8], w: i32, h: i32, hx: i32, hy: i32) -> *mut c_void {
+    // SAFETY: 入参已保证像素缓冲区长度；每个 GDI 句柄在函数内成对释放（`DeleteObject` /
+    // `ReleaseDC`），`GetDC(null)` 取的是屏幕 DC，因此配对的 `ReleaseDC` 也传空窗口。
     unsafe {
         let hdc = GetDC(std::ptr::null_mut());
 
@@ -136,6 +145,9 @@ unsafe extern "system" fn cursor_subclass_proc(
     _uid_subclass: usize,
     _dw_ref_data: usize,
 ) -> LRESULT {
+    // SAFETY: 本函数只由 `SetWindowSubclass` 在 `hwnd` 的消息循环里调用，`hwnd` 与
+    // `l_param` 由系统按窗口消息约定传入；`_dw_ref_data` 是安装时传入的 HICON（见
+    // `init_grabbing_cursor`），仅在命中 WM_SETCURSOR 时交给 `SetCursor`。
     unsafe {
         if u_msg == 0x0020 && (l_param as u32 & 0xffff) == 1 && is_custom_cursor_active() {
             let cursor_handle = _dw_ref_data as *mut c_void;
@@ -150,6 +162,8 @@ unsafe extern "system" fn cursor_subclass_proc(
 ///
 /// `hwnd` 必须是当前进程拥有的有效 Win32 窗口句柄，且每个窗口仅可调用一次；
 /// 内部通过 `SetWindowSubclass` 安装子类过程，调用方需保证窗口消息循环存活期间不重复安装。
+///
+/// 对二进制目标是公开 API（`src/main.rs` 在窗口创建后调用），因此不能收窄可见性。
 pub unsafe fn init_grabbing_cursor(hwnd: HWND) {
     debug_log(&format!("init_grabbing_cursor hwnd={:?}\r\n", hwnd));
     let hicon = create_icon_from_rgba(

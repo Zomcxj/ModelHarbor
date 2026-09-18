@@ -44,7 +44,8 @@ fn omp_yaml() -> String {
         - xhigh
         - max
         defaultLevel: high
-"#.to_string()
+"#
+    .to_string()
 }
 
 fn load_omp(content: &str) -> model_harbor::backends::BackendLoad {
@@ -116,10 +117,7 @@ fn omp_round_trip_preserves_thinking_block() {
     let t = &root["providers"]["gw"]["models"][0]["thinking"];
     assert_eq!(t["mode"], json!("effort"));
     assert_eq!(t["defaultLevel"], json!("high"));
-    assert_eq!(
-        t["efforts"],
-        json!(["medium", "high", "xhigh", "max"])
-    );
+    assert_eq!(t["efforts"], json!(["medium", "high", "xhigh", "max"]));
 }
 
 #[test]
@@ -271,9 +269,16 @@ fn yaml_render_round_trip_with_special_ids() {
     let mut root2 = root;
     root2["providers"]["gw"]["models"][0]["id"] = json!("[次]m1");
     let yaml_text = b.render(&root2, false).expect("YAML 渲染失败");
-    assert!(yaml_text.contains("'[次]m1'"), "特殊 id 必须被引号包裹: {}", yaml_text);
+    assert!(
+        yaml_text.contains("'[次]m1'"),
+        "特殊 id 必须被引号包裹: {}",
+        yaml_text
+    );
     let parsed = parse_yaml_content(&yaml_text).expect("YAML 回读失败");
-    assert_eq!(parsed["providers"]["gw"]["models"][0]["id"], json!("[次]m1"));
+    assert_eq!(
+        parsed["providers"]["gw"]["models"][0]["id"],
+        json!("[次]m1")
+    );
 }
 
 #[test]
@@ -291,21 +296,27 @@ fn load_backend_reads_yaml_file() {
     let mut p = std::env::temp_dir();
     p.push(format!("omp_load_{}.yml", std::process::id()));
     std::fs::write(&p, omp_yaml()).unwrap();
-    let load = backends::load_backend(ConfigFormat::OhMyPi, p.to_str().unwrap())
-        .expect("通用加载失败");
+    let load =
+        backends::load_backend(ConfigFormat::OhMyPi, p.to_str().unwrap()).expect("通用加载失败");
     assert_eq!(load.providers.len(), 1);
-    assert_eq!(load.providers[0].models[0].variants, "medium, high, xhigh, max");
+    assert_eq!(
+        load.providers[0].models[0].variants,
+        "medium, high, xhigh, max"
+    );
     std::fs::remove_file(&p).ok();
 }
 
 #[test]
 fn real_user_models_yml_round_trip() {
-    // 开发机冒烟：真实用户配置往返（文件不存在则跳过，保证环境无关）
-    let path = r"C:\Users\cxj\.omp\agent\models.yml";
-    if !std::path::Path::new(path).exists() {
+    // 开发机冒烟：真实用户配置往返（路径按环境变量取，文件不存在则跳过）
+    let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) else {
+        return;
+    };
+    let path = std::path::PathBuf::from(home).join(".omp/agent/models.yml");
+    if !path.exists() {
         return;
     }
-    let content = std::fs::read_to_string(path).unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
     let b = backends::backend(ConfigFormat::OhMyPi);
     let load = b.parse(&content).expect("真实 models.yml 解析失败");
     assert!(!load.providers.is_empty());
@@ -323,9 +334,17 @@ fn real_user_models_yml_round_trip() {
                 .find(|m| m.id == mv["id"].as_str().unwrap())
                 .unwrap();
             if src.variants.trim().is_empty() {
-                assert!(mv.get("thinking").is_none(), "{} 无档位不得输出 thinking", mv["id"]);
+                assert!(
+                    mv.get("thinking").is_none(),
+                    "{} 无档位不得输出 thinking",
+                    mv["id"]
+                );
             } else {
-                assert!(mv["thinking"]["mode"] == json!("effort"), "{} thinking 块丢失", mv["id"]);
+                assert!(
+                    mv["thinking"]["mode"] == json!("effort"),
+                    "{} thinking 块丢失",
+                    mv["id"]
+                );
             }
         }
     }

@@ -20,21 +20,19 @@ with open("assets/icon_rgba.bin", "wb") as f:
 print("icon ready:", len(img.tobytes()))
 "#,
             ])
-            .output()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "图标转换失败：无法运行 python（{}）。请安装 Python 与 pillow，\n\
-                     或删除 assets/icon.png 以使用内置回退图标",
-                    e
-                )
-            });
-        if !output.status.success() {
-            eprintln!(
-                "icon.png conversion failed: {}",
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => eprintln!(
+                "icon.png conversion failed, keeping assets/icon.ico as-is: {}",
                 String::from_utf8_lossy(&output.stderr)
-            );
+            ),
+            Err(e) => eprintln!(
+                "python unavailable ({e}), keeping assets/icon.ico as-is; \
+                 install Python with pillow to regenerate it from assets/icon.png"
+            ),
         }
-    } else {
+    } else if !std::path::Path::new("assets/icon_rgba.bin").exists() {
         let (big_w, big_h) = (256usize, 256usize);
         let mut big_rgba = vec![0u8; big_w * big_h * 4];
         let bcx = big_w as f32 / 2.0;

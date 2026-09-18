@@ -30,13 +30,50 @@ pub const DIR_NAME: &str = ".modelharbor";
 const FILE_NAME: &str = "settings.json";
 /// 旧文件名（早期版本）：只用于读取时回退与写入后清理。
 const LEGACY_FILE_NAME: &str = "prefs.json";
+/// 崩溃日志文件名。
+const CRASH_FILE_NAME: &str = "crash.log";
 
 /// 家目录：Windows 用 `USERPROFILE`，其他平台用 `HOME`。
-fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     ["USERPROFILE", "HOME"]
         .into_iter()
         .find_map(|key| std::env::var_os(key).map(PathBuf::from))
         .filter(|dir| !dir.as_os_str().is_empty())
+}
+
+/// 配置目录（家目录下的 `.modelharbor`）：设置、凭证与崩溃日志都放这里。
+pub fn config_dir() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(DIR_NAME))
+}
+
+/// 崩溃日志路径（`<配置目录>/crash.log`）。
+pub fn crash_log_path() -> Option<PathBuf> {
+    config_dir().map(|dir| dir.join(CRASH_FILE_NAME))
+}
+
+/// 把一段记录追加到指定文件：父目录不存在则创建，写失败返回 `false`。
+fn append_line(path: &Path, entry: &str) -> bool {
+    if let Some(dir) = path.parent() {
+        if std::fs::create_dir_all(dir).is_err() {
+            return false;
+        }
+    }
+    use std::io::Write;
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return false;
+    };
+    file.write_all(entry.as_bytes()).is_ok() && file.flush().is_ok()
+}
+
+/// 把一段崩溃记录追加到 `crash.log`。
+///
+/// 返回是否写入成功，供调用方与测试判断；调用它本身绝不会 panic。
+pub fn append_crash_log(entry: &str) -> bool {
+    crash_log_path().is_some_and(|path| append_line(&path, entry))
 }
 
 /// 旧位置（`%APPDATA%` 下同名目录）：早期版本放在这里。
@@ -545,5 +582,23 @@ mod tests {
                 "应放家目录而不是 %APPDATA%：{text}"
             );
         }
+    }
+
+    #[test]
+    fn crash_log_sits_next_to_the_settings_file() {
+        let dir = config_dir().expect("本机有家目录");
+        assert_eq!(dir.file_name().unwrap(), DIR_NAME);
+        assert_eq!(crash_log_path().unwrap(), dir.join("crash.log"));
+    }
+
+    #[test]
+    fn crash_log_creates_its_directory_and_appends() {
+        let dir = std::env::temp_dir().join(format!("{}-crash-{}", DIR_NAME, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("crash.log");
+        assert!(append_line(&path, "first\n"), "应建出父目录并写入");
+        assert!(append_line(&path, "second\n"), "第二次应追加成功");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

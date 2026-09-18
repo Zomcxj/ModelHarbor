@@ -7,7 +7,35 @@ const ICON_BYTES: &[u8] = include_bytes!("../assets/icon_rgba.bin");
 const ICON_W: u32 = 256;
 const ICON_H: u32 = 256;
 
+/// 把 panic 的位置与消息追加到 `<配置目录>/crash.log`。
+///
+/// release 构建是 `panic = "abort"`（无回溯、无控制台），界面又用了
+/// `windows_subsystem = "windows"`，启动即崩时用户看不到任何线索；
+/// 这条记录是唯一的事后证据。写不进去就安静放弃。
+fn install_crash_logger() {
+    std::panic::set_hook(Box::new(|info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<未知位置>".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<无消息>".to_string());
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        model_harbor::prefs::append_crash_log(&format!(
+            "[unix {stamp}] panic at {location}\n{payload}\n\n"
+        ));
+    }));
+}
+
 fn main() -> eframe::Result {
+    install_crash_logger();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1250.0, 820.0])
