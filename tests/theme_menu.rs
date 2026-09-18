@@ -43,15 +43,18 @@ fn frame(
                 .layout(egui::Layout::top_down(egui::Align::LEFT))
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show(|ui| {
-                    ui.set_min_width(180.0);
-                    for t in Theme::ALL {
-                        let resp = ui.selectable_label(*theme == t, t.label());
-                        items.push((t, resp.rect));
-                        if resp.clicked() {
-                            *theme = t;
-                            t.apply(ctx);
+                    ui.set_min_width(200.0);
+                    // 与 bars.rs 一致：九个主题排在自动换行的横向布局里。
+                    ui.horizontal_wrapped(|ui| {
+                        for t in Theme::ALL {
+                            let resp = ui.selectable_label(*theme == t, t.label());
+                            items.push((t, resp.rect));
+                            if resp.clicked() {
+                                *theme = t;
+                                t.apply(ctx);
+                            }
                         }
-                    }
+                    });
                 });
         });
     });
@@ -165,18 +168,32 @@ fn menu_items_hug_their_text_instead_of_filling_the_popup() {
 
     let items = frame(&ctx, &mut theme, vec![], &mut btn_rect);
     assert!(!items.is_empty(), "菜单应已展开");
-    // 所有项左边缘对齐（同一列）。
-    let left = items[0].1.left();
+    // 同一行的项左边缘对齐。
+    // 同一行内按左到右排列：后续项不回到行首。
+    let mut last_row_top = items[0].1.top();
+    let mut last_left = f32::NEG_INFINITY;
     for (t, rect) in &items {
-        assert!(
-            (rect.left() - left).abs() < 1.0,
-            "{} 项没左对齐：{:?}",
-            t.key(),
-            rect
-        );
+        if (rect.top() - last_row_top).abs() > 1.0 {
+            // 换行了：左边缘回到行首，应该比上一行最后一个更靠左。
+            assert!(
+                rect.left() < last_left,
+                "{} 换行后没回到行首：{:?}",
+                t.key(),
+                rect
+            );
+            last_row_top = rect.top();
+        } else {
+            assert!(
+                rect.left() > last_left,
+                "{} 没有从左到右排列：{:?}",
+                t.key(),
+                rect
+            );
+        }
+        last_left = rect.left();
     }
-    // 五个主题名都是两个汉字，宽度本来就一样；能区分「贴文字」与「撑满」的是
-    // **绝对宽度**：撑满时每项会等于弹出宽度（180），贴文字时只有三十几像素。
+    // 主题名都是两个汉字，宽度本来就一样；能区分「贴文字」与「撑满」的是
+    // **绝对宽度**：撑满时每项会等于弹出宽度（200），贴文字时只有三十几像素。
     let widths: Vec<f32> = items.iter().map(|(_, r)| r.width()).collect();
     let max = widths.iter().cloned().fold(0.0_f32, f32::max);
     assert!(

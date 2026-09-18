@@ -108,14 +108,14 @@ pub struct App {
     allow_model_test_with_proxy: bool,
     /// 首次使用引导条是否已被关掉（来自 settings.json）。
     guide_dismissed: bool,
-    /// 控件圆角（像素）。`None` = 用 [`crate::theme::RADIUS_MD`]。
-    corner_radius: Option<u8>,
+    /// 界面形状预设（圆角默认值 + 描边宽度）。
+    ui_style: crate::theme::UiStyle,
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
     /// 已应用到 egui 的主题：egui 0.33 的 `set_style` 是**每个主题各存一份 style**，
     /// 所以主题一变就必须显式再 `apply` 一次，否则只有按钮文字变、界面颜色不跟着变。
-    applied_theme: Option<(Theme, u8)>,
+    applied_theme: Option<(Theme, crate::theme::UiStyle)>,
     save_format: SaveFormat,
     /// 滚轮切换保存格式的门门：一次连续滚动手势只切换一次。
     save_format_wheel_latch: bool,
@@ -203,7 +203,7 @@ impl Default for App {
             net_guard: crate::netguard::detect(),
             allow_model_test_with_proxy: prefs.allow_model_test_with_proxy,
             guide_dismissed: prefs.guide_dismissed,
-            corner_radius: prefs.corner_radius,
+            ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
             net_guard_at: 0.0,
             // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
             theme: Theme::from_key(&prefs.theme),
@@ -353,7 +353,7 @@ impl App {
             collapsed,
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
             guide_dismissed: self.guide_dismissed,
-            corner_radius: self.corner_radius,
+            ui_style: self.ui_style.key().to_string(),
         }
     }
 
@@ -497,16 +497,11 @@ impl App {
         }
     }
 
-    /// 当前生效的圆角：没设置过就用默认档。
-    fn corner_radius(&self) -> u8 {
-        self.corner_radius.unwrap_or(crate::theme::RADIUS_MD)
-    }
-
-    /// 主题或圆角变化（含首次启动）时重新套用样式。
+    /// 主题 / 形状任一变化（含首次启动）时重新套用样式。
     fn apply_theme_if_changed(&mut self, ctx: &egui::Context) {
-        let radius = self.corner_radius();
-        if crate::theme::needs_apply_style(&mut self.applied_theme, self.theme, radius) {
-            self.theme.apply_with_radius(ctx, radius);
+        let shape = self.ui_style;
+        if crate::theme::needs_apply_style(&mut self.applied_theme, self.theme, shape) {
+            self.theme.apply_style(ctx, shape);
         }
     }
 
@@ -687,10 +682,10 @@ impl App {
             .default_pos(egui::pos2(area.left() + 90.0, area.top() + 90.0))
             .frame({
                 // 悬浮窗用比卡片更大的圆角与内边距，与主界面分层；
-                // 圆角在设置值基础上加一档（上限 20），跟着「外观」里的滑块走。
+                // 圆角在形状预设基础上加一档（上限 20）。
                 let mut frame = egui::Frame::window(&ctx.style());
                 let extra = crate::theme::RADIUS_LG - crate::theme::RADIUS_MD;
-                frame.corner_radius = self.corner_radius().saturating_add(extra).min(20).into();
+                frame.corner_radius = self.ui_style.radius().saturating_add(extra).min(20).into();
                 frame.inner_margin = egui::Margin::same(crate::theme::SPACE_4 as i8);
                 frame
             })
