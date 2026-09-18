@@ -39,9 +39,10 @@ fn frame(
             let theme_btn = ui.button(theme.label());
             *btn_rect = theme_btn.rect;
             egui::Popup::menu(&theme_btn)
+                // 与 bars.rs 一致：菜单默认 top_down_justified 会让填充撑满宽度。
+                .layout(egui::Layout::top_down(egui::Align::LEFT))
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
                 .show(|ui| {
-                    ui.set_min_width(80.0);
                     for t in Theme::ALL {
                         let resp = ui.selectable_label(*theme == t, t.label());
                         items.push((t, resp.rect));
@@ -130,4 +131,44 @@ fn clicking_a_theme_menu_item_applies_the_theme() {
         "点击后实际样式没变：只有按钮文字变了"
     );
     assert!(!ctx.style().visuals.dark_mode, "浅色主题应为 light 模式");
+}
+
+/// 菜单项的左对齐与宽度：每项填充应贴着文字宽度，不能撑满整个弹出宽度。
+#[test]
+fn menu_items_hug_their_text_instead_of_filling_the_popup() {
+    let ctx = egui::Context::default();
+    let mut theme = Theme::Dark;
+    theme.apply(&ctx);
+    let mut btn_rect = egui::Rect::ZERO;
+
+    let _ = frame(&ctx, &mut theme, vec![], &mut btn_rect);
+    let btn_center = btn_rect.center();
+    for events in [
+        vec![egui::Event::PointerMoved(btn_center)],
+        vec![press(btn_center, true)],
+        vec![press(btn_center, false)],
+    ] {
+        let _ = frame(&ctx, &mut theme, events, &mut btn_rect);
+    }
+
+    let items = frame(&ctx, &mut theme, vec![], &mut btn_rect);
+    assert!(!items.is_empty(), "菜单应已展开");
+    // 所有项左边缘对齐（同一列）。
+    let left = items[0].1.left();
+    for (t, rect) in &items {
+        assert!(
+            (rect.left() - left).abs() < 1.0,
+            "{} 项没左对齐：{:?}",
+            t.key(),
+            rect
+        );
+    }
+    // 五个主题名都是两个汉字，宽度本来就一样；能区分「贴文字」与「撑满」的是
+    // **绝对宽度**：撑满时每项会等于弹出宽度，贴文字时只有三十几像素。
+    let widths: Vec<f32> = items.iter().map(|(_, r)| r.width()).collect();
+    let max = widths.iter().cloned().fold(0.0_f32, f32::max);
+    assert!(
+        max < 100.0,
+        "菜单项被撑满了（宽度 {widths:?}），填充没有贴文字宽度"
+    );
 }

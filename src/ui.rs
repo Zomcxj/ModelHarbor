@@ -67,6 +67,27 @@ pub fn card_list(
     }
 }
 
+/// 拖动把手的点阵间距（像素）。
+pub const DRAG_HANDLE_GAP: f32 = 5.0;
+
+/// 拖动把手点阵的圆心：按给定矩形**居中**排布。
+///
+/// 抽成纯函数是为了能直接断言「点阵中心与控件中心重合」——写死偏移时，
+/// 控件被 `interact_size` 撑高后点阵会留在偏上的位置，与同一行其他控件对不齐。
+pub fn drag_handle_dots(rect: egui::Rect) -> Vec<egui::Pos2> {
+    let center = rect.center();
+    let mut dots = Vec::with_capacity(6);
+    for row in 0..3 {
+        for col in 0..2 {
+            dots.push(egui::pos2(
+                center.x - DRAG_HANDLE_GAP / 2.0 + col as f32 * DRAG_HANDLE_GAP,
+                center.y - DRAG_HANDLE_GAP + row as f32 * DRAG_HANDLE_GAP,
+            ));
+        }
+    }
+    dots
+}
+
 pub struct DragHandle;
 
 impl egui::Widget for DragHandle {
@@ -77,21 +98,14 @@ impl egui::Widget for DragHandle {
             .min_size(egui::vec2(14.0, 18.0));
         let resp = ui.add(button);
         let painter = ui.painter();
-        let rect = resp.rect;
         let active = resp.hovered() || resp.dragged();
         let color = if active {
             ui.visuals().strong_text_color()
         } else {
             ui.visuals().weak_text_color()
         };
-        for row in 0..3 {
-            for col in 0..2 {
-                let c = egui::pos2(
-                    rect.left() + 2.5 + col as f32 * 5.0,
-                    rect.top() + 3.0 + row as f32 * 5.0,
-                );
-                painter.circle_filled(c, if active { 1.5 } else { 1.0 }, color);
-            }
+        for c in drag_handle_dots(resp.rect) {
+            painter.circle_filled(c, if active { 1.5 } else { 1.0 }, color);
         }
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -158,7 +172,36 @@ pub fn numeric_text_edit(
 
 #[cfg(test)]
 mod tests {
-    use super::merge_drag_target;
+    use super::{drag_handle_dots, merge_drag_target, DRAG_HANDLE_GAP};
+    use eframe::egui;
+
+    /// 点阵的几何中心必须与控件矩形中心重合：控件被 `interact_size` 撑高
+    /// （14x18 的按钮放进 24px 高的行里）后，点阵仍要落在中间。
+    #[test]
+    fn drag_handle_dots_are_centered_in_the_rect() {
+        for rect in [
+            egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(14.0, 18.0)),
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(14.0, 24.0)),
+            egui::Rect::from_min_size(egui::pos2(3.0, 7.0), egui::vec2(14.0, 30.0)),
+        ] {
+            let dots = drag_handle_dots(rect);
+            assert_eq!(dots.len(), 6);
+            let min_x = dots.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+            let max_x = dots.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+            let min_y = dots.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+            let max_y = dots.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+            let cx = (min_x + max_x) / 2.0;
+            let cy = (min_y + max_y) / 2.0;
+            assert!(
+                (cx - rect.center().x).abs() < 0.01 && (cy - rect.center().y).abs() < 0.01,
+                "点阵中心 ({cx}, {cy}) 与控件中心 {:?} 不重合",
+                rect.center()
+            );
+            // 间距就是常量：两列相距 gap，三行跨 2*gap。
+            assert!((max_x - min_x - DRAG_HANDLE_GAP).abs() < 0.01);
+            assert!((max_y - min_y - 2.0 * DRAG_HANDLE_GAP).abs() < 0.01);
+        }
+    }
 
     #[test]
     fn merge_drag_target_keeps_earlier_hit() {

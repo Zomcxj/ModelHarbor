@@ -48,9 +48,19 @@ pub(super) fn find_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// 预览分隔条所在的层级。
+///
+/// 用 `Middle`：预览面板本身在 `background` 层，`Middle` 已经足够接住拖拽
+/// （不会被面板里的文本框抢走）；同时低于令牌悬浮窗所在的 `Foreground`，
+/// 分割线不会画到窗上面。
+///
+/// 分隔条被拖动时 egui 会把它提到**本层**顶部 —— 层级不变，所以拖动过程中
+/// 也不会盖住窗。两者同层时就没有这个保证。
+pub(super) const PREVIEW_RESIZER_ORDER: egui::Order = egui::Order::Middle;
+
 impl App {
     /// 预览面板左边缘的拖动分隔条：拖拽调整预览宽度比例（窗口缩放时按比例适配）。
-    /// 用 Foreground 层的 Area 承载热区，避免被同层的文本框/滚动区抢走拖拽。
+    /// 用独立 Area 承载热区，避免被同层的文本框/滚动区抢走拖拽。
     pub(super) fn ui_preview_resizer(
         &mut self,
         ctx: &egui::Context,
@@ -62,7 +72,7 @@ impl App {
             egui::pos2(panel_rect.left() + 4.0, panel_rect.bottom()),
         );
         let resp = egui::Area::new(egui::Id::new("preview_resizer"))
-            .order(egui::Order::Foreground)
+            .order(PREVIEW_RESIZER_ORDER)
             .fixed_pos(strip.min)
             .show(ctx, |ui| {
                 let (rect, resp) =

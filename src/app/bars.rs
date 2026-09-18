@@ -167,9 +167,12 @@ impl App {
                     ui.label("主题:");
                     let theme_btn = ui.button(self.theme.label());
                     egui::Popup::menu(&theme_btn)
+                        // 菜单默认是 `top_down_justified`：每一项的填充会撑满整个
+                        // 弹出宽度，文字只占左边一小段，看着像「填充与文字没对齐」。
+                        // 改成左对齐的普通纵向布局，填充就贴着文字宽度。
+                        .layout(egui::Layout::top_down(egui::Align::LEFT))
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
                         .show(|ui| {
-                            ui.set_min_width(80.0);
                             for t in Theme::ALL {
                                 if ui.selectable_label(self.theme == t, t.label()).clicked() {
                                     // 只改状态；样式统一由 App::apply_theme_if_changed

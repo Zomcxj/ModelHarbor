@@ -643,6 +643,12 @@ impl App {
         self.reload_for_page(format, false);
     }
 
+    /// 站点面板令牌悬浮窗所在的层级。
+    ///
+    /// 用 `Foreground`：高于预览分隔条所在的 `Middle`，分割线不会横穿悬浮窗；
+    /// 又低于 `Tooltip`，悬停提示仍显示在窗上面。
+    const TOKENS_WINDOW_ORDER: egui::Order = egui::Order::Foreground;
+
     /// 站点面板令牌的悬浮窗外壳（内容见 `ui_tokens_panel`）。
     ///
     /// 用独立窗口而不是内联面板：它只在配置令牌时用一下，没必要长期占着正文空间。
@@ -659,9 +665,12 @@ impl App {
         // 会与闭包里的 `&mut self` 冲突。
         let mut open = true;
         egui::Window::new("站点面板令牌")
+            // 提到 Foreground：预览分隔条在 Middle 层，窗在它上面，
+            // 分割线不会横穿悬浮窗。
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
+            .order(Self::TOKENS_WINDOW_ORDER)
             .fixed_size([620.0, height])
             // 不允许拖到主窗口外：拖出去后标题栏可能落到屏幕外，窗口就找不回来了。
             .constrain_to(area)
