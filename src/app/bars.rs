@@ -175,26 +175,104 @@ impl App {
                         .layout(egui::Layout::top_down(egui::Align::LEFT))
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
-                            ui.set_min_width(200.0);
+                            ui.set_min_width(240.0);
                             ui.label(egui::RichText::new("主题").small().weak());
-                            // 九个主题排三列：单列会把面板拉得很长。
+                            // 当前选中的形状圆角，所有按钮统一使用
+                            let current_radius = self.ui_style.radius() as f32;
+                            // 当前主题的强调色（用于形状按钮填充）
+                            let current_accent = self.theme.accent_color();
+                            // 深色主题一行
+                            ui.label(egui::RichText::new("深色").size(10.0).weak());
                             ui.horizontal_wrapped(|ui| {
-                                for t in Theme::ALL {
-                                    if ui.selectable_label(self.theme == t, t.label()).clicked() {
-                                        // 只改状态；样式统一由 App::apply_theme_if_changed
-                                        // 在下一帧套用（避免两处各自 apply 导致不一致）。
-                                        self.theme = t;
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for t in &Theme::ALL[0..4] {
+                                    let is_current = self.theme == *t;
+                                    let accent = t.accent_color();
+                                    // 按钮用主题色填充
+                                    let fill = accent;
+                                    // 文字颜色：根据背景亮暗自动选择黑/白
+                                    let text_color = if accent.r() as u32 + accent.g() as u32 + accent.b() as u32 > 384 {
+                                        egui::Color32::BLACK
+                                    } else {
+                                        egui::Color32::WHITE
+                                    };
+                                    // 当前主题：加一圈对比色边框
+                                    let stroke = if is_current {
+                                        egui::Stroke::new(2.0, egui::Color32::WHITE)
+                                    } else {
+                                        egui::Stroke::NONE
+                                    };
+                                    let btn = egui::Button::new(egui::RichText::new(t.label()).color(text_color))
+                                        .fill(fill)
+                                        .stroke(stroke)
+                                        .min_size(egui::vec2(52.0, 0.0))
+                                        .corner_radius(current_radius);
+                                    if ui.add(btn).clicked() {
+                                        self.theme = *t;
+                                    }
+                                }
+                            });
+                            // 亮色主题一行
+                            ui.label(egui::RichText::new("亮色").size(10.0).weak());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for t in &Theme::ALL[4..8] {
+                                    let is_current = self.theme == *t;
+                                    let accent = t.accent_color();
+                                    let fill = accent;
+                                    let text_color = if accent.r() as u32 + accent.g() as u32 + accent.b() as u32 > 384 {
+                                        egui::Color32::BLACK
+                                    } else {
+                                        egui::Color32::WHITE
+                                    };
+                                    let stroke = if is_current {
+                                        egui::Stroke::new(2.0, egui::Color32::from_gray(40))
+                                    } else {
+                                        egui::Stroke::NONE
+                                    };
+                                    let btn = egui::Button::new(egui::RichText::new(t.label()).color(text_color))
+                                        .fill(fill)
+                                        .stroke(stroke)
+                                        .min_size(egui::vec2(52.0, 0.0))
+                                        .corner_radius(current_radius);
+                                    if ui.add(btn).clicked() {
+                                        self.theme = *t;
                                     }
                                 }
                             });
                             ui.add_space(crate::theme::SPACE_2);
                             ui.label(egui::RichText::new("形状").small().weak());
                             ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
                                 for style in crate::theme::UiStyle::ALL {
-                                    if ui
-                                        .selectable_label(self.ui_style == style, style.label())
-                                        .clicked()
-                                    {
+                                    let is_current = self.ui_style == style;
+                                    // 按实际圆角和边框宽度绘制预览按钮
+                                    let radius = style.radius() as f32;
+                                    let border = style.border_width();
+                                    // 填充当前主题的强调色
+                                    let fill = current_accent;
+                                    // 文字颜色：根据当前主题色亮暗自动选择
+                                    let text_color = if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
+                                        egui::Color32::BLACK
+                                    } else {
+                                        egui::Color32::WHITE
+                                    };
+                                    // 当前形状：加边框
+                                    let stroke_color = if is_current {
+                                        if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
+                                            egui::Color32::from_gray(40)
+                                        } else {
+                                            egui::Color32::WHITE
+                                        }
+                                    } else {
+                                        fill
+                                    };
+                                    let btn = egui::Button::new(egui::RichText::new(style.label()).color(text_color))
+                                        .fill(fill)
+                                        .stroke(egui::Stroke::new(border, stroke_color))
+                                        .min_size(egui::vec2(52.0, 0.0))
+                                        .corner_radius(radius);
+                                    if ui.add(btn).clicked() {
                                         self.ui_style = style;
                                     }
                                 }

@@ -92,32 +92,23 @@ pub enum UiStyle {
     Slab,
     /// 锐利：全直角 + 1.5px 描边。
     Sharp,
-    /// 面板：全直角 + 2px 描边，终端分屏的硬边界观感。
-    Panel,
-    /// 胶囊：超大圆角 20、1px 描边，按钮完全圆头。
-    Pill,
     /// 厚重：圆角 10 + 2.5px 粗边，卡片感强。
     Heavy,
     /// 精致：圆角 6 + 0.5px 细边，轻量感。
     Fine,
-    /// 极简：大圆角 16 + 1px 标准边，现代简约。
-    Minimal,
     /// 标签：胶囊 20 + 0.5px 细边，标签样式。
     Tag,
 }
 
 impl UiStyle {
-    pub const ALL: [UiStyle; 10] = [
+    pub const ALL: [UiStyle; 7] = [
+        UiStyle::Tag,
         UiStyle::Soft,
         UiStyle::Compact,
-        UiStyle::Slab,
         UiStyle::Sharp,
-        UiStyle::Panel,
-        UiStyle::Pill,
         UiStyle::Heavy,
+        UiStyle::Slab,
         UiStyle::Fine,
-        UiStyle::Minimal,
-        UiStyle::Tag,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -126,11 +117,8 @@ impl UiStyle {
             UiStyle::Compact => "紧凑",
             UiStyle::Slab => "石板",
             UiStyle::Sharp => "锐利",
-            UiStyle::Panel => "面板",
-            UiStyle::Pill => "胶囊",
             UiStyle::Heavy => "厚重",
             UiStyle::Fine => "精致",
-            UiStyle::Minimal => "极简",
             UiStyle::Tag => "标签",
         }
     }
@@ -142,11 +130,8 @@ impl UiStyle {
             UiStyle::Compact => "compact",
             UiStyle::Slab => "slab",
             UiStyle::Sharp => "sharp",
-            UiStyle::Panel => "panel",
-            UiStyle::Pill => "pill",
             UiStyle::Heavy => "heavy",
             UiStyle::Fine => "fine",
-            UiStyle::Minimal => "minimal",
             UiStyle::Tag => "tag",
         }
     }
@@ -165,11 +150,9 @@ impl UiStyle {
             UiStyle::Soft => RADIUS_MD,
             UiStyle::Compact => 6,
             UiStyle::Slab => RADIUS_SM,
-            UiStyle::Sharp | UiStyle::Panel => 0,
-            UiStyle::Pill => RADIUS_SLIDER_MAX,
+            UiStyle::Sharp => 0,
             UiStyle::Heavy => RADIUS_MD,
             UiStyle::Fine => 6,
-            UiStyle::Minimal => 16,
             UiStyle::Tag => RADIUS_SLIDER_MAX,
         }
     }
@@ -177,12 +160,10 @@ impl UiStyle {
     /// 控件描边宽度（像素）。
     pub fn border_width(&self) -> f32 {
         match self {
-            UiStyle::Soft | UiStyle::Compact | UiStyle::Slab | UiStyle::Pill => 1.0,
+            UiStyle::Soft | UiStyle::Compact | UiStyle::Slab => 1.0,
             UiStyle::Sharp => 1.5,
-            UiStyle::Panel => 2.0,
             UiStyle::Heavy => 2.5,
             UiStyle::Fine | UiStyle::Tag => 0.5,
-            UiStyle::Minimal => 1.0,
         }
     }
 
@@ -214,38 +195,36 @@ pub enum Theme {
     Rose,
     /// 苔藓：低饱和绿。
     Moss,
-    /// 琥珀：暖棕黄。
-    Amber,
-    /// 靛蓝：深蓝。
-    Indigo,
-    /// 冰川：冷灰蓝。
-    Glacier,
+    /// 薄荷：清新绿。
+    Mint,
+    /// 薰衣草：柔和紫。
+    Lavender,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 9] = [
+    pub const ALL: [Theme; 8] = [
+        // 深色主题（4个）
         Theme::Dark,
-        Theme::Light,
         Theme::Ocean,
         Theme::Nord,
-        Theme::Rose,
         Theme::Moss,
-        Theme::Amber,
-        Theme::Indigo,
-        Theme::Glacier,
+        // 浅色主题（4个）
+        Theme::Light,
+        Theme::Rose,
+        Theme::Mint,
+        Theme::Lavender,
     ];
 
     pub fn label(&self) -> &'static str {
         match self {
             Theme::Dark => "深色",
-            Theme::Light => "浅色",
+            Theme::Light => "亮色",
             Theme::Ocean => "海洋",
             Theme::Nord => "极地",
             Theme::Rose => "玫瑰",
             Theme::Moss => "苔藓",
-            Theme::Amber => "琥珀",
-            Theme::Indigo => "靛蓝",
-            Theme::Glacier => "冰川",
+            Theme::Mint => "薄荷",
+            Theme::Lavender => "薰衣草",
         }
     }
 
@@ -258,10 +237,14 @@ impl Theme {
             Theme::Nord => "nord",
             Theme::Rose => "rose",
             Theme::Moss => "moss",
-            Theme::Amber => "amber",
-            Theme::Indigo => "indigo",
-            Theme::Glacier => "glacier",
+            Theme::Mint => "mint",
+            Theme::Lavender => "lavender",
         }
+    }
+
+    /// 当前主题的强调色（用于主题选择器色块）。
+    pub fn accent_color(&self) -> egui::Color32 {
+        self.palette().accent
     }
 
     /// 由持久化标识还原；未知 / 空值回落默认主题。
@@ -277,7 +260,7 @@ impl Theme {
         self.palette().dark
     }
 
-    fn palette(&self) -> Palette {
+    pub fn palette(&self) -> Palette {
         match self {
             // dark, panel, faint, extreme, widget, hover, accent, text
             Theme::Dark => Palette::new(
@@ -306,17 +289,13 @@ impl Theme {
                 true, 0x18201A, 0x1E2620, 0x101812, 0x232B24, 0x2C342C, 0x6D9D82, 0xD8DED2,
                 0x767676, 0x000000,
             ),
-            Theme::Amber => Palette::new(
-                true, 0x2F2A21, 0x353026, 0x272219, 0x3A3428, 0x443D30, 0xD2B28E, 0xDED9CC,
-                0x7A7A7A, 0x000000,
+            Theme::Mint => Palette::new(
+                false, 0xF0FAF5, 0xE6F7ED, 0xFFFFFF, 0xD0F0DE, 0xBFEBD3, 0x2D8659, 0x1A4D33,
+                0x7A9B88, 0xFFFFFF,
             ),
-            Theme::Indigo => Palette::new(
-                true, 0x181E28, 0x1E242E, 0x101620, 0x232A36, 0x2C3441, 0x6E92C2, 0xD6DAE8,
-                0x7A7A7A, 0x000000,
-            ),
-            Theme::Glacier => Palette::new(
-                true, 0x282D35, 0x2E333C, 0x20252D, 0x333942, 0x3D444E, 0xB4C9E1, 0xD5DEE6,
-                0x7E7E7E, 0x000000,
+            Theme::Lavender => Palette::new(
+                false, 0xF5F2FA, 0xECE7F5, 0xFFFFFF, 0xD9CEEB, 0xCFC2E6, 0x6B4D9E, 0x3D2866,
+                0x8E7FA3, 0xFFFFFF,
             ),
         }
     }
@@ -836,19 +815,19 @@ mod semantics_tests {
     }
 }
 
-struct Palette {
-    dark: bool,
-    panel: Color32,
-    faint: Color32,
-    extreme: Color32,
-    widget: Color32,
-    hover: Color32,
-    accent: Color32,
-    text: Color32,
+pub struct Palette {
+    pub dark: bool,
+    pub panel: Color32,
+    pub faint: Color32,
+    pub extreme: Color32,
+    pub widget: Color32,
+    pub hover: Color32,
+    pub accent: Color32,
+    pub text: Color32,
     /// 控件描边：把控件从面板底色里分出来（控件底色与面板只差 1.2–1.5:1）。
-    border: Color32,
+    pub border: Color32,
     /// 强调色底上的文字色（选中态 / 主按钮）。
-    accent_text: Color32,
+    pub accent_text: Color32,
 }
 
 impl Palette {
