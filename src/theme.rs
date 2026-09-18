@@ -35,6 +35,8 @@ pub const TEXT_BODY: f32 = 13.0;
 pub const TEXT_HEADING: f32 = 18.0;
 
 // ── 圆角 ──────────────────────────────────────────────────
+/// 圆角滑块的上限（「外观」面板里连续调的范围是 0..=这个值）。
+pub const RADIUS_SLIDER_MAX: u8 = 20;
 /// 徽标 / 小按钮。
 pub const RADIUS_SM: u8 = 4;
 /// 卡片与控件。
@@ -75,6 +77,133 @@ fn over(dst: Color32, src: Color32) -> Color32 {
     )
 }
 
+/// 界面形状预设：圆角、描边粗细、内嵌亮暗边的组合。
+///
+/// 与主题正交 —— 主题管颜色，形状管「控件长什么样」。四档覆盖从圆润到方正的
+/// 常见观感；圆角仍可由「外观」面板里的滑块连续覆盖。
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum UiStyle {
+    /// 圆润：默认档，圆角 10、1px 描边。
+    #[default]
+    Soft,
+    /// 紧凑：小圆角 6、1px 描边。
+    Compact,
+    /// 石板：小圆角 + 亮暗内嵌边，做出轻微立体感。
+    Slab,
+    /// 锐利：全直角 + 1.5px 描边。
+    Sharp,
+    /// 面板：全直角 + 2px 描边，终端分屏的硬边界观感。
+    Panel,
+    /// 胶囊：超大圆角 20、1px 描边，按钮完全圆头。
+    Pill,
+    /// 厚重：圆角 10 + 2.5px 粗边，卡片感强。
+    Heavy,
+    /// 精致：圆角 6 + 0.5px 细边，轻量感。
+    Fine,
+    /// 极简：大圆角 16 + 1px 标准边，现代简约。
+    Minimal,
+    /// 标签：胶囊 20 + 0.5px 细边，标签样式。
+    Tag,
+}
+
+impl UiStyle {
+    pub const ALL: [UiStyle; 10] = [
+        UiStyle::Soft,
+        UiStyle::Compact,
+        UiStyle::Slab,
+        UiStyle::Sharp,
+        UiStyle::Panel,
+        UiStyle::Pill,
+        UiStyle::Heavy,
+        UiStyle::Fine,
+        UiStyle::Minimal,
+        UiStyle::Tag,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            UiStyle::Soft => "圆润",
+            UiStyle::Compact => "紧凑",
+            UiStyle::Slab => "石板",
+            UiStyle::Sharp => "锐利",
+            UiStyle::Panel => "面板",
+            UiStyle::Pill => "胶囊",
+            UiStyle::Heavy => "厚重",
+            UiStyle::Fine => "精致",
+            UiStyle::Minimal => "极简",
+            UiStyle::Tag => "标签",
+        }
+    }
+
+    /// 持久化用的稳定标识（与界面文案解耦）。
+    pub fn key(&self) -> &'static str {
+        match self {
+            UiStyle::Soft => "soft",
+            UiStyle::Compact => "compact",
+            UiStyle::Slab => "slab",
+            UiStyle::Sharp => "sharp",
+            UiStyle::Panel => "panel",
+            UiStyle::Pill => "pill",
+            UiStyle::Heavy => "heavy",
+            UiStyle::Fine => "fine",
+            UiStyle::Minimal => "minimal",
+            UiStyle::Tag => "tag",
+        }
+    }
+
+    /// 由持久化标识还原；未知 / 空值回落默认档。
+    pub fn from_key(key: &str) -> UiStyle {
+        UiStyle::ALL
+            .into_iter()
+            .find(|style| style.key() == key)
+            .unwrap_or_default()
+    }
+
+    /// 该预设的默认圆角（滑块可在此基础上继续调）。
+    pub fn radius(&self) -> u8 {
+        match self {
+            UiStyle::Soft => RADIUS_MD,
+            UiStyle::Compact => 6,
+            UiStyle::Slab => RADIUS_SM,
+            UiStyle::Sharp | UiStyle::Panel => 0,
+            UiStyle::Pill => RADIUS_SLIDER_MAX,
+            UiStyle::Heavy => RADIUS_MD,
+            UiStyle::Fine => 6,
+            UiStyle::Minimal => 16,
+            UiStyle::Tag => RADIUS_SLIDER_MAX,
+        }
+    }
+
+    /// 控件描边宽度（像素）。
+    pub fn border_width(&self) -> f32 {
+        match self {
+            UiStyle::Soft | UiStyle::Compact | UiStyle::Slab | UiStyle::Pill => 1.0,
+            UiStyle::Sharp => 1.5,
+            UiStyle::Panel => 2.0,
+            UiStyle::Heavy => 2.5,
+            UiStyle::Fine | UiStyle::Tag => 0.5,
+            UiStyle::Minimal => 1.0,
+        }
+    }
+
+    /// 是否画亮暗内嵌边（左上偏亮、右下偏暗的立体感）。
+    pub fn has_bevel(&self) -> bool {
+        matches!(self, UiStyle::Slab)
+    }
+
+    /// 内嵌边在浅色主题下的明暗方向要反过来，否则浅底上「左上更亮」看不出来。
+    pub fn bevel_colors(&self, dark: bool) -> (Color32, Color32) {
+        if dark {
+            (Color32::from_white_alpha(18), Color32::from_black_alpha(90))
+        } else {
+            (
+                Color32::from_white_alpha(200),
+                Color32::from_black_alpha(40),
+            )
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
     #[default]
@@ -83,15 +212,27 @@ pub enum Theme {
     Ocean,
     Nord,
     Rose,
+    /// 苔藓：低饱和绿。
+    Moss,
+    /// 琥珀：暖棕黄。
+    Amber,
+    /// 靛蓝：深蓝。
+    Indigo,
+    /// 冰川：冷灰蓝。
+    Glacier,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 5] = [
+    pub const ALL: [Theme; 9] = [
         Theme::Dark,
         Theme::Light,
         Theme::Ocean,
         Theme::Nord,
         Theme::Rose,
+        Theme::Moss,
+        Theme::Amber,
+        Theme::Indigo,
+        Theme::Glacier,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -101,6 +242,10 @@ impl Theme {
             Theme::Ocean => "海洋",
             Theme::Nord => "极地",
             Theme::Rose => "玫瑰",
+            Theme::Moss => "苔藓",
+            Theme::Amber => "琥珀",
+            Theme::Indigo => "靛蓝",
+            Theme::Glacier => "冰川",
         }
     }
 
@@ -112,6 +257,10 @@ impl Theme {
             Theme::Ocean => "ocean",
             Theme::Nord => "nord",
             Theme::Rose => "rose",
+            Theme::Moss => "moss",
+            Theme::Amber => "amber",
+            Theme::Indigo => "indigo",
+            Theme::Glacier => "glacier",
         }
     }
 
@@ -151,6 +300,24 @@ impl Theme {
                 false, 0xFBEEF0, 0xF8E5E8, 0xFFFFFF, 0xEAC0C9, 0xE8B9C2, 0x8C5A66, 0x4A2E33,
                 0x947F82, 0xFFFFFF,
             ),
+            // 以下四组取自暖 / 冷两端的低饱和家族：面板底色偏暗、强调色压低，
+            // 文字与描边按同一套阈值（正文 / 强调 4.5:1、描边 3:1）逐档校过。
+            Theme::Moss => Palette::new(
+                true, 0x18201A, 0x1E2620, 0x101812, 0x232B24, 0x2C342C, 0x6D9D82, 0xD8DED2,
+                0x767676, 0x000000,
+            ),
+            Theme::Amber => Palette::new(
+                true, 0x2F2A21, 0x353026, 0x272219, 0x3A3428, 0x443D30, 0xD2B28E, 0xDED9CC,
+                0x7A7A7A, 0x000000,
+            ),
+            Theme::Indigo => Palette::new(
+                true, 0x181E28, 0x1E242E, 0x101620, 0x232A36, 0x2C3441, 0x6E92C2, 0xD6DAE8,
+                0x7A7A7A, 0x000000,
+            ),
+            Theme::Glacier => Palette::new(
+                true, 0x282D35, 0x2E333C, 0x20252D, 0x333942, 0x3D444E, 0xB4C9E1, 0xD5DEE6,
+                0x7E7E7E, 0x000000,
+            ),
         }
     }
 
@@ -158,13 +325,13 @@ impl Theme {
         egui::Theme::from_dark_mode(self.palette().dark)
     }
 
-    /// 按当前主题 + 圆角设置套用样式。
+    /// 按当前主题 + 默认形状套用样式。
     pub fn apply(&self, ctx: &egui::Context) {
-        self.apply_with_radius(ctx, RADIUS_MD);
+        let style = UiStyle::default();
+        self.apply_style(ctx, style);
     }
-
-    /// 按指定圆角套用样式（顶部栏的「外观」面板用它）。
-    pub fn apply_with_radius(&self, ctx: &egui::Context, radius: u8) {
+    /// 按主题 + 形状预设套用样式（顶部栏的「外观」面板用它）。
+    pub fn apply_style(&self, ctx: &egui::Context, shape: UiStyle) {
         let mut style = egui::Style::default();
         style.spacing.item_spacing = egui::vec2(SPACE_2 / 2.0, SPACE_2);
         style.spacing.button_padding = egui::vec2(SPACE_4 - 2.0, SPACE_1 - 1.0);
@@ -188,24 +355,50 @@ impl Theme {
             egui::TextStyle::Heading,
             egui::FontId::new(TEXT_HEADING, egui::FontFamily::Proportional),
         );
-        style.visuals = self.palette().into_visuals();
-        let r = radius;
+        let palette = self.palette();
+        let dark = palette.dark;
+        style.visuals = palette.into_visuals();
+        let radius = shape.radius();
         for w in [
             &mut style.visuals.widgets.noninteractive,
             &mut style.visuals.widgets.inactive,
             &mut style.visuals.widgets.hovered,
             &mut style.visuals.widgets.active,
         ] {
-            w.corner_radius = r.into();
+            w.corner_radius = radius.into();
+        }
+        // 描边宽度随形状走；颜色沿用调色板（hovered / active 是强调色）。
+        for w in [
+            &mut style.visuals.widgets.noninteractive,
+            &mut style.visuals.widgets.inactive,
+        ] {
+            w.bg_stroke.width = shape.border_width();
+        }
+        if shape.has_bevel() {
+            // 石板：把描边换成偏暗的一条，并给悬浮窗 / 弹出层一个偏右下的投影，
+            // 让面板看起来是「压在」底上的石板而不是平贴的色块。
+            let (_, edge) = shape.bevel_colors(dark);
+            style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, edge);
+            style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, edge);
+            style.visuals.window_shadow = egui::epaint::Shadow {
+                offset: [2, 2],
+                blur: 6,
+                spread: 0,
+                color: edge,
+            };
+            style.visuals.popup_shadow = style.visuals.window_shadow;
         }
         ctx.set_theme(self.egui_theme());
         ctx.set_style(style);
+        // 形状存进上下文：`ui.rs` 里的卡片要读它决定描边宽度与内嵌亮线，
+        // 而 `Frame` 只能拿到 `Ui`，拿不到 `App` 的字段。
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new(ACTIVE_STYLE_ID), shape));
     }
 }
 
 /// 语义色（绿 = 正常 / 黄 = 注意 / 红 = 异常 / 蓝 = 信息）。
 ///
-/// **跨主题统一**：五个主题共用同一套（黑白灰随主题变，彩色不变），
+/// **跨主题统一**：所有主题共用同一套（黑白灰随主题变，彩色不变），
 /// 取中间调色，让同一支颜色在浅底和深底上都看得清（单测锁定对比度 ≥3:1）。
 /// 唯一的例外是「信息蓝」和主题强调色撞色时改用青蓝，见 [`semantics`]。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -258,7 +451,7 @@ fn distance(a: Color32, b: Color32) -> f32 {
     (d(ar, br) + d(ag, bg) + d(ab, bb)).sqrt()
 }
 
-/// 对比度（WCAG，1.0 ~ 21.0）。只在单测里用来锁定「五个主题都看得清」。
+/// 对比度（WCAG，1.0 ~ 21.0）。只在单测里用来锁定「每个主题都看得清」。
 #[cfg(test)]
 fn contrast(a: Color32, b: Color32) -> f32 {
     let channel = |value: u8| {
@@ -290,6 +483,15 @@ pub(crate) fn distance_for_tests(a: Color32, b: Color32) -> f32 {
     distance(a, b)
 }
 
+/// 当前形状预设存在上下文里的键。
+const ACTIVE_STYLE_ID: &str = "modelharbor_active_ui_style";
+
+/// 当前生效的形状预设（还没套用样式时是默认档）。
+pub fn active_style(ctx: &egui::Context) -> UiStyle {
+    ctx.data(|data| data.get_temp::<UiStyle>(egui::Id::new(ACTIVE_STYLE_ID)))
+        .unwrap_or_default()
+}
+
 /// 主题是否需要在本次应用（`applied` 记录已应用的主题，会被就地更新）。
 ///
 /// 单独抽出来是为了能在单测里锁定「启动时必须应用一次」：
@@ -307,11 +509,15 @@ pub fn needs_apply(applied: &mut Option<Theme>, theme: Theme) -> bool {
 /// 主题或圆角变了都要重套样式。
 ///
 /// `applied` 记录已套用的（主题, 圆角），会被就地更新。
-pub fn needs_apply_style(applied: &mut Option<(Theme, u8)>, theme: Theme, radius: u8) -> bool {
-    if *applied == Some((theme, radius)) {
+pub fn needs_apply_style(
+    applied: &mut Option<(Theme, UiStyle)>,
+    theme: Theme,
+    shape: UiStyle,
+) -> bool {
+    if *applied == Some((theme, shape)) {
         return false;
     }
-    *applied = Some((theme, radius));
+    *applied = Some((theme, shape));
     true
 }
 
@@ -391,8 +597,10 @@ mod semantics_tests {
                 theme.key()
             );
         }
-        // 同一主题不重复应用（每帧重设会白白丢掉 egui 的样式缓存）
-        assert!(!needs_apply(&mut applied, Theme::Rose));
+        // 同一主题不重复应用（每帧重设会白白丢掉 egui 的样式缓存）。
+        // 用 `ALL` 的末项而不是写死某个主题：主题表增删时这里不该跟着改。
+        let last = *Theme::ALL.last().expect("主题表非空");
+        assert!(!needs_apply(&mut applied, last));
         assert!(needs_apply(&mut applied, Theme::Dark));
     }
 
@@ -742,6 +950,91 @@ fn rgb(hex: u32) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 形状预设的圆角必须落在滑块能取到的范围里，否则用户切到预设后
+    /// 再拖滑块会出现「值变了但样式没变」的错觉。
+    #[test]
+    fn every_shape_radius_is_reachable_by_the_slider() {
+        for style in UiStyle::ALL {
+            assert!(
+                style.radius() <= RADIUS_SLIDER_MAX,
+                "{} 的圆角 {} 超过滑块上限 {RADIUS_SLIDER_MAX}",
+                style.key(),
+                style.radius()
+            );
+        }
+    }
+
+    /// 预设要真的做出区别：圆角与描边不能四个都一样。
+    #[test]
+    fn shape_presets_differ_in_radius_or_border() {
+        let seen: Vec<(u8, u32)> = UiStyle::ALL
+            .iter()
+            // 描边宽度是 f32，转成定点再比较（浮点不能直接做键）。
+            .map(|s| (s.radius(), (s.border_width() * 10.0) as u32))
+            .collect();
+        let mut unique = seen.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            seen.len(),
+            "形状预设的（圆角, 描边）有重复：{seen:?}"
+        );
+    }
+
+    /// 圆角 / 描边真的写进了 Style。
+    #[test]
+    fn shape_preset_reaches_the_style() {
+        let ctx = egui::Context::default();
+        for style in UiStyle::ALL {
+            Theme::Dark.apply_style(&ctx, style);
+            let widgets = ctx.style().visuals.widgets.noninteractive;
+            assert_eq!(
+                widgets.corner_radius.nw,
+                style.radius(),
+                "{} 的圆角没进 Style",
+                style.key()
+            );
+            assert_eq!(
+                widgets.bg_stroke.width,
+                style.border_width(),
+                "{} 的描边宽度没进 Style",
+                style.key()
+            );
+        }
+    }
+
+    /// 形状预设变化时 `needs_apply_style` 要重套样式。
+    #[test]
+    fn shape_change_reapplies_the_style() {
+        let mut applied: Option<(Theme, UiStyle)> = None;
+        assert!(needs_apply_style(&mut applied, Theme::Dark, UiStyle::Soft));
+        assert!(!needs_apply_style(&mut applied, Theme::Dark, UiStyle::Soft));
+        assert!(needs_apply_style(&mut applied, Theme::Dark, UiStyle::Sharp));
+        assert!(needs_apply_style(
+            &mut applied,
+            Theme::Light,
+            UiStyle::Sharp
+        ));
+        assert!(!needs_apply_style(
+            &mut applied,
+            Theme::Light,
+            UiStyle::Sharp
+        ));
+    }
+
+    /// 形状要能从上下文读回来：卡片靠它决定描边与内嵌边。
+    #[test]
+    fn active_style_round_trips_through_the_context() {
+        let ctx = egui::Context::default();
+        // 没套过样式时是默认档。
+        assert_eq!(active_style(&ctx), UiStyle::default());
+        for style in UiStyle::ALL {
+            Theme::Dark.apply_style(&ctx, style);
+            assert_eq!(active_style(&ctx), style, "{} 没存进上下文", style.key());
+        }
+    }
 
     #[test]
     fn labels_unique_and_visuals_build() {

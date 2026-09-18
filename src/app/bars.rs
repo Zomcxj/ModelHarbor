@@ -166,7 +166,7 @@ impl App {
                     ui.separator();
                     let look_btn = ui
                         .button("外观")
-                        .on_hover_text("主题与圆角")
+                        .on_hover_text("主题、形状与圆角")
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     egui::Popup::menu(&look_btn)
                         // 菜单默认是 `top_down_justified`：每一项的填充会撑满整个
@@ -175,27 +175,30 @@ impl App {
                         .layout(egui::Layout::top_down(egui::Align::LEFT))
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
-                            ui.set_min_width(180.0);
+                            ui.set_min_width(200.0);
                             ui.label(egui::RichText::new("主题").small().weak());
-                            for t in Theme::ALL {
-                                if ui.selectable_label(self.theme == t, t.label()).clicked() {
-                                    // 只改状态；样式统一由 App::apply_theme_if_changed
-                                    // 在下一帧套用（避免两处各自 apply 导致不一致）。
-                                    self.theme = t;
+                            // 九个主题排三列：单列会把面板拉得很长。
+                            ui.horizontal_wrapped(|ui| {
+                                for t in Theme::ALL {
+                                    if ui.selectable_label(self.theme == t, t.label()).clicked() {
+                                        // 只改状态；样式统一由 App::apply_theme_if_changed
+                                        // 在下一帧套用（避免两处各自 apply 导致不一致）。
+                                        self.theme = t;
+                                    }
                                 }
-                            }
+                            });
                             ui.add_space(crate::theme::SPACE_2);
-                            ui.label(egui::RichText::new("圆角").small().weak());
-                            let mut radius = self.corner_radius();
-                            let slider = ui.add(
-                                egui::Slider::new(&mut radius, 0..=20)
-                                    .suffix(" px")
-                                    .fixed_decimals(0),
-                            );
-                            if slider.changed() {
-                                // 只改状态；样式由 App::apply_theme_if_changed 下一帧套用。
-                                self.corner_radius = Some(radius);
-                            }
+                            ui.label(egui::RichText::new("形状").small().weak());
+                            ui.horizontal_wrapped(|ui| {
+                                for style in crate::theme::UiStyle::ALL {
+                                    if ui
+                                        .selectable_label(self.ui_style == style, style.label())
+                                        .clicked()
+                                    {
+                                        self.ui_style = style;
+                                    }
+                                }
+                            });
                         });
                 });
             });

@@ -15,9 +15,13 @@ pub fn card_frame<R>(
     let (stroke_color, stroke_width) = match highlight {
         1 => (egui::Color32::from_rgb(255, 180, 50), 2.0), // source: orange
         2 => (egui::Color32::from_rgb(100, 200, 100), 2.0), // target: green
-        _ => (ui.visuals().widgets.noninteractive.bg_stroke.color, 1.0),
+        // 无高亮时跟随形状预设的描边宽度（锐利 1.5 / 面板 2.0 比默认粗）。
+        _ => (
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+            crate::theme::active_style(ui.ctx()).border_width(),
+        ),
     };
-    egui::Frame::NONE
+    let frame = egui::Frame::NONE
         .fill(fill)
         .corner_radius(corner)
         .stroke(egui::Stroke::new(stroke_width, stroke_color))
@@ -25,8 +29,65 @@ pub fn card_frame<R>(
         .show(ui, |ui| {
             ui.style_mut().spacing.item_spacing = egui::vec2(4.0, 2.0);
             add(ui);
-        })
-        .response
+        });
+    draw_bevel(ui, frame.response.rect);
+    frame.response
+}
+
+/// 内嵌浮雕的线段：`(亮边, 暗边)`，各两条。
+///
+/// 亮边在上 / 左，暗边在下 / 右，合起来是「左上受光」的浮雕。
+/// 抽成纯函数是为了能直接断言「线落在矩形内侧、且两端避开圆角」——
+/// 画到圆角外会冒出直角，看上去像多了一个方框。
+pub fn bevel_segments(
+    rect: egui::Rect,
+    radius: f32,
+) -> ([[egui::Pos2; 2]; 2], [[egui::Pos2; 2]; 2]) {
+    let inner = rect.shrink(1.0);
+    let r = radius.min(inner.width() / 2.0).min(inner.height() / 2.0);
+    let light = [
+        [
+            egui::pos2(inner.left() + r, inner.top()),
+            egui::pos2(inner.right() - r, inner.top()),
+        ],
+        [
+            egui::pos2(inner.left(), inner.top() + r),
+            egui::pos2(inner.left(), inner.bottom() - r),
+        ],
+    ];
+    let dark = [
+        [
+            egui::pos2(inner.left() + r, inner.bottom()),
+            egui::pos2(inner.right() - r, inner.bottom()),
+        ],
+        [
+            egui::pos2(inner.right(), inner.top() + r),
+            egui::pos2(inner.right(), inner.bottom() - r),
+        ],
+    ];
+    (light, dark)
+}
+
+/// 石板形状的内嵌浮雕（左上亮、右下暗，各 1px）。
+///
+/// egui 的 `Frame` 只能画一圈同色描边，画不出方向性的立体感；
+/// 这里在卡片内侧补四条线，配合描边构成石板观感。
+/// 其余形状不画（`has_bevel()` 为假时直接返回）。
+fn draw_bevel(ui: &egui::Ui, rect: egui::Rect) {
+    let style = crate::theme::active_style(ui.ctx());
+    if !style.has_bevel() {
+        return;
+    }
+    let (light, dark) = style.bevel_colors(ui.visuals().dark_mode);
+    let radius = ui.visuals().widgets.noninteractive.corner_radius.nw as f32;
+    let (light_lines, dark_lines) = bevel_segments(rect, radius);
+    let painter = ui.painter();
+    for segment in light_lines {
+        painter.line_segment(segment, egui::Stroke::new(1.0, light));
+    }
+    for segment in dark_lines {
+        painter.line_segment(segment, egui::Stroke::new(1.0, dark));
+    }
 }
 
 /// 表单字段标签：**左对齐**且宽度按文本内容自适应（上限 `max_width`），
@@ -201,6 +262,45 @@ mod tests {
             assert!((max_x - min_x - DRAG_HANDLE_GAP).abs() < 0.01);
             assert!((max_y - min_y - 2.0 * DRAG_HANDLE_GAP).abs() < 0.01);
         }
+    }
+
+    /// 浮雕线要落在矩形内侧，且两端避开圆角。
+    #[test]
+    fn bevel_lines_stay_inside_and_clear_the_corners() {
+        use super::bevel_segments;
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(120.0, 60.0));
+        let radius = 4.0;
+        let (light, dark) = bevel_segments(rect, radius);
+        let [top, left] = light;
+        // 都在矩形内侧 1px（Frame 的描边占掉那一圈）。
+        assert!(top[0].y > rect.top() && top[0].y < rect.bottom());
+        assert!(left[0].x > rect.left() && left[0].x < rect.right());
+        // 上边线的两端各留出圆角。
+        assert!((top[0].x - (rect.left() + 1.0 + radius)).abs() < 0.01);
+        assert!((top[1].x - (rect.right() - 1.0 - radius)).abs() < 0.01);
+        // 左边线的两端同理。
+        assert!((left[0].y - (rect.top() + 1.0 + radius)).abs() < 0.01);
+        assert!((left[1].y - (rect.bottom() - 1.0 - radius)).abs() < 0.01);
+        // 暗边在下 / 右，与亮边对称。
+        let [bottom, right] = dark;
+        assert!(bottom[0].y < rect.bottom() && bottom[0].y > rect.top());
+        assert!(right[0].x < rect.right() && right[0].x > rect.left());
+        assert!((bottom[0].x - top[0].x).abs() < 0.01);
+        assert!((right[0].y - left[0].y).abs() < 0.01);
+    }
+
+    /// 圆角大到超过矩形一半时，线段不能反向（起点跑到终点右边）。
+    #[test]
+    fn bevel_lines_stay_ordered_with_a_huge_radius() {
+        use super::bevel_segments;
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(10.0, 8.0));
+        let (light, dark) = bevel_segments(rect, 40.0);
+        let [top, left] = light;
+        assert!(top[0].x <= top[1].x, "上边线反向了：{top:?}");
+        assert!(left[0].y <= left[1].y, "左边线反向了：{left:?}");
+        let [bottom, right] = dark;
+        assert!(bottom[0].x <= bottom[1].x, "下边线反向了：{bottom:?}");
+        assert!(right[0].y <= right[1].y, "右边线反向了：{right:?}");
     }
 
     #[test]

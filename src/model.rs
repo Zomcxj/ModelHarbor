@@ -647,7 +647,7 @@ impl ProviderRow {
             original_dsh_retry_mode: "normal".into(),
             original_dsh_max_retries: String::new(),
             timeout: "180000".into(),
-            original_timeout: "180000".into(),
+            original_timeout: "".into(),
             compat: false,
             requires_reasoning_content: false,
             original_requires_reasoning_content: false,
@@ -700,7 +700,13 @@ impl ProviderRow {
                 set_str(&mut options, "apiKey", &self.api_key);
             }
             if timeout_changed {
-                set_num_opt(&mut options, "timeout", &self.timeout);
+                // 新建 provider 时 original_timeout 为空，timeout 为默认值 180000：
+                // 只有用户修改过才写入文件，否则保持缺省。
+                let is_default_unchanged =
+                    self.original_timeout.is_empty() && self.timeout == "180000";
+                if !is_default_unchanged {
+                    set_num_opt(&mut options, "timeout", &self.timeout);
+                }
             }
             if options.is_empty() {
                 m.remove("options");
