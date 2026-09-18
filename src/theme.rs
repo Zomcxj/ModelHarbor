@@ -6,6 +6,57 @@ use eframe::egui::{self, Color32, Stroke, Visuals};
 /// `Visuals::disabled_alpha()` 核对，egui 改了默认值就会红。
 const DISABLED_ALPHA: f32 = 0.5;
 
+// ── 间距刻度（4 的倍数）────────────────────────────────────────────
+/// 行内元素之间。
+pub const SPACE_1: f32 = 4.0;
+/// 同一分组内。
+pub const SPACE_2: f32 = 8.0;
+/// 控件与标签之间。
+pub const SPACE_3: f32 = 12.0;
+/// 卡片内边距。
+pub const SPACE_4: f32 = 16.0;
+/// 卡片之间。
+pub const SPACE_5: f32 = 24.0;
+/// 区块之间。
+pub const SPACE_6: f32 = 32.0;
+/// 页面级留白。
+pub const SPACE_7: f32 = 48.0;
+
+// ── 字号刻度 ──────────────────────────────────────────────────
+/// 徽标 / 极短标记。egui 默认 `Small` 只有 9px，中文在这个尺寸下吃力，抬到 11。
+pub const TEXT_CAPTION: f32 = 11.0;
+/// 副信息：来源、请求次数、站点名。
+pub const TEXT_SMALL: f32 = 12.0;
+/// 卡片标题（provider key）。
+pub const TEXT_TITLE: f32 = 16.0;
+/// 正文 / 控件文字。egui 默认就是 13，这里显式写出来当刻度基准。
+pub const TEXT_BODY: f32 = 13.0;
+/// 区块标题。
+pub const TEXT_HEADING: f32 = 18.0;
+
+// ── 圆角 ──────────────────────────────────────────────────
+/// 徽标 / 小按钮。
+pub const RADIUS_SM: u8 = 4;
+/// 卡片与控件。
+pub const RADIUS_MD: u8 = 10;
+/// 悬浮窗。
+pub const RADIUS_LG: u8 = 14;
+
+/// 可点击目标的最小高度（触控与高 DPI 下的下限）。
+pub const TAP_TARGET_MIN: f32 = 24.0;
+
+/// 正文 / 语义色对底色要求的最低对比度（WCAG AA）。
+pub const CONTRAST_TEXT_MIN: f32 = 4.5;
+
+/// 提示 / 占位文字的最低对比度。
+///
+/// 比正文低一档：提示色是推导值（见 [`Palette::hint_color`]），上限由控件底色决定 ——
+/// 要再高就得把按钮做成中灰，控件反而比面板抢眼。
+pub const CONTRAST_HINT_MIN: f32 = 3.0;
+
+/// 非文字 UI 组件（控件描边、边框）的最低对比度。
+pub const CONTRAST_UI_MIN: f32 = 3.0;
+
 /// 把一个**预乘 alpha** 的颜色合成到不透明底色上。
 ///
 /// egui 的 `Color32` 是预乘的，wgpu 侧的混合因子也是 `One / OneMinusSrcAlpha`，
@@ -76,19 +127,24 @@ impl Theme {
         match self {
             // dark, panel, faint, extreme, widget, hover, accent, text
             Theme::Dark => Palette::new(
-                true, 0x1E1E1E, 0x242424, 0x101010, 0x2D2D2D, 0x383838, 0x3B82F6, 0xE4E4E4,
+                true, 0x1E1E1E, 0x242424, 0x101010, 0x2D2D2D, 0x383838, 0x4A8CF7, 0xE4E4E4,
+                0x6F6F6F, 0x000000,
             ),
             Theme::Light => Palette::new(
-                false, 0xF5F5F5, 0xECECEC, 0xFFFFFF, 0xE2E2E2, 0xD5D5D5, 0x2563EB, 0x1E1E1E,
+                false, 0xF5F5F5, 0xECECEC, 0xFFFFFF, 0xE2E2E2, 0xD5D5D5, 0x1D4ED8, 0x1E1E1E,
+                0x868686, 0xFFFFFF,
             ),
             Theme::Ocean => Palette::new(
                 true, 0x0D1B2A, 0x1B263B, 0x0A1622, 0x22384F, 0x2C4A66, 0x48CAE4, 0xE0E8F0,
+                0x67727E, 0x000000,
             ),
             Theme::Nord => Palette::new(
                 true, 0x2E3440, 0x323846, 0x272C36, 0x434C5E, 0x4C566A, 0x88C0D0, 0xD8DEE9,
+                0x7D838F, 0x000000,
             ),
             Theme::Rose => Palette::new(
-                false, 0xFBEEF0, 0xF8E5E8, 0xFFFFFF, 0xF0CDD4, 0xE8B9C2, 0xB5838D, 0x4A2E33,
+                false, 0xFBEEF0, 0xF8E5E8, 0xFFFFFF, 0xEAC0C9, 0xE8B9C2, 0x8C5A66, 0x4A2E33,
+                0x947F82, 0xFFFFFF,
             ),
         }
     }
@@ -100,13 +156,30 @@ impl Theme {
     /// Builds a full Style (theme visuals + shared spacing/rounding) and applies it.
     pub fn apply(&self, ctx: &egui::Context) {
         let mut style = egui::Style::default();
-        style.spacing.item_spacing = egui::vec2(5.0, 8.0);
-        style.spacing.button_padding = egui::vec2(14.0, 3.0);
-        style.spacing.interact_size.y = 18.0;
+        style.spacing.item_spacing = egui::vec2(SPACE_2 / 2.0, SPACE_2);
+        style.spacing.button_padding = egui::vec2(SPACE_4 - 2.0, SPACE_1 - 1.0);
+        style.spacing.interact_size.y = TAP_TARGET_MIN;
         style.spacing.scroll.bar_outer_margin = 0.0;
         style.spacing.scroll.floating = true;
+        // 字号刻度：egui 默认 Small 只有 9px，中文读不清；统一抬到刻度上。
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::new(TEXT_CAPTION, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::new(TEXT_BODY, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::new(TEXT_BODY, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::new(TEXT_HEADING, egui::FontFamily::Proportional),
+        );
         style.visuals = self.palette().into_visuals();
-        let r = 10u8;
+        let r = RADIUS_MD;
         for w in [
             &mut style.visuals.widgets.noninteractive,
             &mut style.visuals.widgets.inactive,
@@ -314,11 +387,92 @@ mod semantics_tests {
                 theme.key()
             );
             assert!(
-                hint >= 2.0,
-                "{} 的提示色太淡，读不清：{hint:.1}:1",
+                hint >= CONTRAST_HINT_MIN,
+                "{} 的提示色太淡，读不清：{hint:.1}:1（下限 {CONTRAST_HINT_MIN}）",
                 theme.key()
             );
         }
+    }
+
+    #[test]
+    fn every_theme_meets_the_text_and_border_contrast_floor() {
+        // 设计系统的硬指标：正文与强调色是文字（4.5:1），描边是非文字 UI（3:1）。
+        for theme in Theme::ALL {
+            let palette = theme.palette();
+            for (what, color, floor) in [
+                ("正文", palette.text, CONTRAST_TEXT_MIN),
+                ("强调色", palette.accent, CONTRAST_TEXT_MIN),
+                ("描边", palette.border, CONTRAST_UI_MIN),
+            ] {
+                for (background_name, background) in [
+                    ("panel", palette.panel),
+                    ("faint", palette.faint),
+                    ("extreme", palette.extreme),
+                ] {
+                    let ratio = contrast(color, background);
+                    assert!(
+                        ratio >= floor,
+                        "{} 的{what} / {background_name} 对比度 {ratio:.2}:1 低于 {floor}:1",
+                        theme.key()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accent_text_reads_on_the_accent_fill() {
+        // 强调色是选中态行与主按钮的**底色**，所以它上面的文字要单独校验。
+        for theme in Theme::ALL {
+            let palette = theme.palette();
+            let ratio = contrast(palette.accent_text, palette.accent);
+            assert!(
+                ratio >= CONTRAST_TEXT_MIN,
+                "{} 的强调色文字对比度只有 {ratio:.2}:1（下限 {CONTRAST_TEXT_MIN}）",
+                theme.key()
+            );
+        }
+    }
+
+    #[test]
+    fn tap_targets_are_tall_enough_to_hit() {
+        let ctx = egui::Context::default();
+        Theme::Dark.apply(&ctx);
+        let spacing = ctx.style().spacing.clone();
+        assert!(
+            spacing.interact_size.y >= TAP_TARGET_MIN,
+            "点击区高度 {} 低于 {TAP_TARGET_MIN}",
+            spacing.interact_size.y
+        );
+    }
+
+    #[test]
+    fn spacing_scale_is_used_by_the_style() {
+        // 刻度常量必须真的进了 Style，否则改 token 不影响界面。
+        let ctx = egui::Context::default();
+        Theme::Dark.apply(&ctx);
+        let spacing = ctx.style().spacing.clone();
+        assert_eq!(spacing.item_spacing.y, SPACE_2);
+        assert_eq!(spacing.button_padding.x, SPACE_4 - 2.0);
+        assert_eq!(spacing.button_padding.y, SPACE_1 - 1.0);
+    }
+
+    #[test]
+    fn text_scale_is_used_by_the_style() {
+        // egui 默认 Small 是 9px，中文读不清；这条钉住它走我们的刻度。
+        let ctx = egui::Context::default();
+        Theme::Dark.apply(&ctx);
+        let styles = ctx.style().text_styles.clone();
+        assert_eq!(styles[&egui::TextStyle::Small].size, TEXT_CAPTION);
+        assert_eq!(styles[&egui::TextStyle::Body].size, TEXT_BODY);
+        assert_eq!(styles[&egui::TextStyle::Button].size, TEXT_BODY);
+        assert_eq!(styles[&egui::TextStyle::Heading].size, TEXT_HEADING);
+        // 副信息字号必须明显高于 egui 默认的 9px，否则中文读不清。
+        let default_small = egui::TextStyle::Small.resolve(&egui::Style::default()).size;
+        assert!(
+            TEXT_CAPTION > default_small,
+            "副信息字号 {TEXT_CAPTION} 不应退回 egui 默认的 {default_small}"
+        );
     }
 
     /// 一次丢弃式渲染：取回本帧所有顶点色（含数量）。
@@ -450,6 +604,10 @@ struct Palette {
     hover: Color32,
     accent: Color32,
     text: Color32,
+    /// 控件描边：把控件从面板底色里分出来（控件底色与面板只差 1.2–1.5:1）。
+    border: Color32,
+    /// 强调色底上的文字色（选中态 / 主按钮）。
+    accent_text: Color32,
 }
 
 impl Palette {
@@ -463,6 +621,8 @@ impl Palette {
         hover: u32,
         accent: u32,
         text: u32,
+        border: u32,
+        accent_text: u32,
     ) -> Self {
         Self {
             dark,
@@ -473,6 +633,8 @@ impl Palette {
             hover: rgb(hover),
             accent: rgb(accent),
             text: rgb(text),
+            border: rgb(border),
+            accent_text: rgb(accent_text),
         }
     }
 
@@ -520,14 +682,22 @@ impl Palette {
         }
         v.weak_text_color = Some(hint);
         v.hyperlink_color = self.accent;
-        v.selection.bg_fill = self.accent.gamma_multiply(0.45);
-        v.selection.stroke = Stroke::new(1.0, self.accent);
+        v.selection.bg_fill = self.accent;
         v.widgets.inactive.weak_bg_fill = self.widget;
         v.widgets.inactive.bg_fill = self.widget;
         v.widgets.hovered.weak_bg_fill = self.hover;
         v.widgets.hovered.bg_fill = self.hover;
         v.widgets.active.weak_bg_fill = self.accent;
         v.widgets.active.bg_fill = self.accent;
+        // 控件描边：控件底色与面板底色只差 1.2–1.5:1，不给描边就靠这点色差分边界。
+        // 输入框用 `extreme` 底，同样靠这条线成形。
+        let edge = Stroke::new(1.0, self.border);
+        v.widgets.noninteractive.bg_stroke = edge;
+        v.widgets.inactive.bg_stroke = edge;
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, self.accent);
+        v.widgets.active.bg_stroke = Stroke::new(1.0, self.accent);
+        // 强调色底上的文字：选中态行 / 主按钮要看得清（浅底主题用白、深底主题用黑）。
+        v.selection.stroke = Stroke::new(1.0, self.accent_text);
         v
     }
 }

@@ -389,8 +389,8 @@ impl App {
             }
         });
 
-        ui.add_space(6.0);
-        ui.add_space(6.0);
+        ui.add_space(crate::theme::SPACE_2);
+        ui.add_space(crate::theme::SPACE_2);
         let mut fetch_request: Option<(String, String, String, String)> = None;
         let mut close_fetch = false;
         // 本帧用户点下的探测请求（provider key, model id），UI 循环外统一发起。
@@ -626,7 +626,7 @@ impl App {
             let prefix = format!("variant_open_{}_", p.key);
             self.variant_open.retain(|k| !k.starts_with(&prefix));
         }
-        ui.add_space(6.0);
+        ui.add_space(crate::theme::SPACE_2);
         let show_new_model_key = format!("show_new_model_{}", p.key);
         let show_new_model = self.variant_open.contains(&show_new_model_key);
         let btn_text = if show_new_model {
@@ -687,7 +687,7 @@ impl App {
                 );
             });
             ui.horizontal(|ui| {
-                ui.add_space(60.0);
+                ui.add_space(crate::theme::SPACE_7);
                 if ui.button("添加").clicked() && !p.new_model.id.trim().is_empty() {
                     p.models.push(p.new_model.clone());
                     p.new_model = ModelRow::new();
@@ -792,7 +792,7 @@ impl App {
                     );
                 }
             });
-            ui.add_space(6.0);
+            ui.add_space(crate::theme::SPACE_2);
             let mut fetch_request: Option<(String, String, String)> = None;
             let mut close_fetch = false;
             ui.horizontal(|ui| {
@@ -924,7 +924,7 @@ impl App {
             if let Some(j) = rm_new {
                 self.new_provider.models.remove(j);
             }
-            ui.add_space(6.0);
+            ui.add_space(crate::theme::SPACE_2);
             let show_new_model_key = format!("new_provider_show_model_{}", self.new_provider.key);
             let show_new_model = self.variant_open.contains(&show_new_model_key);
             if ui
@@ -993,7 +993,7 @@ impl App {
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.add_space(60.0);
+                    ui.add_space(crate::theme::SPACE_7);
                     if ui.button("添加").clicked()
                         && !self.new_provider.new_model.id.trim().is_empty()
                     {
@@ -1006,7 +1006,7 @@ impl App {
                 });
             }
             ui.horizontal(|ui| {
-                ui.add_space(60.0);
+                ui.add_space(crate::theme::SPACE_7);
                 if ui.button("确认").clicked() {
                     let key = self.new_provider.key.trim().to_string();
                     if key.is_empty() {

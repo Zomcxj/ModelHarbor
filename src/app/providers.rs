@@ -158,7 +158,7 @@ impl App {
             self.model_drag_target = None;
         }
 
-        ui.add_space(10.0);
+        ui.add_space(crate::theme::SPACE_3);
         if ui.button("新增 Provider").clicked() {
             self.show_new_provider = !self.show_new_provider;
         }
@@ -535,7 +535,7 @@ impl App {
             // 不能在已经借了 `token_uid_draft` 的闭包里调用。
             let needs_id = self.station_needs_user_id(keys);
             ui.horizontal(|ui| {
-                ui.add_space(8.0);
+                ui.add_space(crate::theme::SPACE_2);
                 ui.label(
                     egui::RichText::new("用户 ID")
                         .small()
@@ -562,7 +562,7 @@ impl App {
                     );
                 }
             });
-            ui.add_space(2.0);
+            ui.add_space(crate::theme::SPACE_1);
         }
 
         // 单条显隐：与全局「显示密钥」是「或」的关系，互不干扰。

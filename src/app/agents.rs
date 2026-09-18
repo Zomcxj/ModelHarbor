@@ -39,7 +39,7 @@ impl App {
             self.agent_drag_target = None;
         }
 
-        ui.add_space(6.0);
+        ui.add_space(crate::theme::SPACE_2);
         if ui.button("新增 Agent").clicked() {
             self.show_new_agent = !self.show_new_agent;
         }
@@ -347,7 +347,7 @@ impl App {
                 );
             });
             ui.horizontal(|ui| {
-                ui.add_space(60.0);
+                ui.add_space(crate::theme::SPACE_7);
                 if ui.button("确认").clicked() {
                     let key = self.new_agent.key.trim().to_string();
                     if key.is_empty() {
