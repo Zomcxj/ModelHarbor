@@ -123,6 +123,11 @@ impl Theme {
             .unwrap_or_default()
     }
 
+    /// 该主题是否深色底。预览的语法配色按它选深浅两套。
+    pub fn is_dark(&self) -> bool {
+        self.palette().dark
+    }
+
     fn palette(&self) -> Palette {
         match self {
             // dark, panel, faint, extreme, widget, hover, accent, text
@@ -266,6 +271,18 @@ fn contrast(a: Color32, b: Color32) -> f32 {
     let (la, lb) = (rel(a), rel(b));
     let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
     (hi + 0.05) / (lo + 0.05)
+}
+
+/// 单测用：其他模块锁定配色对比度时复用同一套公式。
+#[cfg(test)]
+pub(crate) fn contrast_for_tests(a: Color32, b: Color32) -> f32 {
+    contrast(a, b)
+}
+
+/// 单测用：RGB 欧氏距离，判断两块颜色是否看得出区别。
+#[cfg(test)]
+pub(crate) fn distance_for_tests(a: Color32, b: Color32) -> f32 {
+    distance(a, b)
 }
 
 /// 主题是否需要在本次应用（`applied` 记录已应用的主题，会被就地更新）。

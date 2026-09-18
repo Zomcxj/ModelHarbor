@@ -1,7 +1,7 @@
 //! 右侧配置预览 / 编辑面板：草稿生成、语法高亮、查找与实时保存。
 use super::{App, SaveFormat};
 use crate::app::save::{strip_cross_format_containers, PageTarget};
-use crate::app::syntax::{apply_find_background, syntax_tokens, PreviewSyntax};
+use crate::app::syntax::{apply_find_background, syntax_tokens_with, PreviewSyntax, SyntaxPalette};
 use crate::backends;
 use crate::format::ConfigFormat;
 use eframe::egui;
@@ -163,14 +163,10 @@ impl App {
             )
             .on_hover_text("光标所在行 / 待保存文档总行数");
             if let Some(e) = &self.preview_parse_error {
-                ui.colored_label(egui::Color32::from_rgb(255, 120, 120), "⚠ 格式错误");
+                let palette = SyntaxPalette::for_dark(ui.visuals().dark_mode);
+                ui.colored_label(palette.error, "⚠ 格式错误");
                 ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(e)
-                            .small()
-                            .color(egui::Color32::from_rgb(235, 170, 170)),
-                    )
-                    .wrap(),
+                    egui::Label::new(egui::RichText::new(e).small().color(palette.error)).wrap(),
                 )
                 .on_hover_text("继续编辑修正，或点「重新生成」/ 切走再切回以撤销文本修改");
                 regenerate = ui
@@ -285,6 +281,8 @@ impl App {
             .min(find_matches.len().saturating_sub(1));
         let find_jump = self.preview_find_jump.take();
         let syntax = self.preview_syntax(&self.preview_draft);
+        // 语法配色按当前主题明暗选：写死一套深色配色在浅底上读不清。
+        let palette = SyntaxPalette::for_dark(self.theme.is_dark());
         let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
             let text = text.as_str();
             let font_id = egui::TextStyle::Monospace.resolve(ui.style());
@@ -303,9 +301,9 @@ impl App {
                     },
                 );
             };
-            // 1) 语法着色（VSCode Dark+ 配色，opencode=JSON / 其余=YAML）
+            // 1) 语法着色（opencode=JSON / 其余=YAML；配色随主题明暗）
             let mut pos = 0;
-            for (start, end, color) in syntax_tokens(text, syntax) {
+            for (start, end, color) in syntax_tokens_with(text, syntax, palette) {
                 if start > pos {
                     push(&mut job, &text[pos..start], base);
                 }
@@ -319,7 +317,7 @@ impl App {
             }
             // 2) 查找命中底色叠加在语法色之上
             if !find_matches.is_empty() {
-                apply_find_background(&mut job, &find_matches, find_current);
+                apply_find_background(&mut job, &find_matches, find_current, palette);
             }
             ui.painter().layout_job(job)
         };
