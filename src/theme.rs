@@ -158,8 +158,13 @@ impl Theme {
         egui::Theme::from_dark_mode(self.palette().dark)
     }
 
-    /// Builds a full Style (theme visuals + shared spacing/rounding) and applies it.
+    /// 按当前主题 + 圆角设置套用样式。
     pub fn apply(&self, ctx: &egui::Context) {
+        self.apply_with_radius(ctx, RADIUS_MD);
+    }
+
+    /// 按指定圆角套用样式（顶部栏的「外观」面板用它）。
+    pub fn apply_with_radius(&self, ctx: &egui::Context, radius: u8) {
         let mut style = egui::Style::default();
         style.spacing.item_spacing = egui::vec2(SPACE_2 / 2.0, SPACE_2);
         style.spacing.button_padding = egui::vec2(SPACE_4 - 2.0, SPACE_1 - 1.0);
@@ -184,7 +189,7 @@ impl Theme {
             egui::FontId::new(TEXT_HEADING, egui::FontFamily::Proportional),
         );
         style.visuals = self.palette().into_visuals();
-        let r = RADIUS_MD;
+        let r = radius;
         for w in [
             &mut style.visuals.widgets.noninteractive,
             &mut style.visuals.widgets.inactive,
@@ -296,6 +301,17 @@ pub fn needs_apply(applied: &mut Option<Theme>, theme: Theme) -> bool {
         return false;
     }
     *applied = Some(theme);
+    true
+}
+
+/// 主题或圆角变了都要重套样式。
+///
+/// `applied` 记录已套用的（主题, 圆角），会被就地更新。
+pub fn needs_apply_style(applied: &mut Option<(Theme, u8)>, theme: Theme, radius: u8) -> bool {
+    if *applied == Some((theme, radius)) {
+        return false;
+    }
+    *applied = Some((theme, radius));
     true
 }
 

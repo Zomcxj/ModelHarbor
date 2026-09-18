@@ -26,7 +26,7 @@ fn press(pos: egui::Pos2, down: bool) -> egui::Event {
     }
 }
 
-/// 跑一帧顶栏（复刻 bars.rs 的主题菜单），返回本帧菜单项的矩形。
+/// 跑一帧顶栏（复刻 bars.rs 的「外观」面板），返回本帧主题项的矩形。
 fn frame(
     ctx: &egui::Context,
     theme: &mut Theme,
@@ -36,13 +36,14 @@ fn frame(
     let mut items = Vec::new();
     let _ = ctx.run(input(events), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let theme_btn = ui.button(theme.label());
-            *btn_rect = theme_btn.rect;
-            egui::Popup::menu(&theme_btn)
+            let look_btn = ui.button("外观");
+            *btn_rect = look_btn.rect;
+            egui::Popup::menu(&look_btn)
                 // 与 bars.rs 一致：菜单默认 top_down_justified 会让填充撑满宽度。
                 .layout(egui::Layout::top_down(egui::Align::LEFT))
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show(|ui| {
+                    ui.set_min_width(180.0);
                     for t in Theme::ALL {
                         let resp = ui.selectable_label(*theme == t, t.label());
                         items.push((t, resp.rect));
@@ -143,13 +144,24 @@ fn menu_items_hug_their_text_instead_of_filling_the_popup() {
 
     let _ = frame(&ctx, &mut theme, vec![], &mut btn_rect);
     let btn_center = btn_rect.center();
-    for events in [
+    let _ = frame(
+        &ctx,
+        &mut theme,
         vec![egui::Event::PointerMoved(btn_center)],
+        &mut btn_rect,
+    );
+    let _ = frame(
+        &ctx,
+        &mut theme,
         vec![press(btn_center, true)],
+        &mut btn_rect,
+    );
+    let _ = frame(
+        &ctx,
+        &mut theme,
         vec![press(btn_center, false)],
-    ] {
-        let _ = frame(&ctx, &mut theme, events, &mut btn_rect);
-    }
+        &mut btn_rect,
+    );
 
     let items = frame(&ctx, &mut theme, vec![], &mut btn_rect);
     assert!(!items.is_empty(), "菜单应已展开");
@@ -164,7 +176,7 @@ fn menu_items_hug_their_text_instead_of_filling_the_popup() {
         );
     }
     // 五个主题名都是两个汉字，宽度本来就一样；能区分「贴文字」与「撑满」的是
-    // **绝对宽度**：撑满时每项会等于弹出宽度，贴文字时只有三十几像素。
+    // **绝对宽度**：撑满时每项会等于弹出宽度（180），贴文字时只有三十几像素。
     let widths: Vec<f32> = items.iter().map(|(_, r)| r.width()).collect();
     let max = widths.iter().cloned().fold(0.0_f32, f32::max);
     assert!(

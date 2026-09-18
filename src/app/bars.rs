@@ -164,15 +164,19 @@ impl App {
                     )
                     .on_hover_text(wsl_tip);
                     ui.separator();
-                    ui.label("主题:");
-                    let theme_btn = ui.button(self.theme.label());
-                    egui::Popup::menu(&theme_btn)
+                    let look_btn = ui
+                        .button("外观")
+                        .on_hover_text("主题与圆角")
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    egui::Popup::menu(&look_btn)
                         // 菜单默认是 `top_down_justified`：每一项的填充会撑满整个
                         // 弹出宽度，文字只占左边一小段，看着像「填充与文字没对齐」。
                         // 改成左对齐的普通纵向布局，填充就贴着文字宽度。
                         .layout(egui::Layout::top_down(egui::Align::LEFT))
-                        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
+                            ui.set_min_width(180.0);
+                            ui.label(egui::RichText::new("主题").small().weak());
                             for t in Theme::ALL {
                                 if ui.selectable_label(self.theme == t, t.label()).clicked() {
                                     // 只改状态；样式统一由 App::apply_theme_if_changed
@@ -180,8 +184,19 @@ impl App {
                                     self.theme = t;
                                 }
                             }
-                        },
-                    );
+                            ui.add_space(crate::theme::SPACE_2);
+                            ui.label(egui::RichText::new("圆角").small().weak());
+                            let mut radius = self.corner_radius();
+                            let slider = ui.add(
+                                egui::Slider::new(&mut radius, 0..=20)
+                                    .suffix(" px")
+                                    .fixed_decimals(0),
+                            );
+                            if slider.changed() {
+                                // 只改状态；样式由 App::apply_theme_if_changed 下一帧套用。
+                                self.corner_radius = Some(radius);
+                            }
+                        });
                 });
             });
             // 第二行：配置文件 / 保存格式

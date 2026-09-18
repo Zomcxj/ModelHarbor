@@ -109,7 +109,7 @@ fn remove_legacy_next_to(path: &Path) {
 }
 
 /// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
-const SCHEMA_VERSION: u64 = 7;
+const SCHEMA_VERSION: u64 = 8;
 
 /// 配置身份：规范化路径后做稳定 FNV-1a 哈希，避免把用户目录明文写进设置键。
 pub fn config_identity(path: &str) -> String {
@@ -187,6 +187,10 @@ pub struct Prefs {
     pub allow_model_test_with_proxy: bool,
     /// 是否已经关掉首次使用引导条。
     pub guide_dismissed: bool,
+    /// 控件圆角（像素，0 = 直角）。缺字段 = 用 [`crate::theme::RADIUS_MD`]。
+    ///
+    /// 用 `Option` 而不是裸 `u8`：`0` 是合法取值（直角），没法拿它当「没设置过」。
+    pub corner_radius: Option<u8>,
 }
 
 impl Prefs {
@@ -276,6 +280,11 @@ impl Prefs {
                 .get("guide_dismissed")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            // 只认 0..=255 的整数；缺字段 / 类型不对 / 超范围都按「没设置过」。
+            corner_radius: root
+                .get("corner_radius")
+                .and_then(Value::as_u64)
+                .and_then(|v| u8::try_from(v).ok()),
         }
     }
 
@@ -320,6 +329,10 @@ impl Prefs {
             "guide_dismissed".to_string(),
             Value::Bool(self.guide_dismissed),
         );
+        // 没设置过就不写这个键：老版本读到时不会看到陌生字段。
+        if let Some(radius) = self.corner_radius {
+            root.insert("corner_radius".to_string(), Value::Number(radius.into()));
+        }
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -388,6 +401,7 @@ mod tests {
             ],
             allow_model_test_with_proxy: true,
             guide_dismissed: true,
+            corner_radius: Some(16),
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
     }
@@ -623,6 +637,47 @@ mod tests {
         assert!(text.contains(r#""guide_dismissed": true"#), "{text}");
         assert!(Prefs::parse(&text).guide_dismissed);
         assert_eq!(Prefs::parse(&text), prefs);
+    }
+
+    #[test]
+    fn corner_radius_defaults_to_unset_and_reads_an_integer() {
+        // 缺字段 = 没设置过 = 用 theme::RADIUS_MD。
+        assert_eq!(Prefs::default().corner_radius, None);
+        assert_eq!(
+            Prefs::parse(&format!(r#"{{"version":{SCHEMA_VERSION}}}"#)).corner_radius,
+            None
+        );
+        // 0 是合法取值（直角），必须与「没设置过」区分开。
+        assert_eq!(
+            Prefs::parse(r#"{"corner_radius":0}"#).corner_radius,
+            Some(0)
+        );
+        assert_eq!(
+            Prefs::parse(r#"{"corner_radius":16}"#).corner_radius,
+            Some(16)
+        );
+        // 类型不对 / 负数 / 超范围都按「没设置过」。
+        assert_eq!(
+            Prefs::parse(r#"{"corner_radius":"10"}"#).corner_radius,
+            None
+        );
+        assert_eq!(Prefs::parse(r#"{"corner_radius":-1}"#).corner_radius, None);
+        assert_eq!(Prefs::parse(r#"{"corner_radius":300}"#).corner_radius, None);
+    }
+
+    #[test]
+    fn corner_radius_round_trips_and_is_omitted_when_unset() {
+        let prefs = Prefs {
+            corner_radius: Some(16),
+            ..Default::default()
+        };
+        let text = prefs.to_json();
+        assert!(text.contains(r#""corner_radius": 16"#), "{text}");
+        assert_eq!(Prefs::parse(&text), prefs);
+        // 没设置过就不写这个键（老版本读到时看不到陌生字段）。
+        let bare = Prefs::default().to_json();
+        assert!(!bare.contains("corner_radius"), "{bare}");
+        assert_eq!(Prefs::parse(&bare).corner_radius, None);
     }
 
     #[test]
