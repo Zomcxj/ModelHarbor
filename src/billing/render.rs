@@ -84,7 +84,12 @@ impl Billing {
     pub fn inline(&self) -> String {
         // 账号级数据优先：它才是「我还剩多少钱」，令牌级降为补充。
         if let Some(account) = &self.account {
-            return self.inline_account(account);
+            let parts = self.account_parts(account);
+            return if parts.is_empty() {
+                "未返回额度信息".to_string()
+            } else {
+                parts.join(" · ")
+            };
         }
         self.inline_token_or_compat()
     }
@@ -96,8 +101,8 @@ impl Billing {
         }
     }
 
-    /// 有账号数据时的短行：账号余额 + 已用（没余额时才退而单说已用 / 请求数），其次今日。
-    fn inline_account(&self, account: &AccountInfo) -> String {
+    /// 有账号数据时的摘要各段：账号余额 + 已用（没余额时才退而单说已用 / 请求数），其次今日。
+    fn account_parts(&self, account: &AccountInfo) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
         if let Some(balance) = account.balance_usd {
             parts.push(format!("账号余额 {}", money(balance)));
@@ -122,10 +127,7 @@ impl Billing {
             parts.push(format!("近 7 天 {}", money(week)));
         }
         self.push_checkin(&mut parts);
-        if parts.is_empty() {
-            return "未返回额度信息".to_string();
-        }
-        parts.join(" · ")
+        parts
     }
 
     /// 没有账号数据时的短行（令牌额度 / 兼容账单）。
@@ -186,9 +188,35 @@ impl Billing {
     }
 
     pub fn inline_full(&self) -> String {
+        let parts = self.summary_parts();
+        if parts.is_empty() {
+            return self.inline();
+        }
+        parts.join(" · ")
+    }
+
+    /// 卡片主行要突出的那一个数字（余额优先，其次已用）。
+    ///
+    /// 卡片上只能有一个「第一眼看到」的数：多个数字等权并排时，
+    /// 反而哪个都记不住。取不到就返回 `None`（副行照常出）。
+    pub fn headline(&self) -> Option<String> {
+        self.summary_parts().into_iter().next()
+    }
+
+    /// 主行除 [`Billing::headline`] 之外的其余数字（字号降一档显示）。
+    pub fn inline_rest(&self) -> String {
+        let parts = self.summary_parts();
+        if parts.len() <= 1 {
+            return String::new();
+        }
+        parts[1..].join(" · ")
+    }
+
+    /// 摘要各段（顺序即优先级：第一段会被当作主数字）。
+    fn summary_parts(&self) -> Vec<String> {
         // 账号级余额优先，且不再把令牌级累计挤在同一行（降到 `detail`）。
         if let Some(account) = &self.account {
-            return self.inline_account(account);
+            return Self::account_parts(self, account);
         }
         let mut parts: Vec<String> = Vec::new();
         match (self.balance_usd, self.used_usd) {
@@ -214,10 +242,7 @@ impl Billing {
             parts.push(raw.clone());
         }
         self.push_checkin(&mut parts);
-        if parts.is_empty() {
-            return self.inline();
-        }
-        parts.join(" · ")
+        parts
     }
 
     /// 悬停提示：完整说明与口径来源。

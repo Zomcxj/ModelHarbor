@@ -666,6 +666,13 @@ impl App {
             // 不允许拖到主窗口外：拖出去后标题栏可能落到屏幕外，窗口就找不回来了。
             .constrain_to(area)
             .default_pos(egui::pos2(area.left() + 90.0, area.top() + 90.0))
+            .frame({
+                // 悬浮窗用比卡片更大的圆角与内边距，与主界面分层。
+                let mut frame = egui::Frame::window(&ctx.style());
+                frame.corner_radius = crate::theme::RADIUS_LG.into();
+                frame.inner_margin = egui::Margin::same(crate::theme::SPACE_4 as i8);
+                frame
+            })
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     // 撑满固定高度（不随内容缩），滚动条才是“内容超出才出现”。

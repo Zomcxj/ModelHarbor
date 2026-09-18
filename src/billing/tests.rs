@@ -594,6 +594,40 @@ fn account_only_result_is_still_displayable() {
 }
 
 #[test]
+fn the_card_has_one_headline_number_and_a_quieter_rest() {
+    // 主行只留一个「第一眼看到」的数：余额优先；其余数字降一档。
+    let info = account_only_billing();
+    assert_eq!(info.headline().as_deref(), Some("账号余额 $12.30"));
+    assert_eq!(info.inline_rest(), "已用 $20.50");
+    // 两段拼起来仍等于完整摘要（层级只是显示方式，不丢信息）。
+    assert_eq!(
+        format!("{} · {}", info.headline().unwrap(), info.inline_rest()),
+        info.inline_full()
+    );
+}
+
+#[test]
+fn headline_falls_back_to_used_when_there_is_no_balance() {
+    // 不限额度站 / 公益站拿不到余额时，已用就是那个主数字。
+    let billing = Billing {
+        source: Source::Token,
+        used_usd: Some(3.0),
+        today_usd: Some(0.5),
+        ..Default::default()
+    };
+    assert_eq!(billing.headline().as_deref(), Some("已用 $3.00"));
+    assert_eq!(billing.inline_rest(), "今日 $0.50");
+}
+
+#[test]
+fn headline_is_none_when_there_is_nothing_to_show() {
+    // 查不到就什么都不突出，绝不编一个数字。
+    let empty = Billing::default();
+    assert_eq!(empty.headline(), None);
+    assert_eq!(empty.inline_rest(), "");
+}
+
+#[test]
 fn account_detail_is_disclosed_as_account_level() {
     // 小窗不写接口路径，但「账号级」与「面板访问令牌」两项口径披露必须留住：
     // 否则会被读成某个 sk- 令牌的余额。

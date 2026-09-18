@@ -442,14 +442,30 @@ impl App {
                                 ui.label(egui::RichText::new("查询中…").weak());
                             }
                             (None, Some(Ok(info))) if info.is_displayable() => {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(info.inline_full())
-                                            .color(crate::theme::semantics(ui).info),
+                                // 主数字加粗（第一眼要看到的那个），其余数字降为淡色小字。
+                                // 两段仍在同一行：卡片主行高度是固定的。
+                                if let Some(headline) = info.headline() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(headline)
+                                                .strong()
+                                                .color(crate::theme::semantics(ui).info),
+                                        )
+                                        .truncate(),
                                     )
-                                    .truncate(),
-                                )
-                                .on_hover_text(info.detail());
+                                    .on_hover_text(info.detail());
+                                    let rest = info.inline_rest();
+                                    if !rest.is_empty() {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(rest)
+                                                    .color(ui.visuals().weak_text_color()),
+                                            )
+                                            .truncate(),
+                                        )
+                                        .on_hover_text(info.detail());
+                                    }
+                                }
                             }
                             _ => {}
                         }

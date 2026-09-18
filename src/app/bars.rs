@@ -312,8 +312,11 @@ impl App {
             if let Some(icon) = self.icon_for(fmt) {
                 ui.add(egui::Image::from_texture(icon).fit_to_exact_size(egui::vec2(12.0, 12.0)));
             }
-            ui.label(egui::RichText::new(format!("写入: {}", path)).weak())
-                .on_hover_text(kind);
+            // 路径可能很长（吸顶区是固定高度，不能换行）：截断显示，全文放悬停。
+            ui.add(
+                egui::Label::new(egui::RichText::new(format!("写入: {path}")).weak()).truncate(),
+            )
+            .on_hover_text(format!("{kind}\n{path}"));
             // 该格式不支持的区块提前提示，避免保存后才发现数据没写入
             if fmt != ConfigFormat::Opencode && !self.agents.is_empty() {
                 ui.label(
