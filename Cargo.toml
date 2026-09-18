@@ -14,10 +14,12 @@ path = "src/main.rs"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 raw-window-handle = "0.6"
 serde_yaml_ng = "0.10.0"
+# 停在 2.x：3.x 是 breaking 变更（API 与错误类型都改了），当前用法完全够用。
 ureq = { version = "2", default-features = true }
 
-# eframe 0.34 起是 egui 1.0 级重构（SidePanel/TopBottomPanel 被删除、
-# App::update 改为 App::ui），因此在 0.33 线保持；默认特性已含 glow，不含 wgpu。
+# 停在 0.33：0.34 起是 egui 1.0 级重构（SidePanel/TopBottomPanel 被删除、
+# App::update 改为 App::ui），迁移需要重写面板挂载与全部 `ui_*` 入口。
+# 默认特性已含 glow，不含 wgpu。
 eframe = { version = "0.33", features = ["default"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
