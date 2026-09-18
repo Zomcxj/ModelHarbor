@@ -116,6 +116,47 @@ impl App {
         }
     }
 
+    /// 首次使用引导条：三步上手 + 一句查余额前提，可关闭（状态存 settings.json）。
+    ///
+    /// 只在用户没关过时出现；关掉后不再打扰。
+    fn ui_first_run_guide(&mut self, ui: &mut egui::Ui) {
+        if self.guide_dismissed {
+            return;
+        }
+        let semantics = crate::theme::semantics(ui);
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::same(crate::theme::SPACE_3 as i8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("开始使用")
+                            .strong()
+                            .color(semantics.info),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("知道了").clicked() {
+                            self.guide_dismissed = true;
+                        }
+                    });
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "1. 顶栏「配置文件」填路径或点「浏览」加载　→　\
+                         2. 展开卡片填 API Key　→　3. 点「保存」写入",
+                    )
+                    .small(),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "想查账号余额 / 已用 / 今日用量：先在页头「令牌」里填该站点的面板访问令牌。",
+                    )
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
+                );
+            });
+        ui.add_space(crate::theme::SPACE_2);
+    }
+
     /// Providers 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
     pub(super) fn ui_providers_section(&mut self, ui: &mut egui::Ui) {
         // 吸顶区是**固定高度矩形**（sticky_end 用 max_rect 建子 ui）：
@@ -128,6 +169,8 @@ impl App {
         if self.providers.is_empty() && !self.show_new_provider {
             self.show_new_provider = true;
         }
+
+        self.ui_first_run_guide(ui);
 
         // 拖拽落点必须在**所有卡片渲染完之后**统一聚合再写入 self：
         // 卡片各自赋值会被后渲染的卡片用 None 覆盖（模型卡片曾因此丢失绿色落点边框）。
@@ -457,6 +500,13 @@ impl App {
             ui.label(
                 egui::RichText::new("当前页面没有带 baseUrl 的 provider")
                     .color(ui.visuals().weak_text_color()),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "先在 Providers 区新增一个 provider，填上 baseUrl，再回到这里填令牌。",
+                )
+                .small()
+                .color(ui.visuals().weak_text_color()),
             );
             return;
         }

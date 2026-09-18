@@ -109,7 +109,7 @@ fn remove_legacy_next_to(path: &Path) {
 }
 
 /// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
-const SCHEMA_VERSION: u64 = 6;
+const SCHEMA_VERSION: u64 = 7;
 
 /// 配置身份：规范化路径后做稳定 FNV-1a 哈希，避免把用户目录明文写进设置键。
 pub fn config_identity(path: &str) -> String {
@@ -185,6 +185,8 @@ pub struct Prefs {
     /// 中转站普遍有多 IP 检测 / 测活风控，默认 `false` 保持拦截；
     /// 用户明确知道风险时可以打开（会影响延迟测试，不影响连通性测试与用量查询）。
     pub allow_model_test_with_proxy: bool,
+    /// 是否已经关掉首次使用引导条。
+    pub guide_dismissed: bool,
 }
 
 impl Prefs {
@@ -269,6 +271,11 @@ impl Prefs {
                 .get("allow_model_test_with_proxy")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            // 缺字段 = 没关过 = 显示引导。
+            guide_dismissed: root
+                .get("guide_dismissed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         }
     }
 
@@ -308,6 +315,10 @@ impl Prefs {
         root.insert(
             "allow_model_test_with_proxy".to_string(),
             Value::Bool(self.allow_model_test_with_proxy),
+        );
+        root.insert(
+            "guide_dismissed".to_string(),
+            Value::Bool(self.guide_dismissed),
         );
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
@@ -376,6 +387,7 @@ mod tests {
                 collapsed_id("cfg", "providers", "openai"),
             ],
             allow_model_test_with_proxy: true,
+            guide_dismissed: true,
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
     }
@@ -428,7 +440,14 @@ mod tests {
             prefs.collapsed,
             vec!["providers/p".to_string(), "agents/a".to_string()]
         );
-        assert!(prefs.to_json().contains(r#""version": 6"#));
+        // 写出的版本号跟当前 schema 走（这里不写死数字，避免每次升版都要改测试）。
+        assert!(
+            prefs
+                .to_json()
+                .contains(&format!(r#""version": {SCHEMA_VERSION}"#)),
+            "{}",
+            prefs.to_json()
+        );
     }
 
     #[test]
@@ -582,6 +601,28 @@ mod tests {
                 "应放家目录而不是 %APPDATA%：{text}"
             );
         }
+    }
+
+    #[test]
+    fn guide_shows_until_it_is_dismissed() {
+        // 缺字段 = 没关过 = 显示引导。
+        assert!(!Prefs::default().guide_dismissed);
+        assert!(!Prefs::parse(r#"{"version":6}"#).guide_dismissed);
+        // 字符串 "true" 不算关闭（与代理开关同一口径：只认真布尔）。
+        assert!(!Prefs::parse(r#"{"guide_dismissed":"true"}"#).guide_dismissed);
+        assert!(Prefs::parse(r#"{"guide_dismissed":true}"#).guide_dismissed);
+    }
+
+    #[test]
+    fn guide_state_round_trips_through_json() {
+        let prefs = Prefs {
+            guide_dismissed: true,
+            ..Default::default()
+        };
+        let text = prefs.to_json();
+        assert!(text.contains(r#""guide_dismissed": true"#), "{text}");
+        assert!(Prefs::parse(&text).guide_dismissed);
+        assert_eq!(Prefs::parse(&text), prefs);
     }
 
     #[test]

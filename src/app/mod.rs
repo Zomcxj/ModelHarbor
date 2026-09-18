@@ -106,6 +106,8 @@ pub struct App {
     net_guard: Option<String>,
     /// 检测到代理时是否仍允许模型延迟测试（来自 settings.json，默认拦截）。
     allow_model_test_with_proxy: bool,
+    /// 首次使用引导条是否已被关掉（来自 settings.json）。
+    guide_dismissed: bool,
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
@@ -198,6 +200,7 @@ impl Default for App {
             probe: ProbeGate::default(),
             net_guard: crate::netguard::detect(),
             allow_model_test_with_proxy: prefs.allow_model_test_with_proxy,
+            guide_dismissed: prefs.guide_dismissed,
             net_guard_at: 0.0,
             // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
             theme: Theme::from_key(&prefs.theme),
@@ -346,6 +349,7 @@ impl App {
             },
             collapsed,
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
+            guide_dismissed: self.guide_dismissed,
         }
     }
 
