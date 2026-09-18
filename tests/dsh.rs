@@ -351,7 +351,10 @@ fn dsh_retry_max_retries_round_trip_from_file() {
     let load = backends::load_backend(ConfigFormat::DeepSeekHarness, settings.to_str().unwrap())
         .expect("DSH 配置应可加载");
     let mut provider = load.providers[0].clone();
-    assert_eq!(provider.dsh_max_retries, "", "文件未写 maxRetries 时 UI 应为空");
+    assert_eq!(
+        provider.dsh_max_retries, "",
+        "文件未写 maxRetries 时 UI 应为空"
+    );
     provider.dsh_max_retries = "7".into();
 
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);

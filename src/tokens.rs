@@ -227,7 +227,11 @@ mod tests {
     #[test]
     fn user_id_is_per_station_and_normalized() {
         let mut tokens = StationTokens::default();
-        assert_eq!(tokens.user_id("https://a.example.com"), "", "没设置就是空串");
+        assert_eq!(
+            tokens.user_id("https://a.example.com"),
+            "",
+            "没设置就是空串"
+        );
         tokens.set_user_id("  https://A.Example.com  ", " 12345 ");
         assert_eq!(tokens.user_id("https://a.example.com"), "12345");
         // 空串 / 纯空白 = 删除（与 set 对令牌的语义一致）。
@@ -253,9 +257,16 @@ mod tests {
         assert_eq!(old.get("https://a.example.com"), "old-pat");
         assert_eq!(old.user_id("https://a.example.com"), "");
         // 非字符串 / 空串的 user_id 一律不收。
-        let junk = r#"{"tokens":{},"user_ids":{"https://a.example.com":123,"https://b.example.com":""}}"#;
-        assert_eq!(StationTokens::parse(junk).user_id("https://a.example.com"), "");
-        assert_eq!(StationTokens::parse(junk).user_id("https://b.example.com"), "");
+        let junk =
+            r#"{"tokens":{},"user_ids":{"https://a.example.com":123,"https://b.example.com":""}}"#;
+        assert_eq!(
+            StationTokens::parse(junk).user_id("https://a.example.com"),
+            ""
+        );
+        assert_eq!(
+            StationTokens::parse(junk).user_id("https://b.example.com"),
+            ""
+        );
     }
 
     #[test]

@@ -32,7 +32,10 @@ fn pi_provider(key: &str, model_id: &str) -> ProviderRow {
 
 #[test]
 fn backend_registry_covers_all_formats() {
-    assert_eq!(backends::backend(ConfigFormat::Opencode).id(), ConfigFormat::Opencode);
+    assert_eq!(
+        backends::backend(ConfigFormat::Opencode).id(),
+        ConfigFormat::Opencode
+    );
     assert_eq!(backends::backend(ConfigFormat::Pi).id(), ConfigFormat::Pi);
     // 注册表顺序：第 0 个为判别回落项
     assert_eq!(backends::BACKENDS[0].id(), ConfigFormat::Opencode);
@@ -75,7 +78,10 @@ fn opencode_parse_and_current_file_save() {
     let agents = vec![oc_agent("writer")];
     let providers = vec![pi_provider("newp", "m1")];
     let root = b.serialize_root(&agents, &providers, &load.extras, None);
-    assert!(root["agent"].get("old").is_none(), "UI 中已删除的 agent 不得复活");
+    assert!(
+        root["agent"].get("old").is_none(),
+        "UI 中已删除的 agent 不得复活"
+    );
     assert!(root["agent"]["writer"].is_object());
     assert!(root["provider"].get("oldp").is_none());
     assert!(root["provider"]["newp"].is_object());
@@ -141,17 +147,32 @@ fn opencode_current_save_omits_empty_sections() {
     let b = backends::backend(ConfigFormat::Opencode);
     let load = b.parse(r#"{ "mcp": { "s": {} } }"#).expect("解析失败");
     let root = b.serialize_root(&[], &[], &load.extras, None);
-    assert!(root.get("agent").is_none(), "empty agent map must be omitted");
-    assert!(root.get("provider").is_none(), "empty provider map must be omitted");
+    assert!(
+        root.get("agent").is_none(),
+        "empty agent map must be omitted"
+    );
+    assert!(
+        root.get("provider").is_none(),
+        "empty provider map must be omitted"
+    );
     assert!(root["mcp"].is_object(), "未知顶层字段必须保留");
 }
 
 #[test]
 fn detect_empty_yml_as_oh_my_pi() {
     // 空内容新建场景：.yml 扩展名归 oh-my-pi，其余回落 opencode
-    assert_eq!(backends::detect_format("", "models.yml"), ConfigFormat::OhMyPi);
-    assert_eq!(backends::detect_format("", "models.yaml"), ConfigFormat::OhMyPi);
-    assert_eq!(backends::detect_format("", "models.json"), ConfigFormat::Opencode);
+    assert_eq!(
+        backends::detect_format("", "models.yml"),
+        ConfigFormat::OhMyPi
+    );
+    assert_eq!(
+        backends::detect_format("", "models.yaml"),
+        ConfigFormat::OhMyPi
+    );
+    assert_eq!(
+        backends::detect_format("", "models.json"),
+        ConfigFormat::Opencode
+    );
     assert_eq!(backends::detect_format("", ""), ConfigFormat::Opencode);
 }
 
@@ -170,8 +191,8 @@ fn load_backend_via_generic_pipeline() {
     let mut p = std::env::temp_dir();
     p.push("backends_pipeline_test.json");
     std::fs::write(&p, "{\"provider\": {\"x\": {}}}").unwrap();
-    let load = backends::load_backend(ConfigFormat::Opencode, p.to_str().unwrap())
-        .expect("通用加载失败");
+    let load =
+        backends::load_backend(ConfigFormat::Opencode, p.to_str().unwrap()).expect("通用加载失败");
     assert_eq!(load.providers.len(), 1);
     std::fs::remove_file(&p).ok();
 }

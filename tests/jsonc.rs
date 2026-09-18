@@ -63,7 +63,10 @@ fn detect_from_content_distinguishes_formats() {
         ConfigPaths::detect_from_content("{\"provider\": {}}"),
         ConfigFormat::Opencode
     );
-    assert_eq!(ConfigPaths::detect_from_content("{}"), ConfigFormat::Opencode);
+    assert_eq!(
+        ConfigPaths::detect_from_content("{}"),
+        ConfigFormat::Opencode
+    );
     assert_eq!(
         ConfigPaths::detect_from_content("{\"providers\": {}, \"provider\": {}}"),
         ConfigFormat::Opencode,

@@ -69,9 +69,24 @@ fn clicking_a_theme_menu_item_applies_the_theme() {
     assert!(btn_center.x > 0.0, "按钮应有实际尺寸：{btn_rect:?}");
 
     // 2) 悬停 → 按下 → 松开：打开菜单
-    let _ = frame(&ctx, &mut theme, vec![egui::Event::PointerMoved(btn_center)], &mut btn_rect);
-    let _ = frame(&ctx, &mut theme, vec![press(btn_center, true)], &mut btn_rect);
-    let _ = frame(&ctx, &mut theme, vec![press(btn_center, false)], &mut btn_rect);
+    let _ = frame(
+        &ctx,
+        &mut theme,
+        vec![egui::Event::PointerMoved(btn_center)],
+        &mut btn_rect,
+    );
+    let _ = frame(
+        &ctx,
+        &mut theme,
+        vec![press(btn_center, true)],
+        &mut btn_rect,
+    );
+    let _ = frame(
+        &ctx,
+        &mut theme,
+        vec![press(btn_center, false)],
+        &mut btn_rect,
+    );
 
     // 3) 菜单已展开，找到「浅色」那一项的矩形
     let items = frame(&ctx, &mut theme, vec![], &mut btn_rect);
@@ -84,9 +99,24 @@ fn clicking_a_theme_menu_item_applies_the_theme() {
 
     // 4) 点它：悬停 → 按下 → 松开
     let item_center = item_rect.center();
-    let _ = frame(&ctx, &mut theme, vec![egui::Event::PointerMoved(item_center)], &mut btn_rect);
-    let _ = frame(&ctx, &mut theme, vec![press(item_center, true)], &mut btn_rect);
-    let _ = frame(&ctx, &mut theme, vec![press(item_center, false)], &mut btn_rect);
+    let _ = frame(
+        &ctx,
+        &mut theme,
+        vec![egui::Event::PointerMoved(item_center)],
+        &mut btn_rect,
+    );
+    let _ = frame(
+        &ctx,
+        &mut theme,
+        vec![press(item_center, true)],
+        &mut btn_rect,
+    );
+    let _ = frame(
+        &ctx,
+        &mut theme,
+        vec![press(item_center, false)],
+        &mut btn_rect,
+    );
 
     assert_eq!(theme.key(), target.key(), "点击菜单项应切换主题");
 
