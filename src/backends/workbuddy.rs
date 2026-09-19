@@ -107,18 +107,19 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    // WorkBuddy 的 `id` 是账号/提供商级的唯一键（用户起的名，如 `claude_justwoker`），
-    // `name` 才是模型名（如 `Claude Opus 4.8`）。前者落到 ProviderRow.key（卡片身份），
-    // 模型行只承载模型名——否则模型 id 会显示成提供商名。
-    let model_name = v
+    // WorkBuddy 约定（用户实测确认）：`id` = 模型名（发给 API 的模型，如
+    // `claude-opus-5`），`name` = 提供商标签（如 `ps.air-outer`）。因此：
+    //   模型行的 id ← 条目 `id`（模型）；provider 的 key ← 条目 `name`（提供商）。
+    // 每个条目自带独立 url / apiKey，所以仍是「一条目一 provider 卡片」。
+    let provider = v
         .get("name")
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(&id)
         .to_string();
     let mut model = ModelRow::new();
-    model.id = model_name.clone();
-    model.name = model_name;
+    model.id = id.clone();
+    model.name = id.clone();
     model.context = v
         .get("maxInputTokens")
         .map(crate::util::number_text_public)
@@ -146,7 +147,7 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
     model.raw = v.clone();
 
     let mut row = ProviderRow::new();
-    row.key = id;
+    row.key = provider;
     row.description = v
         .get("vendor")
         .and_then(Value::as_str)
@@ -184,22 +185,14 @@ fn entry_from_provider(p: &ProviderRow) -> Value {
     };
     let model = p.models.first();
 
-    // WorkBuddy `id` = 账号键（= ProviderRow.key），`name` = 模型名。
-    // 模型名取模型行 id（WB 页只显示这一个模型字段），回落 name、再回落账号键。
-    obj.insert("id".into(), Value::String(p.key.clone()));
-    let model_name = model
-        .map(|m| {
-            let id = m.id.trim();
-            if id.is_empty() {
-                m.name.trim()
-            } else {
-                id
-            }
-        })
+    // WorkBuddy `id` = 模型名（模型行的 id），`name` = 提供商（= ProviderRow.key）。
+    let model_id = model
+        .map(|m| m.id.trim())
         .filter(|s| !s.is_empty())
         .unwrap_or(&p.key)
         .to_string();
-    obj.insert("name".into(), Value::String(model_name));
+    obj.insert("id".into(), Value::String(model_id));
+    obj.insert("name".into(), Value::String(p.key.clone()));
     if !p.description.trim().is_empty() {
         obj.insert("vendor".into(), Value::String(p.description.clone()));
     }
@@ -352,9 +345,15 @@ impl Backend for WorkBuddyBackend {
 
         let mut out: Vec<Value> = Vec::new();
         for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
-            // 同 id 的旧条目作基底（保留 tags 等未知键）。
+            // 旧条目按 `id`（= 模型 id）作基底，保留 tags 等未知键。
+            let model_id = p
+                .models
+                .first()
+                .map(|m| m.id.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(p.key.trim());
             let mut entry = existing
-                .get(&p.key)
+                .get(model_id)
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();

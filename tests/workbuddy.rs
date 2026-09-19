@@ -246,24 +246,24 @@ fn parse_leaves_variants_empty_so_zcode_export_invents_no_reasoning() {
 }
 
 #[test]
-fn model_row_carries_model_name_not_account_key() {
-    // WorkBuddy 的 id 是账号键、name 是模型名。解析后 provider.key 拿账号键，
-    // 模型行拿模型名——不能让模型 id 显示成账号/提供商名。
+fn model_id_is_the_model_and_name_is_the_provider() {
+    // WorkBuddy 约定：条目 `id` = 模型名（发给 API 的模型），`name` = 提供商标签。
+    // 解析后模型行 id 拿模型名、provider.key 拿提供商——写回保持不变。
     let content = r#"[
-      { "id": "claude_justwoker", "name": "Claude Opus 4.8",
-        "url": "https://api.justwoker.icu/v1/messages", "apiKey": "k",
+      { "id": "claude-opus-5", "name": "ps.air-outer",
+        "url": "https://ps.air-outer.com/v1/messages", "apiKey": "k",
         "useCustomProtocol": true, "maxInputTokens": 272000, "maxOutputTokens": 128000 }
     ]"#;
     let load = load_wb(content);
     let p = &load.providers[0];
-    assert_eq!(p.key, "claude_justwoker", "provider key = 账号键");
-    assert_eq!(p.models[0].id, "Claude Opus 4.8", "模型行 = 模型名");
+    assert_eq!(p.key, "ps.air-outer", "provider key = 提供商（name）");
+    assert_eq!(p.models[0].id, "claude-opus-5", "模型行 id = 模型名（id）");
 
-    // 写回：id 仍是账号键，name 仍是模型名。
+    // 写回：id 仍是模型名，name 仍是提供商。
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let out = b.serialize_root(&[], &load.providers, &load.extras, None);
-    assert_eq!(out[0]["id"], json!("claude_justwoker"));
-    assert_eq!(out[0]["name"], json!("Claude Opus 4.8"));
+    assert_eq!(out[0]["id"], json!("claude-opus-5"));
+    assert_eq!(out[0]["name"], json!("ps.air-outer"));
 }
 
 #[test]
