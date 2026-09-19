@@ -17,6 +17,45 @@ pub(super) fn sticky_begin(ui: &mut egui::Ui, height: f32) -> (f32, f32, f32, f3
     (avail.top(), avail.left(), avail.right(), height)
 }
 
+/// 外观面板里的形状预览按钮：填强调色、按预设圆角，选中画 2px 高亮描边。
+///
+/// 选中描边**统一 2px**、与形状自身的 `border_width` 解耦——云朵这类
+/// 「卡片不描边」的预设若沿用自身宽度，选中后就没有和其他形状一样的
+/// 高亮圈。浅底用深描边、深底用白描边，保证任何主题下都看得清。
+fn shape_button(
+    ui: &mut egui::Ui,
+    style: crate::theme::UiStyle,
+    is_current: bool,
+    current_accent: egui::Color32,
+    dark: bool,
+) -> bool {
+    let bright =
+        current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384;
+    let text_color = if bright {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::WHITE
+    };
+    let stroke = if is_current {
+        egui::Stroke::new(
+            2.0,
+            if dark {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_gray(40)
+            },
+        )
+    } else {
+        egui::Stroke::new(style.border_width(), current_accent)
+    };
+    let btn = egui::Button::new(egui::RichText::new(style.label()).color(text_color))
+        .fill(current_accent)
+        .stroke(stroke)
+        .min_size(egui::vec2(52.0, 0.0))
+        .corner_radius(style.radius() as f32);
+    ui.add(btn).clicked()
+}
+
 /// 吸顶条的 Y：还没滚过标题时钉在内容流位置，滚过之后钉在滚动区**可视顶**。
 ///
 /// egui 会把滚动区裁剪顶向上扩 `clip_rect_margin`（默认 3px，
@@ -253,66 +292,21 @@ impl App {
                             });
                             ui.add_space(crate::theme::SPACE_2);
                             ui.label(egui::RichText::new("形状").small().weak());
-                            // 第一行：前 5 个形状
+                            let dark = ui.visuals().dark_mode;
+                            // 第一行：前 4 个形状
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
-                                for style in &crate::theme::UiStyle::ALL[0..5] {
-                                    let is_current = self.ui_style == *style;
-                                    let radius = style.radius() as f32;
-                                    let border = style.border_width();
-                                    let fill = current_accent;
-                                    let text_color = if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
-                                        egui::Color32::BLACK
-                                    } else {
-                                        egui::Color32::WHITE
-                                    };
-                                    let stroke_color = if is_current {
-                                        if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
-                                            egui::Color32::from_gray(40)
-                                        } else {
-                                            egui::Color32::WHITE
-                                        }
-                                    } else {
-                                        fill
-                                    };
-                                    let btn = egui::Button::new(egui::RichText::new(style.label()).color(text_color))
-                                        .fill(fill)
-                                        .stroke(egui::Stroke::new(border, stroke_color))
-                                        .min_size(egui::vec2(52.0, 0.0))
-                                        .corner_radius(radius);
-                                    if ui.add(btn).clicked() {
+                                for style in &crate::theme::UiStyle::ALL[0..4] {
+                                    if shape_button(ui, *style, self.ui_style == *style, current_accent, dark) {
                                         self.ui_style = *style;
                                     }
                                 }
                             });
-                            // 第二行：后 5 个形状
+                            // 第二行：后 4 个形状
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
-                                for style in &crate::theme::UiStyle::ALL[5..10] {
-                                    let is_current = self.ui_style == *style;
-                                    let radius = style.radius() as f32;
-                                    let border = style.border_width();
-                                    let fill = current_accent;
-                                    let text_color = if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
-                                        egui::Color32::BLACK
-                                    } else {
-                                        egui::Color32::WHITE
-                                    };
-                                    let stroke_color = if is_current {
-                                        if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
-                                            egui::Color32::from_gray(40)
-                                        } else {
-                                            egui::Color32::WHITE
-                                        }
-                                    } else {
-                                        fill
-                                    };
-                                    let btn = egui::Button::new(egui::RichText::new(style.label()).color(text_color))
-                                        .fill(fill)
-                                        .stroke(egui::Stroke::new(border, stroke_color))
-                                        .min_size(egui::vec2(52.0, 0.0))
-                                        .corner_radius(radius);
-                                    if ui.add(btn).clicked() {
+                                for style in &crate::theme::UiStyle::ALL[4..8] {
+                                    if shape_button(ui, *style, self.ui_style == *style, current_accent, dark) {
                                         self.ui_style = *style;
                                     }
                                 }

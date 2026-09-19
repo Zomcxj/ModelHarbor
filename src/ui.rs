@@ -9,9 +9,7 @@ pub fn card_frame<R>(
 ) -> egui::Response {
     let corner = ui.visuals().widgets.noninteractive.corner_radius;
     let shape = crate::theme::active_style(ui.ctx());
-    let fill = if shape.has_frost() {
-        shape.frost_fill(ui.visuals().dark_mode)
-    } else if open {
+    let fill = if open {
         ui.visuals().faint_bg_color
     } else {
         ui.visuals().extreme_bg_color
@@ -63,25 +61,7 @@ pub fn card_frame<R>(
         });
     }
     draw_bevel(ui, frame.response.rect);
-    draw_frost_edges(ui, frame.response.rect);
     frame.response
-}
-
-/// 磨砂玻璃的上下沿：上沿 1px 高光、下沿 1px 暗影，做出顶光穿玻璃的竖向渐变。
-///
-/// 复用 [`bevel_segments`] 的几何（线段落在内侧、避开圆角），只取上、下两条。
-fn draw_frost_edges(ui: &egui::Ui, rect: egui::Rect) {
-    let style = crate::theme::active_style(ui.ctx());
-    if !style.has_frost() {
-        return;
-    }
-    let (sheen, shade) = style.frost_edge_colors(ui.visuals().dark_mode);
-    let radius = ui.visuals().widgets.noninteractive.corner_radius.nw as f32;
-    let (light_lines, dark_lines) = bevel_segments(rect, radius);
-    let painter = ui.painter();
-    // light 的第一条是上边线，dark 的第一条是下边线。
-    painter.line_segment(light_lines[0], egui::Stroke::new(1.0, sheen));
-    painter.line_segment(dark_lines[0], egui::Stroke::new(1.0, shade));
 }
 
 /// 内嵌浮雕的线段：`(亮边, 暗边)`，各两条。
