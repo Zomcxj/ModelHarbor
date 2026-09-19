@@ -126,10 +126,13 @@ pub fn advance_focus(focus: usize, delta: f32, row_step: f32, len: usize) -> usi
 
 /// 转轮模式下渲染一张卡片：按到焦点卡的距离做视觉缩放。
 ///
-/// 缩放锚点取**左边缘中点**：卡片缩小后左侧贴齐（与列表左边缘对齐）、
-/// 垂直方向仍居中于原行位置，看起来像沿圆柱面退远，而不是往中间挤。
-/// 锚点用左边缘而非中心，是因为放大时以中心为锚会向两侧溢出屏幕；
-/// 焦点卡不放大（`WHEEL_FOCUS_SCALE = 1.0`），所以只有缩小这一侧。
+/// 缩放锚点取**卡片水平中心 + 顶边**：缩小后卡片保持水平居中（两侧对称
+/// 内收，像沿圆柱面退远），垂直方向贴着原行位置。
+///
+/// 水平锚点用中心而不是左边缘：左对齐会让缩小的卡片全挤在左侧，右侧空出
+/// 一大片；居中则上下卡片围绕中轴对称收拢，观感更像转轮。
+/// 焦点卡不放大（`WHEEL_FOCUS_SCALE = 1.0`），所以不必担心以中心为锚
+/// 向外溢出——只有缩小这一侧。
 pub fn render_card_in_wheel<R>(
     ui: &mut egui::Ui,
     distance: usize,
@@ -139,13 +142,88 @@ pub fn render_card_in_wheel<R>(
     if (scale - 1.0).abs() < f32::EPSILON {
         return add(ui);
     }
-    // 锚点：光标处的左边缘中点（用当前行高的一半估中点，渲染前不知道真实高度）。
-    // `mul_pos(p) = scaling * p + translation`，让锚点不动
-    // （`scale * anchor + t == anchor`）→ `t = anchor * (1 - scale)`。
-    let row_h = ui.spacing().interact_size.y.max(WHEEL_ROW_PITCH / 2.0);
-    let anchor = ui.cursor().min.to_vec2() + egui::vec2(0.0, row_h / 2.0);
+    // 锚点：可用宽度的中点 + 顶边。`mul_pos(p) = scaling * p + translation`，
+    // 让锚点不动（`scale * anchor + t == anchor`）→ `t = anchor * (1 - scale)`。
+    let anchor = ui.cursor().min.to_vec2() + egui::vec2(ui.available_width() / 2.0, 0.0);
     let transform = egui::emath::TSTransform::new(anchor * (1.0 - scale), scale);
     ui.with_visual_transform(transform, add).inner
+}
+
+/// 转轮模式的完整渲染流程：焦点推进 + 逐卡缩放 + 上下渐变 + 交互层。
+///
+/// `focus` 传入传出（调用方持有焦点状态）；`add_card` 负责渲染第 `pos` 张卡。
+/// Providers 与 Agents 两个列表共用这套流程——之前只有 Providers 接入了
+/// 转轮，逻辑写死在它的渲染循环里，无法复用。
+///
+/// 返回焦点是否变化（调用方据此决定是否重绘）。
+pub fn wheel_list(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    len: usize,
+    focus: &mut usize,
+    card_gap: f32,
+    mut add_card: impl FnMut(&mut egui::Ui, usize),
+) -> bool {
+    if len == 0 {
+        return false;
+    }
+    let row_h = WHEEL_ROW_PITCH;
+    let top = ui.cursor().min;
+    let cur = (*focus).min(len - 1);
+
+    // 焦点卡上方的留白：让它固定落在第 LEAD 行位置，不随列表位置浮动。
+    let above = cur.min(WHEEL_LEAD_ROWS);
+    ui.add_space((WHEEL_LEAD_ROWS - above) as f32 * row_h);
+
+    for pos in 0..len {
+        if !card_visible(cur, pos) {
+            continue;
+        }
+        let distance = cur.abs_diff(pos);
+        // 视觉变换包住整卡渲染：只改绘制坐标，布局与交互命中区不动。
+        render_card_in_wheel(ui, distance, |ui| add_card(ui, pos));
+        ui.add_space(card_gap);
+    }
+
+    // 上下渐变淡出：盖在卡片之上，把边缘卡片融进底色形成纵深。
+    // 必须在卡片渲染之后调用（否则被卡片盖住），并限制在列表区内。
+    let list_bottom = ui.cursor().min.y;
+    wheel_fade(
+        ui,
+        egui::Rect::from_min_max(top, egui::pos2(ui.max_rect().right(), list_bottom)),
+    );
+
+    // 焦点推进的交互层必须**在卡片之后**注册：egui 命中判定是
+    // 「后注册的在上层」（`hit_test`: in tie, pick last = topmost），
+    // 先注册会被卡片及其内部滚动区盖住。
+    let rows_h = WHEEL_VISIBLE_RADIUS as f32 * 2.0 + 1.0;
+    let area = egui::Rect::from_min_size(
+        top,
+        egui::vec2(
+            ui.available_width(),
+            (rows_h * row_h).min(ui.available_height()),
+        ),
+    );
+    let resp = ui.interact(area, ui.id().with(id_salt), egui::Sense::click_and_drag());
+    let mut delta = 0.0;
+    if resp.dragged() {
+        delta -= resp.drag_delta().y;
+    }
+    // 滚轮用 `raw_scroll_delta`：外层滚动区消费的是 `smooth_scroll_delta`
+    // （`scroll_area.rs` 读它并清零），raw 那份不会被别人动。
+    // 指针判定用 `rect_contains_pointer` 而不是 `resp.hovered()`：
+    // 后者要求本层在指针下胜出命中，而卡片里的滚动区会把它抢走。
+    if ui.rect_contains_pointer(area) {
+        delta += ui.input(|i| i.raw_scroll_delta.y);
+    }
+    if delta != 0.0 {
+        let next = advance_focus(cur, delta, row_h, len);
+        if next != *focus {
+            *focus = next;
+            return true;
+        }
+    }
+    false
 }
 
 /// 转轮模式的上下渐变淡出遮罩：把列表上下边缘的卡片融进面板底色。
