@@ -139,8 +139,11 @@ pub fn supports_to_modalities<'a>(pairs: impl IntoIterator<Item = (&'a str, bool
 }
 
 /// ZCode 的模型 raw → 输入模态列表。
+///
+/// 模态布尔嵌在 `properties.inputFormat`（与内置模型库一致：`inputFormat` /
+/// `outputFormat` 两个子块），**不是** `properties` 的直接子键。
 pub fn zcode_modalities_from_raw(raw: &Value) -> String {
-    let props = raw.get("properties");
+    let props = raw.get("properties").and_then(|p| p.get("inputFormat"));
     let flag = |key: &str| {
         props
             .and_then(|p| p.get(key))

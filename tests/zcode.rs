@@ -192,6 +192,44 @@ fn does_not_invent_capability_flags() {
 }
 
 #[test]
+fn modalities_live_under_properties_input_format() {
+    // 内置模型库把模态布尔嵌在 properties.inputFormat（inputFormat/outputFormat
+    // 两个子块），不是 properties 直接子键。读入按嵌套取，写出按嵌套落。
+    let content = r#"{
+      "config": {
+        "providerOrder": ["p1"],
+        "providerConfigRules": { "providerRules": [ {
+            "providerId": "p1", "providerName": "P1",
+            "config": { "access": { "type": "api-key", "apiKey": "k" },
+              "api": { "type": "openai-chat-completions", "baseUrl": "https://x.invalid" },
+              "personalModelIds": ["m1"], "modelOrder": ["m1"] } } ]},
+        "modelConfigRules": { "providerModelRules": [ {
+            "modelId": "m1", "providerId": "p1",
+            "config": { "enabled": true, "properties": {
+              "contextWindow": 1000,
+              "inputFormat": { "supportsText": true, "supportsImage": true, "supportsVideo": false } } } } ],
+          "manualProviderModelRules": [] } } }"#;
+    let load = load_zcode(content);
+    // 读入：从 inputFormat 推导出模态列表（不含 video）。
+    let m = &load.providers[0].models[0];
+    assert_eq!(m.modalities_input, "text, image", "模态应从 inputFormat 取");
+
+    // 写出：模态回落到 properties.inputFormat，不平铺到 properties。
+    let b = backends::backend(ConfigFormat::ZCode);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let props =
+        &root["config"]["modelConfigRules"]["providerModelRules"][0]["config"]["properties"];
+    assert!(
+        props.get("supportsImage").is_none(),
+        "supportsImage 不该平铺在 properties"
+    );
+    let input = &props["inputFormat"];
+    assert_eq!(input["supportsImage"], json!(true));
+    assert_eq!(input["supportsText"], json!(true));
+    assert_eq!(input["supportsVideo"], json!(false));
+}
+
+#[test]
 fn cross_format_save_does_not_leak_foreign_keys() {
     // 从 WorkBuddy 形状的 raw 转存到 ZCode：对方的 id/vendor/url 不得进 config。
     let mut p = ProviderRow::new();

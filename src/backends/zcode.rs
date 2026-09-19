@@ -263,7 +263,14 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         );
     }
     // 模态：界面给出列表时按它写；列表为空时不动原有键。
+    // 落点是 `properties.inputFormat`（内置库如此嵌套），不是 properties 直接子键——
+    // 写平了 ZCode 读不到，还会和它自己写的 inputFormat 并存两套。
     if !m.modalities_input.trim().is_empty() {
+        let mut input_format = props
+            .get("inputFormat")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
         for (key, on) in convert::modalities_to_supports(&m.modalities_input) {
             let field = match key {
                 "text" => "supportsText",
@@ -273,8 +280,9 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
                 "audio" => "supportsAudio",
                 _ => continue,
             };
-            props.insert(field.into(), Value::Bool(on));
+            input_format.insert(field.into(), Value::Bool(on));
         }
+        props.insert("inputFormat".into(), Value::Object(input_format));
     }
     // 同理：只在原文件已有该键时同步 tool_call，否则不凭空声明。
     if props.contains_key("supportsToolCall") {
