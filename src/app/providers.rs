@@ -180,9 +180,52 @@ impl App {
         } else {
             0.0
         };
-        card_list(ui, &matched, card_gap, |ui, idx| {
-            self.render_provider_card(ui, idx, &mut actions);
-        });
+        if self.list_style.is_wheel() {
+            // 转轮模式：只渲染焦点附近若干张，按距离缩放形成纵深。
+            // 远处卡片整卡跳过（不布局也不绘制）——上百张卡全量跑一遍没有意义。
+            let len = matched.len();
+            let focus = self.wheel_focus.min(len.saturating_sub(1));
+
+            // 焦点推进：鼠标在列表区滚动 / 上下拖动即切换焦点卡。
+            // 用整块列表区域的交互层捕获输入——焦点卡自己会消费滚轮
+            // （它内部有可滚动控件），靠它捕获会时灵时不灵。
+            let area = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), ui.available_height()),
+            );
+            let resp = ui.interact(area, ui.id().with("wheel_focus_area"), egui::Sense::drag());
+            let mut delta = 0.0;
+            if resp.dragged() {
+                delta -= resp.drag_delta().y;
+            }
+            if resp.hovered() {
+                delta += ui.input(|i| i.smooth_scroll_delta.y);
+            }
+            if delta != 0.0 {
+                // 一张卡约 40px 高（收起态）；用卡片间距当步长，手感接近列表滚动。
+                let next = crate::wheel::advance_focus(focus, delta, 48.0, len);
+                if next != self.wheel_focus {
+                    self.wheel_focus = next;
+                }
+            }
+            let focus = self.wheel_focus.min(len.saturating_sub(1));
+
+            for (pos, &idx) in matched.iter().enumerate() {
+                if !crate::wheel::card_visible(focus, pos) {
+                    continue;
+                }
+                let distance = focus.abs_diff(pos);
+                // 视觉变换包住整卡渲染：只改绘制坐标，布局与交互命中区不动。
+                crate::wheel::render_card_in_wheel(ui, distance, |ui| {
+                    self.render_provider_card(ui, idx, &mut actions);
+                });
+                ui.add_space(card_gap);
+            }
+        } else {
+            card_list(ui, &matched, card_gap, |ui, idx| {
+                self.render_provider_card(ui, idx, &mut actions);
+            });
+        }
         if let Some(idx) = actions.remove {
             self.providers.remove(idx);
             self.status = "已删除 provider".into();

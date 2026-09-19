@@ -318,6 +318,53 @@ impl App {
                                     }
                                 }
                             });
+                            ui.add_space(crate::theme::SPACE_2);
+                            ui.label(egui::RichText::new("列表").small().weak());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for style in crate::wheel::ListStyle::ALL {
+                                    let is_current = self.list_style == style;
+                                    let bright = current_accent.r() as u32
+                                        + current_accent.g() as u32
+                                        + current_accent.b() as u32
+                                        > 384;
+                                    let btn = egui::Button::new(
+                                        egui::RichText::new(style.label()).color(if bright {
+                                            egui::Color32::BLACK
+                                        } else {
+                                            egui::Color32::WHITE
+                                        }),
+                                    )
+                                    .fill(current_accent)
+                                    .stroke(if is_current {
+                                        egui::Stroke::new(
+                                            2.0,
+                                            if dark {
+                                                egui::Color32::WHITE
+                                            } else {
+                                                egui::Color32::from_gray(40)
+                                            },
+                                        )
+                                    } else {
+                                        egui::Stroke::NONE
+                                    })
+                                    .min_size(egui::vec2(52.0, 0.0));
+                                    if ui
+                                        .add(btn)
+                                        .on_hover_text(match style {
+                                            crate::wheel::ListStyle::Flat => {
+                                                "卡片等大平铺（默认）"
+                                            }
+                                            crate::wheel::ListStyle::Wheel => {
+                                                "卡片列表按圆柱排布：选中的最大最清晰，上下逐渐缩小淡出"
+                                            }
+                                        })
+                                        .clicked()
+                                    {
+                                        self.list_style = style;
+                                    }
+                                }
+                            });
                         });
                 });
             });

@@ -110,6 +110,10 @@ pub struct App {
     guide_dismissed: bool,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
     ui_style: crate::theme::UiStyle,
+    /// 卡片列表展示模式：平面 / 转轮。
+    list_style: crate::wheel::ListStyle,
+    /// 转轮模式的选中卡下标（转轮时哪张卡最大最清晰）。
+    wheel_focus: usize,
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
@@ -235,6 +239,8 @@ impl Default for App {
             allow_model_test_with_proxy: prefs.allow_model_test_with_proxy,
             guide_dismissed: prefs.guide_dismissed,
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
+            list_style: crate::wheel::ListStyle::from_key(&prefs.list_style),
+            wheel_focus: 0,
             net_guard_at: 0.0,
             // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
             theme: Theme::from_key(&prefs.theme),
@@ -388,6 +394,7 @@ impl App {
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
             guide_dismissed: self.guide_dismissed,
             ui_style: self.ui_style.key().to_string(),
+            list_style: self.list_style.key().to_string(),
         }
     }
 
@@ -703,6 +710,11 @@ impl App {
         // `.open()` 要借一个局部变量：直接传 `&mut self.show_tokens`
         // 会与闭包里的 `&mut self` 冲突。
         let mut open = true;
+        // 始终居中：`default_pos` 只在首次生效（之后记住用户拖过的位置），
+        // 要每帧都居中得用 `current_pos` 指定。窗口尺寸固定，居中可以
+        // 直接由内容区算出左上角。
+        let size = egui::vec2(620.0, height);
+        let centered = area.center() - size / 2.0;
         egui::Window::new("站点面板令牌")
             // 提到 Foreground：预览分隔条在 Middle 层，窗在它上面，
             // 分割线不会横穿悬浮窗。
@@ -710,10 +722,10 @@ impl App {
             .collapsible(false)
             .resizable(false)
             .order(Self::TOKENS_WINDOW_ORDER)
-            .fixed_size([620.0, height])
+            .fixed_size(size)
             // 不允许拖到主窗口外：拖出去后标题栏可能落到屏幕外，窗口就找不回来了。
             .constrain_to(area)
-            .default_pos(egui::pos2(area.left() + 90.0, area.top() + 90.0))
+            .current_pos(centered)
             .frame({
                 // 悬浮窗用比卡片更大的圆角与内边距，与主界面分层；
                 // 圆角在形状预设基础上加一档（上限 20）。
