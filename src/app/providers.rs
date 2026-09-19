@@ -180,28 +180,9 @@ impl App {
         } else {
             0.0
         };
-        if self.list_style.is_wheel() {
-            // 转轮模式：焦点卡固定落位、相邻卡片缩小淡出、上下渐变、滚轮切换焦点。
-            // 流程抽在 `wheel::wheel_list` 里，与 Agents 列表共用。
-            let len = matched.len();
-            let mut focus = self.wheel_focus;
-            let card_gap_wheel = card_gap.max(crate::wheel::WHEEL_ROW_PITCH / 4.0);
-            crate::wheel::wheel_list(
-                ui,
-                "provider_wheel",
-                len,
-                &mut focus,
-                card_gap_wheel,
-                |ui, pos| {
-                    self.render_provider_card(ui, matched[pos], &mut actions);
-                },
-            );
-            self.wheel_focus = focus;
-        } else {
-            card_list(ui, &matched, card_gap, |ui, idx| {
-                self.render_provider_card(ui, idx, &mut actions);
-            });
-        }
+        card_list(ui, &matched, card_gap, |ui, idx| {
+            self.render_provider_card(ui, idx, &mut actions);
+        });
         if let Some(idx) = actions.remove {
             self.providers.remove(idx);
             self.status = "已删除 provider".into();

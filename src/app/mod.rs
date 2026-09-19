@@ -110,12 +110,6 @@ pub struct App {
     guide_dismissed: bool,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
     ui_style: crate::theme::UiStyle,
-    /// 卡片列表展示模式：平面 / 转轮。
-    list_style: crate::wheel::ListStyle,
-    /// Providers 转轮模式的焦点卡下标。
-    wheel_focus: usize,
-    /// Agents 转轮模式的焦点卡下标（与 Providers 各自独立）。
-    agent_wheel_focus: usize,
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
@@ -241,9 +235,6 @@ impl Default for App {
             allow_model_test_with_proxy: prefs.allow_model_test_with_proxy,
             guide_dismissed: prefs.guide_dismissed,
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
-            list_style: crate::wheel::ListStyle::from_key(&prefs.list_style),
-            wheel_focus: 0,
-            agent_wheel_focus: 0,
             net_guard_at: 0.0,
             // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
             theme: Theme::from_key(&prefs.theme),
@@ -349,10 +340,6 @@ impl eframe::App for App {
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                 .scroll_source(egui::scroll_area::ScrollSource {
                     drag: false,
-                    // 转轮模式下关掉外层滚轮：此时滚轮由卡片列表自己消费
-                    // （切换焦点卡），外层再跟着滚会让整个页面上下晃。
-                    // 滚动条与拖动仍可用，页面照样能滚。
-                    mouse_wheel: !self.list_style.is_wheel(),
                     ..egui::scroll_area::ScrollSource::ALL
                 })
                 .show(ui, |ui| {
@@ -401,7 +388,6 @@ impl App {
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
             guide_dismissed: self.guide_dismissed,
             ui_style: self.ui_style.key().to_string(),
-            list_style: self.list_style.key().to_string(),
         }
     }
 

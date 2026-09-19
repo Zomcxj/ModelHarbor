@@ -25,27 +25,9 @@ impl App {
         } else {
             0.0
         };
-        if self.list_style.is_wheel() {
-            // 转轮模式：与 Providers 列表共用同一套流程（`wheel::wheel_list`）。
-            // 焦点状态独立——两个列表各自记住自己转到第几张。
-            let len = matched.len();
-            let mut focus = self.agent_wheel_focus;
-            let gap = card_gap.max(crate::wheel::WHEEL_ROW_PITCH / 4.0);
-            crate::wheel::wheel_list(ui, "agent_wheel", len, &mut focus, gap, |ui, pos| {
-                self.render_agent_card(
-                    ui,
-                    matched[pos],
-                    &mut to_remove,
-                    &mut to_copy,
-                    &mut hover_target,
-                );
-            });
-            self.agent_wheel_focus = focus;
-        } else {
-            card_list(ui, &matched, card_gap, |ui, idx| {
-                self.render_agent_card(ui, idx, &mut to_remove, &mut to_copy, &mut hover_target);
-            });
-        }
+        card_list(ui, &matched, card_gap, |ui, idx| {
+            self.render_agent_card(ui, idx, &mut to_remove, &mut to_copy, &mut hover_target);
+        });
         if let Some(idx) = to_remove {
             self.agents.remove(idx);
             self.status = "已删除 agent".into();
