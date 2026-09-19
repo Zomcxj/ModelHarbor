@@ -335,7 +335,7 @@ impl eframe::App for App {
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             self.ui_page_header(ui);
-            egui::ScrollArea::vertical()
+            let scroll = egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                 .scroll_source(egui::scroll_area::ScrollSource {
@@ -355,6 +355,14 @@ impl eframe::App for App {
                         ui.add_space(crate::theme::SPACE_2);
                     }
                 });
+            // 上下渐变淡出：画在滚动区**之后**（覆盖内容），形成纵深。
+            // 滚到头的一侧不画，免得糊掉首 / 末行内容。
+            crate::ui::scroll_fade(
+                ui,
+                scroll.inner_rect,
+                scroll.content_size,
+                egui::vec2(scroll.state.offset.x, scroll.state.offset.y),
+            );
         });
         // 令牌管理：独立悬浮窗（可拖动 / 可关闭），不占正文布局。
         self.ui_tokens_window(ctx);

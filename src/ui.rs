@@ -1,5 +1,103 @@
 use eframe::egui;
 
+/// 滚动区上下渐变淡出的遮罩高度（像素）。
+///
+/// 从边缘到内部的过渡带：内容在这里由「融进底色」逐渐转为全清晰，
+/// 形成纵深的立体滚动感。太短像被硬切，太长会吃掉可视内容。
+pub const SCROLL_FADE_HEIGHT: f32 = 34.0;
+
+/// 顶部渐变要让开的吸顶条高度（像素）。
+///
+/// 吸顶标题始终要清晰可读，不能被渐变糊掉；过渡带从吸顶条下沿才开始。
+pub const SCROLL_FADE_TOP_INSET: f32 = 30.0;
+
+/// 该不该画上下遮罩：`(顶部, 底部)`。
+///
+/// 只有该方向**真的还能滚**时才画。滚到顶时画顶部遮罩会平白糊掉首行内容，
+/// 内容不足一屏（`content_size <= 可视高`）时两侧都不画。
+///
+/// 抽成纯函数是为了能直接断言这三条边界。
+pub fn scroll_fade_sides(visible_height: f32, content_height: f32, offset_y: f32) -> (bool, bool) {
+    let max_offset = (content_height - visible_height).max(0.0);
+    if max_offset <= 0.5 {
+        return (false, false);
+    }
+    let can_up = offset_y > 0.5;
+    let can_down = offset_y < max_offset - 0.5;
+    (can_up, can_down)
+}
+
+/// 滚动区的上下渐变遮罩：把内容上下边缘融进面板底色，中间保持清晰。
+///
+/// egui 没有内置的渐变淡出，这里用带顶点色的 mesh 自己画：
+/// 每侧一个从 `panel_fill`（不透明）到全透明的矩形，覆盖在内容之上。
+///
+/// `visible` 是滚动区可视矩形，`content_size` / `offset` 用来判断还能不能滚。
+pub fn scroll_fade(
+    ui: &egui::Ui,
+    visible: egui::Rect,
+    content_size: egui::Vec2,
+    offset: egui::Vec2,
+) {
+    let base = ui.visuals().panel_fill;
+    let clear = egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 0);
+    let (can_up, can_down) = scroll_fade_sides(visible.height(), content_size.y, offset.y);
+    let painter = ui.painter();
+    let mut mesh = egui::Mesh::default();
+    // 顶部：不透明 → 透明（自上而下）。起点让开吸顶条，标题始终清晰。
+    if can_up {
+        let top = visible.top() + SCROLL_FADE_TOP_INSET;
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(visible.left(), top),
+            egui::pos2(visible.right(), top + SCROLL_FADE_HEIGHT),
+        );
+        add_fade_quad(&mut mesh, rect, base, clear);
+    }
+    // 底部：透明 → 不透明（自上而下）
+    if can_down {
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(visible.left(), visible.bottom() - SCROLL_FADE_HEIGHT),
+            visible.max,
+        );
+        add_fade_quad(&mut mesh, rect, clear, base);
+    }
+    if !mesh.is_empty() {
+        painter.add(egui::Shape::mesh(mesh));
+    }
+}
+
+/// 往 mesh 里加一个竖向渐变的矩形：`top_color` 在上、`bottom_color` 在下。
+fn add_fade_quad(
+    mesh: &mut egui::Mesh,
+    rect: egui::Rect,
+    top_color: egui::Color32,
+    bottom_color: egui::Color32,
+) {
+    let idx = mesh.vertices.len() as u32;
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_top(),
+        uv: egui::epaint::WHITE_UV,
+        color: top_color,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_top(),
+        uv: egui::epaint::WHITE_UV,
+        color: top_color,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_bottom(),
+        uv: egui::epaint::WHITE_UV,
+        color: bottom_color,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_bottom(),
+        uv: egui::epaint::WHITE_UV,
+        color: bottom_color,
+    });
+    mesh.indices
+        .extend_from_slice(&[idx, idx + 1, idx + 2, idx, idx + 2, idx + 3]);
+}
+
 pub fn card_frame<R>(
     ui: &mut egui::Ui,
     open: bool,
@@ -345,6 +443,28 @@ pub fn numeric_text_edit(
 mod tests {
     use super::{drag_handle_dots, merge_drag_target, DRAG_HANDLE_GAP};
     use eframe::egui;
+
+    /// 遮罩只在「该方向还能滚」时画：滚到顶不画顶部，滚到底不画底部，
+    /// 内容不足一屏两侧都不画（否则首 / 末行会被平白糊掉）。
+    #[test]
+    fn scroll_fade_only_shows_where_more_content_exists() {
+        // 内容 1000，可视 400：可滚范围 600
+        assert_eq!(super::scroll_fade_sides(400.0, 1000.0, 0.0), (false, true));
+        assert_eq!(super::scroll_fade_sides(400.0, 1000.0, 300.0), (true, true));
+        assert_eq!(
+            super::scroll_fade_sides(400.0, 1000.0, 600.0),
+            (true, false)
+        );
+        // 内容不足一屏：两侧都不画
+        assert_eq!(super::scroll_fade_sides(400.0, 400.0, 0.0), (false, false));
+        assert_eq!(super::scroll_fade_sides(400.0, 120.0, 0.0), (false, false));
+        // 亚像素抖动不触发遮罩
+        assert_eq!(super::scroll_fade_sides(400.0, 1000.0, 0.4), (false, true));
+        assert_eq!(
+            super::scroll_fade_sides(400.0, 1000.0, 599.8),
+            (true, false)
+        );
+    }
 
     /// 色带只覆盖卡片顶部 3px：越界就会盖住卡片文字（曾经整卡刷白）。
     #[test]
