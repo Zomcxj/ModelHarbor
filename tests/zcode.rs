@@ -273,6 +273,50 @@ fn does_not_expand_declared_modalities_into_false_flags() {
 }
 
 #[test]
+fn provider_always_gets_standard_personal_group() {
+    // ZCode 要求 provider.config.group 必填，个人 provider 缺它会被整份拒绝
+    // （从 WorkBuddy 转过来的 provider 没有 group，就是保存后 ZCode 里不显示的根因）。
+    let mut p = ProviderRow::new();
+    p.key = "wb1".into();
+    p.base_url = "https://api.example.com".into();
+    p.api_key = "sk-x".into();
+    p.pi_api = "openai-completions".into();
+    p.raw = json!({ "id": "wb1", "url": "https://api.example.com", "useCustomProtocol": false });
+    let mut m = ModelRow::new();
+    m.id = "some-model".into();
+    p.models = vec![m];
+
+    let b = backends::backend(ConfigFormat::ZCode);
+    let root = b.serialize_root(&[], std::slice::from_ref(&p), &json!({}), None);
+    let cfg = &root["config"]["providerConfigRules"]["providerRules"][0]["config"];
+    assert_eq!(
+        cfg["group"],
+        json!("standard-personal"),
+        "缺 group 时必须补 standard-personal"
+    );
+}
+
+#[test]
+fn existing_group_is_preserved() {
+    // ZCode 源自带的 group（如 zai-family）不能被覆盖成 standard-personal。
+    let content = r#"{
+      "config": {
+        "providerOrder": ["p1"],
+        "providerConfigRules": { "providerRules": [ {
+            "providerId": "p1", "providerName": "P1",
+            "config": { "group": "zai-family",
+              "access": { "type": "api-key", "apiKey": "k" },
+              "api": { "type": "openai-chat-completions", "baseUrl": "https://x.invalid" },
+              "personalModelIds": ["m1"], "modelOrder": ["m1"] } } ]},
+        "modelConfigRules": { "providerModelRules": [], "manualProviderModelRules": [] } } }"#;
+    let load = load_zcode(content);
+    let b = backends::backend(ConfigFormat::ZCode);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let cfg = &root["config"]["providerConfigRules"]["providerRules"][0]["config"];
+    assert_eq!(cfg["group"], json!("zai-family"), "已有 group 应保留");
+}
+
+#[test]
 fn cross_format_save_does_not_leak_foreign_keys() {
     // 从 WorkBuddy 形状的 raw 转存到 ZCode：对方的 id/vendor/url 不得进 config。
     let mut p = ProviderRow::new();

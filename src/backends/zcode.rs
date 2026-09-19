@@ -189,6 +189,14 @@ fn provider_config_to_zcode(p: &ProviderRow) -> Value {
         p.raw.as_object().cloned().unwrap_or_default()
     };
 
+    // `group` 是必填项：ZCode schema 要求，且个人 provider 缺它或用错值会直接抛
+    // 「Personal-only Provider 必须使用 standard-personal group」并拒绝整份配置
+    // （从 WorkBuddy 等转过来的 provider 没有 group，就是保存后 ZCode 里不显示的根因）。
+    // 已有 group（来自 ZCode 源，如 zai-family）则保留。
+    if !obj.contains_key("group") {
+        obj.insert("group".into(), Value::String("standard-personal".into()));
+    }
+
     let mut access = obj
         .get("access")
         .and_then(Value::as_object)
