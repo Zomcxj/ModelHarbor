@@ -91,9 +91,16 @@ pub(super) fn sticky_end(
         child.id().with("sticky-block"),
         egui::Sense::click_and_drag(),
     );
-    child
-        .painter()
-        .rect_filled(target, 0.0, ui.visuals().panel_fill);
+    // 背景填充要从**裁剪顶**开始，不能只填 target：吸附后 target.top() =
+    // clip_top + clip_margin，与裁剪顶还差那 3px；只填 target 会在顶上留一条缝，
+    // 滚动内容从缝里透出来，看起来像整行透明。未吸附时（target.top() 还在
+    // 内容流里）不需要补——缝里本来就是空白。
+    let fill_top = if y > top { clip_top } else { target.top() };
+    child.painter().rect_filled(
+        egui::Rect::from_min_max(egui::pos2(target.left(), fill_top), target.max),
+        0.0,
+        ui.visuals().panel_fill,
+    );
     paint(&mut child);
     // 标题下边线：吸顶时也能与内容分隔
     child.painter().hline(

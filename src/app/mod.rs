@@ -160,6 +160,32 @@ pub struct App {
     backend_icons: Vec<Option<egui::TextureHandle>>,
 }
 
+/// 启动时的方言判定：以**文件内容**为准，路径所属页面只作回退。
+///
+/// `detect_preferring_overrides` 只回答「哪一页填了覆盖路径且文件存在」，
+/// 不看内容。用户把 opencode.json 填到 pi 页时，用 pi 方言去读会解析出
+/// 0 条 provider——表现为「写了路径却不自动加载」。这里按内容纠正，
+/// 与手动加载（`reload_for_page`）用同一套判定。
+///
+/// **文件读不出内容时保持页面推断**：`detect_for_path` 在无内容时按扩展名
+/// 回落（`.json` → opencode），据此改判会在文件缺失 / 无权限时把页面
+/// 误判成 opencode，并可能把错误路径记进持久化覆盖。
+fn startup_format(owner: ConfigFormat, path: &str) -> ConfigFormat {
+    let path = path.trim();
+    if path.is_empty() {
+        return owner;
+    }
+    let readable = if crate::util::is_wsl_path(path) {
+        crate::util::read_wsl_file(path).is_ok()
+    } else {
+        std::fs::read_to_string(path).is_ok()
+    };
+    if !readable {
+        return owner;
+    }
+    ConfigPaths::detect_for_path(path).0
+}
+
 impl Default for App {
     fn default() -> Self {
         let prefs = crate::prefs::Prefs::load();
@@ -170,6 +196,11 @@ impl Default for App {
         let (format, path) = paths
             .detect_preferring_overrides(&prefs.config_paths)
             .unwrap_or((ConfigFormat::Opencode, String::new()));
+        // 启动探测只按「哪一页有覆盖路径」选后端，**不看文件内容**。若用户把
+        // A 格式的文件指定到了 B 页（例如 pi 页填了 opencode.json），用 B 的
+        // 方言去读会解析出 0 条，表现为「写了路径却不自动加载」。这里按实际
+        // 内容纠正方言——与手动加载（`reload_for_page`）走同一套判定。
+        let format = startup_format(format, &path);
         let mut app = Self {
             root: Value::Object(Map::new()),
             agents: Vec::new(),
