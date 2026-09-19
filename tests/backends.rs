@@ -41,6 +41,33 @@ fn backend_registry_covers_all_formats() {
     assert_eq!(backends::BACKENDS[0].id(), ConfigFormat::Opencode);
 }
 
+/// 每个后端都要有 32×32 图标：标签栏按索引取用，缺一个就是一个空按钮。
+///
+/// 图标是嵌进二进制的原始 RGBA 字节（未预乘），尺寸对不上会在
+/// `ColorImage::from_rgba_unmultiplied` 处 panic 或画成花屏，所以钉住长度。
+#[test]
+fn every_backend_ships_a_32x32_icon() {
+    for backend in backends::BACKENDS {
+        let (rgba, w, h) = backend
+            .icon_rgba()
+            .unwrap_or_else(|| panic!("后端 {:?} 缺少图标", backend.id()));
+        assert_eq!((w, h), (32, 32), "后端 {:?} 的图标尺寸不对", backend.id());
+        assert_eq!(
+            rgba.len(),
+            (w * h * 4) as usize,
+            "后端 {:?} 的图标字节数不对（应为未预乘 RGBA）",
+            backend.id()
+        );
+        // 全透明等于没画：抽几个点确认确实有内容。
+        let (pixels, _) = rgba.as_chunks::<4>();
+        assert!(
+            pixels.iter().any(|px| px[3] > 0),
+            "后端 {:?} 的图标全透明",
+            backend.id()
+        );
+    }
+}
+
 #[test]
 fn detect_format_distinguishes_backends() {
     assert_eq!(

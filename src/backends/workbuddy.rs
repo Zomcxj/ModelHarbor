@@ -349,6 +349,14 @@ impl Backend for WorkBuddyBackend {
         }
     }
 
+    fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
+        Some((
+            include_bytes!("../../assets/agents/workbuddy_32.bin"),
+            32,
+            32,
+        ))
+    }
+
     fn render(&self, root: &Value, compact: bool) -> Result<String, String> {
         // 数组根必须自己渲染：app::pretty_json 假定对象根，会把它变成 `{}`。
         let items = entries_of(root).cloned().unwrap_or_default();
