@@ -20,7 +20,12 @@ impl App {
         let mut to_remove: Option<usize> = None;
         let mut to_copy: Option<usize> = None;
         let mut hover_target: Option<String> = None;
-        card_list(ui, &matched, 0.0, |ui, idx| {
+        let card_gap = if crate::theme::active_style(ui.ctx()).has_card_shadow() {
+            crate::theme::SPACE_2
+        } else {
+            0.0
+        };
+        card_list(ui, &matched, card_gap, |ui, idx| {
             self.render_agent_card(ui, idx, &mut to_remove, &mut to_copy, &mut hover_target);
         });
         if let Some(idx) = to_remove {
@@ -48,7 +53,7 @@ impl App {
         }
         sticky_end(ui, anchor, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("Agents");
+                ui.strong(egui::RichText::new("Agents").size(crate::theme::TEXT_HEADING));
                 // agents 只属于 opencode 页：来源不是 opencode 时界面没有 agents 数据，
                 // 跨格式保存不会接管目标文件的 agent 容器（避免静默清空）。
                 if self.source_format != ConfigFormat::Opencode {
@@ -65,15 +70,27 @@ impl App {
                 if !self.agents.is_empty() {
                     let all_open = self.agents.iter().all(|a| !self.agent_collapsed(&a.key));
                     if ui
-                        .button(if all_open {
-                            "收起全部卡片"
-                        } else {
-                            "展开全部卡片"
+                        .push_id("agents_toggle_all", |ui| {
+                            ui.button(if all_open {
+                                "收起全部卡片"
+                            } else {
+                                "展开全部卡片"
+                            })
                         })
+                        .inner
                         .clicked()
                     {
                         // all_open 为真 = 现在全部展开 → 按钮是「收起全部」
                         self.set_all_agents_collapsed(all_open);
+                        let ctx = ui.ctx().clone();
+                        let open = !all_open;
+                        for agent in &self.agents {
+                            crate::motion::snap_collapse(
+                                &ctx,
+                                egui::Id::new(("agent_card", agent.key.clone())),
+                                open,
+                            );
+                        }
                     }
                 }
             });
@@ -97,7 +114,8 @@ impl App {
         } else {
             0
         };
-        let resp = card_frame(ui, open, highlight, |ui| {
+        let card_id = egui::Id::new(("agent_card", key.clone()));
+        let resp = card_frame(ui, open, highlight, card_id, |ui| {
             ui.horizontal(|ui| {
                 let h = ui.add(DragHandle);
                 if h.drag_started() {
@@ -138,9 +156,10 @@ impl App {
                     }
                 });
             });
-            if open {
+            // 折叠 / 展开带高度动画；动画 id 按 key 派生，改名即换 id（状态不串卡）。
+            crate::motion::animated_collapse(ui, card_id, open, |ui| {
                 self.render_agent_form(ui, idx);
-            }
+            });
         });
         if let Some(src_key) = &self.agent_drag_src {
             if src_key != &key && resp.contains_pointer() && hover_target.is_none() {

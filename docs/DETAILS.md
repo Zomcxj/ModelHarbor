@@ -20,16 +20,23 @@ cargo build --release
 
 顶栏图标切换四个页面（opencode / pi / omp / DSH）。加载任意一份配置后，各页面共享同一份数据，修改 provider 参数在所有页面同步生效（provider / model 顺序亦跨页同步）；Agents 区块仅属于 opencode 页面。
 
-各页表单按自身方言显示字段与枚举，无对应字段不显示占位：
+各页表单按自身方言显示字段与枚举，**没有的字段不占位**。四页的对应关系：
 
-- **opencode 页**：`options.baseURL` / `options.timeout` / `npm` 下拉 / `limit.context` / `modalities` / `variants`（none…ultra）
-- **pi 页**：`baseUrl` / `apiKey` / `api` 下拉（pi KnownApi 10 值）/ `compat` / `contextWindow` / `maxTokens` / `input` / `thinkingLevelMap`（off/minimal…ultra）
-- **oh-my-pi 页**：`baseUrl` / `apiKey` / `api` 下拉（omp 官方 9 值）/ `compat` / `contextWindow` / `maxTokens` / `input` / `thinking.efforts`（minimal…ultra）
-- **DeepSeek Harness 页**：`baseURL` / `apiKeyEnv` + 实际密钥 / `api` 下拉 / `timeoutMs` / `retryPolicy.mode` / `retryPolicy.maxRetries` / `models`（`id` / `name` / `contextWindow` / `maxTokens` / `input` / `reasoningEfforts`（minimal…ultra））
+| 概念 | opencode | pi | oh-my-pi | DSH |
+|---|---|---|---|---|
+| 配置路径 | `.config/opencode/opencode.json` | `.pi/agent/models.json` | `.omp/agent/models.yml` | `.dsh/settings.yaml` |
+| 协议 | `npm` | `api`（KnownApi 10 值） | `api`（官方 9 值） | `api` |
+| Base URL | `options.baseURL` | `baseUrl` | `baseUrl` | `baseURL` |
+| 密钥 | `options.apiKey` | `apiKey` | `apiKey`（环境变量名或字面量） | `apiKeyEnv` + `.credentials.yaml` |
+| 超时 | `options.timeout` | — | — | `timeoutMs` |
+| 重试 | — | — | — | `retryPolicy.mode` / `maxRetries` |
+| 上下文 / 输出 | `limit.context` / `limit.output` | `contextWindow` / `maxTokens` | 同 pi | 同 pi |
+| 输入模态 | `modalities.input` | `input` | `input` | `input` |
+| 推理档位 | `variants`（none…ultra） | `thinkingLevelMap`（off…ultra） | `thinking.efforts` | `reasoningEfforts` |
+| 模型存储 | Map（键 = model id） | Array（含 `id`） | 同 pi | 同 pi |
+| Agents 区块 | 支持 | — | — | — |
 
-协议（`npm` / `api`）四页共用同一份数据，口径统一走 `ProviderRow::effective_api()`：
-`npm` 非空按 npm 包推导 → `api` 非空直接用 → 原文件的 `api` → 都没有则按兼容层 `openai-completions`。
-下拉首项「(空)」表示不指定协议（`npm` 与 `api` 都清空，写盘时按兼容层处理），与 opencode 页 `npm` 的空选项同义且跨页同步。
+协议（`npm` / `api`）四页共用同一份数据，判定顺序为：`npm` 非空按 npm 包推导 → `api` 非空直接用 → 原文件的 `api` → 都没有则按兼容层 `openai-completions`。下拉首项「(空)」表示不指定协议（`npm` 与 `api` 都清空），与 opencode 页 `npm` 的空选项同义且跨页同步。
 
 ## 获取模型
 
@@ -42,44 +49,27 @@ cargo build --release
 
 ## 延迟 / 连通性测试
 
-测试请求的端点、鉴权与请求体都按所选协议构造（各协议打各自的端点）：
-
-| 协议 | 模型延迟端点 | 鉴权 |
-| --- | --- | --- |
-| `openai-completions` / `mistral-conversations` | `POST {base}/chat/completions` | `Authorization: Bearer` |
-| `openai-responses` / `openai-codex-responses` | `POST {base}/responses` | `Authorization: Bearer` |
-| `azure-openai-responses` | `POST {base}/responses` | `api-key` |
-| `anthropic-messages` | `POST {base}/v1/messages` | `x-api-key` + `anthropic-version` |
-| `google-generative-ai` | `POST {base}/models/{model}:streamGenerateContent?alt=sse` | `?key=` 查询参数 |
-| `google-vertex` | `POST {base}/publishers/google/models/{model}:streamGenerateContent?alt=sse` | `Authorization: Bearer` |
-| `pi-messages` | `POST {base}/messages` | `Authorization: Bearer` |
-| `google-gemini-cli` / `bedrock-converse-stream` | 不支持 | 需专有签名 / 私有网关 |
-
-- `anthropic-messages` 的 `{base}` 两种写法都会被归一：已带 `/v1` 时补 `/messages`，未带时补 `/v1/messages`
-  （pi / oh-my-pi / DSH 的 base 不含 `/v1`，opencode 的 baseURL 必带 `/v1`，见「注意事项」）
-
 - **厂商连通性**：Providers 标题行右侧「连通性测试」按钮，一键测试当前页面全部厂商，耗时显示在各厂商卡片名字右侧（失败显示错误码，悬停看完整错误）；卡片收起时依然可见
 - **模型延迟**：每个模型行的「测试」按钮（在拖动按钮右侧，结果就在按钮右侧），**一次只测一个模型**，没有批量入口
-- 测的是**首字延迟**（全程流式）：请求发出 → 第一个带内容的 SSE 块到达；其余协议在同端点靠请求体 `stream: true` 区分，Google 系换动词/加 `?alt=sse`
-- 超时判定 10 秒（单个读操作 / 首字的等待上限）；着色：<2 秒绿色、2~5 秒黄色、≥5 秒红色；测试中显示乱码动画
-- 不支持自动测试的协议直接报错提示，不发无意义的请求
+- 测的是**首字延迟**（全程流式）：请求发出 → 第一个带内容的 SSE 块到达
+- 超时判定 10 秒；着色：<2 秒绿色、2~5 秒黄色、≥5 秒红色；测试中显示动画
+- 不支持自动测试的协议（`google-gemini-cli` / `bedrock-converse-stream`，需专有签名或私有网关）直接报错提示，不发无意义的请求
+
+端点与鉴权按所选协议构造：OpenAI 兼容类打 `{base}/chat/completions`（Bearer），Responses 类打 `{base}/responses`（Azure 用 `api-key` 头），`anthropic-messages` 打 `{base}/v1/messages`（`x-api-key` + `anthropic-version`），Google 系打 `{base}/models/{model}:streamGenerateContent?alt=sse`（查询参数 `?key=`，Vertex 用 Bearer），`pi-messages` 打 `{base}/messages`。
+
+`anthropic-messages` 的 base 两种写法都会被归一：已带 `/v1` 时补 `/messages`，未带时补 `/v1/messages`（pi / omp / DSH 的 base 不含 `/v1`，opencode 的必带 `/v1`，见「注意事项」）。
 
 ### 模型延迟的防封号保护
 
 中转站（API 代理）普遍带「多 IP 检测 / 测活封号」风控，所以模型延迟按「单发、低频、像人」设计：
 
 - **网络守卫**：检测到 Windows 系统代理（含 PAC）或处于 `Up` 状态的 VPN / TUN 网卡时，直接禁用模型延迟测试，并在 Providers 标题行给出原因（每 5 秒复查，关掉代理后自动恢复）；厂商「连通性测试」不受影响（只拉模型列表，不做推理）
-- **放行开关**：Providers **标题行右端**有「**代理支持**」勾选框（写入 `settings.json` 的 `allow_model_test_with_proxy`，默认 `false`）。它是个安全开关，靠右与那排视图按钮分开；状态文案与它同排（在它左边）。勾上后即使检测到代理 / VPN 也允许模型延迟测试，文案转为「已放行」
-  - 注意：吸顶标题区是**固定高度矩形**（`sticky_end` 用 `max_rect` 建子 ui），里面的内容必须装在这一个高度里——多出来的行不会撑开矩形，而是直接画到下面的卡片上。所以加在这块的东西要并排，不要另起一行
-
-  何时可以勾：本工具的探测请求**始终直连、不走系统代理**（见 `netguard` 模块说明），所以仅仅开着 Clash 这类**系统代理**时，你的出口 IP 并没有变，勾选是安全的——这也是守卫最常见的误报。真正要警惕的是 **VPN / TUN 已经改变出口 IP** 的情况：此时拿同一个 key 从新出口发推理探测，正是中转站风控盯的行为。
-- **节流（按厂商各自计数，跨厂商不牽连）**：同一厂商的任意两次探测（同模型、不同模型都算）至少间隔 5 秒，且同一厂商同时只允许一个探测在飞（探测最长 10 秒）；不同厂商之间没有间隔，可以并行测。按钮上显示剩余冷却秒数，悬停有说明
-- **问句轮换**：请求体是题库里的 24 条跨领域常识名词题（地理 / 天文 / 生物 / 化学 / 物理 / 文学 / 艺术 / 音乐 / 历史，均为「一句话能答」的定论型题目），按 provider key 偏移 + 轮换游标选取；**不校验答案**，判定只看「有没有出字」与首字耗时
-- **全协议流式**：主流客户端默认全部流式，同步请求在中转站日志里会显示成「类型：同步」，反而是少数派特征；因此探测一律带 `stream: true`（Google 系走 `:streamGenerateContent`），并带上 SDK 惯用的 `Accept: text/event-stream`
-- **把流读完**：测到首字后仍继续读到 `[DONE]` / `message_stop` / `response.completed` / EOF（上限 64 KB）才关连接——真实客户端不会拿到流就断，匆匆断开反而像探测流量
-- **客户端身份**：`User-Agent` 按协议伪装成白名单客户端（Anthropic / pi-messages → `claude-cli/…`，OpenAI 兼容 / Responses / Google → `opencode/…`）——中转站普遍只放行白名单客户端，实测同一站点同一 key：`ureq/2.x`、不传 UA、`pi/…` 一律 `401 unauthorized client detected`（有的站点直接卡到超时），而这两种身份 200；版本号不被校验
+- **放行开关**：Providers 标题行右端有「**代理支持**」勾选框（写入 `settings.json`，默认关闭）。勾上后即使检测到代理 / VPN 也允许模型延迟测试，文案转为「已放行」。本工具的探测请求**始终直连、不走系统代理**，所以仅仅开着 Clash 这类系统代理时出口 IP 没变，勾选是安全的；真正要警惕的是 **VPN / TUN 已改变出口 IP** 的情况——此时拿同一个 key 从新出口发推理探测，正是中转站风控盯的行为
+- **节流**：同一厂商的任意两次探测至少间隔 5 秒，且同时只允许一个探测在飞；不同厂商之间可并行。按钮上显示剩余冷却秒数
+- **问句轮换**：请求体是 24 条跨领域常识题的轮换（不校验答案，只看有没有出字与首字耗时）
+- **像真实客户端**：一律流式（带 `stream: true` 与 `Accept: text/event-stream`）、测到首字后继续读到流结束才断开、`User-Agent` 按协议伪装成白名单客户端（Anthropic → `claude-cli/…`，其余 → `opencode/…`）。中转站普遍只放行白名单客户端，实测同一站点同一 key：`ureq/2.x`、不传 UA、`pi/…` 一律 `401 unauthorized client detected`
 - **token 上限 16**：避免推理模型因上限过小返回空内容或整体报错
-- 节流状态只在内存中，重启清零（重启后只能逐个手点，不会批量冲击）；测试仍会消耗极少量 token，不建议在计费敏感账号上频繁测试
+- 节流状态只在内存中，重启清零；测试仍会消耗极少量 token，不建议在计费敏感账号上频繁测试
 
 ## 查询用户数据
 
@@ -90,52 +80,36 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 2. 令牌调用日志：`/api/log/token`，用于今日、近 7 天与模型拆分；
 3. 兼容账单：`/dashboard/billing/subscription` 与 `/usage`。
 
-前两个接口**互相独立**：有些站点的 baseUrl 指向的是中转域名，只挂了 relay 路由，`/api/usage/token/` 会回 `Invalid URL`，但 `/api/log/token` 照样可用。这种情况下今日 / 近 7 天与模型拆分照常显示，只是没有额度三项，不会因为额度接口缺失就把日志统计一起丢掉。两个接口都拿不到时才回退兼容账单。
+前两个接口**互相独立**：有些站点的 baseUrl 指向中转域名、只挂了 relay 路由，`/api/usage/token/` 会回 `Invalid URL`，但 `/api/log/token` 照样可用——此时今日 / 近 7 天与模型拆分照常显示，只是没有额度三项。两个都拿不到时才回退兼容账单。
 
-请求只读管理接口并使用直连配置，不经过系统代理；凭证只放入请求头，不写入日志、状态栏或错误文本。同一 provider 两次查询至少间隔 5 秒。占位额度和不限额令牌只报已用、不给余额；卡片上显示的是查询到的数据（有就显示、没有就不显示）。
+请求只读管理接口并直连（不走系统代理）；凭证只放入请求头，不写入日志、状态栏或错误文本。同一 provider 两次查询至少间隔 5 秒。占位额度和不限额令牌只报已用、不给余额；有就显示、没有就不显示。
 
-今日用量按本机时区从当天 0 点计算；跨过本地午夜后，旧快照中的“今日”数字会隐藏，累计、余额和近 7 天数据仍保留，不会因此自动发起请求。日志只取首个 `p=0&page_size=1000` 分页，未遍历后续页时统计可能偏小。
+今日用量按本机时区从当天 0 点计算；跨过本地午夜后「今日」数字会隐藏，累计 / 余额 / 近 7 天保留，不会因此自动发起请求。日志只取首个分页，未遍历后续页时统计可能偏小。
 
-悬停详情里是这份结果的全部数字，按两套口径分节：**账号级**（面板令牌）给余额 / 已用 / 请求次数 / 分组，
-**令牌级**给累计已用 / 余额 / 额度 / 今日已用（含请求次数）/ 今日模型 / 近 7 天；开头写面板名与版本，
-末尾带两个会改变读数的提示：换算比假设（站点没给 `quota_per_unit` 时按默认 1 美元 = 500,000 quota 估算）
-与跨日提醒（「今日数据已跨日，请重新查询」）。签到状态也在这一窗里有完整一行。
+悬停详情按两套口径分节：**账号级**（面板令牌）给余额 / 已用 / 请求次数 / 分组，**令牌级**给累计已用 / 余额 / 额度 / 今日已用 / 今日模型 / 近 7 天；末尾带两个会改变读数的提示——换算比假设（站点没给换算比时按 1 美元 = 500,000 quota 估算）与跨日提醒。
 
 ### 站点面板令牌（PAT）
 
-上面的三个接口都只需 `sk-` key，但公益站的额度常是占位值（拿不到真实余额）。要拿**账号级**真实余额，需要在标题行点「令牌」，为站点填写面板访问令牌：
+上面的接口都只需 `sk-` key，但公益站的额度常是占位值（拿不到真实余额）。要拿**账号级**真实余额，在标题行点「令牌」为站点填写面板访问令牌：
 
-- 入口是标题行「令牌」按钮，打开的是**可拖动 / 可关闭的悬浮窗**（不占正文布局，可与右侧预览面板同时开着）；下次打开按已保存值重填
+- 打开的是**可拖动 / 可关闭的悬浮窗**（不占正文布局，可与右侧预览面板同时开着）；下次打开按已保存值重填
 - 在哪生成：站点面板「**个人设置 → 安全设置 → 系统访问令牌**」；登录后访问 `GET /api/user/token` 也会生成一串
-- 它是**站点 / 账号级**的，不是 provider 级：同一个站点的多个 provider 共用一份，面板里按站点列一行并标注共用的 provider
-- 站点只挂了中转路由（`/api/usage/token/` 不存在）时，面板令牌是拿到余额的**唯一途径**：账号接口 `/api/user/self` 通常仍在该域名下可用，只有调用日志、没有额度的局面因此可以补上余额
-- 与 `sk-` 是两套凭证：`sk-` 用于推理与 `/api/usage/token/`，面板令牌用于 `/api/user/self`（只读）。把 `sk-` 填到面板令牌里会得到「令牌无效或已撤销」
-- 鉴权只用 `Authorization: Bearer <令牌>`
-- **用户 ID（可选）**：部署的是**旧版 new-api** 的站点会在 `/api/user/self` 上回 `401 Unauthorized, New-Api-User header not provided`——令牌本身没问题，缺的是防跳站校验头。此时在令牌行下方的「用户 ID」里填上你的用户 ID（面板里 F12 看任意一次 `/api/user/self` 请求的 `New-Api-User` 值），工具就会带上该头。新版不需要它，**留空就不发这个头**（发空值反而会被判“与登录用户不匹配”）。填错时站点会回 `does not match logged in user`
-- 令牌面板会在该站点上次查询回了「缺 `New-Api-User`」时把那行提示标成黄色（判断依据是上次查询结果，不是持久化配置）
-- 拿到后卡片主行变成「账号余额 … · 已用 …」——只报余额看不出用掉多少，而对那些「令牌额度接口缺失 + 调用日志为空」的中转站（如 `ps.air-outer.com`），账号侧的 `used_quota` 是唯一拿得到的用量，所以它紧跟余额显示；令牌级已用/余额降到悬停详情，两套口径分节列出不混算
-- 令牌无效（401/403）、站点未开该接口、返回内容不可识别都**不影响**原有的 `sk-` 结果；只有账号数据时卡片照样显示
+- 它是**站点 / 账号级**的，不是 provider 级：同一站点的多个 provider 共用一份，面板里按站点列一行并标注共用的 provider
+- 站点只挂了中转路由时，面板令牌是拿到余额的**唯一途径**（账号接口 `/api/user/self` 通常仍可用）
+- 与 `sk-` 是两套凭证：`sk-` 用于推理与令牌额度接口，面板令牌用于 `/api/user/self`（只读）。把 `sk-` 填进去会得到「令牌无效或已撤销」
+- **用户 ID（可选）**：部署**旧版 new-api** 的站点会在 `/api/user/self` 上回 `401 New-Api-User header not provided`——令牌没问题，缺的是防跳站校验头。此时填上用户 ID（面板里 F12 看任意一次 `/api/user/self` 请求的 `New-Api-User` 值）即可；新版不需要，**留空就不发这个头**。填错会回 `does not match logged in user`；上次查询回过「缺头」的站点会把那行标黄
+- 令牌无效 / 站点未开该接口 / 返回不可识别都**不影响**原有的 `sk-` 结果
 
 ## 签到状态
 
-部分站点（new-api 的「签到」功能）每天可领一份随机额度。本工具**只读状态、不代签**：
-签到会改账号额度、并在站点记一条系统日志，所以这里没有任何写入口。能读到就把状态**并进**
-「查询用户数据」的结果一起显示：
-
-- `GET /api/user/checkin`（需**面板访问令牌**）→ 今日是否已签、今日获得多少、
-  本月 / 累计次数、累计获得额度。
+部分站点（new-api 的「签到」功能）每天可领一份随机额度。本工具**只读状态、不代签**——签到会改账号额度并在站点记系统日志，所以这里没有任何写入口。状态并进「查询用户数据」的结果一起显示（`GET /api/user/checkin`，需面板访问令牌与用户身份）。
 
 展示规则是**有就输出，没有就不输出**：
 
-- 卡片主行末尾接一段「签到 今日已签 $0.30」/「签到 未签」/「签到 未启用」；
-  今日金额取自站点 `stats.records` 里**日期最大**的那条（`YYYY-MM-DD` 字典序即时间序，
-  不依赖站点给的先后顺序），且只在 `checked_in_today` 为真时才当「今天」——
-  否则宁可不提，也不把别的日子报成今日；
-- 悬停详情里给完整一行「签到：今日已签 $0.30（本月 14 次，累计获得 $13.00）」；
-- 账号接口失败但签到读到了（如缺 `New-Api-User` 被 401 的站点）→ 这一项**照样显示**。
-
-签到需要面板访问令牌（`sk-` key 不够，站点要的是用户身份）；部署旧版 new-api 的站点同样需要「用户 ID」。
-请求同样是直连、只把凭证放进请求头。
+- 卡片主行末尾接「签到 今日已签 $0.30」/「签到 未签」/「签到 未启用」
+- 悬停详情给完整一行「签到：今日已签 $0.30（本月 14 次，累计获得 $13.00）」
+- 账号接口失败但签到读到了（如缺用户 ID 被 401 的站点）→ 这一项**照样显示**
+- 今日金额取自站点记录里日期最大的那条，且只在「今日已签」为真时才当今天——否则宁可不提，也不把别的日子报成今日
 
 ## 配置预览 / 编辑面板
 
@@ -152,9 +126,10 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 ## 保存与 WSL 同步
 
 - 每页有独立保存按钮与写入路径，默认写 Windows 本地路径
-- 保存按钮这一行**右端**是三个按钮：**令牌 · 显示密钥 · 预览**（令牌在「显示密钥」左侧、预览在右侧）。放在这里而不是 Providers 标题行：显示密钥管的是**所有页面**的密钥显示，预览是当前页的待保存文档，令牌管的是当前页各站点的面板令牌——三个都跟「保存 / 看」是同一个动作，而标题行只有切到 Providers 区块才看得到
+- 保存按钮这一行**右端**是三个按钮：**令牌 · 显示密钥 · 预览**（分别管当前页站点的面板令牌、所有页面的密钥显隐、当前页的待保存文档）
 - 当前文件属于本页格式且已加载时写当前文件；手动改了路径但未加载时写入该路径并保留目标文件其余配置
 - 手动指定过的路径按页面记住（写进设置文件）：启动时优先打开「覆盖过且文件确实存在」的页面；把路径输入框清空后回车即清除该页覆盖，回到自动探测的默认路径（与默认相同的路径不会记下）
+- **启动时按文件内容判定方言**，而不是只按「哪一页填了路径」：把 opencode 的配置文件填到 pi 页时，用 pi 方言去读会解析出 0 条 provider（表现为「写了路径却不自动加载」）。现在启动探测与手动加载走同一套内容判定，页面会跟随实际格式切换。文件读不出内容时保持页面推断不改判——无内容时判定会按扩展名回落 opencode，据此改判会把页面误判并污染持久化路径
 - 跨格式写入由界面接管的容器：`provider`（opencode）/ `providers`（pi / omp / DSH）——容器内的条目与顺序完全来自界面，目标文件里多出来的旧条目不残留；目标文件其余顶层配置（如 `mcp`、`instructions`）原样保留
 - opencode 的 `agent` 容器只在界面确实持有 agents 数据时才接管（来源为 opencode，或在 opencode 页手动新增）；来源为 pi / omp / DSH 时界面无从表达 agents，**目标文件已有的 agents 原样保留**，不会被清空
 - 跨格式写入覆盖已存在的文件前，先把原内容备份为 `<文件>.bak`（内容相同或文件为空时跳过）；备份失败则取消保存，不会静默替换旧配置
@@ -163,13 +138,7 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 ## 界面设置与状态记忆
 
 工具的界面设置写在**家目录**的 `.modelharbor/settings.json`（Windows：`%USERPROFILE%\.modelharbor\settings.json`）。
-里面只有界面选择：主题、保存格式、密钥显隐、WSL 同步、卡片折叠集合、代理支持开关、各页路径覆盖；
-提示 / 淡色小字（输入框占位提示、`.weak()` 小字）的颜色由主题按调色板算出（`theme::Palette::hint_color`），
-取的是**禁用控件文字**的观感：egui 把禁用子树按 `disabled_alpha`（0.5）淡化，
-所以这里把同一个算式算到不透明为止——`正文 / 控件底色 / 面板底色` 三个值合出禁用文字的
-屏幕颜色（暗色 `#848484`）。占位提示画在输入框底色上，只有预先合成为同一个 RGB 才与它一致。
-正文色写在各状态的 `fg_stroke` 上（`Visuals::text_color` 读的就是它）：
-`override_text_color` 会覆盖纯文本取色，连 `hint_text` 的兜底色一起挡掉。
+里面只有界面选择：主题、形状、保存格式、密钥显隐、WSL 同步、卡片折叠集合、代理支持开关、各页路径覆盖。
 **不存密钥、不存模型、不存配置内容**（配置永远以你自己的 agent 配置文件为真源）。
 
 - 写入策略：内容没有变化就不写盘；有变化时先写同目录临时文件并同步，再替换正式文件；替换失败会保留原设置。读不出 / 解析失败 / 文件不存在都按默认值处理（界面设置坏了不该影响工具可用性）
@@ -183,10 +152,35 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 - 加载成功后只清理当前配置身份里已经不存在的记录（删掉 / 改名后不残留）；其他配置身份和加载失败场景都保留
 - v2 的 `providers/名字`、`agents/名字` 旧键会在首次成功加载配置后迁移到当前配置身份
 
-### 主题
+### 主题与形状
 
-- 五个主题（深色 / 浅色 / 海洋 / 极地 / 玫瑰）各自一套底色与强调色，选中后立即生效并在下次启动时恢复
-- 状态色（绿 = 正常 / 黄 = 注意 / 红 = 异常 / 蓝 = 信息）**跨主题保持一致**，只在蓝与当前主题强调色过于接近时改用青蓝，保证在每种底色上都看得清
+顶栏「外观」面板里两组选择，**两者正交**：主题管颜色，形状管控件长相。
+
+**主题**（8 种，按底色分两行）：
+
+- 深色系：深色 / 海洋 / 极地 / 苔藓
+- 浅色系：亮色 / 玫瑰 / 薄荷 / 薰衣草
+
+各自一套底色与强调色，选中后立即生效并在下次启动时恢复。状态色（绿 = 正常 / 黄 = 注意 / 红 = 异常 / 蓝 = 信息）**跨主题保持一致**，只在蓝与当前主题强调色过于接近时改用青蓝，保证在每种底色上都看得清。每个主题的正文 / 强调 / 描边都按 WCAG 下限校过（正文与强调 4.5:1、描边 3:1），提示色另有下限（3:1）且必须明显淡于正文。
+
+**形状**（8 种，4+4 两行）：
+
+| 形状 | 机制 |
+|---|---|
+| 标签 | 胶囊全圆角 + 0.5px 细边 |
+| 圆润 | 圆角 10 + 1px 描边（默认档） |
+| 精致 | 圆角 6 + 0.5px 细边，轻量感 |
+| 极简 | 全直角 + 无边框，纯色块 |
+| 云朵 | 大圆角 16 + 软投影，卡片浮在底上 |
+| 浮雕 | 凸起受光线（卡内左上亮 / 右下暗）+ 接触影 |
+| 石板 | 平放的板——深色描边 + 接触影，无受光线 |
+| 色带 | 卡片顶部 3px 主题强调色条 |
+
+每档是**不同的绘制机制**，而不是同一效果调强度。浅色主题下浮雕 / 石板的暗边会加重到近实色——白底上白高光隐形，立体感全靠暗边，不加重就会退化成普通卡片。
+
+无边框的形状（极简 / 云朵）悬停时会在卡片内侧浮现 1px 高亮环；高亮色按主题取（深色系用强调色，浅色系用中性深灰，避免浅底上出现突兀的饱和色环）。
+
+旧设置里已删除的形状键（`heavy` / `sharp` / `compact` / `neon` / `frosted` / `prism`）会自动回落到默认档（圆润），不需要手工清理 `settings.json`。
 
 ### 旧版本位置兼容
 
@@ -202,153 +196,68 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 
 ## 配置文件格式参考
 
-### opencode
+字段细节由界面表单呈现，这里只说明四个格式的**结构形状**（加新 agent 时按同一张表扩展）。
 
-工具读取 / 写入 `opencode.json`：
+**JSON 系**——opencode 的 `provider` 与 `models` 都是 **Map**（键 = 名字 / model id）；pi 的 `providers` 是 Map、`models` 是 **Array**（每项含 `id`）：
 
 ```jsonc
+// opencode.json —— 顶层另有 agent 容器
 {
-  "agent": {
-    "my-agent": {
-      "mode": "subagent",
-      "description": "我的子代理",
-      "model": "openai/gpt-4o",
-      "variant": "",
-      "temperature": 0.7,
-      "color": "gold",
-      "system": "系统提示词"
-    }
-  },
-  "provider": {
-    "openai": {
+  "agent":    { "<agent 名>": { "mode": "subagent", "model": "…", "system": "…" } },
+  "provider": { "<provider key>": {
       "npm": "@ai-sdk/openai",
-      "options": {
-        "baseURL": "https://api.openai.com/v1",
-        "apiKey": "sk-...",
-        "timeout": 180000
-      },
-      "models": {
-        "gpt-4o": {
-          "name": "GPT-4o",
-          "reasoning": false,
-          "tool_call": true,
-          "limit": { "context": 128000, "output": 4096 },
-          "modalities": { "input": ["text"], "output": ["text"] },
-          "variants": { "high": { "reasoningEffort": "high" } }
-        }
-      }
-    }
-  }
+      "options": { "baseURL": "…", "apiKey": "…", "timeout": 180000 },
+      "models": { "<model id>": { "name": "…", "limit": { "context": 0, "output": 0 } } }
+  } }
 }
-```
 
-### pi
-
-工具读取 / 写入 `~/.pi/agent/models.json`：
-
-```json
+// ~/.pi/agent/models.json —— 无 agent 容器
 {
-  "providers": {
-    "openai": {
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKey": "sk-...",
-      "api": "openai-completions",
-      "models": [
-        {
-          "id": "gpt-4o",
-          "name": "GPT-4o",
-          "reasoning": false,
-          "input": ["text"],
-          "contextWindow": 128000,
-          "maxTokens": 4096
-        }
-      ]
-    }
-  }
+  "providers": { "<provider key>": {
+      "baseUrl": "…", "apiKey": "…", "api": "openai-completions",
+      "models": [ { "id": "…", "name": "…", "contextWindow": 0, "maxTokens": 0 } ]
+  } }
 }
 ```
 
-### oh-my-pi
-
-工具读取 / 写入 `~/.omp/agent/models.yml`（本地优先，本地不可用回落 WSL），YAML 格式，结构与 pi 同族：
+**YAML 系**——omp 与 pi 同族（推理档位存为 `thinking` 块）；DSH 只管理 `llm-pi-ai.providers`，其余顶层配置原样保留，密钥是 `apiKeyEnv` 引用（实际值在同级 `.credentials.yaml`）：
 
 ```yaml
+# ~/.omp/agent/models.yml
 providers:
-  my-gateway:
-    baseUrl: https://gateway.example.com/v1
+  <provider key>:
+    baseUrl: …
     api: openai-completions
-    apiKey: sk-...
-    authHeader: true            # 注入 Authorization: Bearer
-    headers:                    # 原样保留
-      X-Team: platform
+    apiKey: …          # 环境变量名或字面量
     models:
-    - id: m1
-      name: Model One
-      reasoning: true
-      input: [text, image]
-      contextWindow: 200000
-      maxTokens: 16384
-      thinking:
-        mode: effort
-        efforts: [medium, high, xhigh, max]
-```
+    - id: …
+      thinking: { mode: effort, efforts: [medium, high] }
 
-### DeepSeek Harness（DSH）
-
-工具读取 / 写入 `~/.dsh/settings.yaml`，只管理 `llm-pi-ai.providers`，其余顶层配置（`ui`、`conversation`、`agent-default-model`、插件设置等）原样保留：
-
-```yaml
+# ~/.dsh/settings.yaml
 llm-pi-ai:
   providers:
-    sensenova:
-      apiKeyEnv: SENSENOVA_API_KEY   # 凭据引用名，存于主配置
+    <provider key>:
+      apiKeyEnv: MY_API_KEY
       api: openai-completions
-      baseURL: https://api.sensenova.cn/v1
-      timeoutMs: 180000
-      retryPolicy:
-        mode: normal
-        maxRetries: 3
+      baseURL: …
+      retryPolicy: { mode: normal, maxRetries: 3 }
       models:
-        - id: deepseek-v4-flash
-          name: DeepSeek V4 Flash
-          contextWindow: 131072
-          maxTokens: 8192
-          input: [text]
-          reasoningEfforts:
-            medium: medium
+        - id: …
+          reasoningEfforts: { medium: medium }
 ```
-
-## 字段对照
-
-| 字段 | opencode | pi | oh-my-pi |
-| ------ | ---------- | ---------- | ---------- |
-| Provider key | `provider.{name}` | `providers.{name}` | `providers.{name}` |
-| Base URL | `options.baseURL` | `baseUrl` | `baseUrl` |
-| API Key | `options.apiKey` | `apiKey` | `apiKey`（环境变量名或字面量） |
-| 模型存储 | Map（key = model id） | Array（含 id 字段） | Array（含 id 字段） |
-| 上下文长度 | `limit.context` | `contextWindow` | `contextWindow` |
-| 输出限制 | `limit.output` | `maxTokens` | `maxTokens` |
-| 输入模态 | `modalities.input` | `input` | `input` |
-| API 类型 | `npm` | `api` | `api`（9 种枚举） |
-| 推理档位 | `variants` | `thinkingLevelMap` | `thinking: {mode, efforts, effortMap}` |
-| 工具调用 | `tool_call` | 不支持 | 不支持 |
-| Agent 定义 | `agent` | 不支持 | 不支持 |
-| 扩展字段 | 顶层字段保留 | 顶层字段保留 | provider / model 级字段保留 |
 
 ## 注意事项
 
-- `baseURL` 末尾 `/v1` 的归一化按目标 agent 的客户端行为决定，**读入与写出都做**：
-  pi / oh-my-pi / DSH 的 `anthropic-messages` **去掉**末尾 `/v1`（这三家客户端都自己拼 `/v1/messages`，
-  base 里再带 `/v1` 会请求成 `/v1/v1/messages`）；opencode 的 `@ai-sdk/anthropic` 相反，baseURL
-  **必须带** `/v1`（客户端只追加 `/messages`），读入时缺了就补上、写出时也保证带上；其他 api 一律不动
+- `baseURL` 末尾 `/v1` 的归一化按目标 agent 的客户端行为决定，**读入与写出都做**：pi / omp / DSH 的 `anthropic-messages` **去掉**末尾 `/v1`（这三家客户端自己拼 `/v1/messages`，base 里再带会请求成 `/v1/v1/messages`）；opencode 的 `@ai-sdk/anthropic` 相反，baseURL **必须带** `/v1`（客户端只追加 `/messages`）。其他 api 一律不动
 - provider / model 只保存各自支持的字段，方言字段不会互相泄漏
-- oh-my-pi 的 `apiKey` 为「环境变量名或字面量」语义；推理档位保存为官方 `thinking` 块
+- omp 的 `apiKey` 为「环境变量名或字面量」语义；推理档位保存为官方 `thinking` 块
 - 保存 YAML 时文件注释不会保留，输出为标准块风格
-- DSH 的实际密钥保存在同级 `.credentials.yaml` 的 `refs` 下，加载时自动读取，保存时写回；凭据文件中的其他字段原样保留
+- DSH 的实际密钥保存在同级 `.credentials.yaml`，加载时自动读取、保存时写回；凭据文件中的其他字段原样保留
 
 ## 平台与安全
 
 - 当前**仅支持 Windows**
-- 配置文件中的 `apiKey` 为**明文**，DSH 的 `.credentials.yaml` 同样为明文，请勿提交到公开仓库
-- 界面设置文件（`%USERPROFILE%\.modelharbor\settings.json`）只保存界面选择，不含密钥；可以安全删除（会恢复默认界面设置）
-- 站点面板令牌存在 `%USERPROFILE%\.modelharbor\tokens.json`，**含凭证且为明文**（与你的 agent 配置文件同级风险），请勿提交或同步到共享目录；里面只有你主动填过的站点，在「令牌」面板点「删除」或直接删除该文件即可清空。文件里 `tokens` 段存令牌、`user_ids` 段存可选的用户 ID（旧版站点才需要，同样视为凭证）；工具不会把它们写进 `settings.json`、也不会写进任何 agent 配置文件，接口请求只把令牌放进 `Authorization` 头、用户 ID 放进 `New-Api-User` 头（都不进 URL、不进日志与状态栏文本）
+- 配置文件中的 `apiKey` 为**明文**（DSH 的 `.credentials.yaml` 同样），请勿提交到公开仓库
+- 界面设置文件只保存界面选择、不含密钥，可以安全删除（会恢复默认界面设置）
+- 站点面板令牌存在 `%USERPROFILE%\.modelharbor\tokens.json`，**含凭证且为明文**（与 agent 配置文件同级风险），请勿提交或同步到共享目录。里面只有你主动填过的站点，在「令牌」面板点「删除」或直接删除该文件即可清空
+- 令牌与用户 ID **不会**写进 `settings.json`，也不会写进任何 agent 配置文件；接口请求只把它们放进请求头（不进 URL、不进日志与状态栏文本）

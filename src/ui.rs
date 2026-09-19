@@ -4,41 +4,173 @@ pub fn card_frame<R>(
     ui: &mut egui::Ui,
     open: bool,
     highlight: u8,
+    id: egui::Id,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::Response {
     let corner = ui.visuals().widgets.noninteractive.corner_radius;
+    let shape = crate::theme::active_style(ui.ctx());
     let fill = if open {
         ui.visuals().faint_bg_color
     } else {
         ui.visuals().extreme_bg_color
     };
+    // 悬停 id 必须按卡片稳定派生：前面卡片展开 / 折叠会改变后面卡片的 auto_id，
+    // 用 auto_id 会把悬停状态串到别的卡片上。矩形画完才有，存进临时存储
+    // 供下一帧判定指针是否悬停——即悬停状态天然滞后一帧。
+    let hover_id = id.with("hover");
+    let mut hover_t = 0.0f32;
     let (stroke_color, stroke_width) = match highlight {
         1 => (egui::Color32::from_rgb(255, 180, 50), 2.0), // source: orange
         2 => (egui::Color32::from_rgb(100, 200, 100), 2.0), // target: green
-        // 无高亮时跟随形状预设的描边宽度（锐利 1.5 / 面板 2.0 比默认粗）。
-        _ => (
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-            crate::theme::active_style(ui.ctx()).border_width(),
-        ),
+        // 无高亮时跟随形状预设的描边宽度（恒宽），颜色向强调色做悬停过渡。
+        //
+        // egui 的 Frame 会把描边宽度算进占位尺寸
+        // （`outer_rect = content + margin + 2 * stroke`），所以悬停描边
+        // 绝不能改宽度：极简 / 云朵下 0 → 1px 会把卡片撑高 1px，指针脱离
+        // 悬停后收回、再悬停……整列组件就这样来回波动。高亮环改由
+        // [`draw_hover_ring`] 用 painter 画在矩形内侧，不参与布局。
+        _ => {
+            let last_rect = ui
+                .ctx()
+                .data(|data| data.get_temp::<egui::Rect>(hover_id.with("rect")));
+            let pointer = ui.input(|input| input.pointer.hover_pos());
+            let hovered =
+                matches!((last_rect, pointer), (Some(rect), Some(pos)) if rect.contains(pos));
+            let t = crate::motion::hover_t(ui.ctx(), hover_id, hovered);
+            hover_t = t;
+            let base = ui.visuals().widgets.noninteractive.bg_stroke.color;
+            let target = hover_target_color(ui);
+            let rest_width = if shape.has_card_shadow() {
+                0.0
+            } else {
+                shape.border_width()
+            };
+            (crate::motion::lerp_color(base, target, t), rest_width)
+        }
     };
-    let frame = egui::Frame::NONE
+    let mut frame = egui::Frame::NONE
         .fill(fill)
         .corner_radius(corner)
         .stroke(egui::Stroke::new(stroke_width, stroke_color))
-        .inner_margin(egui::Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.style_mut().spacing.item_spacing = egui::vec2(4.0, 2.0);
-            add(ui);
+        .inner_margin(egui::Margin::symmetric(12, 6));
+    if shape.has_card_shadow() {
+        frame = frame.shadow(shape.card_shadow(ui.visuals().dark_mode));
+    }
+    let frame = frame.show(ui, |ui| {
+        ui.style_mut().spacing.item_spacing = egui::vec2(4.0, 2.0);
+        add(ui);
+    });
+    if highlight == 0 {
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(hover_id.with("rect"), frame.response.rect);
         });
-    draw_bevel(ui, frame.response.rect);
+    }
+    draw_accent_bar(ui, frame.response.rect);
+    draw_relief(ui, frame.response.rect);
+    draw_hover_ring(ui, frame.response.rect, hover_t, stroke_width);
     frame.response
 }
 
-/// 内嵌浮雕的线段：`(亮边, 暗边)`，各两条。
+/// 石板 / 浮雕的「坐在底上」质感。
 ///
-/// 亮边在上 / 左，暗边在下 / 右，合起来是「左上受光」的浮雕。
-/// 抽成纯函数是为了能直接断言「线落在矩形内侧、且两端避开圆角」——
-/// 画到圆角外会冒出直角，看上去像多了一个方框。
+/// 接触影：向右下偏移 1px 的整圈暗色描边（跟随圆角，一半落在卡外），
+/// 石板和浮雕都有。浮雕在此之上再画凸起受光线（卡内左上亮、右下暗）；
+/// 石板是**平放**的板，只有描边和接触影，没有受光线——这是它和浮雕
+/// 的机制区别，而不是圆角和强度差异。
+fn draw_relief(ui: &egui::Ui, rect: egui::Rect) {
+    let style = crate::theme::active_style(ui.ctx());
+    if !style.has_contact_shadow() {
+        return;
+    }
+    let shadow = style.contact_shadow_color(ui.visuals().dark_mode);
+    let radius = ui.visuals().widgets.noninteractive.corner_radius;
+    let painter = ui.painter();
+    painter.rect_stroke(
+        rect.translate(egui::vec2(1.0, 1.0)),
+        radius,
+        egui::Stroke::new(1.0, shadow),
+        egui::StrokeKind::Inside,
+    );
+    if style.has_bevel() {
+        let (light, dark) = style.bevel_colors(ui.visuals().dark_mode);
+        let (light_lines, dark_lines) = bevel_segments(rect, radius.nw as f32);
+        for segment in light_lines {
+            painter.line_segment(segment, egui::Stroke::new(1.0, light));
+        }
+        for segment in dark_lines {
+            painter.line_segment(segment, egui::Stroke::new(1.0, dark));
+        }
+    }
+}
+
+/// 色带在卡片上的覆盖区：**只有顶部 3px**。
+///
+/// 抽成纯函数是为了能直接断言「色带不越界到内容区」——曾经用
+/// 「整卡填色再盖回」实现，覆盖动作发生在内容之后，把卡片文字全刷没了。
+pub fn accent_bar_rect(rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.right(), rect.top() + ACCENT_BAR_HEIGHT),
+    )
+}
+
+/// 色带高度（像素）。
+pub const ACCENT_BAR_HEIGHT: f32 = 3.0;
+
+/// 色带：卡片顶部一条 3px 主题强调色，随顶角圆弧收边。
+///
+/// 必须**只画顶部条带**（用 painter 的裁剪区限制），不能「整卡填色再盖回」——
+/// 那样覆盖动作发生在内容画完之后，会把卡片里的文字一起刷掉。
+/// 条带用整卡圆角矩形 + 裁剪到顶部 3px 得到：顶角圆弧天然对齐。
+/// painter 绘制，不参与布局。
+fn draw_accent_bar(ui: &egui::Ui, rect: egui::Rect) {
+    let style = crate::theme::active_style(ui.ctx());
+    if !style.has_accent_bar() {
+        return;
+    }
+    let accent = ui.visuals().hyperlink_color;
+    let corner = ui.visuals().widgets.noninteractive.corner_radius;
+    let painter = ui.painter().with_clip_rect(accent_bar_rect(rect));
+    painter.rect_filled(rect, corner, accent);
+}
+
+/// 悬停高亮的目标色。
+///
+/// 深色主题用强调色：彩环在暗底上好看。浅色主题的强调色多是饱和的
+/// 深蓝 / 深紫（亮色主题是 1D4ED8），整圈环会显得突兀刺眼，改用中性
+/// 深灰——悬停反馈照样清楚，但不和主题色打架。
+fn hover_target_color(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        ui.visuals().hyperlink_color
+    } else {
+        egui::Color32::from_gray(110)
+    }
+}
+
+/// 悬停高亮环：只给**平时无边框**的形状（极简 / 云朵卡片）画，
+/// 沿卡片内侧 1px，宽度随悬停进度浮现。
+///
+/// 必须用 painter 而不是 Frame 描边：后者会把宽度算进占位尺寸，
+/// 0 → 1px 的变化会让卡片在「撑开 → 收回」间震荡，整列跟着波动。
+fn draw_hover_ring(ui: &egui::Ui, rect: egui::Rect, hover_t: f32, rest_stroke_width: f32) {
+    if hover_t <= 0.01 || rest_stroke_width > 0.0 {
+        return;
+    }
+    let color = hover_target_color(ui);
+    let corner = ui.visuals().widgets.noninteractive.corner_radius;
+    ui.painter().rect_stroke(
+        rect,
+        corner,
+        egui::Stroke::new(hover_t, color),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// 凸起浮雕的内嵌线段：`(亮边, 暗边)`，各两条。
+///
+/// 凸起的受光方向：亮边在内侧左上，暗边在内侧右下——顶光打在凸出元素
+/// 的上沿，下沿留下阴影，看起来是「立起来」而不是「凹进去」。
+/// 抽成纯函数是为了能直接断言「线落在矩形内侧、且两端避开圆角」。
 pub fn bevel_segments(
     rect: egui::Rect,
     radius: f32,
@@ -66,28 +198,6 @@ pub fn bevel_segments(
         ],
     ];
     (light, dark)
-}
-
-/// 石板形状的内嵌浮雕（左上亮、右下暗，各 1px）。
-///
-/// egui 的 `Frame` 只能画一圈同色描边，画不出方向性的立体感；
-/// 这里在卡片内侧补四条线，配合描边构成石板观感。
-/// 其余形状不画（`has_bevel()` 为假时直接返回）。
-fn draw_bevel(ui: &egui::Ui, rect: egui::Rect) {
-    let style = crate::theme::active_style(ui.ctx());
-    if !style.has_bevel() {
-        return;
-    }
-    let (light, dark) = style.bevel_colors(ui.visuals().dark_mode);
-    let radius = ui.visuals().widgets.noninteractive.corner_radius.nw as f32;
-    let (light_lines, dark_lines) = bevel_segments(rect, radius);
-    let painter = ui.painter();
-    for segment in light_lines {
-        painter.line_segment(segment, egui::Stroke::new(1.0, light));
-    }
-    for segment in dark_lines {
-        painter.line_segment(segment, egui::Stroke::new(1.0, dark));
-    }
 }
 
 /// 表单字段标签：**左对齐**且宽度按文本内容自适应（上限 `max_width`），
@@ -236,6 +346,19 @@ mod tests {
     use super::{drag_handle_dots, merge_drag_target, DRAG_HANDLE_GAP};
     use eframe::egui;
 
+    /// 色带只覆盖卡片顶部 3px：越界就会盖住卡片文字（曾经整卡刷白）。
+    #[test]
+    fn accent_bar_covers_only_the_top_strip() {
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(200.0, 60.0));
+        let bar = super::accent_bar_rect(rect);
+        assert_eq!(bar.height(), super::ACCENT_BAR_HEIGHT);
+        assert_eq!(bar.top(), rect.top());
+        assert_eq!(bar.left(), rect.left());
+        assert_eq!(bar.right(), rect.right());
+        // 必须远小于卡片高度，绝不能盖到内容。
+        assert!(bar.bottom() < rect.top() + 10.0, "色带侵入内容区：{bar:?}");
+    }
+
     /// 点阵的几何中心必须与控件矩形中心重合：控件被 `interact_size` 撑高
     /// （14x18 的按钮放进 24px 高的行里）后，点阵仍要落在中间。
     #[test]
@@ -264,7 +387,8 @@ mod tests {
         }
     }
 
-    /// 浮雕线要落在矩形内侧，且两端避开圆角。
+    /// 凸起浮雕线要落在矩形内侧，且两端避开圆角；方向必须是
+    /// 「亮边在上 / 左、暗边在下 / 右」（凸起受光，不是凹进去）。
     #[test]
     fn bevel_lines_stay_inside_and_clear_the_corners() {
         use super::bevel_segments;
@@ -275,13 +399,11 @@ mod tests {
         // 都在矩形内侧 1px（Frame 的描边占掉那一圈）。
         assert!(top[0].y > rect.top() && top[0].y < rect.bottom());
         assert!(left[0].x > rect.left() && left[0].x < rect.right());
-        // 上边线的两端各留出圆角。
         assert!((top[0].x - (rect.left() + 1.0 + radius)).abs() < 0.01);
         assert!((top[1].x - (rect.right() - 1.0 - radius)).abs() < 0.01);
-        // 左边线的两端同理。
         assert!((left[0].y - (rect.top() + 1.0 + radius)).abs() < 0.01);
         assert!((left[1].y - (rect.bottom() - 1.0 - radius)).abs() < 0.01);
-        // 暗边在下 / 右，与亮边对称。
+        // 暗边在下 / 右，与亮边对称（凸起受光方向）。
         let [bottom, right] = dark;
         assert!(bottom[0].y < rect.bottom() && bottom[0].y > rect.top());
         assert!(right[0].x < rect.right() && right[0].x > rect.left());

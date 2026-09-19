@@ -160,6 +160,32 @@ pub struct App {
     backend_icons: Vec<Option<egui::TextureHandle>>,
 }
 
+/// 启动时的方言判定：以**文件内容**为准，路径所属页面只作回退。
+///
+/// `detect_preferring_overrides` 只回答「哪一页填了覆盖路径且文件存在」，
+/// 不看内容。用户把 opencode.json 填到 pi 页时，用 pi 方言去读会解析出
+/// 0 条 provider——表现为「写了路径却不自动加载」。这里按内容纠正，
+/// 与手动加载（`reload_for_page`）用同一套判定。
+///
+/// **文件读不出内容时保持页面推断**：`detect_for_path` 在无内容时按扩展名
+/// 回落（`.json` → opencode），据此改判会在文件缺失 / 无权限时把页面
+/// 误判成 opencode，并可能把错误路径记进持久化覆盖。
+fn startup_format(owner: ConfigFormat, path: &str) -> ConfigFormat {
+    let path = path.trim();
+    if path.is_empty() {
+        return owner;
+    }
+    let readable = if crate::util::is_wsl_path(path) {
+        crate::util::read_wsl_file(path).is_ok()
+    } else {
+        std::fs::read_to_string(path).is_ok()
+    };
+    if !readable {
+        return owner;
+    }
+    ConfigPaths::detect_for_path(path).0
+}
+
 impl Default for App {
     fn default() -> Self {
         let prefs = crate::prefs::Prefs::load();
@@ -170,6 +196,11 @@ impl Default for App {
         let (format, path) = paths
             .detect_preferring_overrides(&prefs.config_paths)
             .unwrap_or((ConfigFormat::Opencode, String::new()));
+        // 启动探测只按「哪一页有覆盖路径」选后端，**不看文件内容**。若用户把
+        // A 格式的文件指定到了 B 页（例如 pi 页填了 opencode.json），用 B 的
+        // 方言去读会解析出 0 条，表现为「写了路径却不自动加载」。这里按实际
+        // 内容纠正方言——与手动加载（`reload_for_page`）走同一套判定。
+        let format = startup_format(format, &path);
         let mut app = Self {
             root: Value::Object(Map::new()),
             agents: Vec::new(),
@@ -306,12 +337,15 @@ impl eframe::App for App {
             self.ui_page_header(ui);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                 .scroll_source(egui::scroll_area::ScrollSource {
                     drag: false,
                     ..egui::scroll_area::ScrollSource::ALL
                 })
                 .show(ui, |ui| {
-                    ui.add_space(crate::theme::SPACE_1);
+                    // 顶部不留空白：Providers 吸顶条一滚就会贴到滚动区可视顶。
+                    // 多出 4px 时，标题会从内容流位置跳到可视顶，看起来整行往上抬。
+                    // （egui 还会把裁剪顶上扩 3px，见 bars::sticky_y 的说明。）
                     // Providers 在上、Agents 在下：Agents 只属于 opencode 页面，
                     // 且按需求放在 Providers 下方（只影响界面顺序，不动配置文件里的字段顺序）。
                     self.ui_providers_section(ui);
@@ -669,6 +703,11 @@ impl App {
         // `.open()` 要借一个局部变量：直接传 `&mut self.show_tokens`
         // 会与闭包里的 `&mut self` 冲突。
         let mut open = true;
+        // 始终居中：`default_pos` 只在首次生效（之后记住用户拖过的位置），
+        // 要每帧都居中得用 `current_pos` 指定。窗口尺寸固定，居中可以
+        // 直接由内容区算出左上角。
+        let size = egui::vec2(620.0, height);
+        let centered = area.center() - size / 2.0;
         egui::Window::new("站点面板令牌")
             // 提到 Foreground：预览分隔条在 Middle 层，窗在它上面，
             // 分割线不会横穿悬浮窗。
@@ -676,10 +715,10 @@ impl App {
             .collapsible(false)
             .resizable(false)
             .order(Self::TOKENS_WINDOW_ORDER)
-            .fixed_size([620.0, height])
+            .fixed_size(size)
             // 不允许拖到主窗口外：拖出去后标题栏可能落到屏幕外，窗口就找不回来了。
             .constrain_to(area)
-            .default_pos(egui::pos2(area.left() + 90.0, area.top() + 90.0))
+            .current_pos(centered)
             .frame({
                 // 悬浮窗用比卡片更大的圆角与内边距，与主界面分层；
                 // 圆角在形状预设基础上加一档（上限 20）。

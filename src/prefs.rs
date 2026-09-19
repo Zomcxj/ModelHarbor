@@ -638,11 +638,11 @@ mod tests {
         // 类型不对按没设置过处理。
         assert_eq!(Prefs::parse(r#"{"ui_style":3}"#).ui_style, "");
         let prefs = Prefs {
-            ui_style: "sharp".to_string(),
+            ui_style: "band".to_string(),
             ..Default::default()
         };
         let text = prefs.to_json();
-        assert!(text.contains(r#""ui_style": "sharp""#), "{text}");
+        assert!(text.contains(r#""ui_style": "band""#), "{text}");
         assert_eq!(Prefs::parse(&text), prefs);
     }
 

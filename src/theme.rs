@@ -77,49 +77,54 @@ fn over(dst: Color32, src: Color32) -> Color32 {
     )
 }
 
-/// 界面形状预设：圆角、描边粗细、内嵌亮暗边的组合。
+/// 界面形状预设：圆角、描边粗细、内嵌亮暗边、投影、色带的组合。
 ///
-/// 与主题正交 —— 主题管颜色，形状管「控件长什么样」。四档覆盖从圆润到方正的
-/// 常见观感；圆角仍可由「外观」面板里的滑块连续覆盖。
+/// 与主题正交 —— 主题管颜色，形状管「控件长什么样」。8 档各有一套
+/// **不同的机制**（描边 / 无边框 / 凸起光线 / 软投影 / 接触影 / 顶部色带），
+/// 而不是同一效果调强度。
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum UiStyle {
     /// 圆润：默认档，圆角 10、1px 描边。
     #[default]
     Soft,
-    /// 紧凑：小圆角 6、1px 描边。
-    Compact,
-    /// 石板：小圆角 + 亮暗内嵌边，做出轻微立体感。
-    Slab,
-    /// 锐利：全直角 + 1.5px 描边。
-    Sharp,
-    /// 厚重：圆角 10 + 2.5px 粗边，卡片感强。
-    Heavy,
     /// 精致：圆角 6 + 0.5px 细边，轻量感。
     Fine,
+    /// 极简：全直角 + 0px 无边框，纯色块。
+    Minimal,
     /// 标签：胶囊 20 + 0.5px 细边，标签样式。
     Tag,
+    /// 云朵：大圆角 16 + 软投影，卡片浮在底上。
+    Cloud,
+    /// 浮雕：凸起受光线 + 接触影，卡面「立」在底上。
+    Emboss,
+    /// 石板：平放石板——深色描边 + 接触影，无受光线。
+    Slab,
+    /// 色带：卡片顶部一条主题强调色色带。
+    Band,
 }
 
 impl UiStyle {
-    pub const ALL: [UiStyle; 7] = [
+    pub const ALL: [UiStyle; 8] = [
         UiStyle::Tag,
         UiStyle::Soft,
-        UiStyle::Compact,
-        UiStyle::Sharp,
-        UiStyle::Heavy,
-        UiStyle::Slab,
         UiStyle::Fine,
+        UiStyle::Minimal,
+        UiStyle::Cloud,
+        UiStyle::Emboss,
+        UiStyle::Slab,
+        UiStyle::Band,
     ];
 
     pub fn label(&self) -> &'static str {
         match self {
             UiStyle::Soft => "圆润",
-            UiStyle::Compact => "紧凑",
-            UiStyle::Slab => "石板",
-            UiStyle::Sharp => "锐利",
-            UiStyle::Heavy => "厚重",
             UiStyle::Fine => "精致",
+            UiStyle::Minimal => "极简",
             UiStyle::Tag => "标签",
+            UiStyle::Cloud => "云朵",
+            UiStyle::Emboss => "浮雕",
+            UiStyle::Slab => "石板",
+            UiStyle::Band => "色带",
         }
     }
 
@@ -127,12 +132,13 @@ impl UiStyle {
     pub fn key(&self) -> &'static str {
         match self {
             UiStyle::Soft => "soft",
-            UiStyle::Compact => "compact",
-            UiStyle::Slab => "slab",
-            UiStyle::Sharp => "sharp",
-            UiStyle::Heavy => "heavy",
             UiStyle::Fine => "fine",
+            UiStyle::Minimal => "minimal",
             UiStyle::Tag => "tag",
+            UiStyle::Cloud => "cloud",
+            UiStyle::Emboss => "emboss",
+            UiStyle::Slab => "slab",
+            UiStyle::Band => "band",
         }
     }
 
@@ -148,39 +154,100 @@ impl UiStyle {
     pub fn radius(&self) -> u8 {
         match self {
             UiStyle::Soft => RADIUS_MD,
-            UiStyle::Compact => 6,
-            UiStyle::Slab => RADIUS_SM,
-            UiStyle::Sharp => 0,
-            UiStyle::Heavy => RADIUS_MD,
             UiStyle::Fine => 6,
+            UiStyle::Minimal => 0,
             UiStyle::Tag => RADIUS_SLIDER_MAX,
+            UiStyle::Cloud => 16,
+            UiStyle::Emboss => 8,
+            UiStyle::Slab => RADIUS_SM,
+            UiStyle::Band => 8,
         }
     }
 
     /// 控件描边宽度（像素）。
     pub fn border_width(&self) -> f32 {
         match self {
-            UiStyle::Soft | UiStyle::Compact | UiStyle::Slab => 1.0,
-            UiStyle::Sharp => 1.5,
-            UiStyle::Heavy => 2.5,
+            UiStyle::Soft | UiStyle::Slab | UiStyle::Emboss | UiStyle::Band => 1.0,
+            UiStyle::Minimal => 0.0,
             UiStyle::Fine | UiStyle::Tag => 0.5,
+            // 云朵的卡片本身不描边（靠投影成形），输入框 / 按钮仍要 1px，否则浅底上看不见框。
+            UiStyle::Cloud => 1.0,
         }
     }
 
-    /// 是否画亮暗内嵌边（左上偏亮、右下偏暗的立体感）。
+    /// 是否画凸起受光线（卡内左上亮、右下暗）。
     pub fn has_bevel(&self) -> bool {
-        matches!(self, UiStyle::Slab)
+        matches!(self, UiStyle::Emboss)
     }
 
-    /// 内嵌边在浅色主题下的明暗方向要反过来，否则浅底上「左上更亮」看不出来。
+    /// 是否画接触影（向右下偏移的整圈暗色描边，让卡片「坐」在底上）。
+    pub fn has_contact_shadow(&self) -> bool {
+        matches!(self, UiStyle::Slab | UiStyle::Emboss)
+    }
+
+    /// 是否给卡片画一层软投影（云朵）。
+    pub fn has_card_shadow(&self) -> bool {
+        matches!(self, UiStyle::Cloud)
+    }
+
+    /// 是否在卡片顶部画主题强调色色带。
+    pub fn has_accent_bar(&self) -> bool {
+        matches!(self, UiStyle::Band)
+    }
+
+    /// 写进 egui `WidgetVisuals` 的描边宽度。
+    ///
+    /// 浮雕的控件描边要换成内嵌暗边（1px），让整卡质感统一；石板的
+    /// 深色描边本身就是边框，直接用原宽。
+    pub fn widget_stroke_width(&self) -> f32 {
+        if self.has_bevel() {
+            1.0
+        } else {
+            self.border_width()
+        }
+    }
+
+    /// 卡片软投影：深色用黑、浅色用更深的灰，浅底上也能看出浮起。
+    pub fn card_shadow(&self, dark: bool) -> egui::epaint::Shadow {
+        let color = if dark {
+            Color32::from_black_alpha(110)
+        } else {
+            Color32::from_black_alpha(50)
+        };
+        egui::epaint::Shadow {
+            offset: [0, 4],
+            blur: 14,
+            spread: 0,
+            color,
+        }
+    }
+
+    /// 凸起受光线的颜色（浮雕专用），返回 `(亮边, 暗边)`。
+    ///
+    /// 浅底上白高光隐形（白上白），**立体感全靠深色暗边**：浅色主题的暗边
+    /// 拉到近实色（alpha 230）——1px 的半透明线在浅底上会化掉。
+    /// 深底走反方向：亮边负责立体感。
     pub fn bevel_colors(&self, dark: bool) -> (Color32, Color32) {
         if dark {
-            (Color32::from_white_alpha(18), Color32::from_black_alpha(90))
+            (
+                Color32::from_white_alpha(55),
+                Color32::from_black_alpha(160),
+            )
         } else {
             (
-                Color32::from_white_alpha(200),
-                Color32::from_black_alpha(40),
+                Color32::from_white_alpha(255),
+                Color32::from_black_alpha(230),
             )
+        }
+    }
+
+    /// 接触影颜色：向右下偏移的整圈暗色描边用。石板 / 浮雕共用，
+    /// 浅底更实、深底更透。
+    pub fn contact_shadow_color(&self, dark: bool) -> Color32 {
+        if dark {
+            Color32::from_black_alpha(120)
+        } else {
+            Color32::from_black_alpha(140)
         }
     }
 }
@@ -351,11 +418,10 @@ impl Theme {
             &mut style.visuals.widgets.noninteractive,
             &mut style.visuals.widgets.inactive,
         ] {
-            w.bg_stroke.width = shape.border_width();
+            w.bg_stroke.width = shape.widget_stroke_width();
         }
-        if shape.has_bevel() {
-            // 石板：把描边换成偏暗的一条，并给悬浮窗 / 弹出层一个偏右下的投影，
-            // 让面板看起来是「压在」底上的石板而不是平贴的色块。
+        if shape.has_contact_shadow() {
+            // 浮雕：控件描边换成内嵌暗边；悬浮窗给偏右下的投影，与卡片接触影呼应。
             let (_, edge) = shape.bevel_colors(dark);
             style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, edge);
             style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, edge);
@@ -366,6 +432,11 @@ impl Theme {
                 color: edge,
             };
             style.visuals.popup_shadow = style.visuals.window_shadow;
+        }
+        if shape.has_card_shadow() {
+            let shadow = shape.card_shadow(dark);
+            style.visuals.window_shadow = shadow;
+            style.visuals.popup_shadow = shadow;
         }
         ctx.set_theme(self.egui_theme());
         ctx.set_style(style);
@@ -693,6 +764,13 @@ mod semantics_tests {
             TEXT_CAPTION > default_small,
             "副信息字号 {TEXT_CAPTION} 不应退回 egui 默认的 {default_small}"
         );
+        assert!(
+            TEXT_CAPTION < TEXT_SMALL
+                && TEXT_SMALL < TEXT_BODY
+                && TEXT_BODY < TEXT_TITLE
+                && TEXT_TITLE < TEXT_HEADING,
+            "字阶必须严格递增：caption {TEXT_CAPTION} < small {TEXT_SMALL} < body {TEXT_BODY} < title {TEXT_TITLE} < heading {TEXT_HEADING}"
+        );
     }
 
     /// 一次丢弃式渲染：取回本帧所有顶点色（含数量）。
@@ -944,13 +1022,24 @@ mod tests {
         }
     }
 
-    /// 预设要真的做出区别：圆角与描边不能四个都一样。
+    /// 预设要真的做出区别：圆角 / 描边 / 浮雕 / 投影不能撞车。
     #[test]
     fn shape_presets_differ_in_radius_or_border() {
-        let seen: Vec<(u8, u32)> = UiStyle::ALL
+        let seen: Vec<(u8, u32, bool, bool)> = UiStyle::ALL
             .iter()
-            // 描边宽度是 f32，转成定点再比较（浮点不能直接做键）。
-            .map(|s| (s.radius(), (s.border_width() * 10.0) as u32))
+            .map(|s| {
+                (
+                    s.radius(),
+                    // 云朵卡片不描边，控件仍 1px： uniqueness 按卡片观感算 0。
+                    if s.has_card_shadow() {
+                        0
+                    } else {
+                        (s.border_width() * 10.0) as u32
+                    },
+                    s.has_bevel(),
+                    s.has_card_shadow(),
+                )
+            })
             .collect();
         let mut unique = seen.clone();
         unique.sort_unstable();
@@ -958,8 +1047,57 @@ mod tests {
         assert_eq!(
             unique.len(),
             seen.len(),
-            "形状预设的（圆角, 描边）有重复：{seen:?}"
+            "形状预设的（圆角, 描边, 浮雕, 投影）有重复：{seen:?}"
         );
+    }
+
+    #[test]
+    fn heavy_is_gone_and_unknown_keys_fall_back() {
+        for removed in ["heavy", "sharp", "frosted", "compact", "neon", "prism"] {
+            assert!(!UiStyle::ALL.iter().any(|s| s.key() == removed));
+            assert_eq!(UiStyle::from_key(removed), UiStyle::default());
+        }
+        assert_eq!(UiStyle::from_key("cloud").key(), "cloud");
+        assert_eq!(UiStyle::from_key("emboss").key(), "emboss");
+        assert_eq!(UiStyle::from_key("slab").key(), "slab");
+        assert_eq!(UiStyle::from_key("band").key(), "band");
+        assert_eq!(UiStyle::from_key("minimal").key(), "minimal");
+        assert_eq!(UiStyle::from_key("fine").key(), "fine");
+    }
+
+    /// 石板与浮雕必须是**机制**不同，不是同一套光影调强度：
+    /// 浮雕有凸起受光线，石板只有描边 + 接触影（平放的板）。
+    #[test]
+    fn slab_and_emboss_use_different_mechanisms() {
+        assert!(UiStyle::Emboss.has_bevel(), "浮雕必须有凸起受光线");
+        assert!(!UiStyle::Slab.has_bevel(), "石板是平放的板，不该有受光线");
+        assert!(UiStyle::Slab.has_contact_shadow());
+        assert!(UiStyle::Emboss.has_contact_shadow());
+        // 色带是另一套机制：顶部强调条。
+        assert!(UiStyle::Band.has_accent_bar());
+        assert!(!UiStyle::Band.has_bevel());
+        assert!(!UiStyle::Band.has_contact_shadow());
+        assert!(!UiStyle::Band.has_card_shadow());
+    }
+
+    #[test]
+    fn light_bevel_is_strong_enough_on_light_backgrounds() {
+        let (light_hi, light_lo) = UiStyle::Emboss.bevel_colors(false);
+        let (dark_hi, dark_lo) = UiStyle::Emboss.bevel_colors(true);
+        assert!(
+            light_lo.a() > dark_hi.a(),
+            "浅色主题的暗边必须比深色主题的亮边更实，否则浅底上看不见"
+        );
+        assert!(light_hi.a() >= dark_hi.a());
+        assert!(light_lo.a() > 0 && dark_lo.a() > 0);
+        // 浅色主题的暗边必须近实色：半透明线在浅底上会化掉，用户已两次反馈。
+        assert!(
+            light_lo.a() >= 190,
+            "浅色浮雕暗边 alpha {} 不够实",
+            light_lo.a()
+        );
+        // 接触影在浅底上也要够实。
+        assert!(UiStyle::Slab.contact_shadow_color(false).a() >= 120);
     }
 
     /// 圆角 / 描边真的写进了 Style。
@@ -975,9 +1113,10 @@ mod tests {
                 "{} 的圆角没进 Style",
                 style.key()
             );
+            let expected_width = style.widget_stroke_width();
             assert_eq!(
                 widgets.bg_stroke.width,
-                style.border_width(),
+                expected_width,
                 "{} 的描边宽度没进 Style",
                 style.key()
             );
@@ -990,16 +1129,20 @@ mod tests {
         let mut applied: Option<(Theme, UiStyle)> = None;
         assert!(needs_apply_style(&mut applied, Theme::Dark, UiStyle::Soft));
         assert!(!needs_apply_style(&mut applied, Theme::Dark, UiStyle::Soft));
-        assert!(needs_apply_style(&mut applied, Theme::Dark, UiStyle::Sharp));
+        assert!(needs_apply_style(
+            &mut applied,
+            Theme::Dark,
+            UiStyle::Minimal
+        ));
         assert!(needs_apply_style(
             &mut applied,
             Theme::Light,
-            UiStyle::Sharp
+            UiStyle::Minimal
         ));
         assert!(!needs_apply_style(
             &mut applied,
             Theme::Light,
-            UiStyle::Sharp
+            UiStyle::Minimal
         ));
     }
 
