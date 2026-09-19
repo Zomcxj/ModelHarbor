@@ -73,14 +73,26 @@ fn suffix_for_api(api: &str) -> Option<&'static str> {
     }
 }
 
-/// 把基址与后缀拼起来：已有相同后缀时不重复追加。
+/// 把基址与后缀拼起来，且**幂等**：先把基址末尾的协议路径段
+/// （`/messages`、`/responses`、`/chat/completions`、`/v1`）全部剥掉，再补规范后缀。
+///
+/// 这样既避免「基址本就含 `/v1` + 后缀 `/v1/messages`」拼成 `/v1/v1/messages`，
+/// 也能修复历史上已写坏的 `/v1/v1/messages`（下次保存自动收敛为 `/v1/messages`）。
 fn with_suffix(url: &str, suffix: &str) -> String {
-    let trimmed = url.trim().trim_end_matches('/');
-    if trimmed.ends_with(suffix) {
-        trimmed.to_string()
-    } else {
-        format!("{}{}", trimmed, suffix)
+    let mut base = url.trim().trim_end_matches('/');
+    loop {
+        let stripped = base
+            .strip_suffix("/messages")
+            .or_else(|| base.strip_suffix("/responses"))
+            .or_else(|| base.strip_suffix("/chat/completions"))
+            .or_else(|| base.strip_suffix("/v1"))
+            .map(|s| s.trim_end_matches('/'));
+        match stripped {
+            Some(s) if s != base => base = s,
+            _ => break,
+        }
     }
+    format!("{}{}", base, suffix)
 }
 
 /// 条目 → ProviderRow（每个模型一张卡片，key 用模型 id）。
@@ -95,14 +107,18 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let mut model = ModelRow::new();
-    model.id = id.clone();
-    model.name = v
+    // WorkBuddy 的 `id` 是账号/提供商级的唯一键（用户起的名，如 `claude_justwoker`），
+    // `name` 才是模型名（如 `Claude Opus 4.8`）。前者落到 ProviderRow.key（卡片身份），
+    // 模型行只承载模型名——否则模型 id 会显示成提供商名。
+    let model_name = v
         .get("name")
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(&id)
         .to_string();
+    let mut model = ModelRow::new();
+    model.id = model_name.clone();
+    model.name = model_name;
     model.context = v
         .get("maxInputTokens")
         .map(crate::util::number_text_public)
@@ -162,17 +178,22 @@ fn entry_from_provider(p: &ProviderRow) -> Value {
     };
     let model = p.models.first();
 
+    // WorkBuddy `id` = 账号键（= ProviderRow.key），`name` = 模型名。
+    // 模型名取模型行 id（WB 页只显示这一个模型字段），回落 name、再回落账号键。
     obj.insert("id".into(), Value::String(p.key.clone()));
-    obj.insert(
-        "name".into(),
-        Value::String(
-            model
-                .map(|m| m.name.trim())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(&p.key)
-                .to_string(),
-        ),
-    );
+    let model_name = model
+        .map(|m| {
+            let id = m.id.trim();
+            if id.is_empty() {
+                m.name.trim()
+            } else {
+                id
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&p.key)
+        .to_string();
+    obj.insert("name".into(), Value::String(model_name));
     if !p.description.trim().is_empty() {
         obj.insert("vendor".into(), Value::String(p.description.clone()));
     }

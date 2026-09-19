@@ -280,9 +280,19 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
                 "audio" => "supportsAudio",
                 _ => continue,
             };
-            input_format.insert(field.into(), Value::Bool(on));
+            // 只同步原本已声明的键，或新打开的模态（on）。绝不给未声明的键补
+            // false——那会把「未声明」变成「明确不支持」，凭空展开成五个 flag；
+            // 尤其 supportsText:false 会让 ZCode 隐藏/拒绝该模型（就是保存后
+            // 软件里不显示的根因）。
+            if input_format.contains_key(field) || on {
+                input_format.insert(field.into(), Value::Bool(on));
+            }
         }
-        props.insert("inputFormat".into(), Value::Object(input_format));
+        if input_format.is_empty() {
+            props.remove("inputFormat");
+        } else {
+            props.insert("inputFormat".into(), Value::Object(input_format));
+        }
     }
     // 同理：只在原文件已有该键时同步 tool_call，否则不凭空声明。
     if props.contains_key("supportsToolCall") {

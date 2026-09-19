@@ -230,6 +230,49 @@ fn modalities_live_under_properties_input_format() {
 }
 
 #[test]
+fn does_not_expand_declared_modalities_into_false_flags() {
+    // 模型只声明了 inputFormat.supportsImage，保存不得把它展开成五个 flag
+    // （supportsText:false 等）——那是「凭空发明字段」，supportsText:false 会让
+    // ZCode 隐藏/拒绝该模型（保存后软件里不显示的根因）。
+    let content = r#"{
+      "config": {
+        "providerOrder": ["p1"],
+        "providerConfigRules": { "providerRules": [ {
+            "providerId": "p1", "providerName": "P1",
+            "config": { "access": { "type": "api-key", "apiKey": "k" },
+              "api": { "type": "anthropic-messages", "baseUrl": "https://x.invalid" },
+              "personalModelIds": ["m1"], "modelOrder": ["m1"] } } ]},
+        "modelConfigRules": { "providerModelRules": [ {
+            "modelId": "m1", "providerId": "p1",
+            "config": { "enabled": true, "properties": {
+              "contextWindow": 272000,
+              "inputFormat": { "supportsImage": true } } } } ],
+          "manualProviderModelRules": [] } } }"#;
+    let load = load_zcode(content);
+    let b = backends::backend(ConfigFormat::ZCode);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let input = &root["config"]["modelConfigRules"]["providerModelRules"][0]["config"]
+        ["properties"]["inputFormat"];
+    assert_eq!(input["supportsImage"], json!(true));
+    assert!(
+        input.get("supportsText").is_none(),
+        "不该补 supportsText:false"
+    );
+    assert!(
+        input.get("supportsVideo").is_none(),
+        "不该补 supportsVideo:false"
+    );
+    assert!(
+        input.get("supportsPdf").is_none(),
+        "不该补 supportsPdf:false"
+    );
+    assert!(
+        input.get("supportsAudio").is_none(),
+        "不该补 supportsAudio:false"
+    );
+}
+
+#[test]
 fn cross_format_save_does_not_leak_foreign_keys() {
     // 从 WorkBuddy 形状的 raw 转存到 ZCode：对方的 id/vendor/url 不得进 config。
     let mut p = ProviderRow::new();

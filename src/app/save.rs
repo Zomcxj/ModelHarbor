@@ -228,7 +228,7 @@ impl App {
                     "input" => model
                         .raw
                         .get("properties")
-                        .and_then(|v| v.get("supportsText"))
+                        .and_then(|v| v.get("inputFormat"))
                         .is_some(),
                     "tool_call" => model
                         .raw
@@ -244,7 +244,9 @@ impl App {
                 },
                 // WorkBuddy 每条模型自带全部属性。
                 ConfigFormat::WorkBuddy => match field {
-                    "name" => model.raw.get("name").is_some(),
+                    // 模型名已落到模型行的 id 字段（WB 无独立模型 id），不再单列 name 字段，
+                    // 否则 id / name 两个框都显示同一个模型名，反而误导。
+                    "name" => false,
                     "context" => model.raw.get("maxInputTokens").is_some(),
                     "output" => model.raw.get("maxOutputTokens").is_some(),
                     "input" => model.raw.get("supportsImages").is_some(),

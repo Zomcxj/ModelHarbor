@@ -188,6 +188,58 @@ fn custom_protocol_url_is_not_normalized() {
 }
 
 #[test]
+fn messages_suffix_never_doubles_v1() {
+    // 基址已带 /v1 时补后缀不得拼成 /v1/v1/messages；历史写坏的 /v1/v1/messages
+    // 再次保存要收敛回 /v1/messages。
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    for (base, expect) in [
+        (
+            "https://api.example.com",
+            "https://api.example.com/v1/messages",
+        ),
+        (
+            "https://api.example.com/v1",
+            "https://api.example.com/v1/messages",
+        ),
+        (
+            "https://api.example.com/v1/v1/messages",
+            "https://api.example.com/v1/messages",
+        ),
+    ] {
+        let mut p = ProviderRow::new();
+        p.key = "m1".into();
+        p.base_url = base.into();
+        p.pi_api = "anthropic-messages".into();
+        let mut m = ModelRow::new();
+        m.id = "m1".into();
+        p.models = vec![m];
+        let out = b.serialize_root(&[], std::slice::from_ref(&p), &json!([]), None);
+        assert_eq!(out[0]["url"], json!(expect), "base={base}");
+    }
+}
+
+#[test]
+fn model_row_carries_model_name_not_account_key() {
+    // WorkBuddy 的 id 是账号键、name 是模型名。解析后 provider.key 拿账号键，
+    // 模型行拿模型名——不能让模型 id 显示成账号/提供商名。
+    let content = r#"[
+      { "id": "claude_justwoker", "name": "Claude Opus 4.8",
+        "url": "https://api.justwoker.icu/v1/messages", "apiKey": "k",
+        "useCustomProtocol": true, "maxInputTokens": 272000, "maxOutputTokens": 128000 }
+    ]"#;
+    let load = load_wb(content);
+    let p = &load.providers[0];
+    assert_eq!(p.key, "claude_justwoker", "provider key = 账号键");
+    assert_eq!(p.models[0].id, "Claude Opus 4.8", "模型行 = 模型名");
+
+    // 写回：id 仍是账号键，name 仍是模型名。
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let out = b.serialize_root(&[], &load.providers, &load.extras, None);
+    assert_eq!(out[0]["id"], json!("claude_justwoker"));
+    assert_eq!(out[0]["name"], json!("Claude Opus 4.8"));
+}
+
+#[test]
 fn current_file_save_preserves_unknown_entry_keys() {
     let content = r#"[
       { "id": "m1", "name": "M1", "vendor": "Custom", "url": "https://x.invalid/v1",
