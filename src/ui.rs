@@ -21,8 +21,11 @@ pub fn card_frame<R>(
     let (stroke_color, stroke_width) = match highlight {
         1 => (egui::Color32::from_rgb(255, 180, 50), 2.0), // source: orange
         2 => (egui::Color32::from_rgb(100, 200, 100), 2.0), // target: green
-        // 无高亮时跟随形状预设的描边宽度（锐利 1.5 / 面板 2.0 比默认粗），
-        // 颜色向强调色做悬停过渡。
+        // 无高亮时跟随形状预设的描边宽度，颜色向强调色做悬停过渡。
+        //
+        // 平时无边框的形状（极简边宽 0、云朵卡片不描边）悬停时**画出**
+        // 1px 强调色描边当作高亮环——否则这两档下卡片悬停 / 点选没有任何
+        // 反馈。有边框的形状宽度不变，只走颜色过渡。
         _ => {
             let last_rect = ui
                 .ctx()
@@ -33,14 +36,18 @@ pub fn card_frame<R>(
             let t = crate::motion::hover_t(ui.ctx(), hover_id, hovered);
             let base = ui.visuals().widgets.noninteractive.bg_stroke.color;
             let accent = ui.visuals().hyperlink_color;
-            (
-                crate::motion::lerp_color(base, accent, t),
-                if shape.has_card_shadow() {
-                    0.0
-                } else {
-                    shape.border_width()
-                },
-            )
+            let rest_width = if shape.has_card_shadow() {
+                0.0
+            } else {
+                shape.border_width()
+            };
+            let stroke_width = if rest_width < 1.0 {
+                // 无边 → 悬停浮现 1px 强调色环
+                rest_width + (1.0 - rest_width) * t
+            } else {
+                rest_width
+            };
+            (crate::motion::lerp_color(base, accent, t), stroke_width)
         }
     };
     let mut frame = egui::Frame::NONE
