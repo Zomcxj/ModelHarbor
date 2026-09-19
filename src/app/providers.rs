@@ -24,12 +24,14 @@ pub(super) struct CardActions {
     pub(super) model_hover: Option<String>,
 }
 
-/// provider / model 表单的字段可见性与方言标签（opencode / pi / omp / DSH 共用）。
+/// provider / model 表单的字段可见性与方言标签（六个页面共用）。
 #[derive(Clone, Copy)]
 pub(super) struct ProviderFormFlags {
     pub(super) show_oc: bool,
     pub(super) show_omp: bool,
     pub(super) show_dsh: bool,
+    pub(super) show_zcode: bool,
+    pub(super) show_wb: bool,
     pub(super) show_provider_base_url: bool,
     pub(super) show_provider_timeout: bool,
     pub(super) show_model_name: bool,
@@ -51,10 +53,14 @@ impl ProviderFormFlags {
     pub(super) fn new(app: &App) -> Self {
         let show_oc = app.current_page == ConfigFormat::Opencode;
         let show_dsh = app.current_page == ConfigFormat::DeepSeekHarness;
+        let show_zcode = app.current_page == ConfigFormat::ZCode;
+        let show_wb = app.current_page == ConfigFormat::WorkBuddy;
         Self {
             show_oc,
             show_omp: app.current_page == ConfigFormat::OhMyPi,
             show_dsh,
+            show_zcode,
+            show_wb,
             show_provider_base_url: app.page_has_provider_field("base_url"),
             // opencode 的 options.timeout 始终显示（文件未写该字段时默认 180000ms）
             show_provider_timeout: show_oc || app.page_has_provider_field("timeout"),
@@ -70,6 +76,10 @@ impl ProviderFormFlags {
                 "options.baseURL"
             } else if show_dsh {
                 "baseURL"
+            } else if show_zcode {
+                "api.baseUrl"
+            } else if show_wb {
+                "url"
             } else {
                 "baseUrl"
             },
@@ -77,16 +87,38 @@ impl ProviderFormFlags {
                 "options.apiKey"
             } else if show_dsh {
                 "apiKeyEnv"
+            } else if show_zcode {
+                "access.apiKey"
             } else {
                 "apiKey"
             },
             context_label: if show_oc {
                 "limit.context"
+            } else if show_zcode {
+                "properties.contextWindow"
+            } else if show_wb {
+                "maxInputTokens"
             } else {
                 "contextWindow"
             },
-            output_label: if show_oc { "limit.output" } else { "maxTokens" },
-            input_label: if show_oc { "modalities.input" } else { "input" },
+            output_label: if show_oc {
+                "limit.output"
+            } else if show_zcode {
+                "optionSpecs.maxOutputTokens.max"
+            } else if show_wb {
+                "maxOutputTokens"
+            } else {
+                "maxTokens"
+            },
+            input_label: if show_oc {
+                "modalities.input"
+            } else if show_zcode {
+                "properties.supports*"
+            } else if show_wb {
+                "supportsImages"
+            } else {
+                "input"
+            },
         }
     }
 }
@@ -113,6 +145,13 @@ impl App {
                 "reasoningEfforts",
                 &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
             ),
+            // ZCode 的档位存在 optionSpecs.reasoningLevel.values，词表与内置库一致。
+            ConfigFormat::ZCode => (
+                "optionSpecs.reasoningLevel.values",
+                &["minimal", "low", "medium", "high", "xhigh", "max"],
+            ),
+            // WorkBuddy 没有档位清单，只有 supportsReasoning 布尔。
+            ConfigFormat::WorkBuddy => ("supportsReasoning", &[]),
         }
     }
 

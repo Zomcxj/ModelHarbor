@@ -25,6 +25,19 @@ pub(crate) fn is_dsh_shaped_provider(raw: &Value) -> bool {
     raw.get("apiKeyEnv").is_some() || raw.get("baseURL").is_some()
 }
 
+/// 判断 raw 是否为 WorkBuddy 方言（扁平条目，含 `useCustomProtocol` 或 `url`）。
+/// ZCode 输出时以此为界：WorkBuddy 形状全新构造，防止它的 id / vendor / url
+/// 被当成 ZCode 的扩展字段写进 `config`。
+pub(crate) fn is_workbuddy_shaped(raw: &Value) -> bool {
+    raw.get("useCustomProtocol").is_some() || raw.get("url").is_some()
+}
+
+/// 判断 raw 是否为 ZCode 方言（provider 规则的 `config`，含 `access` / `api`）。
+/// WorkBuddy 输出时以此为界，防止 group / access / api 泄漏进扁平条目。
+pub(crate) fn is_zcode_shaped(raw: &Value) -> bool {
+    raw.get("access").is_some() || raw.get("api").is_some()
+}
+
 /// `anthropic-messages` 协议的 base URL 归一化：**保证末尾带 `/v1`**（opencode 侧读入与写出共用）。
 ///
 /// opencode 的 `@ai-sdk/anthropic` 客户端只往 baseURL 追加 `/messages`，所以 baseURL 必须
@@ -57,6 +70,130 @@ pub fn without_v1_for_messages(api: &str, url: &str) -> String {
         Some(rest) => rest.trim_end_matches('/').to_string(),
         None => url.to_string(),
     }
+}
+
+/// ZCode 的 `api.type` → 内部统一的 api（pi / omp / DSH 词表）。
+///
+/// ZCode 只有三值，且 Chat Completions 叫 `openai-chat-completions`（多一个 `chat`），
+/// 与 pi 系的 `openai-completions` 是同一个线上协议——不转换就会把对方不认的字符串
+/// 写进配置。其余两值与 pi 系同名，原样透传。
+pub fn zcode_api_to_api(zcode_api: &str) -> String {
+    match zcode_api.trim() {
+        "openai-chat-completions" => "openai-completions".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// 内部统一的 api（pi / omp / DSH 词表）→ ZCode 的 `api.type`。
+///
+/// ZCode 只认三值；其余协议没有对应值，回落到 Chat Completions
+/// （ZCode 的默认协议，也是它 `openai-compatible` kind 的含义）。
+pub fn api_to_zcode_api(api: &str) -> String {
+    match api.trim() {
+        "openai-completions" | "openai-chat-completions" => "openai-chat-completions".to_string(),
+        "anthropic-messages" => "anthropic-messages".to_string(),
+        "openai-responses" => "openai-responses".to_string(),
+        _ => "openai-chat-completions".to_string(),
+    }
+}
+
+/// ZCode 的 `api.type` 是否属于「Chat Completions 家族」。
+pub fn zcode_api_is_chat(zcode_api: &str) -> bool {
+    zcode_api.trim() == "openai-chat-completions"
+}
+
+/// 输入模态列表（`text, image` 形式）→ 一组能力布尔。
+///
+/// WorkBuddy 用 `supportsImages` 这类布尔表达模态，ZCode 用
+/// `properties.supportsImage/Video/Pdf/Audio/Text`；两边都由本函数从同一个
+/// 逗号分隔列表推导，保证跨格式转换时语义一致。
+pub fn modalities_to_supports(list: &str) -> Vec<(&'static str, bool)> {
+    let items: HashSet<String> = list
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    vec![
+        ("text", items.contains("text")),
+        ("image", items.contains("image")),
+        ("video", items.contains("video")),
+        ("pdf", items.contains("pdf")),
+        ("audio", items.contains("audio")),
+    ]
+}
+
+/// 一组能力布尔 → 输入模态列表（`text, image` 形式，按固定顺序）。
+pub fn supports_to_modalities<'a>(pairs: impl IntoIterator<Item = (&'a str, bool)>) -> String {
+    const ORDER: [&str; 5] = ["text", "image", "video", "pdf", "audio"];
+    let on: HashSet<String> = pairs
+        .into_iter()
+        .filter(|(_, v)| *v)
+        .map(|(k, _)| k.to_ascii_lowercase())
+        .collect();
+    ORDER
+        .iter()
+        .filter(|k| on.contains(**k))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// ZCode 的模型 raw → 输入模态列表。
+pub fn zcode_modalities_from_raw(raw: &Value) -> String {
+    let props = raw.get("properties");
+    let flag = |key: &str| {
+        props
+            .and_then(|p| p.get(key))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    // 未写任何 supports* 键时留空，避免把「没写」误判成「只支持 text」。
+    let any = [
+        "supportsText",
+        "supportsImage",
+        "supportsVideo",
+        "supportsPdf",
+        "supportsAudio",
+    ]
+    .iter()
+    .any(|k| props.and_then(|p| p.get(k)).is_some());
+    if !any {
+        return String::new();
+    }
+    supports_to_modalities([
+        ("text", flag("supportsText")),
+        ("image", flag("supportsImage")),
+        ("video", flag("supportsVideo")),
+        ("pdf", flag("supportsPdf")),
+        ("audio", flag("supportsAudio")),
+    ])
+}
+
+/// WorkBuddy 的模型 raw → 输入模态列表（由 `supportsImages` 推导）。
+pub fn workbuddy_modalities_from_raw(raw: &Value) -> String {
+    let images = raw
+        .get("supportsImages")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    supports_to_modalities([("text", true), ("image", images)])
+}
+
+/// ZCode 的模型 raw → 思考档位文本（逗号分隔）。
+///
+/// 档位存在 `optionSpecs.reasoningLevel.values`；未写该键时留空。
+pub fn zcode_variants_from_raw(raw: &Value) -> String {
+    raw.get("optionSpecs")
+        .and_then(|s| s.get("reasoningLevel"))
+        .and_then(|r| r.get("values"))
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
 }
 
 /// opencode 的 npm 包 → pi / omp 的 api（线上协议）：
@@ -99,6 +236,21 @@ pub(crate) const PI_APIS: [&str; 10] = [
     "google-generative-ai",
     "google-vertex",
     "pi-messages",
+];
+
+/// ZCode 官方 3 值（`api.type`；Chat Completions 多一个 `chat`）。
+pub(crate) const ZCODE_APIS: [&str; 3] = [
+    "openai-chat-completions",
+    "anthropic-messages",
+    "openai-responses",
+];
+
+/// WorkBuddy 页面可选协议：文件里没有协议字段，协议由 URL 后缀 + 勾选框表达。
+/// 这里列出的值用于界面选择，保存时落到 URL 后缀（见 `backends::workbuddy`）。
+pub(crate) const WORKBUDDY_APIS: [&str; 3] = [
+    "openai-completions",
+    "anthropic-messages",
+    "openai-responses",
 ];
 
 /// pi / omp 的 api → opencode 的 npm 包：

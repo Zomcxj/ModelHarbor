@@ -37,6 +37,11 @@ pub(super) enum PageTarget {
 /// 数据来自 pi / oh-my-pi / DSH（或空载启动）时界面无从表达 agents，
 /// 此时必须保留目标文件里的 agent 容器，否则会把它们静默删掉。
 pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents_owned: bool) {
+    // workbuddy 的根是数组：整体清空即是「剔除界面接管的容器」。
+    if fmt == ConfigFormat::WorkBuddy {
+        *root = Value::Array(Vec::new());
+        return;
+    }
     let Some(obj) = root.as_object_mut() else {
         return;
     };
@@ -55,6 +60,25 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
                 llm.remove("providers");
             }
         }
+        ConfigFormat::ZCode => {
+            if let Some(cfg) = obj.get_mut("config").and_then(Value::as_object_mut) {
+                cfg.remove("providerOrder");
+                if let Some(rules) = cfg
+                    .get_mut("providerConfigRules")
+                    .and_then(Value::as_object_mut)
+                {
+                    rules.remove("providerRules");
+                }
+                if let Some(rules) = cfg
+                    .get_mut("modelConfigRules")
+                    .and_then(Value::as_object_mut)
+                {
+                    rules.remove("providerModelRules");
+                }
+            }
+        }
+        // 已在上面提前返回，这里不会到达；列出以保持 match 穷尽。
+        ConfigFormat::WorkBuddy => {}
     }
 }
 
@@ -108,6 +132,20 @@ impl App {
                 },
                 ConfigFormat::DeepSeekHarness => match field {
                     "base_url" => provider.raw.get("baseURL").is_some(),
+                    _ => false,
+                },
+                // ZCode 的端点/密钥落在 `api.baseUrl` / `access.apiKey`。
+                ConfigFormat::ZCode => match field {
+                    "base_url" => provider
+                        .raw
+                        .get("api")
+                        .and_then(|v| v.get("baseUrl"))
+                        .is_some(),
+                    _ => false,
+                },
+                // WorkBuddy 每条模型自带 url / apiKey。
+                ConfigFormat::WorkBuddy => match field {
+                    "base_url" => provider.raw.get("url").is_some(),
                     _ => false,
                 },
             })
@@ -173,6 +211,45 @@ impl App {
                     "output" => model.raw.get("maxTokens").is_some(),
                     "input" => model.raw.get("input").is_some(),
                     "variants" => model.raw.get("reasoningEfforts").is_some(),
+                    _ => false,
+                },
+                // ZCode 的模型属性落在 config.properties / config.optionSpecs。
+                ConfigFormat::ZCode => match field {
+                    "context" => model
+                        .raw
+                        .get("properties")
+                        .and_then(|v| v.get("contextWindow"))
+                        .is_some(),
+                    "output" => model
+                        .raw
+                        .get("optionSpecs")
+                        .and_then(|v| v.get("maxOutputTokens"))
+                        .is_some(),
+                    "input" => model
+                        .raw
+                        .get("properties")
+                        .and_then(|v| v.get("supportsText"))
+                        .is_some(),
+                    "tool_call" => model
+                        .raw
+                        .get("properties")
+                        .and_then(|v| v.get("supportsToolCall"))
+                        .is_some(),
+                    "variants" => model
+                        .raw
+                        .get("optionSpecs")
+                        .and_then(|v| v.get("reasoningLevel"))
+                        .is_some(),
+                    _ => false,
+                },
+                // WorkBuddy 每条模型自带全部属性。
+                ConfigFormat::WorkBuddy => match field {
+                    "name" => model.raw.get("name").is_some(),
+                    "context" => model.raw.get("maxInputTokens").is_some(),
+                    "output" => model.raw.get("maxOutputTokens").is_some(),
+                    "input" => model.raw.get("supportsImages").is_some(),
+                    "tool_call" => model.raw.get("supportsToolCall").is_some(),
+                    "reasoning" => model.raw.get("supportsReasoning").is_some(),
                     _ => false,
                 },
             })
@@ -461,7 +538,11 @@ impl App {
             ConfigFormat::Opencode => &self.root,
             // pi 系（pi / oh-my-pi）共用 extras 载体：providers 之外的顶层字段
             ConfigFormat::Pi | ConfigFormat::OhMyPi => &self.pi_extras,
-            ConfigFormat::DeepSeekHarness => &self.root,
+            // ZCode / WorkBuddy 与 opencode、DSH 一样，extras 就是完整 root
+            // （序列化时由各后端自行保留未接管的容器与顶层字段）。
+            ConfigFormat::DeepSeekHarness | ConfigFormat::ZCode | ConfigFormat::WorkBuddy => {
+                &self.root
+            }
         }
     }
 }

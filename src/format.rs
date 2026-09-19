@@ -10,6 +10,8 @@ pub enum ConfigFormat {
     Pi,
     OhMyPi,
     DeepSeekHarness,
+    ZCode,
+    WorkBuddy,
 }
 
 impl ConfigFormat {
@@ -19,6 +21,8 @@ impl ConfigFormat {
             ConfigFormat::Pi => "pi",
             ConfigFormat::OhMyPi => "oh-my-pi",
             ConfigFormat::DeepSeekHarness => "deepseek-harness",
+            ConfigFormat::ZCode => "zcode",
+            ConfigFormat::WorkBuddy => "workbuddy",
         }
     }
 }
@@ -29,6 +33,8 @@ pub struct ConfigPaths {
     pub pi: String,
     pub oh_my_pi: String,
     pub deepseek_harness: String,
+    pub zcode: String,
+    pub workbuddy: String,
 }
 
 impl Default for ConfigPaths {
@@ -38,6 +44,8 @@ impl Default for ConfigPaths {
             pi: backends::backend(ConfigFormat::Pi).default_local_path(),
             oh_my_pi: backends::backend(ConfigFormat::OhMyPi).default_local_path(),
             deepseek_harness: backends::backend(ConfigFormat::DeepSeekHarness).default_local_path(),
+            zcode: backends::backend(ConfigFormat::ZCode).default_local_path(),
+            workbuddy: backends::backend(ConfigFormat::WorkBuddy).default_local_path(),
         }
     }
 }
@@ -50,6 +58,8 @@ impl ConfigPaths {
             ConfigFormat::Pi => self.pi.clone(),
             ConfigFormat::OhMyPi => self.oh_my_pi.clone(),
             ConfigFormat::DeepSeekHarness => self.deepseek_harness.clone(),
+            ConfigFormat::ZCode => self.zcode.clone(),
+            ConfigFormat::WorkBuddy => self.workbuddy.clone(),
         }
     }
 
@@ -60,6 +70,8 @@ impl ConfigPaths {
             ConfigFormat::Pi => self.pi = path.to_string(),
             ConfigFormat::OhMyPi => self.oh_my_pi = path.to_string(),
             ConfigFormat::DeepSeekHarness => self.deepseek_harness = path.to_string(),
+            ConfigFormat::ZCode => self.zcode = path.to_string(),
+            ConfigFormat::WorkBuddy => self.workbuddy = path.to_string(),
         }
     }
 

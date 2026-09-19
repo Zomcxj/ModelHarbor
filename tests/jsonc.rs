@@ -84,6 +84,8 @@ fn target_path_prefers_local_when_exists() {
         pi: p.to_string_lossy().to_string(),
         oh_my_pi: p.to_string_lossy().to_string(),
         deepseek_harness: p.to_string_lossy().to_string(),
+        zcode: p.to_string_lossy().to_string(),
+        workbuddy: p.to_string_lossy().to_string(),
     };
     assert_eq!(
         paths.target_path(ConfigFormat::Opencode),

@@ -7,3 +7,4 @@
 # 工具产生的本地状态
 .pi/
 .ruff_cache/
+.zcode/

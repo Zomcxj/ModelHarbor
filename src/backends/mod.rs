@@ -13,6 +13,8 @@ pub mod deepseek_harness;
 pub mod oh_my_pi;
 pub mod opencode;
 pub mod pi;
+pub mod workbuddy;
+pub mod zcode;
 
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
@@ -98,9 +100,13 @@ pub trait Backend: Sync {
 }
 
 /// 全部后端。**顺序即语义**：第 0 个是判别回落项，其余按“更具体优先”排列
-/// （omp 在 pi 之前：.yml 扩展名优先归 omp，无扩展名时 JSON 语法内容让位给 pi）。
+/// （omp 在 pi 之前：.yml 扩展名优先归 omp，无扩展名时 JSON 语法内容让位给 pi；
+/// workbuddy / zcode 有各自的唯一顶层标记——数组根 / `config.providerOrder`——
+/// 放在 pi 系之前，避免被 `providers` 判定抢走）。
 pub static BACKENDS: &[&dyn Backend] = &[
     &opencode::BACKEND,
+    &workbuddy::BACKEND,
+    &zcode::BACKEND,
     &deepseek_harness::BACKEND,
     &oh_my_pi::BACKEND,
     &pi::BACKEND,

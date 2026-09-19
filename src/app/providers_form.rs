@@ -96,13 +96,25 @@ pub(super) fn provider_preset_combo(
 pub(super) fn provider_api_combo(
     ui: &mut egui::Ui,
     p: &mut ProviderRow,
-    show_omp: bool,
+    page: ConfigFormat,
     id_salt: &str,
 ) {
-    let options: &[&str] = if show_omp {
-        &convert::OMP_APIS
-    } else {
-        &convert::PI_APIS
+    // 每个后端自己的协议词表：omp 9 值 / pi 10 值 / ZCode 3 值（多一个 chat）/
+    // WorkBuddy 3 值（协议落到 URL 后缀，见 workbuddy 后端）。
+    let options: &[&str] = match page {
+        ConfigFormat::OhMyPi => &convert::OMP_APIS,
+        ConfigFormat::ZCode => &convert::ZCODE_APIS,
+        ConfigFormat::WorkBuddy => &convert::WORKBUDDY_APIS,
+        _ => &convert::PI_APIS,
+    };
+    // ZCode 的 api.type 词表与内部表示差一个 `chat`，显示与写回都要转换。
+    let zcode = page == ConfigFormat::ZCode;
+    let to_display = |api: &str| {
+        if zcode {
+            convert::api_to_zcode_api(api)
+        } else {
+            api.to_string()
+        }
     };
     // 「(空)」= 未指定协议。四页共用同一份数据，故以 npm / pi_api / raw.api
     // 是否都为空判定，显示值统一走 effective_api()，与写盘、延迟测试同口径。
@@ -111,9 +123,9 @@ pub(super) fn provider_api_combo(
     field_label(ui, 120.0, "api");
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(if explicit {
-            current.as_str()
+            to_display(&current)
         } else {
-            EMPTY_API_LABEL
+            EMPTY_API_LABEL.to_string()
         })
         .width(180.0)
         .show_ui(ui, |ui| {
@@ -125,15 +137,43 @@ pub(super) fn provider_api_combo(
                 p.clear_api();
             }
             for &api in options {
+                // 选中态按「转换后」的值比较：ZCode 页存的是 openai-completions，
+                // 但选项文本是 openai-chat-completions。
+                let shown = to_display(api);
                 if ui
-                    .selectable_label(explicit && current == api, api)
+                    .selectable_label(explicit && to_display(&current) == shown, shown)
                     .clicked()
                 {
-                    p.pi_api = api.to_string();
+                    // 写回内部表示：ZCode 的 chat 值先映射回 pi 词表。
+                    p.pi_api = if zcode {
+                        convert::zcode_api_to_api(api)
+                    } else {
+                        api.to_string()
+                    };
                     p.npm = convert::api_to_npm(api);
+                    // WorkBuddy：选非 Chat 协议就默认勾上「自定义协议」，
+                    // 让界面与保存结果一致（保存时后端仍会强制对齐一次）。
+                    if page == ConfigFormat::WorkBuddy {
+                        set_workbuddy_custom(p, api != "openai-completions");
+                    }
                 }
             }
         });
+}
+
+/// 写入 WorkBuddy 的「自定义协议」开关（存在 raw 的 `useCustomProtocol`）。
+pub(super) fn set_workbuddy_custom(p: &mut ProviderRow, custom: bool) {
+    if let serde_json::Value::Object(obj) = &mut p.raw {
+        obj.insert("useCustomProtocol".into(), serde_json::Value::Bool(custom));
+    }
+}
+
+/// 读取 WorkBuddy 的「自定义协议」开关。
+pub(super) fn workbuddy_custom(p: &ProviderRow) -> bool {
+    p.raw
+        .get("useCustomProtocol")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// 思考档位多选：按钮展开、勾选写回逗号分隔文本。
@@ -309,6 +349,8 @@ impl App {
             show_oc,
             show_omp,
             show_dsh,
+            show_zcode,
+            show_wb,
             show_provider_base_url,
             show_provider_timeout,
             show_model_name,
@@ -344,7 +386,7 @@ impl App {
             }
             if !show_oc {
                 let salt = format!("provider_api_{}", p.key);
-                provider_api_combo(ui, p, show_omp, &salt);
+                provider_api_combo(ui, p, self.current_page, &salt);
             }
             // timeout / timeoutMs 与 npm/api 同排（第一行）。
             if show_oc && show_provider_timeout {
@@ -356,7 +398,7 @@ impl App {
                 numeric_text_edit(ui, &mut p.dsh_timeout_ms, 70.0, "180000");
             }
             // pi / omp 的 compat 与 api 同排显示（紧跟 api 之后）。
-            if !show_oc && !show_dsh {
+            if !show_oc && !show_dsh && !show_zcode && !show_wb {
                 field_label(ui, 120.0, "compat");
                 ui.checkbox(&mut p.compat, "supportsDeveloperRole");
                 // pi / omp 相互映射字段：加载 opencode/dsh 时缺省不勾选。
@@ -378,6 +420,19 @@ impl App {
             if show_provider_base_url {
                 field_label(ui, 120.0, base_label);
                 ui.add(egui::TextEdit::singleline(&mut p.base_url).desired_width(200.0));
+            }
+            // WorkBuddy 的协议由 URL 后缀 + 这个开关表达（文件里没有协议字段）：
+            // 不勾选 = 自动补 /chat/completions，勾选 = URL 原样使用。
+            if show_wb {
+                let mut value = workbuddy_custom(p);
+                let resp = ui.checkbox(&mut value, "自定义协议").on_hover_text(
+                    "不勾选：保存后由 WorkBuddy 自动补 /chat/completions；\n\
+                         勾选：URL 原样使用，需自行写全路径（如 .../v1/messages）。\n\
+                         选择非 Chat 协议时保存会自动勾上并补后缀。",
+                );
+                if resp.changed() {
+                    set_workbuddy_custom(p, value);
+                }
             }
             field_label(ui, 120.0, api_key_label);
             if show_dsh {
@@ -723,6 +778,8 @@ impl App {
             show_oc,
             show_omp,
             show_dsh,
+            show_zcode,
+            show_wb,
             base_label,
             api_key_label,
             context_label,
@@ -753,7 +810,7 @@ impl App {
                 }
                 if !show_oc {
                     let p = &mut self.new_provider;
-                    provider_api_combo(ui, p, show_omp, "new_provider_api");
+                    provider_api_combo(ui, p, self.current_page, "new_provider_api");
                 }
                 // timeout 与 npm/api 同排（第一行）。
                 if show_oc {
@@ -761,7 +818,8 @@ impl App {
                     numeric_text_edit(ui, &mut self.new_provider.timeout, 70.0, "180000");
                 }
                 // pi / omp 的 compat 与 api 同排显示（紧跟 api 之后）。
-                if !show_oc && !show_dsh {
+                // ZCode / WorkBuddy 没有 compat 字段，不显示。
+                if !show_oc && !show_dsh && !show_zcode && !show_wb {
                     field_label(ui, 120.0, "compat");
                     ui.checkbox(&mut self.new_provider.compat, "supportsDeveloperRole");
                     let requires_label = if show_omp {
@@ -782,6 +840,17 @@ impl App {
                         .hint_text("https://api.openai.com/v1")
                         .desired_width(200.0),
                 );
+                // WorkBuddy：与已有 provider 卡片一致的「自定义协议」开关。
+                if show_wb {
+                    let mut value = workbuddy_custom(&self.new_provider);
+                    let resp = ui.checkbox(&mut value, "自定义协议").on_hover_text(
+                        "不勾选：保存后由 WorkBuddy 自动补 /chat/completions；\n\
+                             勾选：URL 原样使用，需自行写全路径（如 .../v1/messages）。",
+                    );
+                    if resp.changed() {
+                        set_workbuddy_custom(&mut self.new_provider, value);
+                    }
+                }
                 field_label(ui, 120.0, api_key_label);
                 if show_dsh {
                     ui.add(

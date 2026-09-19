@@ -383,6 +383,8 @@ impl App {
                 pi: self.path_override(ConfigFormat::Pi),
                 oh_my_pi: self.path_override(ConfigFormat::OhMyPi),
                 deepseek_harness: self.path_override(ConfigFormat::DeepSeekHarness),
+                zcode: self.path_override(ConfigFormat::ZCode),
+                workbuddy: self.path_override(ConfigFormat::WorkBuddy),
             },
             collapsed,
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
