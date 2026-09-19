@@ -65,7 +65,7 @@ pub fn card_frame<R>(
             data.insert_temp(hover_id.with("rect"), frame.response.rect);
         });
     }
-    draw_accent_bar(ui, frame.response.rect, fill);
+    draw_accent_bar(ui, frame.response.rect);
     draw_relief(ui, frame.response.rect);
     draw_hover_ring(ui, frame.response.rect, hover_t, stroke_width);
     frame.response
@@ -103,33 +103,35 @@ fn draw_relief(ui: &egui::Ui, rect: egui::Rect) {
     }
 }
 
+/// 色带在卡片上的覆盖区：**只有顶部 3px**。
+///
+/// 抽成纯函数是为了能直接断言「色带不越界到内容区」——曾经用
+/// 「整卡填色再盖回」实现，覆盖动作发生在内容之后，把卡片文字全刷没了。
+pub fn accent_bar_rect(rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.right(), rect.top() + ACCENT_BAR_HEIGHT),
+    )
+}
+
+/// 色带高度（像素）。
+pub const ACCENT_BAR_HEIGHT: f32 = 3.0;
+
 /// 色带：卡片顶部一条 3px 主题强调色，随顶角圆弧收边。
 ///
-/// 先铺整张强调色圆角矩形，再用卡面填充盖住下部——色带与描边、圆角
-/// 天然对齐。painter 绘制，不参与布局。
-fn draw_accent_bar(ui: &egui::Ui, rect: egui::Rect, fill: egui::Color32) {
+/// 必须**只画顶部条带**（用 painter 的裁剪区限制），不能「整卡填色再盖回」——
+/// 那样覆盖动作发生在内容画完之后，会把卡片里的文字一起刷掉。
+/// 条带用整卡圆角矩形 + 裁剪到顶部 3px 得到：顶角圆弧天然对齐。
+/// painter 绘制，不参与布局。
+fn draw_accent_bar(ui: &egui::Ui, rect: egui::Rect) {
     let style = crate::theme::active_style(ui.ctx());
     if !style.has_accent_bar() {
         return;
     }
     let accent = ui.visuals().hyperlink_color;
     let corner = ui.visuals().widgets.noninteractive.corner_radius;
-    let painter = ui.painter();
+    let painter = ui.painter().with_clip_rect(accent_bar_rect(rect));
     painter.rect_filled(rect, corner, accent);
-    let body = egui::Rect::from_min_max(
-        egui::pos2(rect.left(), rect.top() + 3.0),
-        egui::pos2(rect.right(), rect.bottom()),
-    );
-    painter.rect_filled(
-        body,
-        egui::CornerRadius {
-            nw: 0,
-            ne: 0,
-            sw: corner.sw,
-            se: corner.se,
-        },
-        fill,
-    );
 }
 
 /// 悬停高亮的目标色。
@@ -343,6 +345,19 @@ pub fn numeric_text_edit(
 mod tests {
     use super::{drag_handle_dots, merge_drag_target, DRAG_HANDLE_GAP};
     use eframe::egui;
+
+    /// 色带只覆盖卡片顶部 3px：越界就会盖住卡片文字（曾经整卡刷白）。
+    #[test]
+    fn accent_bar_covers_only_the_top_strip() {
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(200.0, 60.0));
+        let bar = super::accent_bar_rect(rect);
+        assert_eq!(bar.height(), super::ACCENT_BAR_HEIGHT);
+        assert_eq!(bar.top(), rect.top());
+        assert_eq!(bar.left(), rect.left());
+        assert_eq!(bar.right(), rect.right());
+        // 必须远小于卡片高度，绝不能盖到内容。
+        assert!(bar.bottom() < rect.top() + 10.0, "色带侵入内容区：{bar:?}");
+    }
 
     /// 点阵的几何中心必须与控件矩形中心重合：控件被 `interact_size` 撑高
     /// （14x18 的按钮放进 24px 高的行里）后，点阵仍要落在中间。
