@@ -65,9 +65,71 @@ pub fn card_frame<R>(
             data.insert_temp(hover_id.with("rect"), frame.response.rect);
         });
     }
-    draw_bevel(ui, frame.response.rect);
+    draw_accent_bar(ui, frame.response.rect, fill);
+    draw_relief(ui, frame.response.rect);
     draw_hover_ring(ui, frame.response.rect, hover_t, stroke_width);
     frame.response
+}
+
+/// 石板 / 浮雕的「坐在底上」质感。
+///
+/// 接触影：向右下偏移 1px 的整圈暗色描边（跟随圆角，一半落在卡外），
+/// 石板和浮雕都有。浮雕在此之上再画凸起受光线（卡内左上亮、右下暗）；
+/// 石板是**平放**的板，只有描边和接触影，没有受光线——这是它和浮雕
+/// 的机制区别，而不是圆角和强度差异。
+fn draw_relief(ui: &egui::Ui, rect: egui::Rect) {
+    let style = crate::theme::active_style(ui.ctx());
+    if !style.has_contact_shadow() {
+        return;
+    }
+    let shadow = style.contact_shadow_color(ui.visuals().dark_mode);
+    let radius = ui.visuals().widgets.noninteractive.corner_radius;
+    let painter = ui.painter();
+    painter.rect_stroke(
+        rect.translate(egui::vec2(1.0, 1.0)),
+        radius,
+        egui::Stroke::new(1.0, shadow),
+        egui::StrokeKind::Inside,
+    );
+    if style.has_bevel() {
+        let (light, dark) = style.bevel_colors(ui.visuals().dark_mode);
+        let (light_lines, dark_lines) = bevel_segments(rect, radius.nw as f32);
+        for segment in light_lines {
+            painter.line_segment(segment, egui::Stroke::new(1.0, light));
+        }
+        for segment in dark_lines {
+            painter.line_segment(segment, egui::Stroke::new(1.0, dark));
+        }
+    }
+}
+
+/// 色带：卡片顶部一条 3px 主题强调色，随顶角圆弧收边。
+///
+/// 先铺整张强调色圆角矩形，再用卡面填充盖住下部——色带与描边、圆角
+/// 天然对齐。painter 绘制，不参与布局。
+fn draw_accent_bar(ui: &egui::Ui, rect: egui::Rect, fill: egui::Color32) {
+    let style = crate::theme::active_style(ui.ctx());
+    if !style.has_accent_bar() {
+        return;
+    }
+    let accent = ui.visuals().hyperlink_color;
+    let corner = ui.visuals().widgets.noninteractive.corner_radius;
+    let painter = ui.painter();
+    painter.rect_filled(rect, corner, accent);
+    let body = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.top() + 3.0),
+        egui::pos2(rect.right(), rect.bottom()),
+    );
+    painter.rect_filled(
+        body,
+        egui::CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: corner.sw,
+            se: corner.se,
+        },
+        fill,
+    );
 }
 
 /// 悬停高亮的目标色。
@@ -134,37 +196,6 @@ pub fn bevel_segments(
         ],
     ];
     (light, dark)
-}
-
-/// 石板 / 浮雕 / 棱镜的**凸起**浮雕。
-///
-/// 三层：卡内左上亮线 + 卡内右下暗线（1px 内嵌线，凸起的受光面），
-/// 再加一整圈向右下偏移的暗色接触影（跟随圆角，一半落在卡外）——
-/// 凸出的板总要「坐」在底上。painter 绘制，不参与布局。
-/// 其余形状不画（`has_bevel()` 为假时直接返回）。
-fn draw_bevel(ui: &egui::Ui, rect: egui::Rect) {
-    let style = crate::theme::active_style(ui.ctx());
-    if !style.has_bevel() {
-        return;
-    }
-    let (light, dark) = style.bevel_colors(ui.visuals().dark_mode);
-    let radius = ui.visuals().widgets.noninteractive.corner_radius;
-    let painter = ui.painter();
-    // 接触影：向右下偏 1px 的整圈暗色描边（画在亮暗线之前，垫在最底下）。
-    painter.rect_stroke(
-        rect.translate(egui::vec2(1.0, 1.0)),
-        radius,
-        egui::Stroke::new(1.0, dark),
-        egui::StrokeKind::Inside,
-    );
-    // 凸起受光面：内侧左上亮线、右下暗线。
-    let (light_lines, dark_lines) = bevel_segments(rect, radius.nw as f32);
-    for segment in light_lines {
-        painter.line_segment(segment, egui::Stroke::new(1.0, light));
-    }
-    for segment in dark_lines {
-        painter.line_segment(segment, egui::Stroke::new(1.0, dark));
-    }
 }
 
 /// 表单字段标签：**左对齐**且宽度按文本内容自适应（上限 `max_width`），
