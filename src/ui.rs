@@ -18,14 +18,17 @@ pub fn card_frame<R>(
     // 用 auto_id 会把悬停状态串到别的卡片上。矩形画完才有，存进临时存储
     // 供下一帧判定指针是否悬停——即悬停状态天然滞后一帧。
     let hover_id = id.with("hover");
+    let mut hover_t = 0.0f32;
     let (stroke_color, stroke_width) = match highlight {
         1 => (egui::Color32::from_rgb(255, 180, 50), 2.0), // source: orange
         2 => (egui::Color32::from_rgb(100, 200, 100), 2.0), // target: green
-        // 无高亮时跟随形状预设的描边宽度，颜色向强调色做悬停过渡。
+        // 无高亮时跟随形状预设的描边宽度（恒宽），颜色向强调色做悬停过渡。
         //
-        // 平时无边框的形状（极简边宽 0、云朵卡片不描边）悬停时**画出**
-        // 1px 强调色描边当作高亮环——否则这两档下卡片悬停 / 点选没有任何
-        // 反馈。有边框的形状宽度不变，只走颜色过渡。
+        // egui 的 Frame 会把描边宽度算进占位尺寸
+        // （`outer_rect = content + margin + 2 * stroke`），所以悬停描边
+        // 绝不能改宽度：极简 / 云朵下 0 → 1px 会把卡片撑高 1px，指针脱离
+        // 悬停后收回、再悬停……整列组件就这样来回波动。高亮环改由
+        // [`draw_hover_ring`] 用 painter 画在矩形内侧，不参与布局。
         _ => {
             let last_rect = ui
                 .ctx()
@@ -34,6 +37,7 @@ pub fn card_frame<R>(
             let hovered =
                 matches!((last_rect, pointer), (Some(rect), Some(pos)) if rect.contains(pos));
             let t = crate::motion::hover_t(ui.ctx(), hover_id, hovered);
+            hover_t = t;
             let base = ui.visuals().widgets.noninteractive.bg_stroke.color;
             let accent = ui.visuals().hyperlink_color;
             let rest_width = if shape.has_card_shadow() {
@@ -41,13 +45,7 @@ pub fn card_frame<R>(
             } else {
                 shape.border_width()
             };
-            let stroke_width = if rest_width < 1.0 {
-                // 无边 → 悬停浮现 1px 强调色环
-                rest_width + (1.0 - rest_width) * t
-            } else {
-                rest_width
-            };
-            (crate::motion::lerp_color(base, accent, t), stroke_width)
+            (crate::motion::lerp_color(base, accent, t), rest_width)
         }
     };
     let mut frame = egui::Frame::NONE
@@ -68,7 +66,27 @@ pub fn card_frame<R>(
         });
     }
     draw_bevel(ui, frame.response.rect);
+    draw_hover_ring(ui, frame.response.rect, hover_t, stroke_width);
     frame.response
+}
+
+/// 悬停高亮环：只给**平时无边框**的形状（极简 / 云朵卡片）画，
+/// 沿卡片内侧 1px 强调色，宽度随悬停进度浮现。
+///
+/// 必须用 painter 而不是 Frame 描边：后者会把宽度算进占位尺寸，
+/// 0 → 1px 的变化会让卡片在「撑开 → 收回」间震荡，整列跟着波动。
+fn draw_hover_ring(ui: &egui::Ui, rect: egui::Rect, hover_t: f32, rest_stroke_width: f32) {
+    if hover_t <= 0.01 || rest_stroke_width > 0.0 {
+        return;
+    }
+    let accent = ui.visuals().hyperlink_color;
+    let corner = ui.visuals().widgets.noninteractive.corner_radius;
+    ui.painter().rect_stroke(
+        rect,
+        corner,
+        egui::Stroke::new(hover_t, accent),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// 内嵌浮雕的线段：`(亮边, 暗边)`，各两条。
