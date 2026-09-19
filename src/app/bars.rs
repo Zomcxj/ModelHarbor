@@ -211,8 +211,13 @@ impl App {
                     } else {
                         format!("{}（未安装）", id.label())
                     };
+                    // click_and_drag：普通 Button 只感应点击，drag_started/stopped
+                    // 永不触发，已安装页就拖不动。补上拖拽感应，点击仍照常工作。
                     let btn_resp = ui
-                        .add(btn.min_size(egui::vec2(24.0, 22.0)))
+                        .add(
+                            btn.min_size(egui::vec2(24.0, 22.0))
+                                .sense(egui::Sense::click_and_drag()),
+                        )
                         .on_hover_text(tip);
                     let btn_resp = if is_installed {
                         btn_resp.on_hover_cursor(egui::CursorIcon::Grab)
