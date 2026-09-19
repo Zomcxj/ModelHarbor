@@ -219,6 +219,33 @@ fn messages_suffix_never_doubles_v1() {
 }
 
 #[test]
+fn parse_leaves_variants_empty_so_zcode_export_invents_no_reasoning() {
+    // WorkBuddy 无「思考档位」概念（只有布尔 supportsReasoning）。解析后 variants
+    // 必须为空，否则 ModelRow::new() 的默认档位会在跨格式存到 ZCode 时被凭空写成
+    // reasoningLevel.values，污染每个模型。
+    let content = r#"[
+      { "id": "acct", "name": "some-model", "url": "https://x.invalid/v1",
+        "apiKey": "k", "useCustomProtocol": false,
+        "maxInputTokens": 256000, "maxOutputTokens": 64000 }
+    ]"#;
+    let load = load_wb(content);
+    assert_eq!(
+        load.providers[0].models[0].variants, "",
+        "WB 模型 variants 应为空"
+    );
+
+    // 跨格式存到 ZCode：不得出现 reasoningLevel。
+    let zc = backends::backend(ConfigFormat::ZCode);
+    let root = zc.serialize_root(&[], &load.providers, &json!({}), None);
+    let specs =
+        &root["config"]["modelConfigRules"]["providerModelRules"][0]["config"]["optionSpecs"];
+    assert!(
+        specs.get("reasoningLevel").is_none(),
+        "不该凭空给 ZCode 模型写 reasoningLevel"
+    );
+}
+
+#[test]
 fn model_row_carries_model_name_not_account_key() {
     // WorkBuddy 的 id 是账号键、name 是模型名。解析后 provider.key 拿账号键，
     // 模型行拿模型名——不能让模型 id 显示成账号/提供商名。

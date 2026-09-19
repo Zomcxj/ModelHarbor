@@ -136,6 +136,12 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
         .get("supportsReasoning")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // WorkBuddy 用布尔 supportsReasoning 表达推理，没有「思考档位」概念。
+    // ModelRow::new() 会带一组默认档位（medium/high/xhigh/max），若不清空，
+    // 跨格式存到 ZCode 时会给每个模型凭空塞 reasoningLevel.values——这些档位
+    // 是发明出来的，会污染 ZCode 配置（就是「保存后 ZCode 里不对」的根因）。
+    model.variants.clear();
+    model.original_variants.clear();
     model.source_format = Some(ConfigFormat::WorkBuddy);
     model.raw = v.clone();
 
