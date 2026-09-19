@@ -175,7 +175,12 @@ impl App {
         // 拖拽落点必须在**所有卡片渲染完之后**统一聚合再写入 self：
         // 卡片各自赋值会被后渲染的卡片用 None 覆盖（模型卡片曾因此丢失绿色落点边框）。
         let mut actions = CardActions::default();
-        card_list(ui, &matched, 0.0, |ui, idx| {
+        let card_gap = if crate::theme::active_style(ui.ctx()).has_card_shadow() {
+            crate::theme::SPACE_2
+        } else {
+            0.0
+        };
+        card_list(ui, &matched, card_gap, |ui, idx| {
             self.render_provider_card(ui, idx, &mut actions);
         });
         if let Some(idx) = actions.remove {
@@ -210,22 +215,35 @@ impl App {
         }
         sticky_end(ui, anchor, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("Providers");
+                ui.strong(egui::RichText::new("Providers").size(crate::theme::TEXT_HEADING));
                 if !self.providers.is_empty() {
                     let all_open = self
                         .providers
                         .iter()
                         .all(|p| !self.provider_collapsed(&p.key));
                     if ui
-                        .button(if all_open {
-                            "收起全部卡片"
-                        } else {
-                            "展开全部卡片"
+                        .push_id("providers_toggle_all", |ui| {
+                            ui.button(if all_open {
+                                "收起全部卡片"
+                            } else {
+                                "展开全部卡片"
+                            })
                         })
+                        .inner
                         .clicked()
                     {
                         // all_open 为真 = 现在全部展开 → 按钮是「收起全部」
                         self.set_all_providers_collapsed(all_open);
+                        // 批量不走高度补间：25 张卡同时把整份表单画进裁剪区会卡。
+                        let ctx = ui.ctx().clone();
+                        let open = !all_open;
+                        for provider in &self.providers {
+                            crate::motion::snap_collapse(
+                                &ctx,
+                                egui::Id::new(("provider_card", provider.key.clone())),
+                                open,
+                            );
+                        }
                     }
                 }
                 // 连通性测试：放在标题行右侧，收起全部卡片时也始终可见。
@@ -353,7 +371,8 @@ impl App {
         } else {
             0
         };
-        let resp = card_frame(ui, open, highlight, |ui| {
+        let card_id = egui::Id::new(("provider_card", key.clone()));
+        let resp = card_frame(ui, open, highlight, card_id, |ui| {
             ui.horizontal(|ui| {
                 let h = ui.add(DragHandle);
                 if h.drag_started() {
@@ -459,6 +478,7 @@ impl App {
                                         ui.add(
                                             egui::Label::new(
                                                 egui::RichText::new(rest)
+                                                    .size(crate::theme::TEXT_SMALL)
                                                     .color(ui.visuals().weak_text_color()),
                                             )
                                             .truncate(),
@@ -472,9 +492,10 @@ impl App {
                     }
                 });
             });
-            if open {
+            // 折叠 / 展开带高度动画；动画 id 按 key 派生，改名即换 id（状态不串卡）。
+            crate::motion::animated_collapse(ui, card_id, open, |ui| {
                 self.render_provider_form(ui, idx, &mut actions.model_hover);
-            }
+            });
         });
         if let Some(src_key) = &self.provider_drag_src {
             if src_key != &key && resp.contains_pointer() && actions.hover.is_none() {

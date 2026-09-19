@@ -306,12 +306,15 @@ impl eframe::App for App {
             self.ui_page_header(ui);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                 .scroll_source(egui::scroll_area::ScrollSource {
                     drag: false,
                     ..egui::scroll_area::ScrollSource::ALL
                 })
                 .show(ui, |ui| {
-                    ui.add_space(crate::theme::SPACE_1);
+                    // 顶部不留空白：Providers 吸顶条一滚就会贴到滚动区可视顶。
+                    // 多出 4px 时，标题会从内容流位置跳到可视顶，看起来整行往上抬。
+                    // （egui 还会把裁剪顶上扩 3px，见 bars::sticky_y 的说明。）
                     // Providers 在上、Agents 在下：Agents 只属于 opencode 页面，
                     // 且按需求放在 Providers 下方（只影响界面顺序，不动配置文件里的字段顺序）。
                     self.ui_providers_section(ui);

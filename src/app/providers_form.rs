@@ -443,15 +443,21 @@ impl App {
         }
         if self.model_fetch_open.contains(&p.key) {
             let fetch_key = p.key.clone();
-            card_frame(ui, false, 0, |ui| {
-                model_fetch_popup(
-                    ui,
-                    self.model_fetch.get(&fetch_key),
-                    &mut p.models,
-                    self.current_page,
-                    ("model_fetch_scroll", fetch_key.as_str()),
-                );
-            });
+            card_frame(
+                ui,
+                false,
+                0,
+                egui::Id::new(("model_fetch", fetch_key.clone())),
+                |ui| {
+                    model_fetch_popup(
+                        ui,
+                        self.model_fetch.get(&fetch_key),
+                        &mut p.models,
+                        self.current_page,
+                        ("model_fetch_scroll", fetch_key.as_str()),
+                    );
+                },
+            );
         }
         let mut rm: Option<usize> = None;
         let mut model_hover_here: Option<String> = None;
@@ -472,105 +478,114 @@ impl App {
                 .filter(|(j2, _)| *j2 != j)
                 .map(|(_, m)| m.id.trim().to_string())
                 .collect();
-            let model_response = card_frame(ui, true, model_highlight, |ui| {
-                ui.horizontal(|ui| {
-                    let handle = ui.add(DragHandle);
-                    if handle.drag_started() {
-                        self.model_drag_src = Some(model_key.clone());
-                        self.model_drag_target = None;
-                    }
-                    if handle.drag_stopped() {
-                        model_drag_stopped = true;
-                    }
-                    // 单模型延迟测试：按钮在拖动按钮右侧，结果显示在按钮右侧。
-                    let model_id = p.models[j].id.trim().to_string();
-                    // 只借两个字段（不是 `&self` 方法）：此处 `p` 还借着 providers，
-                    // 且外层闭包需要独占 `*self`，整结构借用编译不过。
-                    let gate = net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
-                    if model_probe_button(
-                        ui,
-                        &self.probe,
-                        &p.key,
-                        ui.input(|i| i.time),
-                        gate.as_deref(),
-                    ) {
-                        probe_request = Some((p.key.clone(), model_id.clone()));
-                    }
-                    let latency = self.latency.get(&p.key);
-                    model_latency_label(ui, latency, &model_id);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("删").clicked() {
-                            rm = Some(j);
+            let model_response = card_frame(
+                ui,
+                true,
+                model_highlight,
+                egui::Id::new(("model_card", model_key.clone())),
+                |ui| {
+                    ui.horizontal(|ui| {
+                        let handle = ui.add(DragHandle);
+                        if handle.drag_started() {
+                            self.model_drag_src = Some(model_key.clone());
+                            self.model_drag_target = None;
+                        }
+                        if handle.drag_stopped() {
+                            model_drag_stopped = true;
+                        }
+                        // 单模型延迟测试：按钮在拖动按钮右侧，结果显示在按钮右侧。
+                        let model_id = p.models[j].id.trim().to_string();
+                        // 只借两个字段（不是 `&self` 方法）：此处 `p` 还借着 providers，
+                        // 且外层闭包需要独占 `*self`，整结构借用编译不过。
+                        let gate =
+                            net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
+                        if model_probe_button(
+                            ui,
+                            &self.probe,
+                            &p.key,
+                            ui.input(|i| i.time),
+                            gate.as_deref(),
+                        ) {
+                            probe_request = Some((p.key.clone(), model_id.clone()));
+                        }
+                        let latency = self.latency.get(&p.key);
+                        model_latency_label(ui, latency, &model_id);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("删").clicked() {
+                                rm = Some(j);
+                            }
+                        });
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        field_label(ui, 120.0, "id:");
+                        let id_resp = ui.add(
+                            egui::TextEdit::singleline(&mut p.models[j].id).desired_width(120.0),
+                        );
+                        if !p.models[j].id.trim().is_empty()
+                            && other_ids.contains(p.models[j].id.trim())
+                        {
+                            id_resp.on_hover_text("id 与同 provider 内其他模型重复，保存将被阻止");
+                            ui.label(
+                                egui::RichText::new("⚠ 重复")
+                                    .small()
+                                    .color(crate::theme::semantics(ui).err),
+                            );
+                        }
+                        if show_model_name {
+                            field_label(ui, 120.0, "name:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut p.models[j].name)
+                                    .desired_width(120.0),
+                            );
+                        }
+                        if show_model_reasoning && (show_oc || !show_dsh) {
+                            ui.checkbox(&mut p.models[j].reasoning, "reasoning");
+                        }
+                        if show_model_tool_call && show_oc {
+                            ui.checkbox(&mut p.models[j].tool_call, "tool_call");
+                        }
+                        if show_model_store && show_oc {
+                            ui.checkbox(&mut p.models[j].store, "store");
+                        }
+                        if show_model_context {
+                            field_label(ui, 120.0, context_label);
+                            numeric_text_edit(ui, &mut p.models[j].context, 53.0, "");
+                        }
+                        if show_model_output {
+                            field_label(ui, 120.0, output_label);
+                            numeric_text_edit(ui, &mut p.models[j].output, 53.0, "");
                         }
                     });
-                });
-                ui.horizontal_wrapped(|ui| {
-                    field_label(ui, 120.0, "id:");
-                    let id_resp = ui
-                        .add(egui::TextEdit::singleline(&mut p.models[j].id).desired_width(120.0));
-                    if !p.models[j].id.trim().is_empty()
-                        && other_ids.contains(p.models[j].id.trim())
-                    {
-                        id_resp.on_hover_text("id 与同 provider 内其他模型重复，保存将被阻止");
-                        ui.label(
-                            egui::RichText::new("⚠ 重复")
-                                .small()
-                                .color(crate::theme::semantics(ui).err),
+                    ui.horizontal_wrapped(|ui| {
+                        if show_model_input {
+                            field_label(ui, 120.0, input_label);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut p.models[j].modalities_input)
+                                    .desired_width(80.0),
+                            );
+                        }
+                        if show_oc {
+                            field_label(ui, 120.0, "modalities.output");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut p.models[j].modalities_output)
+                                    .desired_width(80.0),
+                            );
+                        }
+                        if show_model_variants {
+                            field_label(ui, 120.0, variants_label);
+                        }
+                        let variant_key = format!("variant_open_{}_{}", p.key, j);
+                        variant_selector(
+                            ui,
+                            &mut p.models[j].variants,
+                            variant_names,
+                            variant_key,
+                            &mut self.variant_open,
+                            true,
                         );
-                    }
-                    if show_model_name {
-                        field_label(ui, 120.0, "name:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut p.models[j].name).desired_width(120.0),
-                        );
-                    }
-                    if show_model_reasoning && (show_oc || !show_dsh) {
-                        ui.checkbox(&mut p.models[j].reasoning, "reasoning");
-                    }
-                    if show_model_tool_call && show_oc {
-                        ui.checkbox(&mut p.models[j].tool_call, "tool_call");
-                    }
-                    if show_model_store && show_oc {
-                        ui.checkbox(&mut p.models[j].store, "store");
-                    }
-                    if show_model_context {
-                        field_label(ui, 120.0, context_label);
-                        numeric_text_edit(ui, &mut p.models[j].context, 53.0, "");
-                    }
-                    if show_model_output {
-                        field_label(ui, 120.0, output_label);
-                        numeric_text_edit(ui, &mut p.models[j].output, 53.0, "");
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    if show_model_input {
-                        field_label(ui, 120.0, input_label);
-                        ui.add(
-                            egui::TextEdit::singleline(&mut p.models[j].modalities_input)
-                                .desired_width(80.0),
-                        );
-                    }
-                    if show_oc {
-                        field_label(ui, 120.0, "modalities.output");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut p.models[j].modalities_output)
-                                .desired_width(80.0),
-                        );
-                    }
-                    if show_model_variants {
-                        field_label(ui, 120.0, variants_label);
-                    }
-                    let variant_key = format!("variant_open_{}_{}", p.key, j);
-                    variant_selector(
-                        ui,
-                        &mut p.models[j].variants,
-                        variant_names,
-                        variant_key,
-                        &mut self.variant_open,
-                        true,
-                    );
-                });
-            });
+                    });
+                },
+            );
             if let Some(src) = &self.model_drag_src {
                 if src != &model_key
                     && model_response.contains_pointer()
@@ -829,15 +844,21 @@ impl App {
                 self.model_fetch_open.remove(NEW_PROVIDER_FETCH_KEY);
             }
             if self.model_fetch_open.contains(NEW_PROVIDER_FETCH_KEY) {
-                card_frame(ui, false, 0, |ui| {
-                    model_fetch_popup(
-                        ui,
-                        self.model_fetch.get(NEW_PROVIDER_FETCH_KEY),
-                        &mut self.new_provider.models,
-                        self.current_page,
-                        "new_provider_fetch_scroll",
-                    );
-                });
+                card_frame(
+                    ui,
+                    false,
+                    0,
+                    egui::Id::new(("new_provider_fetch", NEW_PROVIDER_FETCH_KEY)),
+                    |ui| {
+                        model_fetch_popup(
+                            ui,
+                            self.model_fetch.get(NEW_PROVIDER_FETCH_KEY),
+                            &mut self.new_provider.models,
+                            self.current_page,
+                            "new_provider_fetch_scroll",
+                        );
+                    },
+                );
             }
             let mut rm_new: Option<usize> = None;
             let mut move_new_request: Option<(usize, usize)> = None;
@@ -845,60 +866,85 @@ impl App {
             let mut probe_request: Option<(String, String)> = None;
             for j in 0..self.new_provider.models.len() {
                 let model_count = self.new_provider.models.len();
-                card_frame(ui, true, 0, |ui| {
-                    ui.horizontal(|ui| {
-                        if j > 0 && ui.button("↑").clicked() {
-                            move_new_request = Some((j, j - 1));
-                        }
-                        if j + 1 < model_count && ui.button("↓").clicked() {
-                            move_new_request = Some((j, j + 1));
-                        }
-                        // 单模型延迟测试：按钮在调整按钮右侧，结果显示在按钮右侧。
-                        let model_id = self.new_provider.models[j].id.trim().to_string();
-                        let gate =
-                            net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
-                        if model_probe_button(
-                            ui,
-                            &self.probe,
-                            NEW_PROVIDER_FETCH_KEY,
-                            ui.input(|i| i.time),
-                            gate.as_deref(),
-                        ) {
-                            probe_request =
-                                Some((NEW_PROVIDER_FETCH_KEY.to_string(), model_id.clone()));
-                        }
-                        let latency = self.latency.get(NEW_PROVIDER_FETCH_KEY);
-                        model_latency_label(ui, latency, &model_id);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("删").clicked() {
-                                rm_new = Some(j);
+                card_frame(
+                    ui,
+                    true,
+                    0,
+                    egui::Id::new(("new_provider_model", j)),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            if j > 0 && ui.button("↑").clicked() {
+                                move_new_request = Some((j, j - 1));
                             }
+                            if j + 1 < model_count && ui.button("↓").clicked() {
+                                move_new_request = Some((j, j + 1));
+                            }
+                            // 单模型延迟测试：按钮在调整按钮右侧，结果显示在按钮右侧。
+                            let model_id = self.new_provider.models[j].id.trim().to_string();
+                            let gate =
+                                net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
+                            if model_probe_button(
+                                ui,
+                                &self.probe,
+                                NEW_PROVIDER_FETCH_KEY,
+                                ui.input(|i| i.time),
+                                gate.as_deref(),
+                            ) {
+                                probe_request =
+                                    Some((NEW_PROVIDER_FETCH_KEY.to_string(), model_id.clone()));
+                            }
+                            let latency = self.latency.get(NEW_PROVIDER_FETCH_KEY);
+                            model_latency_label(ui, latency, &model_id);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("删").clicked() {
+                                        rm_new = Some(j);
+                                    }
+                                },
+                            );
                         });
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        field_label(ui, 120.0, "id:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.new_provider.models[j].id)
-                                .desired_width(120.0),
-                        );
-                        field_label(ui, 120.0, "name:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.new_provider.models[j].name)
-                                .desired_width(120.0),
-                        );
-                        if show_oc || !show_dsh {
-                            ui.checkbox(&mut self.new_provider.models[j].reasoning, "reasoning");
-                        }
-                        if show_oc {
-                            ui.checkbox(&mut self.new_provider.models[j].tool_call, "tool_call");
-                            ui.checkbox(&mut self.new_provider.models[j].store, "store");
-                        }
-                        field_label(ui, 120.0, context_label);
-                        numeric_text_edit(ui, &mut self.new_provider.models[j].context, 53.0, "");
-                        field_label(ui, 120.0, output_label);
-                        numeric_text_edit(ui, &mut self.new_provider.models[j].output, 53.0, "");
-                    });
-                });
+                        ui.horizontal_wrapped(|ui| {
+                            field_label(ui, 120.0, "id:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.new_provider.models[j].id)
+                                    .desired_width(120.0),
+                            );
+                            field_label(ui, 120.0, "name:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.new_provider.models[j].name)
+                                    .desired_width(120.0),
+                            );
+                            if show_oc || !show_dsh {
+                                ui.checkbox(
+                                    &mut self.new_provider.models[j].reasoning,
+                                    "reasoning",
+                                );
+                            }
+                            if show_oc {
+                                ui.checkbox(
+                                    &mut self.new_provider.models[j].tool_call,
+                                    "tool_call",
+                                );
+                                ui.checkbox(&mut self.new_provider.models[j].store, "store");
+                            }
+                            field_label(ui, 120.0, context_label);
+                            numeric_text_edit(
+                                ui,
+                                &mut self.new_provider.models[j].context,
+                                53.0,
+                                "",
+                            );
+                            field_label(ui, 120.0, output_label);
+                            numeric_text_edit(
+                                ui,
+                                &mut self.new_provider.models[j].output,
+                                53.0,
+                                "",
+                            );
+                        });
+                    },
+                );
             }
             if let Some((provider_key, model_id)) = probe_request {
                 let now = ui.input(|i| i.time);

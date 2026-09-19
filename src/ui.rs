@@ -4,34 +4,84 @@ pub fn card_frame<R>(
     ui: &mut egui::Ui,
     open: bool,
     highlight: u8,
+    id: egui::Id,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::Response {
     let corner = ui.visuals().widgets.noninteractive.corner_radius;
-    let fill = if open {
+    let shape = crate::theme::active_style(ui.ctx());
+    let fill = if shape.has_frost() {
+        shape.frost_fill(ui.visuals().dark_mode)
+    } else if open {
         ui.visuals().faint_bg_color
     } else {
         ui.visuals().extreme_bg_color
     };
+    // 悬停 id 必须按卡片稳定派生：前面卡片展开 / 折叠会改变后面卡片的 auto_id，
+    // 用 auto_id 会把悬停状态串到别的卡片上。矩形画完才有，存进临时存储
+    // 供下一帧判定指针是否悬停——即悬停状态天然滞后一帧。
+    let hover_id = id.with("hover");
     let (stroke_color, stroke_width) = match highlight {
         1 => (egui::Color32::from_rgb(255, 180, 50), 2.0), // source: orange
         2 => (egui::Color32::from_rgb(100, 200, 100), 2.0), // target: green
-        // 无高亮时跟随形状预设的描边宽度（锐利 1.5 / 面板 2.0 比默认粗）。
-        _ => (
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-            crate::theme::active_style(ui.ctx()).border_width(),
-        ),
+        // 无高亮时跟随形状预设的描边宽度（锐利 1.5 / 面板 2.0 比默认粗），
+        // 颜色向强调色做悬停过渡。
+        _ => {
+            let last_rect = ui
+                .ctx()
+                .data(|data| data.get_temp::<egui::Rect>(hover_id.with("rect")));
+            let pointer = ui.input(|input| input.pointer.hover_pos());
+            let hovered =
+                matches!((last_rect, pointer), (Some(rect), Some(pos)) if rect.contains(pos));
+            let t = crate::motion::hover_t(ui.ctx(), hover_id, hovered);
+            let base = ui.visuals().widgets.noninteractive.bg_stroke.color;
+            let accent = ui.visuals().hyperlink_color;
+            (
+                crate::motion::lerp_color(base, accent, t),
+                if shape.has_card_shadow() {
+                    0.0
+                } else {
+                    shape.border_width()
+                },
+            )
+        }
     };
-    let frame = egui::Frame::NONE
+    let mut frame = egui::Frame::NONE
         .fill(fill)
         .corner_radius(corner)
         .stroke(egui::Stroke::new(stroke_width, stroke_color))
-        .inner_margin(egui::Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.style_mut().spacing.item_spacing = egui::vec2(4.0, 2.0);
-            add(ui);
+        .inner_margin(egui::Margin::symmetric(12, 6));
+    if shape.has_card_shadow() {
+        frame = frame.shadow(shape.card_shadow(ui.visuals().dark_mode));
+    }
+    let frame = frame.show(ui, |ui| {
+        ui.style_mut().spacing.item_spacing = egui::vec2(4.0, 2.0);
+        add(ui);
+    });
+    if highlight == 0 {
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(hover_id.with("rect"), frame.response.rect);
         });
+    }
     draw_bevel(ui, frame.response.rect);
+    draw_frost_edges(ui, frame.response.rect);
     frame.response
+}
+
+/// 磨砂玻璃的上下沿：上沿 1px 高光、下沿 1px 暗影，做出顶光穿玻璃的竖向渐变。
+///
+/// 复用 [`bevel_segments`] 的几何（线段落在内侧、避开圆角），只取上、下两条。
+fn draw_frost_edges(ui: &egui::Ui, rect: egui::Rect) {
+    let style = crate::theme::active_style(ui.ctx());
+    if !style.has_frost() {
+        return;
+    }
+    let (sheen, shade) = style.frost_edge_colors(ui.visuals().dark_mode);
+    let radius = ui.visuals().widgets.noninteractive.corner_radius.nw as f32;
+    let (light_lines, dark_lines) = bevel_segments(rect, radius);
+    let painter = ui.painter();
+    // light 的第一条是上边线，dark 的第一条是下边线。
+    painter.line_segment(light_lines[0], egui::Stroke::new(1.0, sheen));
+    painter.line_segment(dark_lines[0], egui::Stroke::new(1.0, shade));
 }
 
 /// 内嵌浮雕的线段：`(亮边, 暗边)`，各两条。

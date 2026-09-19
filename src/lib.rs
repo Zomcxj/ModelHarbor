@@ -8,6 +8,7 @@ pub mod cursor;
 pub mod format;
 pub mod http_status;
 pub mod model;
+pub mod motion;
 pub mod netguard;
 pub mod prefs;
 pub mod presets;

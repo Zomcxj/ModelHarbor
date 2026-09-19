@@ -17,6 +17,17 @@ pub(super) fn sticky_begin(ui: &mut egui::Ui, height: f32) -> (f32, f32, f32, f3
     (avail.top(), avail.left(), avail.right(), height)
 }
 
+/// 吸顶条的 Y：还没滚过标题时钉在内容流位置，滚过之后钉在滚动区**可视顶**。
+///
+/// egui 会把滚动区裁剪顶向上扩 `clip_rect_margin`（默认 3px，
+/// `content_clip_rect.min.y = inner_rect.min.y - margin`）。如果直接用
+/// `clip_rect().top()`，标题要多滚 3px 才停住——看起来整行先往上抬一下。
+/// 可视顶 = clip_top + margin，吸顶钉在它上面就纹丝不动。
+/// 抽成纯函数是为了能直接断言这两条性质；`round` 收掉亚像素差。
+pub(super) fn sticky_y(content_top: f32, clip_top: f32, clip_margin: f32) -> f32 {
+    content_top.max(clip_top + clip_margin).round()
+}
+
 /// 绘制吸顶标题：未滚过时留在内容流中；滚动越过视口顶部后吸附在滚动区顶部。
 pub(super) fn sticky_end(
     ui: &mut egui::Ui,
@@ -25,7 +36,7 @@ pub(super) fn sticky_end(
 ) {
     let (top, left, right, height) = anchor;
     let clip_top = ui.clip_rect().top();
-    let y = top.max(clip_top);
+    let y = sticky_y(top, clip_top, ui.visuals().clip_rect_margin);
     let target = egui::Rect::from_min_max(egui::pos2(left, y), egui::pos2(right, y + height));
     if !ui.clip_rect().intersects(target) {
         return;
@@ -242,22 +253,19 @@ impl App {
                             });
                             ui.add_space(crate::theme::SPACE_2);
                             ui.label(egui::RichText::new("形状").small().weak());
+                            // 第一行：前 5 个形状
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
-                                for style in crate::theme::UiStyle::ALL {
-                                    let is_current = self.ui_style == style;
-                                    // 按实际圆角和边框宽度绘制预览按钮
+                                for style in &crate::theme::UiStyle::ALL[0..5] {
+                                    let is_current = self.ui_style == *style;
                                     let radius = style.radius() as f32;
                                     let border = style.border_width();
-                                    // 填充当前主题的强调色
                                     let fill = current_accent;
-                                    // 文字颜色：根据当前主题色亮暗自动选择
                                     let text_color = if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
                                         egui::Color32::BLACK
                                     } else {
                                         egui::Color32::WHITE
                                     };
-                                    // 当前形状：加边框
                                     let stroke_color = if is_current {
                                         if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
                                             egui::Color32::from_gray(40)
@@ -273,7 +281,39 @@ impl App {
                                         .min_size(egui::vec2(52.0, 0.0))
                                         .corner_radius(radius);
                                     if ui.add(btn).clicked() {
-                                        self.ui_style = style;
+                                        self.ui_style = *style;
+                                    }
+                                }
+                            });
+                            // 第二行：后 5 个形状
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for style in &crate::theme::UiStyle::ALL[5..10] {
+                                    let is_current = self.ui_style == *style;
+                                    let radius = style.radius() as f32;
+                                    let border = style.border_width();
+                                    let fill = current_accent;
+                                    let text_color = if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
+                                        egui::Color32::BLACK
+                                    } else {
+                                        egui::Color32::WHITE
+                                    };
+                                    let stroke_color = if is_current {
+                                        if current_accent.r() as u32 + current_accent.g() as u32 + current_accent.b() as u32 > 384 {
+                                            egui::Color32::from_gray(40)
+                                        } else {
+                                            egui::Color32::WHITE
+                                        }
+                                    } else {
+                                        fill
+                                    };
+                                    let btn = egui::Button::new(egui::RichText::new(style.label()).color(text_color))
+                                        .fill(fill)
+                                        .stroke(egui::Stroke::new(border, stroke_color))
+                                        .min_size(egui::vec2(52.0, 0.0))
+                                        .corner_radius(radius);
+                                    if ui.add(btn).clicked() {
+                                        self.ui_style = *style;
                                     }
                                 }
                             });
@@ -365,7 +405,11 @@ impl App {
                                 .color(crate::theme::semantics(ui).err),
                         );
                     }
-                    ui.label(egui::RichText::new(&self.status).weak());
+                    ui.label(
+                        egui::RichText::new(&self.status)
+                            .size(crate::theme::TEXT_SMALL)
+                            .weak(),
+                    );
                     // 右侧：当前页 + 数量统计，随时可见页面身份
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
                         ui.label(
@@ -374,10 +418,12 @@ impl App {
                                 self.agents.len(),
                                 self.providers.len()
                             ))
+                            .size(crate::theme::TEXT_SMALL)
                             .weak(),
                         );
                         ui.label(
                             egui::RichText::new(format!("当前页: {}", self.current_page.label()))
+                                .size(crate::theme::TEXT_SMALL)
                                 .weak(),
                         );
                     });
@@ -487,5 +533,28 @@ impl App {
             });
         });
         ui.separator();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sticky_y;
+
+    #[test]
+    fn sticky_stays_put_until_it_hits_the_clip() {
+        let margin = 3.0; // egui 默认 clip_rect_margin
+                          // 滚动为零时 clip_top = 内容顶 - margin：标题钉在内容流位置。
+        assert_eq!(sticky_y(40.0, 40.0 - margin, margin), 40.0);
+        // 刚滚过可视顶：钉在可视顶，一格都不多滚。
+        assert_eq!(sticky_y(39.0, 40.0 - margin, margin), 40.0);
+        assert_eq!(sticky_y(40.0, 52.0, margin), 55.0);
+    }
+
+    #[test]
+    fn sticky_does_not_jump_for_a_subpixel_gap() {
+        // 滚动区顶部曾经多留 4px，标题会从 4 跳到 0。
+        // 现在内容顶就是可视顶，亚像素差也要收成同一格。
+        assert_eq!(sticky_y(0.4, -3.0, 3.0), 0.0);
+        assert_eq!(sticky_y(0.0, -2.6, 3.0), 0.0);
     }
 }
