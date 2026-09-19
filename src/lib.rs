@@ -16,3 +16,4 @@ pub mod theme;
 pub mod tokens;
 pub mod ui;
 pub mod util;
+pub mod wheel;

@@ -138,6 +138,9 @@ pub(super) fn provider_api_combo(
 
 /// 思考档位多选：按钮展开、勾选写回逗号分隔文本。
 /// `normalize` 为 true 时按规范档位顺序写回，避免重新勾选后被追加到末尾。
+///
+/// `picker` 决定展示方式：平面 = 按钮展开勾选列表；滚轮 = 圆柱转轮。
+/// 两种模式读写同一份逗号分隔文本，切换样式不丢数据。
 pub(super) fn variant_selector(
     ui: &mut egui::Ui,
     variants: &mut String,
@@ -145,6 +148,7 @@ pub(super) fn variant_selector(
     open_key: String,
     open_set: &mut HashSet<String>,
     normalize: bool,
+    picker: crate::wheel::PickerStyle,
 ) {
     let current = variants.clone();
     let mut selected: Vec<String> = current
@@ -152,6 +156,29 @@ pub(super) fn variant_selector(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    if picker.is_wheel() {
+        // 滚轮模式：单值语义（一次选一个档位），与勾选列表的多值共存——
+        // 进入滚轮时以首个已选档位为当前值。
+        let options: Vec<String> = names.iter().map(|s| (*s).to_string()).collect();
+        let selected_idx = selected
+            .first()
+            .and_then(|s| options.iter().position(|o| o == s))
+            .unwrap_or(0);
+        let outcome = crate::wheel::wheel_selector(
+            ui,
+            open_key,
+            crate::wheel::WheelState {
+                options: &options,
+                selected: selected_idx,
+            },
+        );
+        if outcome.changed {
+            if let Some(name) = options.get(outcome.selected) {
+                *variants = name.clone();
+            }
+        }
+        return;
+    }
     let display = if selected.is_empty() {
         "选择...".to_string()
     } else {
@@ -582,6 +609,7 @@ impl App {
                             variant_key,
                             &mut self.variant_open,
                             true,
+                            self.picker_style,
                         );
                     });
                 },
@@ -699,6 +727,7 @@ impl App {
                     variant_key,
                     &mut self.variant_open,
                     false,
+                    self.picker_style,
                 );
             });
             ui.horizontal(|ui| {
@@ -1036,6 +1065,7 @@ impl App {
                         "new_provider_new_model_variant".to_string(),
                         &mut self.variant_open,
                         false,
+                        self.picker_style,
                     );
                 });
                 ui.horizontal(|ui| {

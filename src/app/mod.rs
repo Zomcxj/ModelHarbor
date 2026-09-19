@@ -110,6 +110,8 @@ pub struct App {
     guide_dismissed: bool,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
     ui_style: crate::theme::UiStyle,
+    /// 枚举选择器样式：平面下拉 / 圆柱滚轮。
+    picker_style: crate::wheel::PickerStyle,
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
@@ -235,6 +237,7 @@ impl Default for App {
             allow_model_test_with_proxy: prefs.allow_model_test_with_proxy,
             guide_dismissed: prefs.guide_dismissed,
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
+            picker_style: crate::wheel::PickerStyle::from_key(&prefs.picker_style),
             net_guard_at: 0.0,
             // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
             theme: Theme::from_key(&prefs.theme),
@@ -388,6 +391,7 @@ impl App {
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
             guide_dismissed: self.guide_dismissed,
             ui_style: self.ui_style.key().to_string(),
+            picker_style: self.picker_style.key().to_string(),
         }
     }
 

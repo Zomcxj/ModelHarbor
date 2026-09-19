@@ -318,6 +318,54 @@ impl App {
                                     }
                                 }
                             });
+                            ui.add_space(crate::theme::SPACE_2);
+                            ui.label(egui::RichText::new("选择器").small().weak());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for picker in crate::wheel::PickerStyle::ALL {
+                                    let is_current = self.picker_style == picker;
+                                    let btn = egui::Button::new(
+                                        egui::RichText::new(picker.label())
+                                            .color(if current_accent.r() as u32
+                                                + current_accent.g() as u32
+                                                + current_accent.b() as u32
+                                                > 384
+                                            {
+                                                egui::Color32::BLACK
+                                            } else {
+                                                egui::Color32::WHITE
+                                            }),
+                                    )
+                                    .fill(current_accent)
+                                    .stroke(if is_current {
+                                        egui::Stroke::new(
+                                            2.0,
+                                            if dark {
+                                                egui::Color32::WHITE
+                                            } else {
+                                                egui::Color32::from_gray(40)
+                                            },
+                                        )
+                                    } else {
+                                        egui::Stroke::NONE
+                                    })
+                                    .min_size(egui::vec2(52.0, 0.0));
+                                    if ui
+                                        .add(btn)
+                                        .on_hover_text(match picker {
+                                            crate::wheel::PickerStyle::Flat => {
+                                                "枚举字段用下拉框勾选（默认）"
+                                            }
+                                            crate::wheel::PickerStyle::Wheel => {
+                                                "枚举字段用圆柱滚轮选择（iOS 闹钟式）"
+                                            }
+                                        })
+                                        .clicked()
+                                    {
+                                        self.picker_style = picker;
+                                    }
+                                }
+                            });
                         });
                 });
             });
