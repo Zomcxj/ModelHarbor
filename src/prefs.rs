@@ -187,13 +187,8 @@ pub struct Prefs {
     pub allow_model_test_with_proxy: bool,
     /// 是否已经关掉首次使用引导条。
     pub guide_dismissed: bool,
-    /// 界面形状标识（`soft` / `fine` / `minimal` / `tag` / `cloud` / `emboss` / `slab` / `band`；空 = 用默认档）。
+    /// 界面形状标识（`soft` / `compact` / `slab` / `sharp` / `panel` / `pill`；空 = 用默认档）。
     pub ui_style: String,
-    /// 选择器样式（`flat` / `wheel`；空 = 平面下拉）。
-    ///
-    /// 枚举型选择器（思考档位、api 协议、npm 包）的展示方式：
-    /// 平面 = 下拉勾选；滚轮 = iOS 闹钟式的圆柱转轮。
-    pub picker_style: String,
 }
 
 impl Prefs {
@@ -284,7 +279,6 @@ impl Prefs {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             ui_style: get_str("ui_style"),
-            picker_style: get_str("picker_style"),
         }
     }
 
@@ -330,10 +324,6 @@ impl Prefs {
             Value::Bool(self.guide_dismissed),
         );
         root.insert("ui_style".to_string(), Value::String(self.ui_style.clone()));
-        root.insert(
-            "picker_style".to_string(),
-            Value::String(self.picker_style.clone()),
-        );
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -403,7 +393,6 @@ mod tests {
             allow_model_test_with_proxy: true,
             guide_dismissed: true,
             ui_style: "slab".to_string(),
-            picker_style: "wheel".to_string(),
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
     }
