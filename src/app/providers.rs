@@ -181,34 +181,21 @@ impl App {
             0.0
         };
         if self.list_style.is_wheel() {
-            // 转轮模式：只渲染焦点附近若干张，按距离缩放形成纵深。
-            // 远处卡片整卡跳过（不布局也不绘制）——上百张卡全量跑一遍没有意义。
+            // 转轮模式：焦点卡落在列表区**垂直中心**，上下相邻卡片按距离
+            // 缩小淡出，远处的整卡跳过（不布局也不绘制）。
+            //
+            // 「居中」靠焦点卡上方预留 `WHEEL_LEAD_ROWS` 行留白实现：
+            // 焦点卡前面有几张卡就留几行空，缺的补足——这样焦点卡始终
+            // 停在同一个高度，而不是随它在列表里的位置上下浮动。
             let len = matched.len();
             let focus = self.wheel_focus.min(len.saturating_sub(1));
+            let top = ui.cursor().min;
+            let row_h = crate::wheel::WHEEL_ROW_PITCH;
 
-            // 焦点推进：鼠标在列表区滚动 / 上下拖动即切换焦点卡。
-            // 用整块列表区域的交互层捕获输入——焦点卡自己会消费滚轮
-            // （它内部有可滚动控件），靠它捕获会时灵时不灵。
-            let area = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(ui.available_width(), ui.available_height()),
-            );
-            let resp = ui.interact(area, ui.id().with("wheel_focus_area"), egui::Sense::drag());
-            let mut delta = 0.0;
-            if resp.dragged() {
-                delta -= resp.drag_delta().y;
-            }
-            if resp.hovered() {
-                delta += ui.input(|i| i.smooth_scroll_delta.y);
-            }
-            if delta != 0.0 {
-                // 一张卡约 40px 高（收起态）；用卡片间距当步长，手感接近列表滚动。
-                let next = crate::wheel::advance_focus(focus, delta, 48.0, len);
-                if next != self.wheel_focus {
-                    self.wheel_focus = next;
-                }
-            }
-            let focus = self.wheel_focus.min(len.saturating_sub(1));
+            // 焦点卡上方的留白：让焦点卡固定落在第 LEAD 行位置。
+            // 焦点卡自身及其上方的卡片各占一行，缺的用空白补。
+            let above = focus.min(crate::wheel::WHEEL_LEAD_ROWS);
+            ui.add_space((crate::wheel::WHEEL_LEAD_ROWS - above) as f32 * row_h);
 
             for (pos, &idx) in matched.iter().enumerate() {
                 if !crate::wheel::card_visible(focus, pos) {
@@ -220,6 +207,40 @@ impl App {
                     self.render_provider_card(ui, idx, &mut actions);
                 });
                 ui.add_space(card_gap);
+            }
+
+            // 焦点推进的交互层必须**在卡片之后**注册：egui 命中判定是
+            // 「后注册的在上层」（`hit_test`: in tie, pick last = topmost），
+            // 先注册会被卡片及其内部滚动区盖住。
+            let rows_h = crate::wheel::WHEEL_VISIBLE_RADIUS as f32 * 2.0 + 1.0;
+            let area = egui::Rect::from_min_size(
+                top,
+                egui::vec2(
+                    ui.available_width(),
+                    (rows_h * row_h).min(ui.available_height()),
+                ),
+            );
+            let resp = ui.interact(
+                area,
+                ui.id().with("wheel_focus_area"),
+                egui::Sense::click_and_drag(),
+            );
+            let mut delta = 0.0;
+            if resp.dragged() {
+                delta -= resp.drag_delta().y;
+            }
+            // 滚轮用 `raw_scroll_delta`：外层滚动区消费的是 `smooth_scroll_delta`
+            // （`scroll_area.rs` 读它并清零），raw 那份不会被别人动。
+            // 指针判定用 `rect_contains_pointer` 而不是 `resp.hovered()`：
+            // 后者要求本层在指针下胜出命中，而卡片里的滚动区会把它抢走。
+            if ui.rect_contains_pointer(area) {
+                delta += ui.input(|i| i.raw_scroll_delta.y);
+            }
+            if delta != 0.0 {
+                let next = crate::wheel::advance_focus(focus, delta, row_h, len);
+                if next != self.wheel_focus {
+                    self.wheel_focus = next;
+                }
             }
         } else {
             card_list(ui, &matched, card_gap, |ui, idx| {
