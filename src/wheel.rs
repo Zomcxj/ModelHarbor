@@ -52,14 +52,18 @@ impl ListStyle {
     }
 }
 
-/// 选中卡（距离 0）的缩放。转轮模式下选中卡略微放大，坐实「焦点」。
-pub const WHEEL_FOCUS_SCALE: f32 = 1.06;
+/// 选中卡（距离 0）的缩放。
+///
+/// 固定为 1.0（**不放大**）：放大焦点卡会让它超出列表宽度、被窗口边缘裁掉。
+/// 纵深感靠「其余卡片缩小」来表达——这样焦点卡正好占满可用宽度，与平面
+/// 模式观感一致，也不会溢出。
+pub const WHEEL_FOCUS_SCALE: f32 = 1.0;
 
 /// 离选中卡最远的可见卡的最小缩放。
 ///
-/// 与 `WHEEL_FOCUS_SCALE` 要拉开足够差距，纵深才明显——两档太接近时
-/// 看起来只是「卡片大小不齐」，而不是「绕圆柱排布」。
-pub const WHEEL_EDGE_SCALE: f32 = 0.68;
+/// 焦点卡固定 1.0（不放大），纵深全靠这一侧缩小表达——所以要拉得够开，
+/// 否则看起来只是「卡片大小不齐」。0.72 时最远卡明显退后，又没小到看不清。
+pub const WHEEL_EDGE_SCALE: f32 = 0.72;
 
 /// 最远卡的透明度下限。
 pub const WHEEL_EDGE_ALPHA: f32 = 0.35;
@@ -120,11 +124,12 @@ pub fn advance_focus(focus: usize, delta: f32, row_step: f32, len: usize) -> usi
     (focus as i64 + moved).clamp(0, len as i64 - 1) as usize
 }
 
-/// 转轮模式下渲染一张卡片：按到选中卡的距离做视觉缩放。
+/// 转轮模式下渲染一张卡片：按到焦点卡的距离做视觉缩放。
 ///
-/// `ui` 的光标位置即卡片左上角；缩放锚点取**卡片顶边中点**——这样卡片
-/// 缩小后仍贴着同一条水平中轴，视觉上像绕圆柱转。锚点用顶边而不是中心，
-/// 是因为渲染前还不知道卡片高度（要先渲染才能量到），用顶边就不依赖高度。
+/// 缩放锚点取**左边缘中点**：卡片缩小后左侧贴齐（与列表左边缘对齐）、
+/// 垂直方向仍居中于原行位置，看起来像沿圆柱面退远，而不是往中间挤。
+/// 锚点用左边缘而非中心，是因为放大时以中心为锚会向两侧溢出屏幕；
+/// 焦点卡不放大（`WHEEL_FOCUS_SCALE = 1.0`），所以只有缩小这一侧。
 pub fn render_card_in_wheel<R>(
     ui: &mut egui::Ui,
     distance: usize,
@@ -134,16 +139,85 @@ pub fn render_card_in_wheel<R>(
     if (scale - 1.0).abs() < f32::EPSILON {
         return add(ui);
     }
-    // 锚点：光标处的顶边中点。`mul_pos(p) = scaling * p + translation`，
-    // 让锚点保持不动（`scale * anchor + t == anchor`）→ `t = anchor * (1 - scale)`。
-    let anchor = ui.cursor().min.to_vec2() + egui::vec2(ui.available_width() / 2.0, 0.0);
+    // 锚点：光标处的左边缘中点（用当前行高的一半估中点，渲染前不知道真实高度）。
+    // `mul_pos(p) = scaling * p + translation`，让锚点不动
+    // （`scale * anchor + t == anchor`）→ `t = anchor * (1 - scale)`。
+    let row_h = ui.spacing().interact_size.y.max(WHEEL_ROW_PITCH / 2.0);
+    let anchor = ui.cursor().min.to_vec2() + egui::vec2(0.0, row_h / 2.0);
     let transform = egui::emath::TSTransform::new(anchor * (1.0 - scale), scale);
     ui.with_visual_transform(transform, add).inner
+}
+
+/// 转轮模式的上下渐变淡出遮罩：把列表上下边缘的卡片融进面板底色。
+///
+/// egui 没有内置的渐变淡出，用带顶点色的 mesh 自绘（与滚动区那套同思路）：
+/// 每侧一个从 `panel_fill` 不透明到全透明的矩形，覆盖在卡片之上。
+/// 只在转轮模式调用——平面模式没有纵深，盖上去只会糊掉首末行。
+pub fn wheel_fade(ui: &egui::Ui, area: egui::Rect) {
+    let base = ui.visuals().panel_fill;
+    let clear = egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 0);
+    let painter = ui.painter().with_clip_rect(area);
+    let mut mesh = egui::Mesh::default();
+    let top = egui::Rect::from_min_max(
+        area.min,
+        egui::pos2(area.right(), area.top() + WHEEL_FADE_HEIGHT),
+    );
+    add_fade_quad(&mut mesh, top, base, clear);
+    let bottom = egui::Rect::from_min_max(
+        egui::pos2(area.left(), area.bottom() - WHEEL_FADE_HEIGHT),
+        area.max,
+    );
+    add_fade_quad(&mut mesh, bottom, clear, base);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// 上下渐变过渡带高度（像素）。
+pub const WHEEL_FADE_HEIGHT: f32 = 48.0;
+
+/// 往 mesh 里加一个竖向渐变的矩形：`top_color` 在上、`bottom_color` 在下。
+fn add_fade_quad(
+    mesh: &mut egui::Mesh,
+    rect: egui::Rect,
+    top_color: egui::Color32,
+    bottom_color: egui::Color32,
+) {
+    let idx = mesh.vertices.len() as u32;
+    for (pos, color) in [
+        (rect.left_top(), top_color),
+        (rect.right_top(), top_color),
+        (rect.right_bottom(), bottom_color),
+        (rect.left_bottom(), bottom_color),
+    ] {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos,
+            uv: egui::epaint::WHITE_UV,
+            color,
+        });
+    }
+    mesh.indices
+        .extend_from_slice(&[idx, idx + 1, idx + 2, idx, idx + 2, idx + 3]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 焦点卡不能放大：放大后会超出列表宽度被窗口裁掉（曾经 1.06 就溢出屏幕）。
+    #[test]
+    fn focus_card_never_scales_above_one() {
+        assert!(
+            WHEEL_FOCUS_SCALE <= 1.0,
+            "焦点卡缩放 {} 大于 1，会溢出屏幕",
+            WHEEL_FOCUS_SCALE
+        );
+        let (scale, _) = card_visual(0);
+        assert!(scale <= 1.0);
+        // 所有档位都不得放大
+        for d in 0..=WHEEL_VISIBLE_RADIUS {
+            let (s, _) = card_visual(d);
+            assert!(s <= 1.0, "距离 {d} 的缩放 {s} 大于 1");
+        }
+    }
 
     /// 中间卡最大最实，越远越小越淡，且单调。
     #[test]

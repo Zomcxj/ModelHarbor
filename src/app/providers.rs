@@ -209,6 +209,14 @@ impl App {
                 ui.add_space(card_gap);
             }
 
+            // 上下渐变淡出：盖在卡片之上，把边缘卡片融进底色形成纵深。
+            // 必须在卡片渲染之后调用（否则被卡片盖住），并限制在列表区内。
+            let list_bottom = ui.cursor().min.y;
+            crate::wheel::wheel_fade(
+                ui,
+                egui::Rect::from_min_max(top, egui::pos2(ui.max_rect().right(), list_bottom)),
+            );
+
             // 焦点推进的交互层必须**在卡片之后**注册：egui 命中判定是
             // 「后注册的在上层」（`hit_test`: in tie, pick last = topmost），
             // 先注册会被卡片及其内部滚动区盖住。
