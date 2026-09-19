@@ -109,7 +109,7 @@ fn remove_legacy_next_to(path: &Path) {
 }
 
 /// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
-const SCHEMA_VERSION: u64 = 11;
+const SCHEMA_VERSION: u64 = 12;
 
 /// 配置身份：规范化路径后做稳定 FNV-1a 哈希，避免把用户目录明文写进设置键。
 pub fn config_identity(path: &str) -> String {
@@ -195,6 +195,9 @@ pub struct Prefs {
     pub guide_dismissed: bool,
     /// 界面形状标识（`soft` / `compact` / `slab` / `sharp` / `panel` / `pill`；空 = 用默认档）。
     pub ui_style: String,
+    /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
+    /// 只对已安装的那一组生效——未安装的页面始终排在后面并按字母序。
+    pub tab_order: Vec<String>,
 }
 
 impl Prefs {
@@ -287,6 +290,7 @@ impl Prefs {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             ui_style: get_str("ui_style"),
+            tab_order: get_list("tab_order"),
         }
     }
 
@@ -334,6 +338,17 @@ impl Prefs {
             Value::Bool(self.guide_dismissed),
         );
         root.insert("ui_style".to_string(), Value::String(self.ui_style.clone()));
+        // 顶栏顺序按用户拖动结果原样写出：这里**不能**排序，
+        // 顺序本身就是这个键的内容（与 collapsed 的排序去重不同）。
+        root.insert(
+            "tab_order".to_string(),
+            Value::Array(
+                self.tab_order
+                    .iter()
+                    .map(|k| Value::String(k.clone()))
+                    .collect(),
+            ),
+        );
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -405,8 +420,28 @@ mod tests {
             allow_model_test_with_proxy: true,
             guide_dismissed: true,
             ui_style: "slab".to_string(),
+            tab_order: vec!["pi".to_string(), "zcode".to_string()],
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
+    }
+
+    /// 顶栏顺序按拖动结果原样写出：排序会毁掉这个键的内容。
+    #[test]
+    fn tab_order_is_written_verbatim_not_sorted() {
+        let prefs = Prefs {
+            tab_order: vec!["zcode".into(), "pi".into(), "opencode".into()],
+            ..Default::default()
+        };
+        let back = Prefs::parse(&prefs.to_json());
+        assert_eq!(
+            back.tab_order,
+            vec![
+                "zcode".to_string(),
+                "pi".to_string(),
+                "opencode".to_string()
+            ],
+            "顺序本身是内容，不得排序"
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ use crate::app::save::PageTarget;
 use crate::backends;
 use crate::format::ConfigFormat;
 use crate::theme::Theme;
+use crate::ui::move_item;
 use crate::util::show_file_dialog;
 use eframe::egui;
 
@@ -160,12 +161,38 @@ impl App {
             // 第一行：页面切换 / 来源 / 右侧 WSL 同步 + 主题
             ui.horizontal(|ui| {
                 let icons: Vec<Option<egui::TextureHandle>> = self.backend_icons.clone();
-                for (i, b) in backends::BACKENDS.iter().enumerate() {
-                    let id = b.id();
+                // 已安装的排在前（可拖动换位），未安装的按名字首字母排在后面。
+                let installed = |id: ConfigFormat| self.config_paths.validate_target(id);
+                let order = self
+                    .config_paths
+                    .tab_order(&self.tab_order, |id| self.config_paths.validate_target(id));
+                // 已安装的那一段：拖动只在它内部换位。
+                let installed_count = order.iter().filter(|id| installed(**id)).count();
+                let mut drop_on: Option<usize> = None;
+                let mut released = false;
+                let mut clicked_page: Option<ConfigFormat> = None;
+
+                for (slot, id) in order.iter().copied().enumerate() {
+                    let i = backends::BACKENDS
+                        .iter()
+                        .position(|b| b.id() == id)
+                        .unwrap_or(0);
+                    let is_installed = installed(id);
+                    // 未安装的页面把图标调淡：egui 的 Button 没有 weak()，
+                    // 用 Image 的 tint 压暗（保持同一个按钮形状，只改观感）。
+                    // 已安装：WHITE = 乘以白 = 不改色（原图）。绝不能用
+                    // Color32::PLACEHOLDER——它是魔法值 rgba(0,255,183,4)，
+                    // 直接当 tint 会把图标乘成绿色（红通道归零）。
+                    let icon_tint = if is_installed {
+                        egui::Color32::WHITE
+                    } else {
+                        ui.visuals().weak_text_color()
+                    };
                     let btn = match icons.get(i).and_then(|o| o.as_ref()) {
                         Some(tex) => egui::Button::image(
                             egui::Image::from_texture(tex)
-                                .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                .fit_to_exact_size(egui::vec2(16.0, 16.0))
+                                .tint(icon_tint),
                         ),
                         None => egui::Button::new(""),
                     };
@@ -178,28 +205,77 @@ impl App {
                     } else {
                         btn
                     };
-                    // 只显示图标，鼠标悬停提示名称；加大点击区便于操作
+                    // 未安装的页面画淡一点，与已安装的区分开。
+                    let tip = if is_installed {
+                        format!("{}（已安装，可拖动换位）", id.label())
+                    } else {
+                        format!("{}（未安装）", id.label())
+                    };
                     let btn_resp = ui
                         .add(btn.min_size(egui::vec2(24.0, 22.0)))
-                        .on_hover_text(id.label())
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        .on_hover_text(tip);
+                    let btn_resp = if is_installed {
+                        btn_resp.on_hover_cursor(egui::CursorIcon::Grab)
+                    } else {
+                        btn_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                    };
                     if btn_resp.clicked() {
-                        if id == ConfigFormat::DeepSeekHarness
-                            && self.current_page != ConfigFormat::DeepSeekHarness
-                        {
-                            self.project_dsh_credentials();
-                        }
-                        self.sync_provider_secrets(id);
-                        // 对应 agent 未在 WSL 安装的页面：关闭并禁用 WSL 同步
-                        if backends::wsl_target(id).is_none() {
-                            self.sync_wsl = false;
-                        }
-                        self.current_page = id;
-                        // 切换页面后必须重建预览草稿：草稿只在「预览未聚焦且上次解析成功」时才
-                        // 跟随组件状态，否则会停留在上一页的内容上（预览框仍有焦点或上次解析失败）。
-                        self.reset_preview_draft();
-                        ctx.memory_mut(|m| m.surrender_focus(egui::Id::new(PREVIEW_EDITOR_ID)));
+                        clicked_page = Some(id);
                     }
+                    // 拖动换位：只认已安装段内的落点（未安装的位置是推导出来的，
+                    // 允许拖进去会和「未安装按字母序」的规则打架）。
+                    if is_installed && slot < installed_count {
+                        if btn_resp.drag_started() {
+                            self.tab_drag_src = Some(id);
+                        }
+                        if self.tab_drag_src.is_some() && btn_resp.hovered() {
+                            drop_on = Some(slot);
+                        }
+                        if btn_resp.drag_stopped() {
+                            released = true;
+                        }
+                    }
+                }
+
+                // 松手：把被拖的页面移到落点位置，落点即用户看到的那个槽位。
+                if released {
+                    if let (Some(src), Some(dst)) = (self.tab_drag_src, drop_on) {
+                        let mut installed_ids: Vec<ConfigFormat> = order
+                            .iter()
+                            .copied()
+                            .filter(|id| installed(*id))
+                            .collect();
+                        if let (Some(from), true) =
+                            (installed_ids.iter().position(|id| *id == src), dst < installed_ids.len())
+                        {
+                            if from != dst {
+                                move_item(&mut installed_ids, from, dst);
+                                self.tab_order = installed_ids
+                                    .iter()
+                                    .map(|id| id.label().to_string())
+                                    .collect();
+                            }
+                        }
+                    }
+                    self.tab_drag_src = None;
+                }
+
+                if let Some(id) = clicked_page {
+                    if id == ConfigFormat::DeepSeekHarness
+                        && self.current_page != ConfigFormat::DeepSeekHarness
+                    {
+                        self.project_dsh_credentials();
+                    }
+                    self.sync_provider_secrets(id);
+                    // 对应 agent 未在 WSL 安装的页面：关闭并禁用 WSL 同步
+                    if backends::wsl_target(id).is_none() {
+                        self.sync_wsl = false;
+                    }
+                    self.current_page = id;
+                    // 切换页面后必须重建预览草稿：草稿只在「预览未聚焦且上次解析成功」时才
+                    // 跟随组件状态，否则会停留在上一页的内容上（预览框仍有焦点或上次解析失败）。
+                    self.reset_preview_draft();
+                    ctx.memory_mut(|m| m.surrender_focus(egui::Id::new(PREVIEW_EDITOR_ID)));
                 }
                 ui.separator();
                 // 右侧：WSL 同步 + 主题

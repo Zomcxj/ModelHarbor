@@ -80,6 +80,8 @@ pub struct App {
     provider_drag_target: Option<String>,
     model_drag_src: Option<String>,
     model_drag_target: Option<String>,
+    /// 正在拖动的顶栏页面（已安装的那一段内换位）。
+    tab_drag_src: Option<ConfigFormat>,
     /// 每个 provider 的模型获取状态（key → 状态）。
     model_fetch: HashMap<String, ModelFetchState>,
     /// 已展开的模型获取面板（provider key）。
@@ -110,6 +112,8 @@ pub struct App {
     guide_dismissed: bool,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
     ui_style: crate::theme::UiStyle,
+    /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
+    tab_order: Vec<String>,
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
@@ -217,6 +221,7 @@ impl Default for App {
             agent_drag_src: None,
             agent_drag_target: None,
             provider_drag_src: None,
+            tab_drag_src: None,
             provider_drag_target: None,
             model_drag_src: None,
             model_drag_target: None,
@@ -235,6 +240,7 @@ impl Default for App {
             allow_model_test_with_proxy: prefs.allow_model_test_with_proxy,
             guide_dismissed: prefs.guide_dismissed,
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
+            tab_order: prefs.tab_order.clone(),
             net_guard_at: 0.0,
             // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
             theme: Theme::from_key(&prefs.theme),
@@ -390,6 +396,7 @@ impl App {
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
             guide_dismissed: self.guide_dismissed,
             ui_style: self.ui_style.key().to_string(),
+            tab_order: self.tab_order.clone(),
         }
     }
 

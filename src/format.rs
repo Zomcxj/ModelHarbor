@@ -143,6 +143,42 @@ impl ConfigPaths {
         backends::target_available(format, &self.local_path(format))
     }
 
+    /// 页面在顶栏的显示顺序：**已安装在前、未安装在后**，各组内按名字首字母。
+    ///
+    /// `saved_order` 是用户拖动过的顺序（后端标识，`ConfigFormat::label()` 的值）：
+    /// 只对已安装的那一组生效——未安装的排在哪里是推导出来的，不该被手动顺序干扰。
+    /// 拖动后新装了一个 agent 也不会打乱：它按字母序插进已安装组。
+    pub fn tab_order(
+        &self,
+        saved_order: &[String],
+        is_installed: impl Fn(ConfigFormat) -> bool,
+    ) -> Vec<ConfigFormat> {
+        let mut installed: Vec<ConfigFormat> = Vec::new();
+        let mut missing: Vec<ConfigFormat> = Vec::new();
+        for backend in backends::BACKENDS {
+            let id = backend.id();
+            if is_installed(id) {
+                installed.push(id);
+            } else {
+                missing.push(id);
+            }
+        }
+        // 已安装组：先按用户拖动顺序，其余按名字首字母补在其后。
+        let rank = |id: ConfigFormat| {
+            saved_order
+                .iter()
+                .position(|k| k == id.label())
+                .unwrap_or(usize::MAX)
+        };
+        installed.sort_by(|a, b| {
+            let (ra, rb) = (rank(*a), rank(*b));
+            ra.cmp(&rb).then_with(|| a.label().cmp(b.label()))
+        });
+        missing.sort_by(|a, b| a.label().cmp(b.label()));
+        installed.extend(missing);
+        installed
+    }
+
     /// 本地优先：本地文件存在时写本地，否则回落 WSL，最后回退本地默认路径（新建场景）。
     pub fn target_path(&self, format: ConfigFormat) -> String {
         backends::target_path(format, &self.local_path(format))
@@ -153,6 +189,113 @@ impl ConfigPaths {
 mod tests {
     use super::*;
     use crate::prefs::ConfigPathPrefs;
+
+    /// 顶栏顺序：已安装在前（按字母）、未安装在后（按字母）。
+    #[test]
+    fn tab_order_puts_installed_first_then_alphabetical() {
+        let paths = ConfigPaths::default();
+        // 假装只有 pi / zcode / workbuddy 装了
+        let order = paths.tab_order(&[], |id| {
+            matches!(
+                id,
+                ConfigFormat::Pi | ConfigFormat::ZCode | ConfigFormat::WorkBuddy
+            )
+        });
+        let labels: Vec<&str> = order.iter().map(|id| id.label()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "pi",
+                "workbuddy",
+                "zcode",
+                "deepseek-harness",
+                "oh-my-pi",
+                "opencode"
+            ],
+            "已安装的按字母在前，未安装的按字母在后"
+        );
+    }
+
+    /// 保存的拖动顺序只作用于已安装的那一段。
+    #[test]
+    fn tab_order_applies_saved_order_to_installed_only() {
+        let paths = ConfigPaths::default();
+        let saved = vec!["zcode".to_string(), "pi".to_string()];
+        let order = paths.tab_order(&saved, |id| {
+            matches!(id, ConfigFormat::Pi | ConfigFormat::ZCode)
+        });
+        let labels: Vec<&str> = order.iter().map(|id| id.label()).collect();
+        assert_eq!(labels[0], "zcode", "拖动顺序生效");
+        assert_eq!(labels[1], "pi");
+        // 未安装的仍按字母序跟在后面，不受 saved 影响
+        assert_eq!(
+            &labels[2..],
+            &["deepseek-harness", "oh-my-pi", "opencode", "workbuddy"],
+        );
+    }
+
+    /// 拖动顺序里出现了当前未安装的项时不该出错：它被忽略，等装了再排进去。
+    #[test]
+    fn tab_order_ignores_saved_entries_that_are_not_installed() {
+        let paths = ConfigPaths::default();
+        let saved = vec![
+            "workbuddy".to_string(), // 没装
+            "zcode".to_string(),
+        ];
+        let order = paths.tab_order(&saved, |id| {
+            matches!(id, ConfigFormat::ZCode | ConfigFormat::Pi)
+        });
+        let labels: Vec<&str> = order.iter().map(|id| id.label()).collect();
+        assert_eq!(labels[0], "zcode", "未安装的项被跳过，不影响已安装的排序");
+        assert_eq!(labels[1], "pi", "剩下的按字母补在后面");
+    }
+
+    /// 新装一个 agent：按字母插进已安装段，不打断已有顺序。
+    #[test]
+    fn tab_order_keeps_saved_prefix_when_a_new_agent_appears() {
+        let paths = ConfigPaths::default();
+        let saved = vec!["zcode".to_string()];
+        let order = paths.tab_order(&saved, |id| {
+            matches!(id, ConfigFormat::ZCode | ConfigFormat::Pi)
+        });
+        let labels: Vec<&str> = order.iter().map(|id| id.label()).collect();
+        assert_eq!(labels[0], "zcode", "已保存的顺序保持");
+        assert_eq!(labels[1], "pi", "新装的按字母补进已安装段");
+        assert_eq!(labels[2], "deepseek-harness", "未安装段不受影响");
+    }
+
+    /// 一个都没装时全按字母序。
+    #[test]
+    fn tab_order_all_alphabetical_when_nothing_installed() {
+        let paths = ConfigPaths::default();
+        let order = paths.tab_order(&[], |_| false);
+        let labels: Vec<&str> = order.iter().map(|id| id.label()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "deepseek-harness",
+                "oh-my-pi",
+                "opencode",
+                "pi",
+                "workbuddy",
+                "zcode"
+            ],
+        );
+    }
+
+    /// 顺序必须是全部后端的一个排列：漏一个就等于顶栏少一个页面。
+    #[test]
+    fn tab_order_covers_every_backend_exactly_once() {
+        let paths = ConfigPaths::default();
+        for installed in [ConfigFormat::Opencode, ConfigFormat::WorkBuddy] {
+            let order = paths.tab_order(&[], |id| id == installed);
+            assert_eq!(order.len(), crate::backends::BACKENDS.len());
+            let mut sorted: Vec<&str> = order.iter().map(|id| id.label()).collect();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), order.len(), "不得重复");
+        }
+    }
 
     fn temp_config(name: &str) -> String {
         let path = std::env::temp_dir().join(format!(
