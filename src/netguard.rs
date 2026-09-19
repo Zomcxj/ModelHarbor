@@ -258,10 +258,9 @@ mod platform {
         if rc != ERROR_SUCCESS {
             return None;
         }
-        let units: Vec<u16> = buf
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
+        // REG_SZ 的字节长度恒为偶数，尾块必然为空。
+        let (pairs, _) = buf.as_chunks::<2>();
+        let units: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
         let end = units.iter().position(|u| *u == 0).unwrap_or(units.len());
         Some(String::from_utf16_lossy(&units[..end]))
     }

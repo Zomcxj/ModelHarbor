@@ -88,17 +88,17 @@ fn draw_relief(ui: &egui::Ui, rect: egui::Rect) {
     painter.rect_stroke(
         rect.translate(egui::vec2(1.0, 1.0)),
         radius,
-        egui::Stroke::new(1.0, shadow),
+        egui::Stroke::new(1.0f32, shadow),
         egui::StrokeKind::Inside,
     );
     if style.has_bevel() {
         let (light, dark) = style.bevel_colors(ui.visuals().dark_mode);
         let (light_lines, dark_lines) = bevel_segments(rect, radius.nw as f32);
         for segment in light_lines {
-            painter.line_segment(segment, egui::Stroke::new(1.0, light));
+            painter.line_segment(segment, egui::Stroke::new(1.0f32, light));
         }
         for segment in dark_lines {
-            painter.line_segment(segment, egui::Stroke::new(1.0, dark));
+            painter.line_segment(segment, egui::Stroke::new(1.0f32, dark));
         }
     }
 }

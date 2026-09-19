@@ -787,7 +787,7 @@ impl App {
         painter.rect_stroke(
             ghost_rect,
             8.0,
-            egui::Stroke::new(1.0, stroke_color),
+            egui::Stroke::new(1.0f32, stroke_color),
             egui::StrokeKind::Inside,
         );
         painter.text(

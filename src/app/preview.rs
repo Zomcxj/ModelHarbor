@@ -89,7 +89,7 @@ impl App {
                 ui.painter().vline(
                     rect.center().x,
                     rect.y_range(),
-                    egui::Stroke::new(1.0, color),
+                    egui::Stroke::new(1.0f32, color),
                 );
                 resp
             })

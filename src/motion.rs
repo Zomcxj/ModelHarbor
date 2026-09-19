@@ -12,6 +12,16 @@ pub const HOVER_TIME: f32 = 0.12;
 /// 折叠 / 展开时长（秒）。与 egui 默认 CollapsingHeader 的动画节奏同级。
 pub const COLLAPSE_TIME: f32 = 0.18;
 
+/// 动画时长必须「短到跟手」：改大了整个界面会显得拖沓。
+/// 编译期检查——改坏常量时构建就失败，不必等测试跑起来。
+const _: () = {
+    assert!(HOVER_TIME <= 0.2, "悬停过渡时长超过 0.2s，界面会显得拖沓");
+    assert!(
+        COLLAPSE_TIME <= 0.25,
+        "折叠动画时长超过 0.25s，界面会显得拖沓"
+    );
+};
+
 /// gamma 空间的逐通道插值（预乘 alpha 原样插）。
 ///
 /// UI 描边过渡不需要线性空间校正——人眼对 0.12 秒的中间帧只感知「在变」，
@@ -104,7 +114,7 @@ pub fn animated_collapse<R>(
 
 #[cfg(test)]
 mod tests {
-    use super::{animated_collapse, lerp_color, COLLAPSE_TIME, HOVER_TIME};
+    use super::{animated_collapse, lerp_color};
     use eframe::egui;
 
     #[test]
@@ -118,13 +128,6 @@ mod tests {
         // 超范围的 t 要被夹住，不能溢出回绕。
         assert_eq!(lerp_color(a, b, -1.0), a);
         assert_eq!(lerp_color(a, b, 2.0), b);
-    }
-
-    /// 动画时长必须是「短到跟手」的量级：改大了整个界面会显得拖沓。
-    #[test]
-    fn durations_stay_snappy() {
-        assert!(HOVER_TIME <= 0.2, "悬停过渡 {HOVER_TIME}s 太长");
-        assert!(COLLAPSE_TIME <= 0.25, "折叠动画 {COLLAPSE_TIME}s 太长");
     }
 
     #[test]

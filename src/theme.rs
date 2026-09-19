@@ -34,6 +34,15 @@ pub const TEXT_BODY: f32 = 13.0;
 /// 区块标题。
 pub const TEXT_HEADING: f32 = 18.0;
 
+/// 字阶必须严格递增（caption < small < body < title < heading）。
+/// 编译期检查——改坏刻度时构建就失败。
+const _: () = {
+    assert!(TEXT_CAPTION < TEXT_SMALL, "字阶错位：caption 不小于 small");
+    assert!(TEXT_SMALL < TEXT_BODY, "字阶错位：small 不小于 body");
+    assert!(TEXT_BODY < TEXT_TITLE, "字阶错位：body 不小于 title");
+    assert!(TEXT_TITLE < TEXT_HEADING, "字阶错位：title 不小于 heading");
+};
+
 // ── 圆角 ──────────────────────────────────────────────────
 /// 圆角滑块的上限（「外观」面板里连续调的范围是 0..=这个值）。
 pub const RADIUS_SLIDER_MAX: u8 = 20;
@@ -357,8 +366,12 @@ impl Theme {
                 0x767676, 0x000000,
             ),
             Theme::Mint => Palette::new(
-                false, 0xF0FAF5, 0xE6F7ED, 0xFFFFFF, 0xD0F0DE, 0xBFEBD3, 0x2D8659, 0x1A4D33,
-                0x7A9B88, 0xFFFFFF,
+                // 原配色三处不达标：强调色 #2D8659 只有 4.22:1、提示色 2.70:1、
+                // 正文 #1A4D33 在四个浅色主题里最淡（9.15:1，亮色 15.3 / 玫瑰 10.8 /
+                // 薰衣草 11.2），提示色是正文淡化出来的，正文一淡它就跟着读不清。
+                // 现在按 WCAG 下限校过：强调 #257A4E、正文 #0F3624、描边 #6E8F7C。
+                false, 0xF0FAF5, 0xE6F7ED, 0xFFFFFF, 0xD0F0DE, 0xBFEBD3, 0x257A4E, 0x0F3624,
+                0x6E8F7C, 0xFFFFFF,
             ),
             Theme::Lavender => Palette::new(
                 false, 0xF5F2FA, 0xECE7F5, 0xFFFFFF, 0xD9CEEB, 0xCFC2E6, 0x6B4D9E, 0x3D2866,
@@ -423,8 +436,8 @@ impl Theme {
         if shape.has_contact_shadow() {
             // 浮雕：控件描边换成内嵌暗边；悬浮窗给偏右下的投影，与卡片接触影呼应。
             let (_, edge) = shape.bevel_colors(dark);
-            style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, edge);
-            style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, edge);
+            style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0f32, edge);
+            style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0f32, edge);
             style.visuals.window_shadow = egui::epaint::Shadow {
                 offset: [2, 2],
                 blur: 6,
@@ -764,13 +777,7 @@ mod semantics_tests {
             TEXT_CAPTION > default_small,
             "副信息字号 {TEXT_CAPTION} 不应退回 egui 默认的 {default_small}"
         );
-        assert!(
-            TEXT_CAPTION < TEXT_SMALL
-                && TEXT_SMALL < TEXT_BODY
-                && TEXT_BODY < TEXT_TITLE
-                && TEXT_TITLE < TEXT_HEADING,
-            "字阶必须严格递增：caption {TEXT_CAPTION} < small {TEXT_SMALL} < body {TEXT_BODY} < title {TEXT_TITLE} < heading {TEXT_HEADING}"
-        );
+        // 字阶的严格递增由模块顶部的 `const { assert!() }` 编译期保证。
     }
 
     /// 一次丢弃式渲染：取回本帧所有顶点色（含数量）。
@@ -989,13 +996,13 @@ impl Palette {
         v.widgets.active.bg_fill = self.accent;
         // 控件描边：控件底色与面板底色只差 1.2–1.5:1，不给描边就靠这点色差分边界。
         // 输入框用 `extreme` 底，同样靠这条线成形。
-        let edge = Stroke::new(1.0, self.border);
+        let edge = Stroke::new(1.0f32, self.border);
         v.widgets.noninteractive.bg_stroke = edge;
         v.widgets.inactive.bg_stroke = edge;
-        v.widgets.hovered.bg_stroke = Stroke::new(1.0, self.accent);
-        v.widgets.active.bg_stroke = Stroke::new(1.0, self.accent);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0f32, self.accent);
+        v.widgets.active.bg_stroke = Stroke::new(1.0f32, self.accent);
         // 强调色底上的文字：选中态行 / 主按钮要看得清（浅底主题用白、深底主题用黑）。
-        v.selection.stroke = Stroke::new(1.0, self.accent_text);
+        v.selection.stroke = Stroke::new(1.0f32, self.accent_text);
         v
     }
 }

@@ -35,6 +35,11 @@ jobs:
   audit:
     name: dependencies
     runs-on: ubuntu-latest
+    # audit-check 要把结果写成 check run，缺 checks: write 会以
+    # 「Resource not accessible by integration」报错——即使没有漏洞也是红的。
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2

@@ -38,7 +38,7 @@ fn shape_button(
     };
     let stroke = if is_current {
         egui::Stroke::new(
-            2.0,
+            2.0f32,
             if dark {
                 egui::Color32::WHITE
             } else {
@@ -173,7 +173,7 @@ impl App {
                     let btn = if is_selected {
                         // 选中态：填充 + 描边，与未选中图标拉开视觉层级
                         btn.fill(ui.visuals().selection.bg_fill).stroke(
-                            egui::Stroke::new(1.0, ui.visuals().selection.stroke.color),
+                            egui::Stroke::new(1.0f32, ui.visuals().selection.stroke.color),
                         )
                     } else {
                         btn
@@ -255,7 +255,7 @@ impl App {
                                     };
                                     // 当前主题：加一圈对比色边框
                                     let stroke = if is_current {
-                                        egui::Stroke::new(2.0, egui::Color32::WHITE)
+                                        egui::Stroke::new(2.0f32, egui::Color32::WHITE)
                                     } else {
                                         egui::Stroke::NONE
                                     };
@@ -283,7 +283,7 @@ impl App {
                                         egui::Color32::WHITE
                                     };
                                     let stroke = if is_current {
-                                        egui::Stroke::new(2.0, egui::Color32::from_gray(40))
+                                        egui::Stroke::new(2.0f32, egui::Color32::from_gray(40))
                                     } else {
                                         egui::Stroke::NONE
                                     };
