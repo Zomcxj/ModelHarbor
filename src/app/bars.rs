@@ -197,7 +197,10 @@ impl App {
                         None => egui::Button::new(""),
                     };
                     let is_selected = self.current_page == id;
-                    let btn = if is_selected {
+                    // 正被抓着的页签也算「选中」：光标离开了也没别的东西提示抓着哪一个，
+                    // 与卡片拖动时整卡亮橙框是同一套语义。
+                    let is_dragging = self.tab_drag_src == Some(id);
+                    let btn = if is_selected || is_dragging {
                         // 选中态：填充 + 描边，与未选中图标拉开视觉层级
                         btn.fill(ui.visuals().selection.bg_fill).stroke(
                             egui::Stroke::new(1.0f32, ui.visuals().selection.stroke.color),
@@ -220,7 +223,13 @@ impl App {
                         )
                         .on_hover_text(tip);
                     let btn_resp = if is_installed {
-                        btn_resp.on_hover_cursor(egui::CursorIcon::Grab)
+                        // 拳头：可拖动时张开手（Grab），按住时抓紧（Grabbing）。
+                        if is_dragging {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            btn_resp
+                        } else {
+                            btn_resp.on_hover_cursor(egui::CursorIcon::Grab)
+                        }
                     } else {
                         btn_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
                     };
@@ -240,6 +249,12 @@ impl App {
                             released = true;
                         }
                     }
+                }
+
+                // 拖动中指针往往已经离开被拖的那个页签（拖到别的槽位上方），
+                // 光标不能退回默认箭头——整体保持「抓紧」，直到松手。
+                if self.tab_drag_src.is_some() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
 
                 // 松手：把被拖的页面移到落点位置，落点即用户看到的那个槽位。
@@ -526,6 +541,39 @@ impl App {
                     (p.clone(), "默认目标（Windows 本地；WSL 仅勾选后写入）", ok)
                 }
             };
+            // 一键保存：把同一份界面状态写到每个已安装后端的目标路径，
+            // 免去逐页切换逐个点保存。放在「保存」左侧（先全局后本页）。
+            // 按钮直接带目标数量：一次会写几个文件必须点之前就看得见——
+            // 本页的 provider 集合与别的 agent 不一致时，这一下会把它们一起改掉。
+            let installed: Vec<(String, String)> = self
+                .targets
+                .iter()
+                .filter(|t| t.available && !t.path.trim().is_empty())
+                .map(|t| (t.backend.label().to_string(), t.path.clone()))
+                .collect();
+            let tip = if installed.is_empty() {
+                "本地与 WSL 都没探测到已安装的配置，没有可写目标".to_string()
+            } else {
+                let mut s = format!(
+                    "一次写完以下 {} 个已安装后端（各自的目标路径）：\n",
+                    installed.len()
+                );
+                for (label, path) in &installed {
+                    s.push_str(&format!("· {label}: {path}\n"));
+                }
+                s.push_str(
+                    "未安装的跳过；跨格式转换前会把目标文件原样备份为 .bak；\n结果逐页列在状态栏。",
+                );
+                s
+            };
+            if ui
+                .button(format!("一键保存 ({})", installed.len()))
+                .on_hover_text(tip)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                self.save_all();
+            }
             if ui
                 .add_enabled(
                     can_save,

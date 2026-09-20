@@ -1397,3 +1397,139 @@ mod net_guard_override_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod save_all_tests {
+    use crate::app::save::SaveTarget;
+    use crate::app::App;
+    use crate::format::ConfigFormat;
+    use crate::model::{ModelRow, ProviderRow};
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "model_harbor_saveall_{}_{}_{}",
+            tag,
+            std::process::id(),
+            nonce
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn provider() -> ProviderRow {
+        let mut p = ProviderRow::new();
+        p.key = "p1".into();
+        p.pi_api = "openai-completions".into();
+        p.base_url = "https://x.example/v1".into();
+        p.api_key = "sk-1".into();
+        let mut m = ModelRow::new();
+        m.id = "m1".into();
+        p.models = vec![m];
+        p
+    }
+
+    #[test]
+    fn every_installed_target_is_written_to_its_own_path() {
+        let dir = temp_dir("paths");
+        let pi_path = dir.join("pi-models.json");
+        let zcode_path = dir.join("provider_config.json");
+        let skipped_start = dir.join("opencode.json");
+        let targets = vec![
+            SaveTarget {
+                backend: ConfigFormat::Pi,
+                available: true,
+                path: pi_path.display().to_string(),
+            },
+            SaveTarget {
+                backend: ConfigFormat::ZCode,
+                available: true,
+                path: zcode_path.display().to_string(),
+            },
+            // 未安装：本地与 WSL 都探测不到，一键保存不得凭空创建
+            SaveTarget {
+                backend: ConfigFormat::Opencode,
+                available: false,
+                path: skipped_start.display().to_string(),
+            },
+        ];
+        let mut app = App {
+            providers: vec![provider()],
+            targets,
+            config_path: pi_path.display().to_string(),
+            loaded_path: pi_path.display().to_string(),
+            source_format: ConfigFormat::Pi,
+            current_page: ConfigFormat::Pi,
+            ..App::default()
+        };
+        app.save_all();
+
+        assert!(pi_path.exists(), "当前页写自己的目标: {}", app.status);
+        assert!(
+            zcode_path.exists(),
+            "其他页写各自的目标路径，不能都塞进当前页那个文件: {}",
+            app.status
+        );
+        assert!(!skipped_start.exists(), "未安装的后端不得被创建");
+        // ZCode 那份是跨格式转换出来的：必须是 ZCode 的方言，而不是 pi 的 providers。
+        let written = std::fs::read_to_string(&zcode_path).unwrap();
+        assert!(written.contains("providerRules"), "{written}");
+        assert!(!written.contains("\"providers\""), "{written}");
+        // 状态栏逐页列出结果（写没写、写到哪）
+        assert!(
+            app.status.contains(ConfigFormat::Pi.label()),
+            "{}",
+            app.status
+        );
+        assert!(
+            app.status.contains(ConfigFormat::ZCode.label()),
+            "{}",
+            app.status
+        );
+        assert!(app.status.starts_with("一键保存:"), "{}", app.status);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_typed_path_on_the_current_page_is_still_honored() {
+        // 当前页输入框里改了路径但没回车加载：一键保存照旧按「先读后合并」写到那个路径，
+        // 只有**其他**页面必须改用各自的目标路径。
+        let dir = temp_dir("typed");
+        let pi_path = dir.join("pi-models.json");
+        let typed_path = dir.join("typed-by-hand.json");
+        let zcode_path = dir.join("provider_config.json");
+        let targets = vec![
+            SaveTarget {
+                backend: ConfigFormat::Pi,
+                available: true,
+                path: pi_path.display().to_string(),
+            },
+            SaveTarget {
+                backend: ConfigFormat::ZCode,
+                available: true,
+                path: zcode_path.display().to_string(),
+            },
+        ];
+        let mut app = App {
+            providers: vec![provider()],
+            targets,
+            config_path: typed_path.display().to_string(),
+            loaded_path: pi_path.display().to_string(),
+            source_format: ConfigFormat::Pi,
+            current_page: ConfigFormat::Pi,
+            ..App::default()
+        };
+        app.save_all();
+        assert!(
+            typed_path.exists(),
+            "当前页仍按输入框里的路径写: {}",
+            app.status
+        );
+        assert!(!pi_path.exists(), "默认目标不该被写（用户已改路径）");
+        assert!(zcode_path.exists(), "其他页照旧写各自的目标");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

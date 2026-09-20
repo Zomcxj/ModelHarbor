@@ -371,9 +371,47 @@ impl App {
 
     /// 保存当前页面：写入该页格式对应的路径，并按需同步 WSL。
     pub(super) fn save_page(&mut self, fmt: ConfigFormat) {
+        self.status = self.save_page_report(fmt);
+    }
+
+    /// 一键保存：按页面顺序把所有**已安装**后端各写一遍。
+    ///
+    /// 每个页面的 provider / agent 都来自同一份界面状态，逐页切换再逐个点保存只是
+    /// 重复劳动；这里一次写完，并把每页结果拼进状态栏，写没写、写到哪一目了然。
+    ///
+    /// 路径解析必须分两种：当前页走 [`Self::page_save_path`]（尊重输入框里「已改未加载」
+    /// 的路径）；其他页面必须用各自目标路径——`page_save_path` 里的 `config_path` 是
+    /// **当前页**的输入框，拿它写别的页面会把全部配置都塞进同一个文件。
+    /// 未安装（本地与 WSL 都探测不到）的后端跳过，不去凭空创建配置文件。
+    pub(super) fn save_all(&mut self) {
         if let Some(dup) = self.find_duplicate_keys() {
             self.status = format!("key 重复: {}，已取消保存", dup);
             return;
+        }
+        let current = self.current_page;
+        let mut parts: Vec<String> = Vec::new();
+        for i in 0..self.targets.len() {
+            let (fmt, available, path) = {
+                let t = &self.targets[i];
+                (t.backend, t.available, t.path.clone())
+            };
+            if fmt == current {
+                parts.push(self.save_page_report(fmt));
+            } else if available && !path.trim().is_empty() {
+                parts.push(self.save_report_to(fmt, &path));
+            }
+        }
+        self.status = if parts.is_empty() {
+            "一键保存: 没有可写的目标（本地与 WSL 均未探测到已安装的配置）".to_string()
+        } else {
+            format!("一键保存: {}", parts.join(" | "))
+        };
+    }
+
+    /// 保存一页并返回状态文本（不写 `self.status`，供单页保存与一键保存共用）。
+    pub(super) fn save_page_report(&mut self, fmt: ConfigFormat) -> String {
+        if let Some(dup) = self.find_duplicate_keys() {
+            return format!("key 重复: {}，已取消保存", dup);
         }
         let target = self.page_save_path(fmt);
         let path = match &target {
@@ -382,21 +420,24 @@ impl App {
         match &target {
             PageTarget::Current(_) => {
                 if let Some(err) = self.load_error.clone() {
-                    self.status = format!("当前文件: 加载失败({})，已跳过", err);
-                    return;
+                    return format!("当前文件: 加载失败({})，已跳过", err);
                 }
             }
             PageTarget::Default(_) => {
                 if !self.targets.iter().any(|t| t.backend == fmt && t.available) {
-                    self.status = format!("{}: 未安装（本地与 WSL 均未找到配置）", fmt.label());
-                    return;
+                    return format!("{}: 未安装（本地与 WSL 均未找到配置）", fmt.label());
                 }
             }
             PageTarget::Modified(_) => {}
         }
-        let res = self.save_backend_to(fmt, &path);
+        self.save_report_to(fmt, &path)
+    }
+
+    /// 按已解析好的路径写入一页并返回状态文本（含 WSL 同步）。
+    fn save_report_to(&mut self, fmt: ConfigFormat, path: &str) -> String {
+        let res = self.save_backend_to(fmt, path);
         let ok = res.is_ok();
-        self.status = match res {
+        let mut status = match res {
             Ok(backup) => {
                 let mut msg = format!("{}: 已保存", fmt.label());
                 if let Some(backup) = backup {
@@ -409,35 +450,28 @@ impl App {
         if ok {
             // 该格式不支持 agents 时明确告知，避免误以为已写入
             if fmt != ConfigFormat::Opencode && !self.agents.is_empty() {
-                self.status.push_str(&format!(
+                status.push_str(&format!(
                     "（{} 个 agents 未写入：该格式不支持）",
                     self.agents.len()
                 ));
             }
             let bad = self.count_invalid_numeric_fields();
             if bad > 0 {
-                self.status
-                    .push_str(&format!("（已忽略 {} 个无效数字字段）", bad));
+                status.push_str(&format!("（已忽略 {} 个无效数字字段）", bad));
             }
         }
         // WSL 同步：仅勾选“WSL同步”且写入路径为本地时，同步到 WSL 侧默认路径；
         // 写入前检测对应 agent 是否已安装（未安装则跳过并提示）。
-        if self.sync_wsl && ok && !is_wsl_path(&path) {
+        if self.sync_wsl && ok && !is_wsl_path(path) {
             match backends::wsl_target(fmt) {
                 Some(wsl_path) => match self.save_backend_to(fmt, &wsl_path) {
-                    Ok(_) => self
-                        .status
-                        .push_str(&format!("; {}(WSL): 已同步", fmt.label())),
-                    Err(e) => {
-                        self.status
-                            .push_str(&format!("; {}(WSL): 同步失败({})", fmt.label(), e))
-                    }
+                    Ok(_) => status.push_str(&format!("; {}(WSL): 已同步", fmt.label())),
+                    Err(e) => status.push_str(&format!("; {}(WSL): 同步失败({})", fmt.label(), e)),
                 },
-                None => self
-                    .status
-                    .push_str(&format!("; {}(WSL): 未安装，跳过同步", fmt.label())),
+                None => status.push_str(&format!("; {}(WSL): 未安装，跳过同步", fmt.label())),
             }
         }
+        status
     }
 
     /// 通用保存：按后端构造 root、渲染内容并写入。

@@ -20,7 +20,7 @@ pub fn card_frame<R>(
     let hover_id = id.with("hover");
     let mut hover_t = 0.0f32;
     let (stroke_color, stroke_width) = match highlight {
-        1 => (egui::Color32::from_rgb(255, 180, 50), 2.0), // source: orange
+        1 => (DRAG_SOURCE_COLOR, 2.0),                      // source: orange
         2 => (egui::Color32::from_rgb(100, 200, 100), 2.0), // target: green
         // 无高亮时跟随形状预设的描边宽度（恒宽），颜色向强调色做悬停过渡。
         //
@@ -241,6 +241,13 @@ pub fn card_list(
 /// 拖动把手的点阵间距（像素）。
 pub const DRAG_HANDLE_GAP: f32 = 5.0;
 
+/// 拖动**源**（正被抓着的那一项）的高亮色：卡片描边与把手点阵共用同一个值，
+/// 两处各写一份常量时改了一边就会「把手是橙色、卡片是别的颜色」。
+pub const DRAG_SOURCE_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 180, 50);
+
+/// 拖动源把手的底色：同色压暗，垫在点阵下面，避免高饱和色块盖过点阵。
+pub const DRAG_SOURCE_FILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 49, 13, 90);
+
 /// 拖动把手点阵的圆心：按给定矩形**居中**排布。
 ///
 /// 抽成纯函数是为了能直接断言「点阵中心与控件中心重合」——写死偏移时，
@@ -268,18 +275,38 @@ impl egui::Widget for DragHandle {
             .sense(egui::Sense::click_and_drag())
             .min_size(egui::vec2(14.0, 18.0));
         let resp = ui.add(button);
-        let painter = ui.painter();
-        let active = resp.hovered() || resp.dragged();
-        let color = if active {
+        let dragging = resp.dragged();
+        let active = resp.hovered() || dragging;
+        // 拖动中除了提亮点阵，还铺一层高亮底色：卡片被拖时整卡会亮起橙色边框，
+        // 把手作为「抓取点」也得有同源的选中态，否则光标一走开就看不出抓着谁。
+        if dragging {
+            ui.painter().rect_filled(resp.rect, 3.0, DRAG_SOURCE_FILL);
+        }
+        let color = if dragging {
+            DRAG_SOURCE_COLOR
+        } else if active {
             ui.visuals().strong_text_color()
         } else {
             ui.visuals().weak_text_color()
         };
+        // 点阵半径在拖动时再放大一档，与边框一起构成「已抓起」的观感。
+        let radius = if dragging {
+            1.75
+        } else if active {
+            1.5
+        } else {
+            1.0
+        };
+        let painter = ui.painter();
         for c in drag_handle_dots(resp.rect) {
-            painter.circle_filled(c, if active { 1.5 } else { 1.0 }, color);
+            painter.circle_filled(c, radius, color);
         }
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        // 光标统一成拳头：悬停是「可抓」的张开手，按住是「抓紧」。
+        // 原先用 PointingHand（点击语义）与标签页拖动的 Grab 不一致。
+        if dragging {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
         resp
     }
