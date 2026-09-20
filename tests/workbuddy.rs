@@ -470,7 +470,9 @@ fn save_writes_one_entry_per_model() {
         vec![
             ("claude_agentrouter", "claude-opus-5"),
             ("claude_agentrouter", "claude-opus-4-8"),
-            ("claude_linxi", "claude-opus-5"),
+            // id 与前一条重复，第 2 条起加两位序号
+            // （见 duplicate_model_ids_get_numbered_so_the_picker_lists_every_row）。
+            ("claude_linxi", "claude-opus-501"),
         ]
     );
     // 同 provider 的条目共用 provider 级字段（url / apiKey / 协议），
@@ -483,28 +485,51 @@ fn save_writes_one_entry_per_model() {
 
 #[test]
 fn entry_id_stays_the_plain_api_model_name() {
-    // `id` 是**发给 API 的模型名**。为了「避免重名」把 provider 拼进去
-    // （`claude_linxi:claude-opus-5`）就是把非法模型名发给服务端，直接吃
-    // "Provider rejected the model request"。同名模型靠 `name` 区分，
-    // 这是 WorkBuddy 自己的设计（它的选择器也按 `provider:model` 显示）。
+    // `id` 是**发给 API 的模型名**。绝不能为了「避免重名」把 provider 拼进去
+    // （`claude_linxi:claude-opus-5`）——那是把非法模型名发给服务端，直接吃
+    // "Provider rejected the model request"。
+    //
+    // 允许的只有「同 id 第 2 条起加两位序号」：它仍然是合法模型名字符串，
+    // 且只在 id 真的重复时才发生（唯一 id 一个字符都不动）。
     let load = load_wb(&multi_model_json());
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    // 原始模型名集合：每个写出的 id 要么**就是**其中之一（未重复，原样保留），
+    // 要么等于其中之一 + 两位序号（重复，被编号）。
+    let originals: Vec<String> = load
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter().map(|m| m.id.clone()))
+        .collect();
     for entry in root.as_array().unwrap() {
         let id = entry["id"].as_str().unwrap();
         let name = entry["name"].as_str().unwrap();
         assert!(!id.contains(':'), "id 不得带命名空间前缀：{id}");
         assert!(!id.contains(name), "id 里不得混入 provider：{id}");
+        let plain = originals.iter().any(|o| o == id);
+        let numbered = id.len() > 2
+            && id[id.len() - 2..].bytes().all(|c| c.is_ascii_digit())
+            && originals.iter().any(|o| o == &id[..id.len() - 2]);
+        assert!(
+            plain || numbered,
+            "id 只能是原模型名，或在原模型名末尾追加两位序号：{id}"
+        );
     }
-    // 同名模型分属两家时，靠 name 区分而不是改 id。
-    let dupes: Vec<&str> = root
+    // 同名模型分属两家时靠 name 区分；id 因重复而被编号。
+    let dupes: Vec<(&str, &str)> = root
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["id"] == json!("claude-opus-5"))
-        .map(|e| e["name"].as_str().unwrap())
+        .filter(|e| e["id"].as_str().unwrap().starts_with("claude-opus-5"))
+        .map(|e| (e["name"].as_str().unwrap(), e["id"].as_str().unwrap()))
         .collect();
-    assert_eq!(dupes, vec!["claude_agentrouter", "claude_linxi"]);
+    assert_eq!(
+        dupes,
+        vec![
+            ("claude_agentrouter", "claude-opus-5"),
+            ("claude_linxi", "claude-opus-501"),
+        ]
+    );
 }
 
 #[test]
@@ -559,4 +584,146 @@ fn a_provider_without_models_still_writes_one_entry() {
     assert_eq!(out.as_array().unwrap().len(), 1);
     assert_eq!(out[0]["id"], json!("brand-new"));
     assert_eq!(out[0]["name"], json!("brand-new"));
+}
+
+#[test]
+fn duplicate_model_ids_get_numbered_so_the_picker_lists_every_row() {
+    // WorkBuddy 的选择器 appendModel 是 `if (ids.has(model.id)) return;`——
+    // **只按裸 id 去重且全局生效**，36 条条目里 15 个不同 id 就只列 15 个。
+    // 给第 2 条起的重复 id 追加两位序号，id 互不相同，才会全部列出。
+    let provider = |key: &str, model: &str| {
+        let mut p = ProviderRow::new();
+        p.key = key.to_string();
+        p.base_url = "https://x.example/v1".into();
+        p.pi_api = "openai-completions".into();
+        let mut m = ModelRow::new();
+        m.id = model.to_string();
+        p.models = vec![m];
+        p
+    };
+    let providers = vec![
+        provider("a", "gpt-5.6-sol"),
+        provider("b", "gpt-5.6-sol"),
+        provider("c", "gpt-5.6-sol"),
+        provider("d", "unique-model"),
+    ];
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let out = b.serialize_root(&[], &providers, &json!([]), None);
+    let ids: Vec<&str> = out
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "gpt-5.6-sol",
+            "gpt-5.6-sol01",
+            "gpt-5.6-sol02",
+            "unique-model"
+        ],
+        "同 id 的第 2 条起加两位序号；唯一的 id 保持原样"
+    );
+    let uniq: std::collections::HashSet<&&str> = ids.iter().collect();
+    assert_eq!(uniq.len(), ids.len(), "编号后 id 必须两两不同");
+    // name 仍是提供商标签，不参与编号
+    let names: Vec<&str> = out
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["a", "b", "c", "d"]);
+}
+
+#[test]
+fn numbering_round_trips_back_to_the_original_model_names() {
+    // 保存写出 gpt-5.6-sol01，读回来必须还原成 gpt-5.6-sol：
+    // 否则界面里模型名带序号，再存到 ZCode 等别的后端会把序号当模型名写进去。
+    let saved = json!([
+        { "id": "gpt-5.6-sol",   "name": "a", "url": "https://x.example/v1" },
+        { "id": "gpt-5.6-sol01", "name": "b", "url": "https://x.example/v1" },
+        { "id": "gpt-5.6-sol02", "name": "c", "url": "https://x.example/v1" }
+    ]);
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let text = serde_json::to_string(&saved).unwrap();
+    let load = b.parse(&text).unwrap();
+    let mut ids: Vec<&str> = load
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter().map(|m| m.id.as_str()))
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec!["gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol"]);
+    // provider 名不还原（它本来就是 a/b/c）
+    let mut keys: Vec<&str> = load.providers.iter().map(|p| p.key.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn genuine_model_names_ending_in_digits_are_not_stripped() {
+    // 用户文件里真实存在 deepseek-v4-flash-0731 这类模型名，末尾本就是数字。
+    // 还原只认「同基名下 01..0n 连续一串且存在无序号基名」的形态，
+    // 否则会把独立模型误并成一个。
+    let saved = json!([
+        { "id": "deepseek-v4-flash-0731", "name": "gm_huige0", "url": "https://x.example/v1" },
+        { "id": "claude-opus-5", "name": "claude_a", "url": "https://x.example/v1" },
+        { "id": "MiniMax-M3", "name": "openai_hyper", "url": "https://x.example/v1" },
+        { "id": "grok-4.6", "name": "grok_247kan", "url": "https://x.example/v1" }
+    ]);
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let text = serde_json::to_string(&saved).unwrap();
+    let load = b.parse(&text).unwrap();
+    let mut ids: Vec<&str> = load
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter().map(|m| m.id.as_str()))
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![
+            "MiniMax-M3",
+            "claude-opus-5",
+            "deepseek-v4-flash-0731",
+            "grok-4.6"
+        ],
+        "末尾是数字的合法模型名不得被剥掉"
+    );
+}
+
+#[test]
+fn saving_twice_is_byte_stable() {
+    // 编号 + 还原必须构成幂等：存 → 读 → 再存，字节一致，否则每次保存都在改文件。
+    let provider = |key: &str, model: &str| {
+        let mut p = ProviderRow::new();
+        p.key = key.to_string();
+        p.base_url = "https://x.example/v1".into();
+        p.pi_api = "openai-completions".into();
+        p.api_key = "sk-x".into();
+        let mut m = ModelRow::new();
+        m.id = model.to_string();
+        p.models = vec![m];
+        p
+    };
+    let providers = vec![
+        provider("a", "gpt-5.6-sol"),
+        provider("b", "gpt-5.6-sol"),
+        provider("c", "claude-opus-5"),
+    ];
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let first = b.serialize_root(&[], &providers, &json!([]), None);
+    let text1 = b.render(&first, false).unwrap();
+
+    let reloaded = b.parse(&text1).unwrap();
+    let second = b.serialize_root(
+        &[],
+        &reloaded.providers,
+        &reloaded.extras,
+        Some(&reloaded.extras),
+    );
+    let text2 = b.render(&second, false).unwrap();
+    assert_eq!(text1, text2, "存→读→再存 必须字节一致");
 }

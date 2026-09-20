@@ -24,12 +24,103 @@ use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
 use crate::util::{parse_config_content, read_config_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub struct WorkBuddyBackend;
 
 pub static BACKEND: WorkBuddyBackend = WorkBuddyBackend;
+
+/// 保存时给重复 id 加的序号宽度（两位：`01`…`99`）。
+const DUP_SUFFIX_WIDTH: usize = 2;
+
+/// 取「同 id 被编号」时的基名：`gpt-5.6-sol01` → `gpt-5.6-sol`。
+///
+/// 基名不能以分隔符结尾：合法模型名里就有 `foo-01` 这种形态，若允许基名是 `foo-`，
+/// 两个各自独立的模型会被误判成同一模型的编号。
+fn numbered_base(id: &str) -> Option<&str> {
+    if id.len() <= DUP_SUFFIX_WIDTH {
+        return None;
+    }
+    let (base, digits) = id.split_at(id.len() - DUP_SUFFIX_WIDTH);
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if base.ends_with(['-', '_', '.', ':', '/', ' ']) {
+        return None;
+    }
+    Some(base)
+}
+
+/// 找出本文件里「确实是被本程序编号过的」基名。
+///
+/// 两条判据必须同时成立：
+/// 1. 存在一条**不带序号**的 `base` 条目（`serialize_root` 保留第一条不编号）；
+/// 2. 编号条目的序号恰好是 `01..0n` 连续一串。
+///
+/// 只按「末尾两位是数字」判断会误伤合法模型名：用户文件里就有
+/// `deepseek-v4-flash-0731`（基名 `deepseek-v4-flash-07`），以及 `foo-2024` /
+/// `foo-2025` 这类同基名的真实模型——它们不满足上面两条，原样保留。
+fn numbered_bases(items: &[Value]) -> HashSet<String> {
+    let mut plain: HashSet<&str> = HashSet::new();
+    let mut numbered: HashMap<&str, Vec<u32>> = HashMap::new();
+    for id in items
+        .iter()
+        .filter_map(|v| v.get("id").and_then(Value::as_str))
+    {
+        match numbered_base(id) {
+            Some(base) => {
+                let n: u32 = id[id.len() - DUP_SUFFIX_WIDTH..].parse().unwrap_or(0);
+                numbered.entry(base).or_default().push(n);
+            }
+            None => {
+                plain.insert(id);
+            }
+        }
+    }
+    numbered
+        .into_iter()
+        .filter(|(base, ns)| {
+            if !plain.contains(*base) {
+                return false;
+            }
+            let mut v = ns.clone();
+            v.sort_unstable();
+            v.dedup();
+            // 恰好 01..0n 连续一串（从 1 开始、无缺口）
+            v.iter().enumerate().all(|(i, n)| *n as usize == i + 1)
+        })
+        .map(|(base, _)| base.to_string())
+        .collect()
+}
+
+/// 还原保存时加的序号，其余字段原样。
+///
+/// 不做这一步会漂移：保存写出 `gpt-5.6-sol01`，下次读回来界面里模型名就带序号，
+/// 再存到 ZCode 等别的后端会把 `gpt-5.6-sol01` 当成模型名写进去。
+fn strip_save_suffixes(items: &[Value]) -> Vec<Value> {
+    let bases = numbered_bases(items);
+    items
+        .iter()
+        .map(|v| {
+            let Some(id) = v.get("id").and_then(Value::as_str) else {
+                return v.clone();
+            };
+            let Some(base) = numbered_base(id) else {
+                return v.clone();
+            };
+            if !bases.contains(base) {
+                return v.clone();
+            }
+            let Some(obj) = v.as_object() else {
+                return v.clone();
+            };
+            let mut obj = obj.clone();
+            obj.insert("id".into(), Value::String(base.to_string()));
+            Value::Object(obj)
+        })
+        .collect()
+}
 
 /// 非 Chat 协议对应的 URL 后缀（保存时补上，与 ZCode 的后缀规则同源）。
 const MESSAGES_SUFFIX: &str = "/v1/messages";
@@ -311,12 +402,15 @@ impl Backend for WorkBuddyBackend {
 
     fn parse(&self, content: &str) -> Result<BackendLoad, String> {
         let root = parse_config_content(content)?;
+        // 保存时给重复 id 加的序号在这里还原，界面与后续跨格式保存都只见原始模型名。
+        let raw_entries = entries_of(&root).cloned().unwrap_or_default();
+        let entries = strip_save_suffixes(&raw_entries);
         // WorkBuddy 文件按模型扁平存储：一家提供商的多个模型就是多条 `name` 相同的条目
         // （用户的文件里 `gpt-5.6-sol` 就有 4 条、`claude-opus-5` 5 条，靠 `name` 区分）。
         // 界面按 provider 分组，所以同 `name` 的条目合并成一张卡片、各自成为一个模型行，
         // 保存时再一条条目一个模型写回去，来回不丢模型。
         let mut providers: Vec<ProviderRow> = Vec::new();
-        for entry in entries_of(&root).into_iter().flatten() {
+        for entry in &entries {
             let Some(row) = provider_from_entry(entry) else {
                 continue;
             };
@@ -333,11 +427,14 @@ impl Backend for WorkBuddyBackend {
                 }),
             }
         }
+        // extras 也换成还原后的数组：保存时 `existing` 索引取的就是它，
+        // 带着序号会让「同名同模型」匹配不上，旧条目里继承的字段（tags / credits）丢失。
+        let extras = Value::Array(entries);
         Ok(BackendLoad {
-            root: root.clone(),
+            root: extras.clone(),
             agents: Vec::new(),
             providers,
-            extras: root,
+            extras,
         })
     }
 
@@ -394,14 +491,44 @@ impl Backend for WorkBuddyBackend {
                 out.push(Value::Object(entry));
             }
         }
+        // 同 id 去重：WorkBuddy 的模型选择器 `appendModel` 是
+        // `if (ids.has(model.id)) return;`——**只按裸 id 去重且全局生效**，
+        // 于是 36 条条目里只有 15 个不同的 id，对话框就只列 15 个。
+        // 给第 2 条起的重复 id 追加两位序号（`gpt-5.6-sol` → `gpt-5.6-sol01`），
+        // id 互不相同，选择器才会把每条都列出来。
+        //
+        // 代价：`id` 就是发给上游的模型名，加了序号的请求体里就是 `gpt-5.6-sol01`。
+        // 因此这一步只在**同一 id 出现多次**时才动手（唯一 id 保持原样），
+        // 并且读取时由 `strip_save_suffixes` 还原，界面上看到的仍是原模型名。
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for entry in &mut out {
+            let Some(obj) = entry.as_object_mut() else {
+                continue;
+            };
+            let Some(id) = obj.get("id").and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            let n = seen.entry(id.clone()).or_insert(0);
+            *n += 1;
+            if *n > 1 {
+                obj.insert(
+                    "id".into(),
+                    Value::String(format!("{id}{:0width$}", *n - 1, width = DUP_SUFFIX_WIDTH)),
+                );
+            }
+        }
         Value::Array(out)
     }
 
     fn load_target_root(&self, path: &str) -> Value {
-        match read_config_content(path) {
+        // 目标文件里的序号同样要还原：`serialize_root` 用它做「同名同模型」的旧条目索引，
+        // 带着序号匹配不上，继承的 tags / credits 会丢。
+        let root = match read_config_content(path) {
             Ok(content) => parse_config_content(&content).unwrap_or(Value::Array(Vec::new())),
             Err(_) => Value::Array(Vec::new()),
-        }
+        };
+        let raw_entries = entries_of(&root).cloned().unwrap_or_default();
+        Value::Array(strip_save_suffixes(&raw_entries))
     }
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {

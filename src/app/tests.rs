@@ -1611,3 +1611,108 @@ mod drag_cursor_tests {
         assert!(!app.is_dragging_anything(), "全部松开后必须熄灭抓取光标");
     }
 }
+
+/// 页签（六个后端图标）的选中高亮：填充与图标色都要跟着当前页面走。
+///
+/// 背景：高亮此前只改按钮填充，而 16px 图标几乎占满 24×22 的按钮，能看见的只剩
+/// 一圈细边；未安装页签的图标本就是灰的，压在强调色底上观感是「发灰」而非「选中」。
+/// 现在图标本身也换成强调色上的文字色，并加粗描边。这里用离屏渲染把三个状态
+/// （未选中 / 选中 / 拖动中）的实际填充色钉住，避免以后又被改回去。
+#[cfg(test)]
+mod tab_highlight_tests {
+    use crate::app::App;
+    use crate::format::ConfigFormat;
+    use eframe::egui;
+
+    /// 用户实际使用的页签顺序（见其 settings.json 的 tab_order）。
+    const TAB_ORDER: [&str; 6] = [
+        "opencode",
+        "pi",
+        "zcode",
+        "workbuddy",
+        "deepseek-harness",
+        "oh-my-pi",
+    ];
+
+    fn tab_fills(app: &mut App) -> Vec<(egui::Rect, egui::Color32)> {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::from_key("dark")
+            .apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1200.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run(input, |ctx| {
+            app.ui_top_bar(ctx);
+        });
+        let mut rects = Vec::new();
+        fn collect(shape: &egui::Shape, out: &mut Vec<(egui::Rect, egui::Color32)>) {
+            match shape {
+                egui::Shape::Rect(r) => out.push((r.rect, r.fill)),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+                _ => {}
+            }
+        }
+        for cs in &out.shapes {
+            collect(&cs.shape, &mut rects);
+        }
+        let mut tabs: Vec<_> = rects
+            .into_iter()
+            .filter(|(r, _)| {
+                r.top() < 40.0 && r.left() < 400.0 && r.width() < 60.0 && r.height() < 40.0
+            })
+            .collect();
+        tabs.sort_by(|a, b| a.0.left().partial_cmp(&b.0.left()).unwrap());
+        tabs
+    }
+
+    fn app_with_tabs() -> App {
+        App {
+            tab_order: TAB_ORDER.iter().map(|s| (*s).to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn selected_tab_is_filled_with_the_accent_and_the_others_are_not() {
+        let mut app = app_with_tabs();
+        app.current_page = ConfigFormat::Opencode;
+        let tabs = tab_fills(&mut app);
+        assert_eq!(tabs.len(), 6, "六个后端图标各一个按钮");
+        let accent = app.theme.palette().accent;
+        assert_eq!(tabs[0].1, accent, "当前页面（第 1 个）必须是强调色填充");
+        for (i, (_, fill)) in tabs.iter().enumerate().skip(1) {
+            assert_ne!(*fill, accent, "第 {i} 个未选中，不该是强调色");
+        }
+    }
+
+    #[test]
+    fn highlight_follows_the_current_page() {
+        let mut app = app_with_tabs();
+        app.current_page = ConfigFormat::ZCode;
+        let tabs = tab_fills(&mut app);
+        let accent = app.theme.palette().accent;
+        assert_eq!(tabs[2].1, accent, "ZCode 在第 3 个槽位，必须是强调色");
+        assert_eq!(
+            tabs.iter().filter(|(_, f)| *f == accent).count(),
+            1,
+            "同一时刻只该有一个选中页签"
+        );
+    }
+
+    #[test]
+    fn the_grabbed_tab_is_highlighted_while_dragging() {
+        // 光标离开被拖的页签后，没有任何别的提示表示「抓着哪一个」，
+        // 所以拖动中也点亮高亮（与卡片拖动时整卡亮框同一套语义）。
+        let mut app = app_with_tabs();
+        app.current_page = ConfigFormat::Opencode;
+        app.tab_drag_src = Some(ConfigFormat::ZCode);
+        let tabs = tab_fills(&mut app);
+        let accent = app.theme.palette().accent;
+        assert_eq!(tabs[0].1, accent, "当前页面仍高亮");
+        assert_eq!(tabs[2].1, accent, "被抓住的页签也必须高亮");
+    }
+}

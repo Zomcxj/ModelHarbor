@@ -183,7 +183,18 @@ impl App {
                     // 已安装：WHITE = 乘以白 = 不改色（原图）。绝不能用
                     // Color32::PLACEHOLDER——它是魔法值 rgba(0,255,183,4)，
                     // 直接当 tint 会把图标乘成绿色（红通道归零）。
-                    let icon_tint = if is_installed {
+                    let is_selected = self.current_page == id;
+                    // 正被抓着的页签也算「选中」：光标离开了也没别的东西提示抓着哪一个，
+                    // 与卡片拖动时整卡亮橙框是同一套语义。
+                    let is_dragging = self.tab_drag_src == Some(id);
+                    let is_active = is_selected || is_dragging;
+                    // 选中/拖动时图标改用「强调色上的文字色」（深色主题下是黑）：
+                    // 只有填充变色不够——16px 图标几乎占满 24×22 的按钮，能看见的
+                    // 只剩一圈细边，加上未安装页签本就是灰图标压在强调色底上，
+                    // 观感是「发灰」而不是「被选中」。图标本身换色才读得出来。
+                    let icon_tint = if is_active {
+                        ui.visuals().selection.stroke.color
+                    } else if is_installed {
                         egui::Color32::WHITE
                     } else {
                         ui.visuals().weak_text_color()
@@ -196,14 +207,11 @@ impl App {
                         ),
                         None => egui::Button::new(""),
                     };
-                    let is_selected = self.current_page == id;
-                    // 正被抓着的页签也算「选中」：光标离开了也没别的东西提示抓着哪一个，
-                    // 与卡片拖动时整卡亮橙框是同一套语义。
-                    let is_dragging = self.tab_drag_src == Some(id);
-                    let btn = if is_selected || is_dragging {
-                        // 选中态：填充 + 描边，与未选中图标拉开视觉层级
+                    let btn = if is_active {
+                        // 选中态：填充 + 加粗描边。1px 描边在这个尺寸上太细，
+                        // 加粗到 2px 才和未选中拉开层级。
                         btn.fill(ui.visuals().selection.bg_fill).stroke(
-                            egui::Stroke::new(1.0f32, ui.visuals().selection.stroke.color),
+                            egui::Stroke::new(2.0f32, ui.visuals().selection.stroke.color),
                         )
                     } else {
                         btn
