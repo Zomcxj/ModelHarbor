@@ -32,12 +32,6 @@ pub(crate) fn is_workbuddy_shaped(raw: &Value) -> bool {
     raw.get("useCustomProtocol").is_some() || raw.get("url").is_some()
 }
 
-/// 判断 raw 是否为 ZCode 方言（provider 规则的 `config`，含 `access` / `api`）。
-/// WorkBuddy 输出时以此为界，防止 group / access / api 泄漏进扁平条目。
-pub(crate) fn is_zcode_shaped(raw: &Value) -> bool {
-    raw.get("access").is_some() || raw.get("api").is_some()
-}
-
 /// `anthropic-messages` 协议的 base URL 归一化：**保证末尾带 `/v1`**（opencode 侧读入与写出共用）。
 ///
 /// opencode 的 `@ai-sdk/anthropic` 客户端只往 baseURL 追加 `/messages`，所以 baseURL 必须
@@ -70,6 +64,48 @@ pub fn without_v1_for_messages(api: &str, url: &str) -> String {
         Some(rest) => rest.trim_end_matches('/').to_string(),
         None => url.to_string(),
     }
+}
+
+/// ZCode 端的 `baseUrl` 归一化：剥掉 ZCode 自己会补的那段端点路径（读入与写出共用）。
+///
+/// ZCode 请求时按 kind 先剥后缀、再拼回同一后缀
+/// （`normalizeModelProviderBaseUrlForKind` + `joinBaseUrlAndPath`）：
+/// `anthropic` 拼 `/v1/messages`、`openai` 拼 `/responses`、
+/// `openai-compatible` 拼 `/chat/completions`。它剥的只有**完整端点后缀**，
+/// 光秃秃的 `/v1` 不在其列——所以 `baseUrl` 以 `/v1` 结尾时会被拼成
+/// `/v1/v1/messages`，服务端直接拒（ZCode 里报 `Provider rejected the model request`）。
+/// 这与 pi / omp / dsh 的约定一致（见 [`without_v1_for_messages`]）；opencode 相反，
+/// 它的 `@ai-sdk/anthropic` 只追加 `/messages`，baseURL 必须自带 `/v1`。
+///
+/// 读入与写出都走这里，界面显示的就是 ZCode 真正当基址用的值，
+/// 顺带自愈历史上已写坏的 `/v1/…` 与整段端点路径。
+pub fn zcode_normalize_base_url(api: &str, url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // 先长后短，与 ZCode 自己的后缀表同源。`openai-compatible` 反而不剥 `/v1`：
+    // 它拼的是 `/chat/completions`，`https://host/v1` 才是正确基址。
+    let suffixes: &[&str] = match api {
+        "anthropic-messages" => &["/v1/messages", "/messages", "/v1"],
+        "openai-responses" => &["/responses"],
+        _ => &["/chat/completions"],
+    };
+    let mut base = trimmed.trim_end_matches('/');
+    loop {
+        let mut stripped = false;
+        for suffix in suffixes {
+            if let Some(rest) = base.strip_suffix(suffix) {
+                base = rest.trim_end_matches('/');
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    base.to_string()
 }
 
 /// ZCode 的 `api.type` → 内部统一的 api（pi / omp / DSH 词表）。

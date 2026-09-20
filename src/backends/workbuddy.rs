@@ -24,6 +24,7 @@ use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
 use crate::util::{parse_config_content, read_config_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct WorkBuddyBackend;
@@ -171,19 +172,18 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
     Some(row)
 }
 
-/// ProviderRow → 条目。
-fn entry_from_provider(p: &ProviderRow) -> Value {
-    // 以 raw 为基底保留 WorkBuddy 自有字段（tags / credits / reasoning 等）；
-    // 但来自其它方言的 raw 必须全新构造，否则 group / access / api 会被写进来。
-    let mut obj = if convert::is_zcode_shaped(&p.raw)
-        || convert::is_opencode_shaped_provider(&p.raw)
-        || convert::is_dsh_shaped_provider(&p.raw)
-    {
-        Map::new()
-    } else {
-        p.raw.as_object().cloned().unwrap_or_default()
-    };
-    let model = p.models.first();
+/// ProviderRow + 单个模型 → 条目里**由界面接管**的字段。
+///
+/// 只返回本函数管理的键：条目里其余的键（tags / credits / reasoning 等）由
+/// [`WorkBuddyBackend::serialize_root`] 从「同名同模型」的旧条目继承。
+/// 这里绝不能用 provider 的 raw 当基底——那是该 provider **第一条**条目的内容，
+/// 一家提供商有多个模型时会把它第一个模型的 tags / credits 串到兄弟模型上。
+///
+/// WorkBuddy 的 `id` 是**发给 API 的模型名**，`name` 是提供商标签，
+/// 两者都不能为了「避重名」而拼在一起——拼了就是把非法模型名发给服务端。
+/// 同 provider 的多条条目靠 `name` 相同、`id` 不同来区分，这正是用户自己文件里的形态。
+fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
+    let mut obj = Map::new();
 
     // WorkBuddy `id` = 模型名（模型行的 id），`name` = 提供商（= ProviderRow.key）。
     let model_id = model
@@ -311,9 +311,28 @@ impl Backend for WorkBuddyBackend {
 
     fn parse(&self, content: &str) -> Result<BackendLoad, String> {
         let root = parse_config_content(content)?;
-        let providers = entries_of(&root)
-            .map(|items| items.iter().filter_map(provider_from_entry).collect())
-            .unwrap_or_default();
+        // WorkBuddy 文件按模型扁平存储：一家提供商的多个模型就是多条 `name` 相同的条目
+        // （用户的文件里 `gpt-5.6-sol` 就有 4 条、`claude-opus-5` 5 条，靠 `name` 区分）。
+        // 界面按 provider 分组，所以同 `name` 的条目合并成一张卡片、各自成为一个模型行，
+        // 保存时再一条条目一个模型写回去，来回不丢模型。
+        let mut providers: Vec<ProviderRow> = Vec::new();
+        for entry in entries_of(&root).into_iter().flatten() {
+            let Some(row) = provider_from_entry(entry) else {
+                continue;
+            };
+            let Some(model) = row.models.first().cloned() else {
+                continue;
+            };
+            match providers.iter_mut().find(|p| p.key == row.key) {
+                // 同 provider 的 url / apiKey / vendor 本就相同，以首条为准；
+                // 后续条目只贡献模型行（各模型自己的 raw 保留在该模型行里）。
+                Some(existing) => existing.models.push(model),
+                None => providers.push(ProviderRow {
+                    models: vec![model],
+                    ..row
+                }),
+            }
+        }
         Ok(BackendLoad {
             root: root.clone(),
             agents: Vec::new(),
@@ -330,40 +349,50 @@ impl Backend for WorkBuddyBackend {
         target_root: Option<&Value>,
     ) -> Value {
         let base = target_root.unwrap_or(extras);
-        // 未接管的旧条目按 id 保留（UI 里删掉的模型不再写回）。
-        let existing: Map<String, Value> = entries_of(base)
+        // 旧条目按 **(name, id) 二元组**保留：WorkBuddy 按模型扁平存储，不同 provider
+        // 可以有同名模型（用户文件里 `gpt-5.6-sol` 就有 4 条），只按 `id` 建索引会让
+        // 后写的 provider 继承到别家条目的 tags / credits 等字段。
+        let existing: HashMap<(String, String), Value> = entries_of(base)
             .map(|items| {
                 items
                     .iter()
                     .filter_map(|v| {
                         let id = v.get("id").and_then(Value::as_str)?;
-                        Some((id.to_string(), v.clone()))
+                        let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
+                        Some(((name.to_string(), id.to_string()), v.clone()))
                     })
                     .collect()
             })
             .unwrap_or_default();
 
+        // 一家提供商的**每个模型各写一条**条目（旧实现只写第一条，第二个模型起全部丢失）。
         let mut out: Vec<Value> = Vec::new();
         for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
-            // 旧条目按 `id`（= 模型 id）作基底，保留 tags 等未知键。
-            let model_id = p
-                .models
-                .first()
-                .map(|m| m.id.trim())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(p.key.trim());
-            let mut entry = existing
-                .get(model_id)
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            let fresh = entry_from_provider(p);
-            if let Some(fresh) = fresh.as_object() {
-                for (k, v) in fresh {
-                    entry.insert(k.clone(), v.clone());
+            // 没有模型的 provider 也要留一条（id 回落到 provider key），
+            // 否则刚建好还没填模型的卡片一保存就消失。
+            let models: Vec<Option<&ModelRow>> = if p.models.is_empty() {
+                vec![None]
+            } else {
+                p.models.iter().map(Some).collect()
+            };
+            for model in models {
+                let model_id = model
+                    .map(|m| m.id.trim())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(p.key.trim())
+                    .to_string();
+                let mut entry = existing
+                    .get(&(p.key.trim().to_string(), model_id))
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(fresh) = entry_from_provider(p, model).as_object() {
+                    for (k, v) in fresh {
+                        entry.insert(k.clone(), v.clone());
+                    }
                 }
+                out.push(Value::Object(entry));
             }
-            out.push(Value::Object(entry));
         }
         Value::Array(out)
     }

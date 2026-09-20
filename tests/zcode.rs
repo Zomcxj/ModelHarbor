@@ -388,3 +388,110 @@ fn round_trip_through_file_keeps_credentials() {
     assert!(text.contains("openai-chat-completions"), "协议必须保留");
     std::fs::remove_file(&path).ok();
 }
+
+/// anthropic 协议的 provider 规则（baseUrl 由调用方给出）。
+fn zcode_anthropic(base_url: &str) -> String {
+    format!(
+        r#"{{
+      "schemaVersion": 1,
+      "config": {{
+        "providerOrder": ["claude_x"],
+        "providerConfigRules": {{ "providerRules": [ {{
+            "providerId": "claude_x", "providerName": "claude_x",
+            "config": {{
+              "group": "standard-personal",
+              "access": {{ "type": "api-key", "apiKey": "sk-test" }},
+              "api": {{ "type": "anthropic-messages", "baseUrl": "{base_url}" }},
+              "personalModelIds": ["claude-opus-5"],
+              "modelOrder": ["claude-opus-5"] }} }} ]}},
+        "modelConfigRules": {{
+          "providerModelRules": [ {{
+              "modelId": "claude-opus-5", "providerId": "claude_x",
+              "config": {{ "enabled": true, "properties": {{ "contextWindow": 272000 }} }} }} ],
+          "manualProviderModelRules": [] }} }} }}"#
+    )
+}
+
+#[test]
+fn anthropic_base_url_drops_v1_like_pi() {
+    // ZCode 请求时按 kind 先剥后缀再拼 `/v1/messages`，但它只剥完整端点后缀，
+    // 不认光秃秃的 `/v1`：baseUrl 留 `/v1` 会被拼成 `/v1/v1/messages`，服务端直接拒
+    // （ZCode 里报 "Provider rejected the model request"）。与 pi 一致：进出都不带 `/v1`。
+    let load = load_zcode(&zcode_anthropic("https://api.justwoker.icu/v1"));
+    assert_eq!(
+        load.providers[0].base_url, "https://api.justwoker.icu",
+        "读入就要去掉末尾 /v1，界面显示的必须是 ZCode 真正当基址用的值"
+    );
+
+    let b = backends::backend(ConfigFormat::ZCode);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let cfg = &root["config"]["providerConfigRules"]["providerRules"][0]["config"];
+    assert_eq!(cfg["api"]["type"], json!("anthropic-messages"));
+    assert_eq!(
+        cfg["api"]["baseUrl"],
+        json!("https://api.justwoker.icu"),
+        "写出同样不能带 /v1"
+    );
+}
+
+#[test]
+fn anthropic_base_url_collapses_a_full_endpoint_path() {
+    // 手填整段端点（WorkBuddy 那边就是这么存的）也要收敛回基址：
+    // ZCode 自己会剥 `/v1/messages` / `/messages` 再拼回去，留着就等于两份后缀。
+    let load = load_zcode(&zcode_anthropic("https://api.justwoker.icu/v1/messages"));
+    assert_eq!(load.providers[0].base_url, "https://api.justwoker.icu");
+
+    // 已经是基址时不动它（幂等）。
+    let load = load_zcode(&zcode_anthropic("https://api.justwoker.icu"));
+    assert_eq!(load.providers[0].base_url, "https://api.justwoker.icu");
+
+    // 带子路径的基址只剥到路径边界，不吞掉 host 后面的前缀。
+    let load = load_zcode(&zcode_anthropic("https://host.example/anthropic/v1"));
+    assert_eq!(load.providers[0].base_url, "https://host.example/anthropic");
+}
+
+#[test]
+fn chat_completions_base_url_keeps_its_v1() {
+    // Chat Completions 相反：ZCode 拼的是 `/chat/completions`，
+    // `https://host/v1` 正是它的正确基址，剥掉就会请求到 `/chat/completions` 而 404。
+    let load = load_zcode(&zcode_json());
+    assert_eq!(load.providers[0].base_url, "http://127.0.0.1:3065/v1");
+
+    let b = backends::backend(ConfigFormat::ZCode);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let cfg = &root["config"]["providerConfigRules"]["providerRules"][0]["config"];
+    assert_eq!(cfg["api"]["baseUrl"], json!("http://127.0.0.1:3065/v1"));
+}
+
+#[test]
+fn zcode_base_url_normalization_is_idempotent() {
+    let cases = [
+        ("anthropic-messages", "https://host.example/v1"),
+        ("anthropic-messages", "https://host.example/v1/messages"),
+        ("anthropic-messages", "https://host.example/messages"),
+        ("anthropic-messages", "https://host.example/anthropic"),
+        ("openai-responses", "https://host.example/v1"),
+        ("openai-completions", "https://host.example/v1"),
+        (
+            "openai-completions",
+            "https://host.example/v1/chat/completions",
+        ),
+    ];
+    for (api, url) in cases {
+        let once = convert::zcode_normalize_base_url(api, url);
+        let twice = convert::zcode_normalize_base_url(api, &once);
+        assert_eq!(once, twice, "{api} {url} 归一化必须幂等");
+        // 归一化结果再拼上 ZCode 自己的端点后缀，就是最终请求 URL。
+        let suffix = match api {
+            "anthropic-messages" => "/v1/messages",
+            "openai-responses" => "/responses",
+            _ => "/chat/completions",
+        };
+        let final_url = format!("{once}{suffix}");
+        assert_eq!(
+            final_url.matches("/v1").count(),
+            1,
+            "最终 URL 只该出现一次 /v1：{final_url}"
+        );
+    }
+}

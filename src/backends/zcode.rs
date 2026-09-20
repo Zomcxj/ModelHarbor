@@ -158,11 +158,14 @@ fn provider_from_zcode(rule: &Value, root: &Value) -> Option<ProviderRow> {
             .and_then(Value::as_str)
             .unwrap_or_default(),
     );
-    row.base_url = api
+    // baseUrl 归一化后再进界面：ZCode 请求时按 kind 拼 `/v1/messages` 等后缀，
+    // 文件里若留着 `/v1`（或整段端点路径）会被拼成 `/v1/v1/messages` 而被服务端拒。
+    // 界面显示的就是 ZCode 真正当基址用的值，跨格式转换也不会把 `/v1` 带过去。
+    let raw_base = api
         .and_then(|a| a.get("baseUrl"))
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+        .unwrap_or_default();
+    row.base_url = convert::zcode_normalize_base_url(&row.pi_api, raw_base);
     row.api_key = cfg
         .and_then(|c| c.get("access"))
         .and_then(|a| a.get("apiKey"))
@@ -215,12 +218,16 @@ fn provider_config_to_zcode(p: &ProviderRow) -> Value {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    // 写出侧同样归一化：anthropic 的 baseUrl 末尾绝不能留 `/v1`
+    // （ZCode 会拼成 `/v1/v1/messages`，请求被服务端拒），其余协议剥掉各自的端点后缀。
+    let effective = p.effective_api();
     api.insert(
         "type".into(),
-        Value::String(convert::api_to_zcode_api(&p.effective_api())),
+        Value::String(convert::api_to_zcode_api(&effective)),
     );
     if !p.base_url.trim().is_empty() {
-        api.insert("baseUrl".into(), Value::String(p.base_url.clone()));
+        let url = convert::zcode_normalize_base_url(&effective, &p.base_url);
+        api.insert("baseUrl".into(), Value::String(url));
     }
     obj.insert("api".into(), Value::Object(api));
 

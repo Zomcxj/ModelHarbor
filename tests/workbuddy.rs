@@ -376,3 +376,151 @@ fn round_trip_through_file_keeps_credentials() {
     assert!(text.trim_start().starts_with('['), "数组根必须保持");
     std::fs::remove_file(&path).ok();
 }
+
+/// 一家提供商的多条条目（同 `name`、不同模型），以及跨 provider 的同名模型。
+fn multi_model_json() -> String {
+    r#"[
+      { "id": "claude-opus-5", "name": "claude_agentrouter", "vendor": "Custom",
+        "url": "https://ps.air-outer.com/v1/messages", "apiKey": "sk-shared",
+        "supportsImages": true, "useCustomProtocol": true,
+        "maxInputTokens": 272000, "maxOutputTokens": 128000 },
+      { "id": "claude-opus-4-8", "name": "claude_agentrouter", "vendor": "Custom",
+        "url": "https://ps.air-outer.com/v1/messages", "apiKey": "sk-shared",
+        "supportsImages": true, "useCustomProtocol": true,
+        "maxInputTokens": 272000, "maxOutputTokens": 64000 },
+      { "id": "claude-opus-5", "name": "claude_linxi", "vendor": "Custom",
+        "url": "https://k40.example/v1/messages", "apiKey": "sk-linxi",
+        "supportsImages": true, "useCustomProtocol": true,
+        "maxInputTokens": 272000, "maxOutputTokens": 128000 }
+    ]"#
+    .to_string()
+}
+
+#[test]
+fn parse_groups_one_provider_into_a_single_card() {
+    // 文件按模型扁平存储，同一 `name` 的条目就是「一家提供商的多个模型」：
+    // 必须合成一张卡片（各自成为一个模型行），否则一家提供商在界面里散成好几张卡。
+    let load = load_wb(&multi_model_json());
+    assert_eq!(load.providers.len(), 2, "两家提供商");
+    let ar = &load.providers[0];
+    assert_eq!(ar.key, "claude_agentrouter");
+    assert_eq!(ar.description, "Custom", "vendor 落在 provider 上");
+    assert_eq!(ar.api_key, "sk-shared");
+    assert_eq!(
+        ar.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        vec!["claude-opus-5", "claude-opus-4-8"],
+        "同 provider 的模型按文件顺序合并"
+    );
+    // 每个模型各自带着自己那条条目的属性，不串味。
+    assert_eq!(ar.models[0].output, "128000");
+    assert_eq!(ar.models[1].output, "64000");
+    assert_eq!(load.providers[1].key, "claude_linxi");
+}
+
+#[test]
+fn save_writes_one_entry_per_model() {
+    // 曾经的 bug：只写 models.first()，一家提供商第二个模型起全部丢失
+    // （用户的 models.json 里 openai_zmofas 的 gpt-5.6-terra / grok-4.5 就是这么丢的）。
+    let load = load_wb(&multi_model_json());
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let entries = root.as_array().expect("数组根");
+    assert_eq!(entries.len(), 3, "2 + 1 个模型各写一条：{entries:#?}");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| (e["name"].as_str().unwrap(), e["id"].as_str().unwrap()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("claude_agentrouter", "claude-opus-5"),
+            ("claude_agentrouter", "claude-opus-4-8"),
+            ("claude_linxi", "claude-opus-5"),
+        ]
+    );
+    // 同 provider 的条目共用 provider 级字段（url / apiKey / 协议），
+    // 模型级字段各写各的。
+    assert_eq!(entries[1]["url"], entries[0]["url"]);
+    assert_eq!(entries[1]["apiKey"], json!("sk-shared"));
+    assert_eq!(entries[1]["maxOutputTokens"], json!(64000));
+    assert_eq!(entries[2]["maxOutputTokens"], json!(128000));
+}
+
+#[test]
+fn entry_id_stays_the_plain_api_model_name() {
+    // `id` 是**发给 API 的模型名**。为了「避免重名」把 provider 拼进去
+    // （`claude_linxi:claude-opus-5`）就是把非法模型名发给服务端，直接吃
+    // "Provider rejected the model request"。同名模型靠 `name` 区分，
+    // 这是 WorkBuddy 自己的设计（它的选择器也按 `provider:model` 显示）。
+    let load = load_wb(&multi_model_json());
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    for entry in root.as_array().unwrap() {
+        let id = entry["id"].as_str().unwrap();
+        let name = entry["name"].as_str().unwrap();
+        assert!(!id.contains(':'), "id 不得带命名空间前缀：{id}");
+        assert!(!id.contains(name), "id 里不得混入 provider：{id}");
+    }
+    // 同名模型分属两家时，靠 name 区分而不是改 id。
+    let dupes: Vec<&str> = root
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["id"] == json!("claude-opus-5"))
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(dupes, vec!["claude_agentrouter", "claude_linxi"]);
+}
+
+#[test]
+fn same_model_id_across_providers_keeps_its_own_entry_fields() {
+    // 旧实现按 `id` 单独建索引：目标文件里 `gpt-5.6-sol` 有四条（各家一条），
+    // 后写的 provider 会认领到别家条目的 tags / credits 等字段。
+    // 索引必须是 (name, id) 二元组。
+    let target = json!([
+        { "id": "gpt-5.6-sol", "name": "openai_apizh", "url": "https://a.example/v1",
+          "useCustomProtocol": false, "tags": ["apizh-only"] },
+        { "id": "gpt-5.6-sol", "name": "openai_leyi", "url": "https://b.example/v1",
+          "useCustomProtocol": false, "tags": ["leyi-only"] }
+    ]);
+    let provider = |key: &str, url: &str, secret: &str| {
+        let mut p = ProviderRow::new();
+        p.key = key.to_string();
+        p.base_url = url.to_string();
+        p.api_key = secret.to_string();
+        p.pi_api = "openai-completions".into();
+        let mut m = ModelRow::new();
+        m.id = "gpt-5.6-sol".into();
+        p.models = vec![m];
+        p
+    };
+    let providers = vec![
+        provider("openai_apizh", "https://a.example/v1", "sk-a"),
+        provider("openai_leyi", "https://b.example/v1", "sk-b"),
+    ];
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let out = b.serialize_root(&[], &providers, &json!([]), Some(&target));
+    let entries = out.as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0]["tags"],
+        json!(["apizh-only"]),
+        "甲家条目不得继承乙家字段"
+    );
+    assert_eq!(entries[1]["tags"], json!(["leyi-only"]));
+    assert_eq!(entries[0]["apiKey"], json!("sk-a"));
+    assert_eq!(entries[1]["apiKey"], json!("sk-b"));
+}
+
+#[test]
+fn a_provider_without_models_still_writes_one_entry() {
+    // 刚建好还没填模型的卡片保存后不能凭空消失（id 回落到 provider key）。
+    let mut p = ProviderRow::new();
+    p.key = "brand-new".into();
+    p.base_url = "https://new.example/v1".into();
+    p.pi_api = "openai-completions".into();
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let out = b.serialize_root(&[], std::slice::from_ref(&p), &json!([]), None);
+    assert_eq!(out.as_array().unwrap().len(), 1);
+    assert_eq!(out[0]["id"], json!("brand-new"));
+    assert_eq!(out[0]["name"], json!("brand-new"));
+}
