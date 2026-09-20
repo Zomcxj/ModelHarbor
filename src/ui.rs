@@ -1,5 +1,68 @@
 use eframe::egui;
 
+/// 本帧请求的自定义抓取光标。
+///
+/// 控件只「提出请求」，由 `App::update` 在帧末统一落到 Win32（见
+/// `crate::cursor::set_custom_cursor`）。这样跨平台构建不需要 `cfg`，
+/// 而且同一帧里多个热区只产生一次系统调用。
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum GrabCursor {
+    #[default]
+    None,
+    /// 悬停在可拖动处：张开的手掌。
+    Palm,
+    /// 已按住：握起的拳头。
+    Fist,
+}
+
+fn grab_cursor_id() -> egui::Id {
+    egui::Id::new("model_harbor_grab_cursor")
+}
+
+/// 请求本帧的抓取光标。同一帧里取「更强」的一态（Fist > Palm > None）：
+/// 拖动中的把手不应被旁边另一个只是悬停的热区降级成手掌。
+pub fn request_grab_cursor(ctx: &egui::Context, want: GrabCursor) {
+    if want == GrabCursor::None {
+        return;
+    }
+    ctx.data_mut(|d| {
+        let cur = d
+            .get_temp::<GrabCursor>(grab_cursor_id())
+            .unwrap_or_default();
+        let next = if cur == GrabCursor::Fist || want == GrabCursor::Fist {
+            GrabCursor::Fist
+        } else {
+            GrabCursor::Palm
+        };
+        d.insert_temp(grab_cursor_id(), next);
+    });
+}
+
+/// 取出并清空本帧请求（帧末调用一次，避免状态泄漏到下一帧）。
+pub fn take_grab_cursor(ctx: &egui::Context) -> GrabCursor {
+    ctx.data_mut(|d| {
+        let cur = d
+            .get_temp::<GrabCursor>(grab_cursor_id())
+            .unwrap_or_default();
+        d.remove::<GrabCursor>(grab_cursor_id());
+        cur
+    })
+}
+
+/// 悬停态：手掌；按下态：拳头。
+///
+/// 用于拖动把手这类「按下才开始拖」的控件——`dragged()` 要越过拖动阈值才为真，
+/// 按下但还没移动的那几帧会没有反馈，所以用 `is_pointer_button_down_on()` 判按下。
+pub fn grab_cursor_for(resp: &egui::Response) -> GrabCursor {
+    if resp.is_pointer_button_down_on() || resp.dragged() {
+        GrabCursor::Fist
+    } else if resp.hovered() {
+        GrabCursor::Palm
+    } else {
+        GrabCursor::None
+    }
+}
+
 pub fn card_frame<R>(
     ui: &mut egui::Ui,
     open: bool,
@@ -20,8 +83,8 @@ pub fn card_frame<R>(
     let hover_id = id.with("hover");
     let mut hover_t = 0.0f32;
     let (stroke_color, stroke_width) = match highlight {
-        1 => (DRAG_SOURCE_COLOR, 2.0),                      // source: orange
-        2 => (egui::Color32::from_rgb(100, 200, 100), 2.0), // target: green
+        1 => (DRAG_SOURCE_COLOR, 2.0), // source: orange
+        2 => (DROP_TARGET_COLOR, 2.0), // target: green
         // 无高亮时跟随形状预设的描边宽度（恒宽），颜色向强调色做悬停过渡。
         //
         // egui 的 Frame 会把描边宽度算进占位尺寸
@@ -248,6 +311,15 @@ pub const DRAG_SOURCE_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 180, 5
 /// 拖动源把手的底色：同色压暗，垫在点阵下面，避免高饱和色块盖过点阵。
 pub const DRAG_SOURCE_FILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 49, 13, 90);
 
+/// 拖动**落点**（当前指针所在的目标项）的高亮色：绿色。
+///
+/// 与 [`DRAG_SOURCE_COLOR`] 同源：卡片描边、页签选中态都用这两个值，
+/// 各写一份常量就会出现「卡片是绿、页签是别的颜色」。
+pub const DROP_TARGET_COLOR: egui::Color32 = egui::Color32::from_rgb(100, 200, 100);
+
+/// 落点/选中态色底的压暗版，垫在图标或点阵下面。
+pub const DROP_TARGET_FILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(27, 55, 27, 90);
+
 /// 拖动把手点阵的圆心：按给定矩形**居中**排布。
 ///
 /// 抽成纯函数是为了能直接断言「点阵中心与控件中心重合」——写死偏移时，
@@ -301,13 +373,17 @@ impl egui::Widget for DragHandle {
         for c in drag_handle_dots(resp.rect) {
             painter.circle_filled(c, radius, color);
         }
-        // 光标用 PointingHand（手型）。**不要用 Grab**：egui 的 Grab 在 Windows 上
-        // 经 winit 映射成 `IDC_SIZEALL`（四向箭头，见 winit 的 `to_windows_cursor`），
-        // 看起来是「可移动」而不是「抓住」，与拖动把手要表达的意思不符。
-        // PointingHand 映射成 `IDC_HAND`，是 Windows 上惯用的抓取/可点光标，
-        // 与卡片、按钮的手型一致。
-        if resp.hovered() || dragging {
+        // 光标：悬停是张开的手掌、按住才是握起的拳头，与真实桌面软件一致
+        // （见 `crate::cursor`）。**不要用 egui 的 `CursorIcon::Grab`**：它在 Windows 上
+        // 经 winit 映射成 `IDC_SIZEALL`（四向箭头），看着像「可移动」而不是「抓住」。
+        //
+        // 自定义光标是整窗生效的（子类过程拦 WM_SETCURSOR），因此这里只提出请求，
+        // 由 `App::update` 帧末统一提交；`PointingHand` 作为非 Windows 或光标
+        // 句柄创建失败时的兜底。
+        let want = grab_cursor_for(&resp);
+        if want != GrabCursor::None {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            request_grab_cursor(ui.ctx(), want);
         }
         resp
     }
@@ -451,6 +527,39 @@ mod tests {
         let [bottom, right] = dark;
         assert!(bottom[0].x <= bottom[1].x, "下边线反向了：{bottom:?}");
         assert!(right[0].y <= right[1].y, "右边线反向了：{right:?}");
+    }
+
+    /// 同一帧里多个热区报状态时取「更强」的一态：正被拖的把手（Fist）不能被旁边
+    /// 只是悬停的控件降级成手掌，否则拖动中光标会在手掌/拳头之间闪。
+    #[test]
+    fn grab_cursor_requests_take_the_strongest_state_in_a_frame() {
+        use super::{take_grab_cursor, GrabCursor};
+
+        let ctx = egui::Context::default();
+        // 没有任何请求：默认熄灭，且 take 之后必须清空（否则状态会泄漏到下一帧）。
+        assert_eq!(take_grab_cursor(&ctx), GrabCursor::None);
+        assert_eq!(take_grab_cursor(&ctx), GrabCursor::None);
+
+        // None 请求本身不写入任何状态。
+        super::request_grab_cursor(&ctx, GrabCursor::None);
+        assert_eq!(take_grab_cursor(&ctx), GrabCursor::None);
+
+        // 手掌先到、拳头后到 -> 拳头。
+        super::request_grab_cursor(&ctx, GrabCursor::Palm);
+        super::request_grab_cursor(&ctx, GrabCursor::Fist);
+        assert_eq!(take_grab_cursor(&ctx), GrabCursor::Fist);
+
+        // 拳头先到、手掌后到 -> 仍是拳头（不能降级）。
+        super::request_grab_cursor(&ctx, GrabCursor::Fist);
+        super::request_grab_cursor(&ctx, GrabCursor::Palm);
+        assert_eq!(take_grab_cursor(&ctx), GrabCursor::Fist);
+
+        // 只有手掌 -> 手掌。
+        super::request_grab_cursor(&ctx, GrabCursor::Palm);
+        assert_eq!(take_grab_cursor(&ctx), GrabCursor::Palm);
+
+        // take 清空后，下一帧从零开始。
+        assert_eq!(take_grab_cursor(&ctx), GrabCursor::None);
     }
 
     #[test]

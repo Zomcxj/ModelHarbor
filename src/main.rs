@@ -62,7 +62,7 @@ fn main() -> eframe::Result {
                     if let raw_window_handle::RawWindowHandle::Win32(w) = handle.as_raw() {
                         unsafe {
                             let hwnd = w.hwnd.get() as *mut core::ffi::c_void;
-                            model_harbor::cursor::init_grabbing_cursor(hwnd);
+                            model_harbor::cursor::init_cursors(hwnd);
                         }
                     }
                 }

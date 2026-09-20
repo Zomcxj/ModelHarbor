@@ -1577,8 +1577,8 @@ mod real_file_grouping {
 
 /// 拖动光标：任一拖动源（含页签/后端图标）都必须点亮自定义抓取光标。
 ///
-/// 背景：`set_custom_cursor_active` 的判定此前漏了 `tab_drag_src`，于是拖卡片是抓取
-/// 光标、拖六个后端图标却退回系统手型。自定义光标是整窗生效的，漏一个拖动源就少一处。
+/// 背景：抓取态的判定此前漏了 `tab_drag_src`，于是拖卡片是抓取光标、拖六个后端图标
+/// 却退回系统手型。自定义光标是整窗生效的，漏一个拖动源就少一处。
 #[cfg(all(test, target_os = "windows"))]
 mod drag_cursor_tests {
     use crate::app::App;
@@ -1612,12 +1612,14 @@ mod drag_cursor_tests {
     }
 }
 
-/// 页签（六个后端图标）的选中高亮：填充与图标色都要跟着当前页面走。
+/// 页签（六个后端图标）的状态配色：底色随状态走，图标色**不随状态走**。
 ///
-/// 背景：高亮此前只改按钮填充，而 16px 图标几乎占满 24×22 的按钮，能看见的只剩
-/// 一圈细边；未安装页签的图标本就是灰的，压在强调色底上观感是「发灰」而非「选中」。
-/// 现在图标本身也换成强调色上的文字色，并加粗描边。这里用离屏渲染把三个状态
-/// （未选中 / 选中 / 拖动中）的实际填充色钉住，避免以后又被改回去。
+/// 背景：高亮此前只改按钮填充，而 16px 图标几乎占满按钮，能看见的只剩一圈细边。
+/// 后来改成「选中就把图标 tint 成强调色上的文字色」，深色主题下那正好是黑色，
+/// 图标整个变黑（用户实测报障）。现在状态一律靠底色 + 描边表达：
+/// 选中 = 绿（与卡片落点同源 `DROP_TARGET_FILL`），拖动中 = 橙（与拖动源同源
+/// `DRAG_SOURCE_FILL`），图标 tint 只在白（已安装）/ 压淡（未安装）之间选。
+/// 这里用离屏渲染把三个状态的实际颜色钉住，避免以后又被改回去。
 #[cfg(test)]
 mod tab_highlight_tests {
     use crate::app::App;
@@ -1634,10 +1636,22 @@ mod tab_highlight_tests {
         "oh-my-pi",
     ];
 
-    fn tab_fills(app: &mut App) -> Vec<(egui::Rect, egui::Color32)> {
+    /// 页签按钮的可见状态：外框矩形、底色、描边色。
+    type TabBox = (egui::Rect, egui::Color32, egui::Color32);
+
+    /// 离屏跑一遍顶部栏，收集页签条区域内的**按钮底色**与**图标 tint**。
+    ///
+    /// egui 0.33 把图片画成带 `brush` 的 `RectShape`（贴图与 `fill` 相乘），**不是**
+    /// `Shape::Mesh`，所以图标靠 `brush.is_some()` 认，tint 就是它的 `fill`。
+    /// 一个页签因此贡献两个矩形：按钮底色（无 brush、约 44px 宽）与图标（有 brush、16px）。
+    /// 两者都落在页签条区域内，所以先按区域筛、再按左边缘排序，下标才对得上页签序号。
+    fn tab_shapes(app: &mut App) -> (Vec<TabBox>, Vec<(egui::Rect, egui::Color32)>) {
         let ctx = egui::Context::default();
         crate::theme::Theme::from_key("dark")
             .apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+        // 图标是 `update()` 里惰性加载的；测试直接调 `ui_top_bar` 不经过 `update`，
+        // 不先加载就没有贴图网格，tint 也就无从断言。
+        app.load_backend_icons(&ctx);
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::pos2(0.0, 0.0),
@@ -1648,10 +1662,15 @@ mod tab_highlight_tests {
         let out = ctx.run(input, |ctx| {
             app.ui_top_bar(ctx);
         });
-        let mut rects = Vec::new();
-        fn collect(shape: &egui::Shape, out: &mut Vec<(egui::Rect, egui::Color32)>) {
+        let mut rects: Vec<(egui::Rect, egui::Color32, egui::Color32, bool)> = Vec::new();
+        fn collect(
+            shape: &egui::Shape,
+            out: &mut Vec<(egui::Rect, egui::Color32, egui::Color32, bool)>,
+        ) {
             match shape {
-                egui::Shape::Rect(r) => out.push((r.rect, r.fill)),
+                egui::Shape::Rect(r) => {
+                    out.push((r.rect, r.fill, r.stroke.color, r.brush.is_some()))
+                }
                 egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
                 _ => {}
             }
@@ -1659,14 +1678,37 @@ mod tab_highlight_tests {
         for cs in &out.shapes {
             collect(&cs.shape, &mut rects);
         }
-        let mut tabs: Vec<_> = rects
-            .into_iter()
-            .filter(|(r, _)| {
-                r.top() < 40.0 && r.left() < 400.0 && r.width() < 60.0 && r.height() < 40.0
-            })
+        let in_strip = |r: &egui::Rect| {
+            r.top() < 40.0 && r.left() < 400.0 && r.width() < 60.0 && r.height() < 40.0
+        };
+        let mut boxes: Vec<TabBox> = rects
+            .iter()
+            .filter(|(r, _, _, textured)| in_strip(r) && !*textured)
+            .map(|(r, fill, stroke, _)| (*r, *fill, *stroke))
             .collect();
-        tabs.sort_by(|a, b| a.0.left().partial_cmp(&b.0.left()).unwrap());
-        tabs
+        let mut icons: Vec<(egui::Rect, egui::Color32)> = rects
+            .iter()
+            .filter(|(r, _, _, textured)| in_strip(r) && *textured)
+            .map(|(r, fill, _, _)| (*r, *fill))
+            .collect();
+        let by_left = |a: &(egui::Rect, egui::Color32), b: &(egui::Rect, egui::Color32)| {
+            a.0.left().partial_cmp(&b.0.left()).unwrap()
+        };
+        boxes.sort_by(|a, b| a.0.left().partial_cmp(&b.0.left()).unwrap());
+        icons.sort_by(by_left);
+        (boxes, icons)
+    }
+
+    fn tab_fills(app: &mut App) -> Vec<TabBox> {
+        tab_shapes(app).0
+    }
+
+    fn tab_icon_tints(app: &mut App) -> Vec<egui::Color32> {
+        tab_shapes(app)
+            .1
+            .into_iter()
+            .map(|(_, fill)| fill)
+            .collect()
     }
 
     fn app_with_tabs() -> App {
@@ -1677,15 +1719,22 @@ mod tab_highlight_tests {
     }
 
     #[test]
-    fn selected_tab_is_filled_with_the_accent_and_the_others_are_not() {
+    fn selected_tab_uses_the_green_drop_target_color_and_the_others_do_not() {
         let mut app = app_with_tabs();
         app.current_page = ConfigFormat::Opencode;
         let tabs = tab_fills(&mut app);
         assert_eq!(tabs.len(), 6, "六个后端图标各一个按钮");
-        let accent = app.theme.palette().accent;
-        assert_eq!(tabs[0].1, accent, "当前页面（第 1 个）必须是强调色填充");
-        for (i, (_, fill)) in tabs.iter().enumerate().skip(1) {
-            assert_ne!(*fill, accent, "第 {i} 个未选中，不该是强调色");
+        assert_eq!(
+            tabs[0].1,
+            crate::ui::DROP_TARGET_FILL,
+            "当前页面（第 1 个）必须是绿色落点底色"
+        );
+        for (i, (_, fill, _)) in tabs.iter().enumerate().skip(1) {
+            assert_ne!(
+                *fill,
+                crate::ui::DROP_TARGET_FILL,
+                "第 {i} 个未选中，不该是绿色"
+            );
         }
     }
 
@@ -1694,25 +1743,85 @@ mod tab_highlight_tests {
         let mut app = app_with_tabs();
         app.current_page = ConfigFormat::ZCode;
         let tabs = tab_fills(&mut app);
-        let accent = app.theme.palette().accent;
-        assert_eq!(tabs[2].1, accent, "ZCode 在第 3 个槽位，必须是强调色");
         assert_eq!(
-            tabs.iter().filter(|(_, f)| *f == accent).count(),
+            tabs[2].1,
+            crate::ui::DROP_TARGET_FILL,
+            "ZCode 在第 3 个槽位，必须是绿色"
+        );
+        assert_eq!(
+            tabs.iter()
+                .filter(|(_, f, _)| *f == crate::ui::DROP_TARGET_FILL)
+                .count(),
             1,
             "同一时刻只该有一个选中页签"
         );
     }
 
     #[test]
-    fn the_grabbed_tab_is_highlighted_while_dragging() {
-        // 光标离开被拖的页签后，没有任何别的提示表示「抓着哪一个」，
-        // 所以拖动中也点亮高亮（与卡片拖动时整卡亮框同一套语义）。
+    fn the_grabbed_tab_is_orange_while_the_selected_one_stays_green() {
+        // 「我正抓着这页」（橙，拖动源色）与「我在这页」（绿，落点色）刻意不同色，
+        // 两者才不会看混。
         let mut app = app_with_tabs();
         app.current_page = ConfigFormat::Opencode;
         app.tab_drag_src = Some(ConfigFormat::ZCode);
         let tabs = tab_fills(&mut app);
-        let accent = app.theme.palette().accent;
-        assert_eq!(tabs[0].1, accent, "当前页面仍高亮");
-        assert_eq!(tabs[2].1, accent, "被抓住的页签也必须高亮");
+        assert_eq!(tabs[0].1, crate::ui::DROP_TARGET_FILL, "当前页面保持绿色");
+        assert_eq!(
+            tabs[2].1,
+            crate::ui::DRAG_SOURCE_FILL,
+            "被抓住的页签用橙色（拖动源色）"
+        );
+    }
+
+    #[test]
+    fn the_icon_tint_does_not_depend_on_which_tab_is_selected() {
+        // 曾经把选中页签的图标 tint 成 `selection.stroke.color`，深色主题下那正好是
+        // 黑色，图标整个变黑。状态只能靠底色/描边表达，图标 tint 只能是白（已安装）
+        // 或压淡色（未安装）——**逐槽位比对**才真的锁住这一点：换个选中页，同一个槽位
+        // 的 tint 必须一模一样。只断言「不是黑色」会漏掉「换成任意别的颜色」的回归。
+        let tints_for = |page| {
+            let mut app = app_with_tabs();
+            app.current_page = page;
+            let tints = tab_icon_tints(&mut app);
+            assert_eq!(tints.len(), 6, "六个页签各有一个图标 tint");
+            tints
+        };
+        let baseline = tints_for(ConfigFormat::Opencode);
+        for (i, tint) in baseline.iter().enumerate() {
+            let is_black = tint.r() == 0 && tint.g() == 0 && tint.b() == 0;
+            assert!(!is_black, "第 {i} 个页签的图标被 tint 成了黑色");
+        }
+        for page in [
+            ConfigFormat::Pi,
+            ConfigFormat::ZCode,
+            ConfigFormat::WorkBuddy,
+            ConfigFormat::DeepSeekHarness,
+            ConfigFormat::OhMyPi,
+        ] {
+            assert_eq!(
+                tints_for(page),
+                baseline,
+                "{page:?} 被选中后图标 tint 变了；tint 不该随选中态变化"
+            );
+        }
+    }
+
+    #[test]
+    fn the_selected_tab_is_marked_by_a_green_outline_not_just_a_fill() {
+        // 16px 图标几乎占满按钮，只换底色的话能看见的只剩一圈细边；描边必须跟着状态走，
+        // 否则「选中」在视觉上等于没发生。
+        let mut app = app_with_tabs();
+        app.current_page = ConfigFormat::Opencode;
+        let tabs = tab_fills(&mut app);
+        assert_eq!(
+            tabs[0].2,
+            crate::ui::DROP_TARGET_COLOR,
+            "选中页签要有绿色描边"
+        );
+        assert_ne!(
+            tabs[1].2,
+            crate::ui::DROP_TARGET_COLOR,
+            "未选中页签不该有绿色描边"
+        );
     }
 }

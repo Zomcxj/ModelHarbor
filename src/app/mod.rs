@@ -301,24 +301,7 @@ impl eframe::App for App {
             self.net_guard_at = frame_time;
         }
         // 首帧惰性加载各后端官方图标
-        if self.backend_icons.is_empty() {
-            self.backend_icons = backends::BACKENDS
-                .iter()
-                .map(|b| {
-                    b.icon_rgba().map(|(rgba, w, h)| {
-                        let image = egui::ColorImage::from_rgba_unmultiplied(
-                            [w as usize, h as usize],
-                            rgba,
-                        );
-                        ctx.load_texture(
-                            format!("backend_icon_{}", b.id().label()),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        )
-                    })
-                })
-                .collect();
-        }
+        self.load_backend_icons(ctx);
         self.poll_model_fetch();
         self.poll_latency();
         self.poll_balance();
@@ -365,9 +348,23 @@ impl eframe::App for App {
         // 令牌管理：独立悬浮窗（可拖动 / 可关闭），不占正文布局。
         self.ui_tokens_window(ctx);
         self.paint_drag_ghost(ctx);
-        // 仅拖拽中显示抓取光标（避免任意控件按下时全局变光标）
+        // 抓取光标：控件在各自绘制时只「提出请求」（悬停=手掌、按住=拳头），
+        // 这里帧末统一提交，同一帧只碰一次系统光标。
+        //
+        // 兜底：拖动中即便没有任何热区报状态（指针已拖离原把手、又悬在空白处），
+        // 也必须保持拳头——否则光标会退回箭头，看着像「拖丢了」。
+        let mut want = crate::ui::take_grab_cursor(ctx);
+        if self.is_dragging_anything() {
+            want = crate::ui::GrabCursor::Fist;
+        }
         #[cfg(target_os = "windows")]
-        crate::cursor::set_custom_cursor_active(self.is_dragging_anything());
+        crate::cursor::set_custom_cursor(match want {
+            crate::ui::GrabCursor::None => crate::cursor::CustomCursor::None,
+            crate::ui::GrabCursor::Palm => crate::cursor::CustomCursor::Palm,
+            crate::ui::GrabCursor::Fist => crate::cursor::CustomCursor::Fist,
+        });
+        #[cfg(not(target_os = "windows"))]
+        let _ = want;
     }
 }
 
@@ -382,6 +379,27 @@ impl App {
             || self.provider_drag_src.is_some()
             || self.model_drag_src.is_some()
             || self.tab_drag_src.is_some()
+    }
+
+    /// 惰性加载各后端官方图标（首帧一次）。
+    fn load_backend_icons(&mut self, ctx: &egui::Context) {
+        if !self.backend_icons.is_empty() {
+            return;
+        }
+        self.backend_icons = backends::BACKENDS
+            .iter()
+            .map(|b| {
+                b.icon_rgba().map(|(rgba, w, h)| {
+                    let image =
+                        egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba);
+                    ctx.load_texture(
+                        format!("backend_icon_{}", b.id().label()),
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    )
+                })
+            })
+            .collect();
     }
 }
 

@@ -184,17 +184,14 @@ impl App {
                     // Color32::PLACEHOLDER——它是魔法值 rgba(0,255,183,4)，
                     // 直接当 tint 会把图标乘成绿色（红通道归零）。
                     let is_selected = self.current_page == id;
-                    // 正被抓着的页签也算「选中」：光标离开了也没别的东西提示抓着哪一个，
-                    // 与卡片拖动时整卡亮橙框是同一套语义。
+                    // 正被抓着的页签单独用橙色（拖动源色），与卡片拖动时整卡亮橙框同源；
+                    // 选中（当前页面）用绿色，与卡片拖动落点色同源。两者刻意不同色，
+                    // 「我现在在这页」和「我正抓着这页」才不会看混。
                     let is_dragging = self.tab_drag_src == Some(id);
-                    let is_active = is_selected || is_dragging;
-                    // 选中/拖动时图标改用「强调色上的文字色」（深色主题下是黑）：
-                    // 只有填充变色不够——16px 图标几乎占满 24×22 的按钮，能看见的
-                    // 只剩一圈细边，加上未安装页签本就是灰图标压在强调色底上，
-                    // 观感是「发灰」而不是「被选中」。图标本身换色才读得出来。
-                    let icon_tint = if is_active {
-                        ui.visuals().selection.stroke.color
-                    } else if is_installed {
+                    // 图标保持原色（已安装）或压淡（未安装）。**不能按选中态改 tint**：
+                    // 先前改成「强调色上的文字色」，深色主题下那正好是黑色，图标直接变黑。
+                    // 状态一律靠底色 + 描边表达，图标本身不参与。
+                    let icon_tint = if is_installed {
                         egui::Color32::WHITE
                     } else {
                         ui.visuals().weak_text_color()
@@ -207,14 +204,16 @@ impl App {
                         ),
                         None => egui::Button::new(""),
                     };
-                    let btn = if is_active {
-                        // 选中态：填充 + 加粗描边。1px 描边在这个尺寸上太细，
-                        // 加粗到 2px 才和未选中拉开层级。
-                        btn.fill(ui.visuals().selection.bg_fill).stroke(
-                            egui::Stroke::new(2.0f32, ui.visuals().selection.stroke.color),
-                        )
-                    } else {
-                        btn
+                    // 底色用各自状态的同色压暗版（同卡片把手 DRAG_SOURCE_FILL 的做法），
+                    // 保证图标在色底上仍然可辨；描边 2px 拉开层级。
+                    let btn = match (is_dragging, is_selected) {
+                        (true, _) => btn
+                            .fill(crate::ui::DRAG_SOURCE_FILL)
+                            .stroke(egui::Stroke::new(2.0f32, crate::ui::DRAG_SOURCE_COLOR)),
+                        (false, true) => btn
+                            .fill(crate::ui::DROP_TARGET_FILL)
+                            .stroke(egui::Stroke::new(2.0f32, crate::ui::DROP_TARGET_COLOR)),
+                        (false, false) => btn,
                     };
                     // 未安装的页面画淡一点，与已安装的区分开。
                     let tip = if is_installed {
@@ -230,9 +229,18 @@ impl App {
                                 .sense(egui::Sense::click_and_drag()),
                         )
                         .on_hover_text(tip);
-                    // 手型（PointingHand → IDC_HAND）。不能用 Grab/Grabbing：Windows 上
-                    // 它们被 winit 映射成 IDC_SIZEALL 四向箭头，看着像「可移动」而非抓取。
-                    let btn_resp = btn_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    // 光标：悬停张开手掌、按住握成拳头（与拖动把手同一套，见 crate::ui）。
+                    // 不用 egui 的 Grab/Grabbing：Windows 上它们被 winit 映射成
+                    // IDC_SIZEALL 四向箭头，看着像「可移动」而非抓取。
+                    let want = crate::ui::grab_cursor_for(&btn_resp);
+                    if want != crate::ui::GrabCursor::None {
+                        crate::ui::request_grab_cursor(ui.ctx(), want);
+                    }
+                    let btn_resp = if want != crate::ui::GrabCursor::None {
+                        btn_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                    } else {
+                        btn_resp
+                    };
                     if btn_resp.clicked() {
                         clicked_page = Some(id);
                     }
@@ -252,9 +260,10 @@ impl App {
                 }
 
                 // 拖动中指针往往已经离开被拖的那个页签（拖到别的槽位上方），
-                // 光标不能退回默认箭头——整体保持手型，直到松手。
+                // 光标不能退回默认箭头——整段拖动期间保持拳头，直到松手。
                 if self.tab_drag_src.is_some() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    crate::ui::request_grab_cursor(ui.ctx(), crate::ui::GrabCursor::Fist);
                 }
 
                 // 松手：把被拖的页面移到落点位置，落点即用户看到的那个槽位。
