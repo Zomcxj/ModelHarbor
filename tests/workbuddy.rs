@@ -363,6 +363,42 @@ fn modalities_and_supports_map_both_ways() {
 }
 
 #[test]
+fn undeclared_supports_images_is_not_reported_as_text_only() {
+    // 条目**没写** supportsImages 时是「未声明」，不是「只支持文本」。
+    // 旧实现返回 "text"，跨格式写出时给 ZCode 凭空补 inputFormat.supportsText: true
+    // ——用户「正常」那份配置里多出来的 inputFormat 就是这么来的。
+    assert_eq!(
+        convert::workbuddy_modalities_from_raw(&json!({ "id": "m", "name": "p" })),
+        "",
+        "未声明模态时必须留空，不能默认成 text"
+    );
+
+    // 未声明模态的条目转成 ZCode，不得凭空长出 inputFormat。
+    let mut p = ProviderRow::new();
+    p.key = "p1".into();
+    p.base_url = "https://x.example/v1".into();
+    p.api_key = "sk-1".into();
+    p.pi_api = "openai-completions".into();
+    let mut m = ModelRow::new();
+    m.id = "m1".into();
+    m.context = "272000".into();
+    // 关键：清掉 ModelRow::new 的默认模态，模拟「源里没声明」。
+    m.modalities_input.clear();
+    m.raw = json!({ "id": "m1", "name": "p1", "url": "https://x.example/v1" });
+    p.models = vec![m];
+
+    let z = backends::backend(ConfigFormat::ZCode);
+    let root = z.serialize_root(&[], std::slice::from_ref(&p), &json!({}), None);
+    let props =
+        &root["config"]["modelConfigRules"]["providerModelRules"][0]["config"]["properties"];
+    assert!(
+        props.get("inputFormat").is_none(),
+        "未声明模态不该给 ZCode 补 inputFormat: {props}"
+    );
+    assert_eq!(props["contextWindow"], json!(272000), "上下文照常带过去");
+}
+
+#[test]
 fn round_trip_through_file_keeps_credentials() {
     let path = temp_path("models.json");
     std::fs::write(&path, workbuddy_json()).unwrap();

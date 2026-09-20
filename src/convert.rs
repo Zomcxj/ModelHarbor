@@ -209,12 +209,16 @@ pub fn zcode_modalities_from_raw(raw: &Value) -> String {
 }
 
 /// WorkBuddy 的模型 raw → 输入模态列表（由 `supportsImages` 推导）。
+///
+/// 条目**没写** `supportsImages` 时返回空串，表示「未声明」——不能返回 `"text"`：
+/// 那会把「未声明」当成「只支持文本」，跨格式写出时给 ZCode 凭空补一个
+/// `inputFormat.supportsText: true`（用户的正常配置里就是这么多出来的）。
 pub fn workbuddy_modalities_from_raw(raw: &Value) -> String {
-    let images = raw
-        .get("supportsImages")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    supports_to_modalities([("text", true), ("image", images)])
+    match raw.get("supportsImages").and_then(Value::as_bool) {
+        // 声明了 supportsImages：文本必然支持（WorkBuddy 的模型都是文本模型）。
+        Some(images) => supports_to_modalities([("text", true), ("image", images)]),
+        None => String::new(),
+    }
 }
 
 /// ZCode 的模型 raw → 思考档位文本（逗号分隔）。

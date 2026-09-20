@@ -301,12 +301,13 @@ impl egui::Widget for DragHandle {
         for c in drag_handle_dots(resp.rect) {
             painter.circle_filled(c, radius, color);
         }
-        // 光标统一成拳头：悬停是「可抓」的张开手，按住是「抓紧」。
-        // 原先用 PointingHand（点击语义）与标签页拖动的 Grab 不一致。
-        if dragging {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-        } else if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        // 光标用 PointingHand（手型）。**不要用 Grab**：egui 的 Grab 在 Windows 上
+        // 经 winit 映射成 `IDC_SIZEALL`（四向箭头，见 winit 的 `to_windows_cursor`），
+        // 看起来是「可移动」而不是「抓住」，与拖动把手要表达的意思不符。
+        // PointingHand 映射成 `IDC_HAND`，是 Windows 上惯用的抓取/可点光标，
+        // 与卡片、按钮的手型一致。
+        if resp.hovered() || dragging {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         resp
     }

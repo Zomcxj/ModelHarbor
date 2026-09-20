@@ -222,17 +222,9 @@ impl App {
                                 .sense(egui::Sense::click_and_drag()),
                         )
                         .on_hover_text(tip);
-                    let btn_resp = if is_installed {
-                        // 拳头：可拖动时张开手（Grab），按住时抓紧（Grabbing）。
-                        if is_dragging {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                            btn_resp
-                        } else {
-                            btn_resp.on_hover_cursor(egui::CursorIcon::Grab)
-                        }
-                    } else {
-                        btn_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-                    };
+                    // 手型（PointingHand → IDC_HAND）。不能用 Grab/Grabbing：Windows 上
+                    // 它们被 winit 映射成 IDC_SIZEALL 四向箭头，看着像「可移动」而非抓取。
+                    let btn_resp = btn_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                     if btn_resp.clicked() {
                         clicked_page = Some(id);
                     }
@@ -252,9 +244,9 @@ impl App {
                 }
 
                 // 拖动中指针往往已经离开被拖的那个页签（拖到别的槽位上方），
-                // 光标不能退回默认箭头——整体保持「抓紧」，直到松手。
+                // 光标不能退回默认箭头——整体保持手型，直到松手。
                 if self.tab_drag_src.is_some() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
 
                 // 松手：把被拖的页面移到落点位置，落点即用户看到的那个槽位。
