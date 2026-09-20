@@ -1616,10 +1616,11 @@ mod drag_cursor_tests {
 ///
 /// 背景：高亮此前只改按钮填充，而 16px 图标几乎占满按钮，能看见的只剩一圈细边。
 /// 后来改成「选中就把图标 tint 成强调色上的文字色」，深色主题下那正好是黑色，
-/// 图标整个变黑（用户实测报障）。现在状态一律靠底色 + 描边表达：
-/// 选中 = 绿（与卡片落点同源 `DROP_TARGET_FILL`），拖动中 = 橙（与拖动源同源
-/// `DRAG_SOURCE_FILL`），图标 tint 只在白（已安装）/ 压淡（未安装）之间选。
-/// 这里用离屏渲染把三个状态的实际颜色钉住，避免以后又被改回去。
+/// 图标整个变黑（用户实测报障）。现在状态一律靠底色 + 描边表达，三态三色：
+/// 选中 = **悬浮色 + 加粗描边**（悬浮的加重版，不是另起一套颜色）；
+/// 拖动源 = 橙（与卡片拖动源同源 `DRAG_SOURCE_FILL`）；
+/// 换位目标 = 绿（与卡片落点同源 `DROP_TARGET_COLOR`，拖动中补画在落点上）。
+/// 图标 tint 只在白（已安装）/ 压淡（未安装）之间选。这里用离屏渲染把实际颜色钉住。
 #[cfg(test)]
 mod tab_highlight_tests {
     use crate::app::App;
@@ -1639,38 +1640,75 @@ mod tab_highlight_tests {
     /// 页签按钮的可见状态：外框矩形、底色、描边色。
     type TabBox = (egui::Rect, egui::Color32, egui::Color32);
 
+    /// 图标矩形：位置 + tint 色。
+    type IconBox = (egui::Rect, egui::Color32);
+
+    /// 页签条这一帧收集到的原始矩形：
+    /// (矩形, 填充, 描边色, 是否贴图(brush), 描边宽度)。
+    type RawRect = (egui::Rect, egui::Color32, egui::Color32, bool, f32);
+
+    /// `tab_shapes_at` 的三段结果：按钮本体 / 图标 / 每个槽位的落点绿环。
+    type TabShapes = (Vec<TabBox>, Vec<IconBox>, Vec<Option<egui::Color32>>);
+
+    /// 与 `tab_shapes` 同一个主题下的「悬浮底色 / 悬浮描边色」。
+    ///
+    /// 选中态定义为「悬浮的加重版」，所以断言必须拿这两个值来比，
+    /// 而不是在测试里再写一份颜色常量——那样改了主题也照样通过。
+    fn hover_visuals() -> (egui::Color32, egui::Color32) {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::from_key("dark")
+            .apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+        let hovered = ctx.style().visuals.widgets.hovered;
+        (hovered.bg_fill, hovered.bg_stroke.color)
+    }
+
     /// 离屏跑一遍顶部栏，收集页签条区域内的**按钮底色**与**图标 tint**。
     ///
     /// egui 0.33 把图片画成带 `brush` 的 `RectShape`（贴图与 `fill` 相乘），**不是**
     /// `Shape::Mesh`，所以图标靠 `brush.is_some()` 认，tint 就是它的 `fill`。
     /// 一个页签因此贡献两个矩形：按钮底色（无 brush、约 44px 宽）与图标（有 brush、16px）。
     /// 两者都落在页签条区域内，所以先按区域筛、再按左边缘排序，下标才对得上页签序号。
-    fn tab_shapes(app: &mut App) -> (Vec<TabBox>, Vec<(egui::Rect, egui::Color32)>) {
+    ///
+    /// `pointer` 给出时，本帧把指针放在该位置（用来触发 hover，验证换位绿环）。
+    fn tab_shapes_at(app: &mut App, pointer: Option<egui::Pos2>) -> TabShapes {
         let ctx = egui::Context::default();
         crate::theme::Theme::from_key("dark")
             .apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
         // 图标是 `update()` 里惰性加载的；测试直接调 `ui_top_bar` 不经过 `update`，
         // 不先加载就没有贴图网格，tint 也就无从断言。
         app.load_backend_icons(&ctx);
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::pos2(0.0, 0.0),
-                egui::vec2(1200.0, 800.0),
-            )),
-            ..Default::default()
+        let events = match pointer {
+            Some(p) => vec![egui::Event::PointerMoved(p)],
+            None => Vec::new(),
         };
-        let out = ctx.run(input, |ctx| {
-            app.ui_top_bar(ctx);
-        });
-        let mut rects: Vec<(egui::Rect, egui::Color32, egui::Color32, bool)> = Vec::new();
-        fn collect(
-            shape: &egui::Shape,
-            out: &mut Vec<(egui::Rect, egui::Color32, egui::Color32, bool)>,
-        ) {
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+        // egui 的交互判定用的是**上一帧**登记的控件矩形，所以指针放在某处时
+        // 第一帧只是登记几何、`hovered()` 仍为假；要跑两帧 hover 才真正命中。
+        let frames = if pointer.is_some() { 2 } else { 1 };
+        let mut last = None;
+        for _ in 0..frames {
+            last = Some(ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events: events.clone(),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.ui_top_bar(ctx);
+                },
+            ));
+        }
+        let out = last.expect("至少跑一帧");
+        let mut rects: Vec<RawRect> = Vec::new();
+        fn collect(shape: &egui::Shape, out: &mut Vec<RawRect>) {
             match shape {
-                egui::Shape::Rect(r) => {
-                    out.push((r.rect, r.fill, r.stroke.color, r.brush.is_some()))
-                }
+                egui::Shape::Rect(r) => out.push((
+                    r.rect,
+                    r.fill,
+                    r.stroke.color,
+                    r.brush.is_some(),
+                    r.stroke.width,
+                )),
                 egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
                 _ => {}
             }
@@ -1681,34 +1719,85 @@ mod tab_highlight_tests {
         let in_strip = |r: &egui::Rect| {
             r.top() < 40.0 && r.left() < 400.0 && r.width() < 60.0 && r.height() < 40.0
         };
-        let mut boxes: Vec<TabBox> = rects
-            .iter()
-            .filter(|(r, _, _, textured)| in_strip(r) && !*textured)
-            .map(|(r, fill, stroke, _)| (*r, *fill, *stroke))
-            .collect();
-        let mut icons: Vec<(egui::Rect, egui::Color32)> = rects
-            .iter()
-            .filter(|(r, _, _, textured)| in_strip(r) && *textured)
-            .map(|(r, fill, _, _)| (*r, *fill))
-            .collect();
-        let by_left = |a: &(egui::Rect, egui::Color32), b: &(egui::Rect, egui::Color32)| {
-            a.0.left().partial_cmp(&b.0.left()).unwrap()
+        // 悬停时同一个页签会画出**两个**矩形：egui 的 hover 框（外扩 1px、底色
+        // `#383838`、描边强调色）与我们补画的落点绿环（无填充）。非悬停时只有一个本体。
+        // 直接按「有没有填充」筛会在悬停那一帧错位，所以**按 x 中心聚类**：
+        // 同一个页签的所有矩形共享中心，取其中填充非透明（或最宽）的那个当本体。
+        let is_ring = |fill: &egui::Color32, stroke: &egui::Color32, textured: bool, w: f32| {
+            !textured
+                && w > 0.0
+                && *fill == egui::Color32::TRANSPARENT
+                && *stroke == crate::ui::DROP_TARGET_COLOR
         };
-        boxes.sort_by(|a, b| a.0.left().partial_cmp(&b.0.left()).unwrap());
-        icons.sort_by(by_left);
-        (boxes, icons)
+        let mut candidates: Vec<RawRect> = rects
+            .iter()
+            .filter(|(r, _, _, textured, w)| in_strip(r) && !*textured && *w > 0.0)
+            .copied()
+            .collect();
+        candidates.sort_by(|a, b| a.0.center().x.partial_cmp(&b.0.center().x).unwrap());
+
+        let mut bodies: Vec<TabBox> = Vec::new();
+        let mut rings: Vec<Option<egui::Color32>> = Vec::new();
+        for group in cluster_by_center_x(&candidates) {
+            // 本体 = 该簇里填充非透明的那一个；若全透明（不该发生）取最宽的。
+            let body = group
+                .iter()
+                .find(|(_, fill, _, _, _)| *fill != egui::Color32::TRANSPARENT)
+                .or_else(|| {
+                    group
+                        .iter()
+                        .max_by(|a, b| a.0.width().partial_cmp(&b.0.width()).unwrap())
+                })
+                .expect("簇非空");
+            bodies.push((body.0, body.1, body.2));
+            rings.push(
+                group
+                    .iter()
+                    .find(|(_, fill, stroke, textured, w)| is_ring(fill, stroke, *textured, *w))
+                    .map(|(_, _, stroke, _, _)| *stroke),
+            );
+        }
+
+        let mut icons: Vec<IconBox> = rects
+            .iter()
+            .filter(|(r, _, _, textured, _)| in_strip(r) && *textured)
+            .map(|(r, fill, _, _, _)| (*r, *fill))
+            .collect();
+        icons.sort_by(|a, b| a.0.left().partial_cmp(&b.0.left()).unwrap());
+        (bodies, icons, rings)
+    }
+
+    /// 把矩形按 x 中心分组：中心相差不到 3px 的算同一个页签（hover 框与本体差 1px）。
+    fn cluster_by_center_x(sorted: &[RawRect]) -> Vec<Vec<RawRect>> {
+        let mut groups: Vec<Vec<RawRect>> = Vec::new();
+        for item in sorted {
+            match groups.last_mut() {
+                Some(g) if (g[0].0.center().x - item.0.center().x).abs() < 3.0 => g.push(*item),
+                _ => groups.push(vec![*item]),
+            }
+        }
+        groups
     }
 
     fn tab_fills(app: &mut App) -> Vec<TabBox> {
-        tab_shapes(app).0
+        tab_shapes_at(app, None).0
     }
 
     fn tab_icon_tints(app: &mut App) -> Vec<egui::Color32> {
-        tab_shapes(app)
+        tab_shapes_at(app, None)
             .1
             .into_iter()
             .map(|(_, fill)| fill)
             .collect()
+    }
+
+    /// 把指针停在第 `slot` 个页签上再跑一帧，返回每个槽位的绿环（无则 `None`）。
+    fn tab_rings_with_pointer_on(app: &mut App, slot: usize) -> Vec<Option<egui::Color32>> {
+        // 先跑一帧拿到稳定的几何（布局由页签数量决定，不随指针变），
+        // 再按目标槽位的中心点跑第二帧，让 hover 真正命中。
+        let boxes = tab_fills(app);
+        let center = boxes[slot].0.center();
+        tab_shapes_at(app, Some(center)).2
     }
 
     fn app_with_tabs() -> App {
@@ -1718,22 +1807,26 @@ mod tab_highlight_tests {
         }
     }
 
+    /// 选中页签的底色 = 悬浮色（`widgets.hovered.bg_fill`），不是另起一套颜色。
     #[test]
-    fn selected_tab_uses_the_green_drop_target_color_and_the_others_do_not() {
+    fn the_selected_tab_uses_the_hover_fill_with_a_bold_ring() {
         let mut app = app_with_tabs();
         app.current_page = ConfigFormat::Opencode;
         let tabs = tab_fills(&mut app);
         assert_eq!(tabs.len(), 6, "六个后端图标各一个按钮");
         assert_eq!(
             tabs[0].1,
-            crate::ui::DROP_TARGET_FILL,
-            "当前页面（第 1 个）必须是绿色落点底色"
+            hover_visuals().0,
+            "选中页签的底色必须是悬浮色（选中 = 悬浮的加重版）"
         );
-        for (i, (_, fill, _)) in tabs.iter().enumerate().skip(1) {
+        assert_eq!(tabs[0].2, hover_visuals().1, "选中页签的描边用悬浮描边色");
+        // 其余未选中：既不是悬浮底色，也不带 2px 描边。
+        for (i, (_, fill, stroke)) in tabs.iter().enumerate().skip(1) {
+            assert_ne!(*fill, hover_visuals().0, "第 {i} 个未选中，不该用悬浮底色");
             assert_ne!(
-                *fill,
-                crate::ui::DROP_TARGET_FILL,
-                "第 {i} 个未选中，不该是绿色"
+                *stroke,
+                hover_visuals().1,
+                "第 {i} 个未选中，不该有选中描边"
             );
         }
     }
@@ -1745,12 +1838,12 @@ mod tab_highlight_tests {
         let tabs = tab_fills(&mut app);
         assert_eq!(
             tabs[2].1,
-            crate::ui::DROP_TARGET_FILL,
-            "ZCode 在第 3 个槽位，必须是绿色"
+            hover_visuals().0,
+            "ZCode 在第 3 个槽位，必须是选中底色"
         );
         assert_eq!(
             tabs.iter()
-                .filter(|(_, f, _)| *f == crate::ui::DROP_TARGET_FILL)
+                .filter(|(_, f, _)| *f == hover_visuals().0)
                 .count(),
             1,
             "同一时刻只该有一个选中页签"
@@ -1758,18 +1851,23 @@ mod tab_highlight_tests {
     }
 
     #[test]
-    fn the_grabbed_tab_is_orange_while_the_selected_one_stays_green() {
-        // 「我正抓着这页」（橙，拖动源色）与「我在这页」（绿，落点色）刻意不同色，
+    fn the_grabbed_tab_is_orange_and_differs_from_the_selected_one() {
+        // 「我正抓着这页」（橙，拖动源色）与「我在这页」（悬浮加重）刻意不同色，
         // 两者才不会看混。
         let mut app = app_with_tabs();
         app.current_page = ConfigFormat::Opencode;
         app.tab_drag_src = Some(ConfigFormat::ZCode);
         let tabs = tab_fills(&mut app);
-        assert_eq!(tabs[0].1, crate::ui::DROP_TARGET_FILL, "当前页面保持绿色");
+        assert_eq!(tabs[0].1, hover_visuals().0, "当前页面保持选中态");
         assert_eq!(
             tabs[2].1,
             crate::ui::DRAG_SOURCE_FILL,
             "被抓住的页签用橙色（拖动源色）"
+        );
+        assert_ne!(
+            crate::ui::DRAG_SOURCE_FILL,
+            hover_visuals().0,
+            "拖动源色与选中色必须是两个不同的颜色"
         );
     }
 
@@ -1807,21 +1905,52 @@ mod tab_highlight_tests {
     }
 
     #[test]
-    fn the_selected_tab_is_marked_by_a_green_outline_not_just_a_fill() {
-        // 16px 图标几乎占满按钮，只换底色的话能看见的只剩一圈细边；描边必须跟着状态走，
-        // 否则「选中」在视觉上等于没发生。
+    fn the_swap_target_is_marked_green_and_the_source_is_not() {
+        // 拖动中：指针所在的**别的**页签画绿环（换位目标），被拖的那个自己用橙。
+        // 绿色只给落点——拖动源不能同时是绿色，否则「要换到哪」看不出来。
         let mut app = app_with_tabs();
         app.current_page = ConfigFormat::Opencode;
+        app.tab_drag_src = Some(ConfigFormat::Opencode);
+        // 指针落在第 3 个槽位（ZCode）上。
+        let hovered = 2usize;
+        let rings = tab_rings_with_pointer_on(&mut app, hovered);
+        assert_eq!(
+            rings[hovered],
+            Some(crate::ui::DROP_TARGET_COLOR),
+            "指针所在的槽位必须是绿色换位目标"
+        );
+        for (i, ring) in rings.iter().enumerate() {
+            if i == hovered {
+                continue;
+            }
+            assert_ne!(
+                *ring,
+                Some(crate::ui::DROP_TARGET_COLOR),
+                "第 {i} 个不是落点，不该有绿色环"
+            );
+        }
+        // 拖动源自己不能是绿色落点：源用橙色底色，绿环只属于落点。
         let tabs = tab_fills(&mut app);
         assert_eq!(
-            tabs[0].2,
-            crate::ui::DROP_TARGET_COLOR,
-            "选中页签要有绿色描边"
+            tabs[0].1,
+            crate::ui::DRAG_SOURCE_FILL,
+            "拖动源用橙色，不是绿色"
         );
-        assert_ne!(
-            tabs[1].2,
-            crate::ui::DROP_TARGET_COLOR,
-            "未选中页签不该有绿色描边"
-        );
+    }
+
+    #[test]
+    fn no_green_ring_appears_when_nothing_is_being_dragged() {
+        // 绿环是「拖动中的落点」专用提示；不在拖动时不该出现，
+        // 否则悬停就变绿，和「选中」的观感混在一起。
+        let mut app = app_with_tabs();
+        app.current_page = ConfigFormat::Opencode;
+        let rings = tab_rings_with_pointer_on(&mut app, 2);
+        for (i, ring) in rings.iter().enumerate() {
+            assert_ne!(
+                *ring,
+                Some(crate::ui::DROP_TARGET_COLOR),
+                "第 {i} 个：没在拖动却画了绿色落点环"
+            );
+        }
     }
 }

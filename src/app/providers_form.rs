@@ -361,6 +361,7 @@ impl App {
             show_model_reasoning,
             show_model_tool_call,
             show_model_store,
+            show_model_disabled,
             base_label,
             api_key_label,
             context_label,
@@ -539,6 +540,10 @@ impl App {
                 model_highlight,
                 egui::Id::new(("model_card", model_key.clone())),
                 |ui| {
+                    // 停用的模型整行压淡：一眼能扫出哪些不生效（选择器里也是灰的）。
+                    if show_model_disabled && p.models[j].disabled {
+                        ui.set_opacity(0.45);
+                    }
                     ui.horizontal(|ui| {
                         let handle = ui.add(DragHandle);
                         if handle.drag_started() {
@@ -550,6 +555,24 @@ impl App {
                         }
                         // 单模型延迟测试：按钮在拖动按钮右侧，结果显示在按钮右侧。
                         let model_id = p.models[j].id.trim().to_string();
+                        // 启用/停用（仅 WorkBuddy 认这个字段）：`disabled: true` 让该模型
+                        // 在 WorkBuddy 的选择器里变灰、不可选，但**仍留在列表里**。
+                        // 放在标题行是为了能一眼扫出哪些被停用；停用的行整体压淡。
+                        if show_model_disabled {
+                            let on = !p.models[j].disabled;
+                            let mut enabled = on;
+                            let cb = ui.checkbox(&mut enabled, "启用");
+                            if enabled != on {
+                                p.models[j].disabled = !enabled;
+                            }
+                            cb.on_hover_text(
+                                "WorkBuddy 的选择器**按模型 id 全局去重**：同一个 id 只会列出一行，\
+                                 其余同名条目会被忽略。\n\
+                                 停用后该条目在选择器里变灰、不可选，但仍在列表里（不会被删）。\n\
+                                 ⚠ 不要为了区分同名模型去改 id —— id 同时就是发给上游的模型名，\
+                                 改了会直接请求失败。",
+                            );
+                        }
                         // 只借两个字段（不是 `&self` 方法）：此处 `p` 还借着 providers，
                         // 且外层闭包需要独占 `*self`，整结构借用编译不过。
                         let gate =
@@ -579,11 +602,24 @@ impl App {
                         if !p.models[j].id.trim().is_empty()
                             && other_ids.contains(p.models[j].id.trim())
                         {
-                            id_resp.on_hover_text("id 与同 provider 内其他模型重复，保存将被阻止");
+                            // 保存**不会**因为模型 id 重复而失败（只有 provider key 重复才拦），
+                            // 所以这里不能说「保存将被阻止」。WorkBuddy 是唯一按 id 全局去重的
+                            // 后端：重复的 id 里只有第一条会在它的选择器里生效。
+                            let hint = if show_model_disabled {
+                                "id 与同 provider 内其他模型重复。\n\
+                                 WorkBuddy 的选择器**按模型 id 全局去重**，同一个 id 只会列出一行，\
+                                 重复条目里只有第一条生效。\n\
+                                 保留多条请把其余条目「停用」（变灰不可选），\
+                                 不要改 id —— id 就是发给上游的模型名。"
+                            } else {
+                                "id 与同 provider 内其他模型重复；保存仍会写入，\
+                                 但同名模型在部分后端只会生效一次。"
+                            };
+                            id_resp.on_hover_text(hint);
                             ui.label(
                                 egui::RichText::new("⚠ 重复")
                                     .small()
-                                    .color(crate::theme::semantics(ui).err),
+                                    .color(crate::theme::semantics(ui).warn),
                             );
                         }
                         if show_model_name {

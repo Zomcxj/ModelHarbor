@@ -253,6 +253,9 @@ impl App {
                     // 模型名已落到模型行的 id 字段（WB 无独立模型 id），不再单列 name 字段，
                     // 否则 id / name 两个框都显示同一个模型名，反而误导。
                     "name" => false,
+                    // 启用/停用开关：WorkBuddy 是唯一认 `disabled` 的后端，恒显示
+                    // （不看文件里有没有该键——这个开关本来就用来把「没有」变成「有」）。
+                    "disabled" => true,
                     "context" => model.raw.get("maxInputTokens").is_some(),
                     "output" => model.raw.get("maxOutputTokens").is_some(),
                     "input" => model.raw.get("supportsImages").is_some(),

@@ -470,9 +470,10 @@ fn save_writes_one_entry_per_model() {
         vec![
             ("claude_agentrouter", "claude-opus-5"),
             ("claude_agentrouter", "claude-opus-4-8"),
-            // id 与前一条重复，第 2 条起加两位序号
-            // （见 duplicate_model_ids_get_numbered_so_the_picker_lists_every_row）。
-            ("claude_linxi", "claude-opus-501"),
+            // id 与前一条重复：**原样写出**，绝不加序号。
+            // `id` 同时是发给上游的模型名，改名会让请求体变成不存在的模型
+            // （见 duplicate_model_ids_are_written_verbatim_never_renamed）。
+            ("claude_linxi", "claude-opus-5"),
         ]
     );
     // 同 provider 的条目共用 provider 级字段（url / apiKey / 协议），
@@ -489,13 +490,12 @@ fn entry_id_stays_the_plain_api_model_name() {
     // （`claude_linxi:claude-opus-5`）——那是把非法模型名发给服务端，直接吃
     // "Provider rejected the model request"。
     //
-    // 允许的只有「同 id 第 2 条起加两位序号」：它仍然是合法模型名字符串，
-    // 且只在 id 真的重复时才发生（唯一 id 一个字符都不动）。
+    // 连「同 id 第 2 条起加两位序号」也不行——序号会进请求体变成不存在的模型名。
+    // 这里断言每个写出的 id 都**逐字等于**某个原始模型名。
     let load = load_wb(&multi_model_json());
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
-    // 原始模型名集合：每个写出的 id 要么**就是**其中之一（未重复，原样保留），
-    // 要么等于其中之一 + 两位序号（重复，被编号）。
+    // 原始模型名集合：每个写出的 id 必须**逐字**等于其中之一。
     let originals: Vec<String> = load
         .providers
         .iter()
@@ -506,28 +506,24 @@ fn entry_id_stays_the_plain_api_model_name() {
         let name = entry["name"].as_str().unwrap();
         assert!(!id.contains(':'), "id 不得带命名空间前缀：{id}");
         assert!(!id.contains(name), "id 里不得混入 provider：{id}");
-        let plain = originals.iter().any(|o| o == id);
-        let numbered = id.len() > 2
-            && id[id.len() - 2..].bytes().all(|c| c.is_ascii_digit())
-            && originals.iter().any(|o| o == &id[..id.len() - 2]);
         assert!(
-            plain || numbered,
-            "id 只能是原模型名，或在原模型名末尾追加两位序号：{id}"
+            originals.iter().any(|o| o == id),
+            "id 必须是原始模型名逐字，不得改名或加序号：{id}"
         );
     }
-    // 同名模型分属两家时靠 name 区分；id 因重复而被编号。
+    // 同名模型分属两家时靠 name 区分；id 保持原模型名（重复就重复）。
     let dupes: Vec<(&str, &str)> = root
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["id"].as_str().unwrap().starts_with("claude-opus-5"))
+        .filter(|e| e["id"].as_str().unwrap() == "claude-opus-5")
         .map(|e| (e["name"].as_str().unwrap(), e["id"].as_str().unwrap()))
         .collect();
     assert_eq!(
         dupes,
         vec![
             ("claude_agentrouter", "claude-opus-5"),
-            ("claude_linxi", "claude-opus-501"),
+            ("claude_linxi", "claude-opus-5"),
         ]
     );
 }
@@ -587,10 +583,15 @@ fn a_provider_without_models_still_writes_one_entry() {
 }
 
 #[test]
-fn duplicate_model_ids_get_numbered_so_the_picker_lists_every_row() {
-    // WorkBuddy 的选择器 appendModel 是 `if (ids.has(model.id)) return;`——
-    // **只按裸 id 去重且全局生效**，36 条条目里 15 个不同 id 就只列 15 个。
-    // 给第 2 条起的重复 id 追加两位序号，id 互不相同，才会全部列出。
+fn duplicate_model_ids_are_written_verbatim_never_renamed() {
+    // WorkBuddy 的选择器 `appendModel` 是 `if (ids.has(model.id)) return;`——
+    // **只按裸 id 去重且全局生效**，所以 36 条条目里 15 个不同 id 就只列 15 行。
+    //
+    // 曾经试图给重复 id 加序号（`gpt-5.6-sol` → `gpt-5.6-sol01`）来绕过去重，
+    // 那是错的：`id` 同时就是**发给上游的模型名**（`configureModelConfig` 把 `ec.id`
+    // 赋给 `agent.model`，`ModelProvider.getModel` 把这个字符串原样放进请求体），
+    // 加序号会让请求体变成不存在的模型名，上游直接 model-not-found。
+    // 所以这里必须原样写出，重复就重复——去重是 WorkBuddy 的既有机制，不是配置错误。
     let provider = |key: &str, model: &str| {
         let mut p = ProviderRow::new();
         p.key = key.to_string();
@@ -617,17 +618,9 @@ fn duplicate_model_ids_get_numbered_so_the_picker_lists_every_row() {
         .collect();
     assert_eq!(
         ids,
-        vec![
-            "gpt-5.6-sol",
-            "gpt-5.6-sol01",
-            "gpt-5.6-sol02",
-            "unique-model"
-        ],
-        "同 id 的第 2 条起加两位序号；唯一的 id 保持原样"
+        vec!["gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol", "unique-model"],
+        "id 是上游模型名，必须原样写出，重复也不许改名"
     );
-    let uniq: std::collections::HashSet<&&str> = ids.iter().collect();
-    assert_eq!(uniq.len(), ids.len(), "编号后 id 必须两两不同");
-    // name 仍是提供商标签，不参与编号
     let names: Vec<&str> = out
         .as_array()
         .unwrap()
@@ -638,35 +631,9 @@ fn duplicate_model_ids_get_numbered_so_the_picker_lists_every_row() {
 }
 
 #[test]
-fn numbering_round_trips_back_to_the_original_model_names() {
-    // 保存写出 gpt-5.6-sol01，读回来必须还原成 gpt-5.6-sol：
-    // 否则界面里模型名带序号，再存到 ZCode 等别的后端会把序号当模型名写进去。
-    let saved = json!([
-        { "id": "gpt-5.6-sol",   "name": "a", "url": "https://x.example/v1" },
-        { "id": "gpt-5.6-sol01", "name": "b", "url": "https://x.example/v1" },
-        { "id": "gpt-5.6-sol02", "name": "c", "url": "https://x.example/v1" }
-    ]);
-    let b = backends::backend(ConfigFormat::WorkBuddy);
-    let text = serde_json::to_string(&saved).unwrap();
-    let load = b.parse(&text).unwrap();
-    let mut ids: Vec<&str> = load
-        .providers
-        .iter()
-        .flat_map(|p| p.models.iter().map(|m| m.id.as_str()))
-        .collect();
-    ids.sort_unstable();
-    assert_eq!(ids, vec!["gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol"]);
-    // provider 名不还原（它本来就是 a/b/c）
-    let mut keys: Vec<&str> = load.providers.iter().map(|p| p.key.as_str()).collect();
-    keys.sort_unstable();
-    assert_eq!(keys, vec!["a", "b", "c"]);
-}
-
-#[test]
-fn genuine_model_names_ending_in_digits_are_not_stripped() {
-    // 用户文件里真实存在 deepseek-v4-flash-0731 这类模型名，末尾本就是数字。
-    // 还原只认「同基名下 01..0n 连续一串且存在无序号基名」的形态，
-    // 否则会把独立模型误并成一个。
+fn genuine_model_names_ending_in_digits_are_left_alone() {
+    // 用户文件里真实存在 `deepseek-v4-flash-0731`、`claude-opus-5`、`grok-4.6`
+    // 这类末尾本就是数字的模型名。既然不再做任何改名/还原，它们必须逐字节保留。
     let saved = json!([
         { "id": "deepseek-v4-flash-0731", "name": "gm_huige0", "url": "https://x.example/v1" },
         { "id": "claude-opus-5", "name": "claude_a", "url": "https://x.example/v1" },
@@ -690,7 +657,7 @@ fn genuine_model_names_ending_in_digits_are_not_stripped() {
             "deepseek-v4-flash-0731",
             "grok-4.6"
         ],
-        "末尾是数字的合法模型名不得被剥掉"
+        "末尾是数字的合法模型名必须原样保留"
     );
 }
 
@@ -726,4 +693,73 @@ fn saving_twice_is_byte_stable() {
     );
     let text2 = b.render(&second, false).unwrap();
     assert_eq!(text1, text2, "存→读→再存 必须字节一致");
+}
+
+#[test]
+fn disabled_flag_round_trips_and_can_be_cleared() {
+    // `disabled: true` 是 WorkBuddy 唯一认的「停用」语义：选择器里变灰、不可选，
+    // 但行仍在列表里。这是应对「全局按裸 id 去重」的手段——同名模型只能生效一次，
+    // 保留多条时停用其余（**不能改 id**，id 就是发给上游的模型名）。
+    let saved = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1",
+          "disabled": true },
+        { "id": "gpt-5.6-sol", "name": "b", "url": "https://x.example/v1" }
+    ]);
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let text = serde_json::to_string(&saved).unwrap();
+    let load = b.parse(&text).unwrap();
+    // 读：两条都进界面，disabled 状态各自保留。
+    let flags: Vec<bool> = load
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter().map(|m| m.disabled))
+        .collect();
+    assert_eq!(flags.len(), 2, "两条条目都要进界面");
+    assert_eq!(flags.iter().filter(|d| **d).count(), 1, "恰好一条被停用");
+
+    // 原样写回：disabled 保持。
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let entries = root.as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    let disabled_count = entries
+        .iter()
+        .filter(|e| e.get("disabled").and_then(|v| v.as_bool()) == Some(true))
+        .count();
+    assert_eq!(disabled_count, 1, "停用状态必须写回文件");
+
+    // 重新启用：`disabled` 键必须被**删掉**，而不是留下 true。
+    // 合并旧条目时只增不减，所以清除必须在合并之后单独做。
+    let mut providers = load.providers.clone();
+    for p in &mut providers {
+        for m in &mut p.models {
+            m.disabled = false;
+        }
+    }
+    let root2 = b.serialize_root(&[], &providers, &load.extras, Some(&root));
+    for e in root2.as_array().unwrap() {
+        assert!(
+            e.get("disabled").is_none(),
+            "启用后不得残留 disabled 键：{e:#?}"
+        );
+    }
+}
+
+#[test]
+fn enabled_models_do_not_gain_a_disabled_key() {
+    // 用户文件里 36 条都没有 `disabled`。保存一遍不能凭空给它们加上
+    // `disabled: false`——那是把「未声明」变成「明确声明」，整文件 diff 会被污染。
+    let saved = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1" },
+        { "id": "claude-opus-5", "name": "b", "url": "https://x.example/v1" }
+    ]);
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let text = serde_json::to_string(&saved).unwrap();
+    let load = b.parse(&text).unwrap();
+    let root = b.serialize_root(&[], &load.providers, &load.extras, Some(&saved));
+    for e in root.as_array().unwrap() {
+        assert!(
+            e.get("disabled").is_none(),
+            "启用的模型不该出现 disabled 键：{e:#?}"
+        );
+    }
 }

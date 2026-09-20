@@ -166,6 +166,12 @@ pub struct ModelRow {
     pub reasoning: bool,
     pub tool_call: bool,
     pub store: bool,
+    /// WorkBuddy 专属：`disabled: true` 让该模型在选择器里变灰、不可选（**但仍在列表里**）。
+    ///
+    /// 这是应对 WorkBuddy「全局按裸 id 去重」的手段：同一个模型名在文件里只能生效一次，
+    /// 想保留多条同 id 条目又不让它们互相顶掉，就把其余的停用。
+    /// **不能靠改 id 去重**——`id` 同时是发给上游的模型名，改名会让请求 model-not-found。
+    pub disabled: bool,
     pub context: String,
     pub output: String,
     pub modalities_input: String,
@@ -207,6 +213,7 @@ impl ModelRow {
             reasoning: bool_at(v, "reasoning"),
             tool_call: bool_at(v, "tool_call"),
             store,
+            disabled: bool_at(v, "disabled"),
             context: nested_num(v, &["limit", "context"]),
             output: nested_num(v, &["limit", "output"]),
             modalities_input: nested_list_str(v, &["modalities", "input"]),
@@ -227,6 +234,8 @@ impl ModelRow {
             reasoning: true,
             tool_call: true,
             store: false,
+            // 新建模型默认启用：`disabled` 只由 WorkBuddy 页的开关显式设置。
+            disabled: false,
             context: "272000".into(),
             output: "128000".into(),
             modalities_input: "text, image".into(),

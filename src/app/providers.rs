@@ -42,6 +42,8 @@ pub(super) struct ProviderFormFlags {
     pub(super) show_model_reasoning: bool,
     pub(super) show_model_tool_call: bool,
     pub(super) show_model_store: bool,
+    /// WorkBuddy 专属：每个模型行显示「启用/停用」开关（写 `disabled`）。
+    pub(super) show_model_disabled: bool,
     pub(super) base_label: &'static str,
     pub(super) api_key_label: &'static str,
     pub(super) context_label: &'static str,
@@ -72,6 +74,7 @@ impl ProviderFormFlags {
             show_model_reasoning: app.page_has_model_field("reasoning"),
             show_model_tool_call: app.page_has_model_field("tool_call"),
             show_model_store: app.page_has_model_field("store"),
+            show_model_disabled: app.page_has_model_field("disabled"),
             base_label: if show_oc {
                 "options.baseURL"
             } else if show_dsh {

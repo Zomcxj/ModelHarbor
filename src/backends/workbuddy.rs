@@ -24,103 +24,12 @@ use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
 use crate::util::{parse_config_content, read_config_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct WorkBuddyBackend;
 
 pub static BACKEND: WorkBuddyBackend = WorkBuddyBackend;
-
-/// 保存时给重复 id 加的序号宽度（两位：`01`…`99`）。
-const DUP_SUFFIX_WIDTH: usize = 2;
-
-/// 取「同 id 被编号」时的基名：`gpt-5.6-sol01` → `gpt-5.6-sol`。
-///
-/// 基名不能以分隔符结尾：合法模型名里就有 `foo-01` 这种形态，若允许基名是 `foo-`，
-/// 两个各自独立的模型会被误判成同一模型的编号。
-fn numbered_base(id: &str) -> Option<&str> {
-    if id.len() <= DUP_SUFFIX_WIDTH {
-        return None;
-    }
-    let (base, digits) = id.split_at(id.len() - DUP_SUFFIX_WIDTH);
-    if !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    if base.ends_with(['-', '_', '.', ':', '/', ' ']) {
-        return None;
-    }
-    Some(base)
-}
-
-/// 找出本文件里「确实是被本程序编号过的」基名。
-///
-/// 两条判据必须同时成立：
-/// 1. 存在一条**不带序号**的 `base` 条目（`serialize_root` 保留第一条不编号）；
-/// 2. 编号条目的序号恰好是 `01..0n` 连续一串。
-///
-/// 只按「末尾两位是数字」判断会误伤合法模型名：用户文件里就有
-/// `deepseek-v4-flash-0731`（基名 `deepseek-v4-flash-07`），以及 `foo-2024` /
-/// `foo-2025` 这类同基名的真实模型——它们不满足上面两条，原样保留。
-fn numbered_bases(items: &[Value]) -> HashSet<String> {
-    let mut plain: HashSet<&str> = HashSet::new();
-    let mut numbered: HashMap<&str, Vec<u32>> = HashMap::new();
-    for id in items
-        .iter()
-        .filter_map(|v| v.get("id").and_then(Value::as_str))
-    {
-        match numbered_base(id) {
-            Some(base) => {
-                let n: u32 = id[id.len() - DUP_SUFFIX_WIDTH..].parse().unwrap_or(0);
-                numbered.entry(base).or_default().push(n);
-            }
-            None => {
-                plain.insert(id);
-            }
-        }
-    }
-    numbered
-        .into_iter()
-        .filter(|(base, ns)| {
-            if !plain.contains(*base) {
-                return false;
-            }
-            let mut v = ns.clone();
-            v.sort_unstable();
-            v.dedup();
-            // 恰好 01..0n 连续一串（从 1 开始、无缺口）
-            v.iter().enumerate().all(|(i, n)| *n as usize == i + 1)
-        })
-        .map(|(base, _)| base.to_string())
-        .collect()
-}
-
-/// 还原保存时加的序号，其余字段原样。
-///
-/// 不做这一步会漂移：保存写出 `gpt-5.6-sol01`，下次读回来界面里模型名就带序号，
-/// 再存到 ZCode 等别的后端会把 `gpt-5.6-sol01` 当成模型名写进去。
-fn strip_save_suffixes(items: &[Value]) -> Vec<Value> {
-    let bases = numbered_bases(items);
-    items
-        .iter()
-        .map(|v| {
-            let Some(id) = v.get("id").and_then(Value::as_str) else {
-                return v.clone();
-            };
-            let Some(base) = numbered_base(id) else {
-                return v.clone();
-            };
-            if !bases.contains(base) {
-                return v.clone();
-            }
-            let Some(obj) = v.as_object() else {
-                return v.clone();
-            };
-            let mut obj = obj.clone();
-            obj.insert("id".into(), Value::String(base.to_string()));
-            Value::Object(obj)
-        })
-        .collect()
-}
 
 /// 非 Chat 协议对应的 URL 后缀（保存时补上，与 ZCode 的后缀规则同源）。
 const MESSAGES_SUFFIX: &str = "/v1/messages";
@@ -229,6 +138,9 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
         .get("supportsReasoning")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // WorkBuddy 的 `disabled: true`：选择器里变灰、不可选，但**仍在列表里**。
+    // 这是应对「全局按裸 id 去重」的手段——同 id 只能生效一次，保留多条时停用其余。
+    model.disabled = v.get("disabled").and_then(Value::as_bool).unwrap_or(false);
     // WorkBuddy 用布尔 supportsReasoning 表达推理，没有「思考档位」概念。
     // ModelRow::new() 会带一组默认档位（medium/high/xhigh/max），若不清空，
     // 跨格式存到 ZCode 时会给每个模型凭空塞 reasoningLevel.values——这些档位
@@ -343,6 +255,13 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
         if obj.contains_key("supportsReasoning") {
             obj.insert("supportsReasoning".into(), Value::Bool(m.reasoning));
         }
+        // 启用/停用：`disabled: true` 让选择器里的该行变灰、不可选（仍在列表里）。
+        // 这里只在停用时写入；**清除**由 `serialize_root` 在合并旧条目后统一处理
+        // （合并只增不减，旧键必须在那里删）。启用时不写 `false` 是为了最小 diff：
+        // WorkBuddy 的 `normalizeCustomModel` 是 `{disabled: false, ...model}`，缺键即 false。
+        if m.disabled {
+            obj.insert("disabled".into(), Value::Bool(true));
+        }
     }
 
     Value::Object(obj)
@@ -402,9 +321,7 @@ impl Backend for WorkBuddyBackend {
 
     fn parse(&self, content: &str) -> Result<BackendLoad, String> {
         let root = parse_config_content(content)?;
-        // 保存时给重复 id 加的序号在这里还原，界面与后续跨格式保存都只见原始模型名。
-        let raw_entries = entries_of(&root).cloned().unwrap_or_default();
-        let entries = strip_save_suffixes(&raw_entries);
+        let entries = entries_of(&root).cloned().unwrap_or_default();
         // WorkBuddy 文件按模型扁平存储：一家提供商的多个模型就是多条 `name` 相同的条目
         // （用户的文件里 `gpt-5.6-sol` 就有 4 条、`claude-opus-5` 5 条，靠 `name` 区分）。
         // 界面按 provider 分组，所以同 `name` 的条目合并成一张卡片、各自成为一个模型行，
@@ -488,47 +405,35 @@ impl Backend for WorkBuddyBackend {
                         entry.insert(k.clone(), v.clone());
                     }
                 }
+                // 启用状态要在合并**之后**单独处理：`entry_from_provider` 只在停用时
+                // 写入 `disabled: true`（启用时压根不写该键），而这里的合并只增不减，
+                // 于是旧条目里的 `disabled: true` 会残留——用户关掉开关，模型仍然选不了。
+                if model.map(|m| m.disabled).unwrap_or(false) {
+                    entry.insert("disabled".into(), Value::Bool(true));
+                } else {
+                    entry.remove("disabled");
+                }
                 out.push(Value::Object(entry));
             }
         }
-        // 同 id 去重：WorkBuddy 的模型选择器 `appendModel` 是
-        // `if (ids.has(model.id)) return;`——**只按裸 id 去重且全局生效**，
-        // 于是 36 条条目里只有 15 个不同的 id，对话框就只列 15 个。
-        // 给第 2 条起的重复 id 追加两位序号（`gpt-5.6-sol` → `gpt-5.6-sol01`），
-        // id 互不相同，选择器才会把每条都列出来。
+        // **不要给重复 id 加序号来绕开选择器去重。** 曾经这么做过，结论是错的：
+        // WorkBuddy 的 `id` 既是选择器的去重键，**也是发给上游的模型名**
+        // （`configureModelConfig` 把 `ec.id` 赋给 `agent.model`，`ModelProvider.getModel`
+        // 再把这个字符串原样交给请求体；唯一改动是发送前 `stripCustomLocalModelPrefix`
+        // 去掉 `custom-local:` 前缀）。加序号的 `id` 会让请求体变成
+        // `gpt-5.6-sol01`，上游直接 model-not-found。
         //
-        // 代价：`id` 就是发给上游的模型名，加了序号的请求体里就是 `gpt-5.6-sol01`。
-        // 因此这一步只在**同一 id 出现多次**时才动手（唯一 id 保持原样），
-        // 并且读取时由 `strip_save_suffixes` 还原，界面上看到的仍是原模型名。
-        let mut seen: HashMap<String, usize> = HashMap::new();
-        for entry in &mut out {
-            let Some(obj) = entry.as_object_mut() else {
-                continue;
-            };
-            let Some(id) = obj.get("id").and_then(Value::as_str).map(str::to_string) else {
-                continue;
-            };
-            let n = seen.entry(id.clone()).or_insert(0);
-            *n += 1;
-            if *n > 1 {
-                obj.insert(
-                    "id".into(),
-                    Value::String(format!("{id}{:0width$}", *n - 1, width = DUP_SUFFIX_WIDTH)),
-                );
-            }
-        }
+        // 选择器只列 15 行的真正原因是**全局按裸 id 去重**，这是 WorkBuddy 的既有机制，
+        // 不是配置错误：同一个模型名在文件里只能生效一次。要减少重复，只能删条目或
+        // 用 `disabled` 停用（见 UI 上的启用/停用开关），不能改 id。
         Value::Array(out)
     }
 
     fn load_target_root(&self, path: &str) -> Value {
-        // 目标文件里的序号同样要还原：`serialize_root` 用它做「同名同模型」的旧条目索引，
-        // 带着序号匹配不上，继承的 tags / credits 会丢。
-        let root = match read_config_content(path) {
+        match read_config_content(path) {
             Ok(content) => parse_config_content(&content).unwrap_or(Value::Array(Vec::new())),
             Err(_) => Value::Array(Vec::new()),
-        };
-        let raw_entries = entries_of(&root).cloned().unwrap_or_default();
-        Value::Array(strip_save_suffixes(&raw_entries))
+        }
     }
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {

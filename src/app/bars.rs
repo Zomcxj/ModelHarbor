@@ -184,9 +184,10 @@ impl App {
                     // Color32::PLACEHOLDER——它是魔法值 rgba(0,255,183,4)，
                     // 直接当 tint 会把图标乘成绿色（红通道归零）。
                     let is_selected = self.current_page == id;
-                    // 正被抓着的页签单独用橙色（拖动源色），与卡片拖动时整卡亮橙框同源；
-                    // 选中（当前页面）用绿色，与卡片拖动落点色同源。两者刻意不同色，
-                    // 「我现在在这页」和「我正抓着这页」才不会看混。
+                    // 正被抓着的页签（拖动源）。三种状态刻意三色，互不看混：
+                    //   选中（我在这页）= 悬浮色 + 加粗描边，即「悬浮的加重版」；
+                    //   拖动源（我抓着这页）= 橙色，与卡片拖动源同源；
+                    //   换位目标（要换到这页）= 绿色，与卡片落点同源（在下面用画笔叠）。
                     let is_dragging = self.tab_drag_src == Some(id);
                     // 图标保持原色（已安装）或压淡（未安装）。**不能按选中态改 tint**：
                     // 先前改成「强调色上的文字色」，深色主题下那正好是黑色，图标直接变黑。
@@ -204,15 +205,20 @@ impl App {
                         ),
                         None => egui::Button::new(""),
                     };
-                    // 底色用各自状态的同色压暗版（同卡片把手 DRAG_SOURCE_FILL 的做法），
-                    // 保证图标在色底上仍然可辨；描边 2px 拉开层级。
+                    // 选中态 = 「悬浮的加重版」：底色就用悬浮色（`widgets.hovered.bg_fill`，
+                    // 未选中的页签悬停时也是这块底色），再把描边加粗到 2px 拉开层级。
+                    // 不另起一套颜色——用户要求选中沿用悬浮色系，只加重。
+                    let selected_fill = ui.visuals().widgets.hovered.bg_fill;
+                    let selected_ring = ui.visuals().widgets.hovered.bg_stroke.color;
+                    // 拖动源用橙色（与卡片拖动源同源）；换位目标的绿环在按钮画完后补画。
                     let btn = match (is_dragging, is_selected) {
                         (true, _) => btn
                             .fill(crate::ui::DRAG_SOURCE_FILL)
                             .stroke(egui::Stroke::new(2.0f32, crate::ui::DRAG_SOURCE_COLOR)),
-                        (false, true) => btn
-                            .fill(crate::ui::DROP_TARGET_FILL)
-                            .stroke(egui::Stroke::new(2.0f32, crate::ui::DROP_TARGET_COLOR)),
+                        (false, true) => {
+                            btn.fill(selected_fill)
+                                .stroke(egui::Stroke::new(2.0f32, selected_ring))
+                        }
                         (false, false) => btn,
                     };
                     // 未安装的页面画淡一点，与已安装的区分开。
@@ -249,6 +255,22 @@ impl App {
                     if is_installed && slot < installed_count {
                         if btn_resp.drag_started() {
                             self.tab_drag_src = Some(id);
+                        }
+                        // 换位目标：拖动中指针所在的槽位画绿环（与卡片落点同色）。
+                        // 必须在按钮画完后补画——`hovered()` 要等控件 allocate 之后才为真，
+                        // 建按钮时还不知道会不会成为落点。
+                        // 用 `Inside` 与按钮自身的描边同几何（egui 的 `Frame` 就是 Inside），
+                        // 换位目标与选中态的环粗细/位置才完全一致；`Outside` 会多出一圈。
+                        if self.tab_drag_src.is_some()
+                            && self.tab_drag_src != Some(id)
+                            && btn_resp.hovered()
+                        {
+                            ui.painter().rect_stroke(
+                                btn_resp.rect,
+                                3.0,
+                                egui::Stroke::new(2.0f32, crate::ui::DROP_TARGET_COLOR),
+                                egui::StrokeKind::Inside,
+                            );
                         }
                         if self.tab_drag_src.is_some() && btn_resp.hovered() {
                             drop_on = Some(slot);

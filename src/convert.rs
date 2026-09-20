@@ -361,6 +361,8 @@ pub fn model_from_pi(v: &Value) -> ModelRow {
         reasoning,
         tool_call: true,
         store: false,
+        // `disabled` 是 WorkBuddy 专属字段，其他方言的模型恒为启用。
+        disabled: false,
         context: num_at(v, "contextWindow"),
         output: num_at(v, "maxTokens"),
         modalities_input,
