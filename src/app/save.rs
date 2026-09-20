@@ -33,6 +33,12 @@ pub(super) enum PageTarget {
 /// 同时目标文件的其他顶层字段（如 DSH 的 llm-pi-ai 下其他设置）原样保留。
 /// 同格式目标（WSL 同步等）不走这里，仍用保守合并。
 ///
+/// **删除必须用 `shift_remove`，不能用 `remove`。** `serde_json` 开了 `preserve_order`
+/// （底层 `IndexMap`），它的 `remove` 是 `swap_remove`：删一个键会把**最后一个**键搬到
+/// 空出来的槽位，其余键的相对顺序随之打乱。跨格式保存 ZCode 时先删 `providerOrder`，
+/// 写出的文件就成了 `modelConfigRules, providerConfigRules, providerOrder` —— ZCode 读得懂，
+/// 但与它自己写出的顺序不一致。`shift_remove` 保留其余键的顺序。
+///
 /// `agents_owned` 表示界面确实持有 agents 数据。agents 只属于 opencode 页：
 /// 数据来自 pi / oh-my-pi / DSH（或空载启动）时界面无从表达 agents，
 /// 此时必须保留目标文件里的 agent 容器，否则会把它们静默删掉。
@@ -47,33 +53,33 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
     };
     match fmt {
         ConfigFormat::Opencode => {
-            obj.remove("provider");
+            obj.shift_remove("provider");
             if agents_owned {
-                obj.remove("agent");
+                obj.shift_remove("agent");
             }
         }
         ConfigFormat::Pi | ConfigFormat::OhMyPi => {
-            obj.remove("providers");
+            obj.shift_remove("providers");
         }
         ConfigFormat::DeepSeekHarness => {
             if let Some(llm) = obj.get_mut("llm-pi-ai").and_then(Value::as_object_mut) {
-                llm.remove("providers");
+                llm.shift_remove("providers");
             }
         }
         ConfigFormat::ZCode => {
             if let Some(cfg) = obj.get_mut("config").and_then(Value::as_object_mut) {
-                cfg.remove("providerOrder");
+                cfg.shift_remove("providerOrder");
                 if let Some(rules) = cfg
                     .get_mut("providerConfigRules")
                     .and_then(Value::as_object_mut)
                 {
-                    rules.remove("providerRules");
+                    rules.shift_remove("providerRules");
                 }
                 if let Some(rules) = cfg
                     .get_mut("modelConfigRules")
                     .and_then(Value::as_object_mut)
                 {
-                    rules.remove("providerModelRules");
+                    rules.shift_remove("providerModelRules");
                 }
             }
         }

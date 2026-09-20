@@ -495,3 +495,96 @@ fn zcode_base_url_normalization_is_idempotent() {
         );
     }
 }
+
+/// 序列化后 `config` 内键序必须恒定：providerOrder → providerConfigRules → modelConfigRules。
+///
+/// 背景：`serde_json` 开了 `preserve_order`（IndexMap），它的 `remove` 是 swap_remove，
+/// 删键会把最后一个键搬到空位。跨格式保存先经 `strip_cross_format_containers` 删掉
+/// providerOrder / providerRules / providerModelRules，键序因此被搅乱成
+/// modelConfigRules → providerConfigRules → providerOrder，与 ZCode 自己的写法不一致。
+fn config_keys_of(root: &serde_json::Value) -> Vec<String> {
+    root.get("config")
+        .and_then(|c| c.as_object())
+        .map(|c| c.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn serialize_keeps_zcode_native_key_order() {
+    let load = load_zcode(&zcode_json());
+    let out = backends::backend(ConfigFormat::ZCode).serialize_root(
+        &load.agents,
+        &load.providers,
+        &load.extras,
+        Some(&load.root),
+    );
+    assert_eq!(
+        config_keys_of(&out),
+        vec!["providerOrder", "providerConfigRules", "modelConfigRules"],
+        "config 键序必须与 ZCode 原生一致"
+    );
+    let top: Vec<String> = out
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    assert_eq!(top, vec!["schemaVersion", "config"], "顶层键序必须固定");
+}
+
+#[test]
+fn cross_format_strip_does_not_reorder_config_keys() {
+    // 模拟跨格式保存的真实路径：先剔除界面接管的容器，再序列化。
+    let load = load_zcode(&zcode_json());
+    let mut target = load.root.clone();
+    model_harbor::app::strip_cross_format_containers(ConfigFormat::ZCode, &mut target, false);
+    assert!(
+        !target
+            .get("config")
+            .and_then(|c| c.as_object())
+            .map(|c| c.contains_key("providerOrder"))
+            .unwrap_or(false),
+        "剔除后 providerOrder 应已删除"
+    );
+    let out = backends::backend(ConfigFormat::ZCode).serialize_root(
+        &load.agents,
+        &load.providers,
+        &load.extras,
+        Some(&target),
+    );
+    assert_eq!(
+        config_keys_of(&out),
+        vec!["providerOrder", "providerConfigRules", "modelConfigRules"],
+        "跨格式路径写出的 config 键序同样必须与 ZCode 原生一致"
+    );
+}
+
+/// 内层容器的键序也要固定，且缺 `manualProviderModelRules` 时补空数组。
+#[test]
+fn nested_containers_keep_their_key_order() {
+    let src = r#"{
+      "schemaVersion": 1,
+      "config": {
+        "modelConfigRules": { "manualProviderModelRules": [] },
+        "providerConfigRules": {},
+        "providerOrder": []
+      }
+    }"#;
+    let root: serde_json::Value = serde_json::from_str(src).unwrap();
+    let out = backends::backend(ConfigFormat::ZCode).serialize_root(&[], &[], &root, Some(&root));
+    let cfg = out.get("config").and_then(|c| c.as_object()).unwrap();
+    let model_keys: Vec<String> = cfg
+        .get("modelConfigRules")
+        .and_then(|m| m.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    assert_eq!(
+        model_keys,
+        vec!["providerModelRules", "manualProviderModelRules"],
+        "modelConfigRules 内部键序必须固定"
+    );
+    let provider_keys: Vec<String> = cfg
+        .get("providerConfigRules")
+        .and_then(|m| m.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    assert_eq!(provider_keys, vec!["providerRules"]);
+}

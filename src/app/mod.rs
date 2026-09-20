@@ -366,11 +366,22 @@ impl eframe::App for App {
         self.ui_tokens_window(ctx);
         self.paint_drag_ghost(ctx);
         // 仅拖拽中显示抓取光标（避免任意控件按下时全局变光标）
-        let dragging = self.agent_drag_src.is_some()
-            || self.provider_drag_src.is_some()
-            || self.model_drag_src.is_some();
         #[cfg(target_os = "windows")]
-        crate::cursor::set_custom_cursor_active(dragging);
+        crate::cursor::set_custom_cursor_active(self.is_dragging_anything());
+    }
+}
+
+impl App {
+    /// 是否有任意拖动源正在拖拽。
+    ///
+    /// 页签（六个后端图标）也是拖动源：它此前漏在这一组之外，于是拖卡片是抓取光标、
+    /// 拖图标却退回系统手型。自定义抓取光标是整窗生效的（子类过程拦 WM_SETCURSOR），
+    /// 只要拖拽期间置位，对所有控件一视同仁。
+    fn is_dragging_anything(&self) -> bool {
+        self.agent_drag_src.is_some()
+            || self.provider_drag_src.is_some()
+            || self.model_drag_src.is_some()
+            || self.tab_drag_src.is_some()
     }
 }
 

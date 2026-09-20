@@ -1574,3 +1574,40 @@ mod real_file_grouping {
         );
     }
 }
+
+/// 拖动光标：任一拖动源（含页签/后端图标）都必须点亮自定义抓取光标。
+///
+/// 背景：`set_custom_cursor_active` 的判定此前漏了 `tab_drag_src`，于是拖卡片是抓取
+/// 光标、拖六个后端图标却退回系统手型。自定义光标是整窗生效的，漏一个拖动源就少一处。
+#[cfg(all(test, target_os = "windows"))]
+mod drag_cursor_tests {
+    use crate::app::App;
+    use crate::format::ConfigFormat;
+
+    #[test]
+    fn every_drag_source_activates_the_grab_cursor() {
+        let mut app = App::default();
+        assert!(!app.is_dragging_anything(), "静止时不该点亮抓取光标");
+
+        app.tab_drag_src = Some(ConfigFormat::ZCode);
+        assert!(
+            app.is_dragging_anything(),
+            "拖动页签（后端图标）必须点亮抓取光标"
+        );
+        app.tab_drag_src = None;
+
+        app.provider_drag_src = Some("p".to_string());
+        assert!(app.is_dragging_anything(), "拖动 provider 卡片必须点亮");
+        app.provider_drag_src = None;
+
+        app.agent_drag_src = Some("a".to_string());
+        assert!(app.is_dragging_anything(), "拖动 agent 卡片必须点亮");
+        app.agent_drag_src = None;
+
+        app.model_drag_src = Some("p\u{1f}m".to_string());
+        assert!(app.is_dragging_anything(), "拖动 model 卡片必须点亮");
+        app.model_drag_src = None;
+
+        assert!(!app.is_dragging_anything(), "全部松开后必须熄灭抓取光标");
+    }
+}

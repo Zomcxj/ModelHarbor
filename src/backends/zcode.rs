@@ -489,6 +489,7 @@ impl Backend for ZCodeBackend {
             .collect();
         let mut provider_cfg = Map::new();
         provider_cfg.insert("providerRules".into(), Value::Array(rules));
+        let provider_cfg = convert::order_fields(provider_cfg, &["providerRules"]);
         cfg.insert("providerConfigRules".into(), Value::Object(provider_cfg));
 
         // modelConfigRules：按 UI 的 (providerId, modelId) 重写；
@@ -546,9 +547,25 @@ impl Backend for ZCodeBackend {
         if !model_cfg.contains_key("manualProviderModelRules") {
             model_cfg.insert("manualProviderModelRules".into(), Value::Array(Vec::new()));
         }
+        // modelConfigRules 内部同样是固定顺序（providerModelRules 在前、
+        // manualProviderModelRules 在后），来源文件缺后者时补空数组。
+        let model_cfg = convert::order_fields(
+            model_cfg,
+            &["providerModelRules", "manualProviderModelRules"],
+        );
         cfg.insert("modelConfigRules".into(), Value::Object(model_cfg));
 
+        // 顶层与 config 的键序显式固定：ZCode 自己写出的顺序是
+        // schemaVersion → config，config 内 providerOrder → providerConfigRules
+        // → modelConfigRules。跨格式保存时 `strip_cross_format_containers` 删过键，
+        // 而 `Map::remove` 是 swap_remove 会打乱顺序（见该函数注释），
+        // 因此落笔前按固定顺序重排，与来源无关地恒定。
+        let cfg = convert::order_fields(
+            cfg,
+            &["providerOrder", "providerConfigRules", "modelConfigRules"],
+        );
         root.insert("config".into(), Value::Object(cfg));
+        let root = convert::order_fields(root, &["schemaVersion", "config"]);
         Value::Object(root)
     }
 
