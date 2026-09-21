@@ -1532,6 +1532,81 @@ mod save_all_tests {
         assert!(zcode_path.exists(), "其他页照旧写各自的目标");
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn a_workbuddy_save_that_drops_entries_backs_up_first() {
+        // WorkBuddy 的「停用」是**整条不写**：同 id 只留第一条，其余连同所属厂商
+        // 一起消失（含那些厂商的 API key）。这是同格式保存，老规矩不给备份——
+        // 于是它删得比跨格式转换还狠却一点后路都不留。这里锁死必须备份。
+        let dir = temp_dir("wb_shrink");
+        let wb_path = dir.join("models.json");
+        let saved = serde_json::json!([
+            { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1",
+              "apiKey": "sk-a" },
+            { "id": "gpt-5.6-sol", "name": "b", "url": "https://y.example/v1",
+              "apiKey": "sk-b" }
+        ]);
+        std::fs::write(&wb_path, serde_json::to_string_pretty(&saved).unwrap()).unwrap();
+        let text = std::fs::read_to_string(&wb_path).unwrap();
+        let load = crate::backends::backend(ConfigFormat::WorkBuddy)
+            .parse(&text)
+            .unwrap();
+        let mut app = App {
+            providers: load.providers,
+            config_path: wb_path.display().to_string(),
+            loaded_path: wb_path.display().to_string(),
+            source_format: ConfigFormat::WorkBuddy,
+            current_page: ConfigFormat::WorkBuddy,
+            ..App::default()
+        };
+        let backup = app
+            .save_backend_to(ConfigFormat::WorkBuddy, &wb_path.display().to_string())
+            .expect("保存应当成功");
+        let backup = backup.expect("删条目时必须先备份");
+        let kept: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&wb_path).unwrap()).unwrap();
+        assert_eq!(kept.as_array().unwrap().len(), 1, "只留启用的那条");
+        let old: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&backup).unwrap()).unwrap();
+        assert_eq!(
+            old.as_array().unwrap().len(),
+            2,
+            "备份必须是删之前的两条（含被删厂商的 key）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_workbuddy_save_that_keeps_everything_writes_no_backup() {
+        // 没删东西就别产生 .bak，否则每次保存都在磁盘上堆垃圾。
+        let dir = temp_dir("wb_keep");
+        let wb_path = dir.join("models.json");
+        let saved = serde_json::json!([
+            { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1",
+              "apiKey": "sk-a" },
+            { "id": "claude-opus-5", "name": "b", "url": "https://y.example/v1",
+              "apiKey": "sk-b" }
+        ]);
+        std::fs::write(&wb_path, serde_json::to_string_pretty(&saved).unwrap()).unwrap();
+        let text = std::fs::read_to_string(&wb_path).unwrap();
+        let load = crate::backends::backend(ConfigFormat::WorkBuddy)
+            .parse(&text)
+            .unwrap();
+        let mut app = App {
+            providers: load.providers,
+            config_path: wb_path.display().to_string(),
+            loaded_path: wb_path.display().to_string(),
+            source_format: ConfigFormat::WorkBuddy,
+            current_page: ConfigFormat::WorkBuddy,
+            ..App::default()
+        };
+        let backup = app
+            .save_backend_to(ConfigFormat::WorkBuddy, &wb_path.display().to_string())
+            .expect("保存应当成功");
+        assert!(backup.is_none(), "没删条目就不该产生 .bak: {backup:?}");
+        assert!(!dir.join("models.json.bak").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[cfg(test)]
@@ -1671,26 +1746,55 @@ mod tab_highlight_tests {
     ///
     /// `pointer` 给出时，本帧把指针放在该位置（用来触发 hover，验证换位绿环）。
     fn tab_shapes_at(app: &mut App, pointer: Option<egui::Pos2>) -> TabShapes {
+        tab_shapes_at_with(app, pointer, None)
+    }
+
+    /// `press_at` 给出时，第一帧在该处**按下主键并保持**，第二帧把指针移到 `pointer`。
+    ///
+    /// 这才是真实拖拽的形态，也是换位绿环回归的关键：egui 在
+    /// 「有键按下且按下的不是本控件」时会强制清掉 HOVERED
+    /// （`context.rs`：`if input.pointer.any_down() && !is_interacted_with`）。
+    /// 拖动时按键落在**源**页签上，指针移到**目标**页签——目标既不是被按下的控件、
+    /// 也没被点击，于是 `hovered()` 恒为 false，绿环永远画不出来（落点也算不出）。
+    /// 若按键直接落在目标上，目标自己就是被按下的控件，`hovered()` 反而正常为真——
+    /// 那样测等于没测，所以必须分两处。
+    fn tab_shapes_at_with(
+        app: &mut App,
+        pointer: Option<egui::Pos2>,
+        press_at: Option<egui::Pos2>,
+    ) -> TabShapes {
         let ctx = egui::Context::default();
         crate::theme::Theme::from_key("dark")
             .apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
         // 图标是 `update()` 里惰性加载的；测试直接调 `ui_top_bar` 不经过 `update`，
         // 不先加载就没有贴图网格，tint 也就无从断言。
         app.load_backend_icons(&ctx);
-        let events = match pointer {
-            Some(p) => vec![egui::Event::PointerMoved(p)],
-            None => Vec::new(),
-        };
         let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
-        // egui 的交互判定用的是**上一帧**登记的控件矩形，所以指针放在某处时
-        // 第一帧只是登记几何、`hovered()` 仍为假；要跑两帧 hover 才真正命中。
-        let frames = if pointer.is_some() { 2 } else { 1 };
+        let moved = |p: egui::Pos2| vec![egui::Event::PointerMoved(p)];
+        let press = |p: egui::Pos2| {
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ]
+        };
+        // 帧序列：按下那一帧 → 指针移到目标那一帧。egui 的交互判定用的是**上一帧**
+        // 登记的控件矩形，所以每个位置都要跑够帧数才生效。
+        let frames: Vec<Vec<egui::Event>> = match (press_at, pointer) {
+            (Some(from), Some(to)) => vec![press(from), press(from), moved(to), moved(to)],
+            (None, Some(to)) => vec![moved(to), moved(to)],
+            _ => vec![Vec::new()],
+        };
         let mut last = None;
-        for _ in 0..frames {
+        for events in frames {
             last = Some(ctx.run(
                 egui::RawInput {
                     screen_rect: Some(screen),
-                    events: events.clone(),
+                    events,
                     ..Default::default()
                 },
                 |ctx| {
@@ -1798,6 +1902,18 @@ mod tab_highlight_tests {
         let boxes = tab_fills(app);
         let center = boxes[slot].0.center();
         tab_shapes_at(app, Some(center)).2
+    }
+
+    /// 同上，但模拟**真实拖拽**：先在第 `from` 个页签按下主键，再把指针移到第 `to` 个。
+    fn tab_rings_while_dragging(
+        app: &mut App,
+        from: usize,
+        to: usize,
+    ) -> Vec<Option<egui::Color32>> {
+        let boxes = tab_fills(app);
+        let start = boxes[from].0.center();
+        let end = boxes[to].0.center();
+        tab_shapes_at_with(app, Some(end), Some(start)).2
     }
 
     fn app_with_tabs() -> App {
@@ -1950,6 +2066,36 @@ mod tab_highlight_tests {
                 *ring,
                 Some(crate::ui::DROP_TARGET_COLOR),
                 "第 {i} 个：没在拖动却画了绿色落点环"
+            );
+        }
+    }
+
+    #[test]
+    fn the_green_ring_shows_up_while_the_button_is_actually_held() {
+        // 回归：真实拖拽时键按在**源**页签上、指针移到**目标**页签上，而 egui 会在
+        // 「有键按下且按下的不是本控件」时强制清掉 HOVERED，所以用 `hovered()` 判断落点
+        // 的话绿环永远画不出来（`drop_on` 也永远是 None，换位功能整个是坏的）。
+        // 上面那个测试没按键，`hovered()` 正常为真，于是「看起来是对的」——
+        // 正是这个假象让 bug 一直没被测出来。
+        let mut app = app_with_tabs();
+        app.current_page = ConfigFormat::Opencode;
+        app.tab_drag_src = Some(ConfigFormat::Opencode);
+        // 从第 1 个槽位（源）拖到第 3 个（目标）。
+        let (from, to) = (0usize, 2usize);
+        let rings = tab_rings_while_dragging(&mut app, from, to);
+        assert_eq!(
+            rings[to],
+            Some(crate::ui::DROP_TARGET_COLOR),
+            "按住键拖动时，指针所在的槽位仍然必须是绿色换位目标"
+        );
+        for (i, ring) in rings.iter().enumerate() {
+            if i == to {
+                continue;
+            }
+            assert_ne!(
+                *ring,
+                Some(crate::ui::DROP_TARGET_COLOR),
+                "第 {i} 个不是落点，不该有绿色环"
             );
         }
     }

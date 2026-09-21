@@ -457,11 +457,17 @@ fn parse_groups_one_provider_into_a_single_card() {
 fn save_writes_one_entry_per_model() {
     // 曾经的 bug：只写 models.first()，一家提供商第二个模型起全部丢失
     // （用户的 models.json 里 openai_zmofas 的 gpt-5.6-terra / grok-4.5 就是这么丢的）。
+    // 现在「一家提供商的每个模型各写一条」仍然成立；少掉的那条是**同 id 被关闭**的
+    // （见 duplicate_ids_keep_only_the_first_enabled）。
     let load = load_wb(&multi_model_json());
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
     let entries = root.as_array().expect("数组根");
-    assert_eq!(entries.len(), 3, "2 + 1 个模型各写一条：{entries:#?}");
+    assert_eq!(
+        entries.len(),
+        2,
+        "同 id 的第二条被关闭，不写盘：{entries:#?}"
+    );
     assert_eq!(
         entries
             .iter()
@@ -470,18 +476,43 @@ fn save_writes_one_entry_per_model() {
         vec![
             ("claude_agentrouter", "claude-opus-5"),
             ("claude_agentrouter", "claude-opus-4-8"),
-            // id 与前一条重复：**原样写出**，绝不加序号。
-            // `id` 同时是发给上游的模型名，改名会让请求体变成不存在的模型
-            // （见 duplicate_model_ids_are_written_verbatim_never_renamed）。
-            ("claude_linxi", "claude-opus-5"),
-        ]
+        ],
+        "同一家提供商的多个模型都要写出来"
     );
     // 同 provider 的条目共用 provider 级字段（url / apiKey / 协议），
     // 模型级字段各写各的。
     assert_eq!(entries[1]["url"], entries[0]["url"]);
     assert_eq!(entries[1]["apiKey"], json!("sk-shared"));
     assert_eq!(entries[1]["maxOutputTokens"], json!(64000));
-    assert_eq!(entries[2]["maxOutputTokens"], json!(128000));
+}
+
+#[test]
+fn duplicate_ids_keep_only_the_first_enabled() {
+    // WorkBuddy 的选择器**按裸 id 全局去重**：同名模型无论挂在哪个厂商下都只列出一行、
+    // 只认第一条。界面必须如实反映这一点——每个 id 只有第一条启用，其余默认关闭，
+    // 且关闭的**不写入配置**（写进去也不生效，只会占地方、让人以为配了）。
+    let load = load_wb(&multi_model_json());
+    let flags: Vec<(String, bool)> = load
+        .providers
+        .iter()
+        .flat_map(|p| {
+            p.models
+                .iter()
+                .map(|m| (m.id.clone(), m.disabled))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        vec![
+            ("claude-opus-5".to_string(), false),
+            ("claude-opus-4-8".to_string(), false),
+            // linxi 的 claude-opus-5 与第一条同名，默认关闭。
+            ("claude-opus-5".to_string(), true),
+        ],
+        "每个 id 的第一条启用，其余关闭"
+    );
+    assert_eq!(flags.len(), 3, "重复条目也要进界面，用户才看得见并切换");
 }
 
 #[test]
@@ -511,8 +542,9 @@ fn entry_id_stays_the_plain_api_model_name() {
             "id 必须是原始模型名逐字，不得改名或加序号：{id}"
         );
     }
-    // 同名模型分属两家时靠 name 区分；id 保持原模型名（重复就重复）。
-    let dupes: Vec<(&str, &str)> = root
+    // 同名模型分属两家时，默认只有**第一条**（先出现的那个厂商）写盘——
+    // WorkBuddy 只认第一条，把第二条也写进去不会生效，只会占地方。
+    let opus: Vec<(&str, &str)> = root
         .as_array()
         .unwrap()
         .iter()
@@ -520,11 +552,9 @@ fn entry_id_stays_the_plain_api_model_name() {
         .map(|e| (e["name"].as_str().unwrap(), e["id"].as_str().unwrap()))
         .collect();
     assert_eq!(
-        dupes,
-        vec![
-            ("claude_agentrouter", "claude-opus-5"),
-            ("claude_linxi", "claude-opus-5"),
-        ]
+        opus,
+        vec![("claude_agentrouter", "claude-opus-5")],
+        "同名模型默认只留第一条，且 id 保持原模型名"
     );
 }
 
@@ -557,15 +587,17 @@ fn same_model_id_across_providers_keeps_its_own_entry_fields() {
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let out = b.serialize_root(&[], &providers, &json!([]), Some(&target));
     let entries = out.as_array().unwrap();
-    assert_eq!(entries.len(), 2);
+    // 同一个 id 只写第一条（WorkBuddy 只认第一条）。留下的这条必须继承
+    // **它自己那家**旧条目的字段，不能认领到别家的 tags —— 索引因此必须是
+    // (name, id) 二元组，只按 id 建索引会让 apizh 认领到 leyi 的字段。
+    assert_eq!(entries.len(), 1, "同 id 只留第一条：{entries:#?}");
+    assert_eq!(entries[0]["name"], json!("openai_apizh"));
     assert_eq!(
         entries[0]["tags"],
         json!(["apizh-only"]),
         "甲家条目不得继承乙家字段"
     );
-    assert_eq!(entries[1]["tags"], json!(["leyi-only"]));
     assert_eq!(entries[0]["apiKey"], json!("sk-a"));
-    assert_eq!(entries[1]["apiKey"], json!("sk-b"));
 }
 
 #[test]
@@ -616,9 +648,12 @@ fn duplicate_model_ids_are_written_verbatim_never_renamed() {
         .iter()
         .map(|e| e["id"].as_str().unwrap())
         .collect();
+    // **id 一律原样写出**：既不加序号（`gpt-5.6-sol01`），也不拼厂商。
+    // 同 id 的第二条起不写盘（WorkBuddy 只认第一条），所以只剩两条。
+    // 逐字相等本身就证明了「没加序号」——加了序号这里就对不上。
     assert_eq!(
         ids,
-        vec!["gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol", "unique-model"],
+        vec!["gpt-5.6-sol", "unique-model"],
         "id 是上游模型名，必须原样写出，重复也不许改名"
     );
     let names: Vec<&str> = out
@@ -627,7 +662,7 @@ fn duplicate_model_ids_are_written_verbatim_never_renamed() {
         .iter()
         .map(|e| e["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["a", "b", "c", "d"]);
+    assert_eq!(names, vec!["a", "d"], "同 id 只留第一条，其余不写盘");
 }
 
 #[test]
@@ -663,7 +698,9 @@ fn genuine_model_names_ending_in_digits_are_left_alone() {
 
 #[test]
 fn saving_twice_is_byte_stable() {
-    // 编号 + 还原必须构成幂等：存 → 读 → 再存，字节一致，否则每次保存都在改文件。
+    // 存 → 读 → 再存必须字节一致，否则每次保存都在改文件。
+    // 现在多了一层「同 id 只留第一条」的收敛，第一次保存就会把它做完，
+    // 所以第二次必须与第一次完全一致（而不是每次都在删条目）。
     let provider = |key: &str, model: &str| {
         let mut p = ProviderRow::new();
         p.key = key.to_string();
@@ -683,6 +720,14 @@ fn saving_twice_is_byte_stable() {
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let first = b.serialize_root(&[], &providers, &json!([]), None);
     let text1 = b.render(&first, false).unwrap();
+    // 同 id 的两条只留第一条（b 被收敛掉）。
+    let names: Vec<&str> = first
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["a", "c"], "同 id 只留第一条");
 
     let reloaded = b.parse(&text1).unwrap();
     let second = b.serialize_root(
@@ -696,50 +741,66 @@ fn saving_twice_is_byte_stable() {
 }
 
 #[test]
-fn disabled_flag_round_trips_and_can_be_cleared() {
-    // `disabled: true` 是 WorkBuddy 唯一认的「停用」语义：选择器里变灰、不可选，
-    // 但行仍在列表里。这是应对「全局按裸 id 去重」的手段——同名模型只能生效一次，
-    // 保留多条时停用其余（**不能改 id**，id 就是发给上游的模型名）。
+fn disabled_models_are_omitted_from_the_file() {
+    // 关闭的模型**不写入配置**：WorkBuddy 按裸 id 全局去重，写进去也不生效，
+    // 只会占地方、让人以为配了。所以「关闭」靠不写这条表达，不是写 `disabled: true`。
     let saved = json!([
-        { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1",
-          "disabled": true },
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1" },
         { "id": "gpt-5.6-sol", "name": "b", "url": "https://x.example/v1" }
     ]);
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let text = serde_json::to_string(&saved).unwrap();
     let load = b.parse(&text).unwrap();
-    // 读：两条都进界面，disabled 状态各自保留。
+    // 读：两条都进界面（用户要看得见才能切换），同 id 的第一条启用、其余关闭。
     let flags: Vec<bool> = load
         .providers
         .iter()
         .flat_map(|p| p.models.iter().map(|m| m.disabled))
         .collect();
-    assert_eq!(flags.len(), 2, "两条条目都要进界面");
-    assert_eq!(flags.iter().filter(|d| **d).count(), 1, "恰好一条被停用");
+    assert_eq!(flags, vec![false, true], "第一条启用，第二条关闭");
+    let names: Vec<String> = load.providers.iter().map(|p| p.key.clone()).collect();
+    assert_eq!(names, vec!["a", "b"], "两条都要进界面");
 
-    // 原样写回：disabled 保持。
+    // 写：只写启用那条。
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
     let entries = root.as_array().unwrap();
-    assert_eq!(entries.len(), 2);
-    let disabled_count = entries
-        .iter()
-        .filter(|e| e.get("disabled").and_then(|v| v.as_bool()) == Some(true))
-        .count();
-    assert_eq!(disabled_count, 1, "停用状态必须写回文件");
+    assert_eq!(entries.len(), 1, "关闭的模型不写盘：{entries:#?}");
+    assert_eq!(entries[0]["name"], json!("a"));
+    assert!(
+        entries.iter().all(|e| e.get("disabled").is_none()),
+        "不写 disabled 键：关闭靠不写这条表达"
+    );
 
-    // 重新启用：`disabled` 键必须被**删掉**，而不是留下 true。
-    // 合并旧条目时只增不减，所以清除必须在合并之后单独做。
+    // 换成启用 b：文件里就该只剩 b，且 b 的字段完整。
     let mut providers = load.providers.clone();
-    for p in &mut providers {
-        for m in &mut p.models {
-            m.disabled = false;
-        }
-    }
+    providers[0].models[0].disabled = true;
+    providers[1].models[0].disabled = false;
     let root2 = b.serialize_root(&[], &providers, &load.extras, Some(&root));
-    for e in root2.as_array().unwrap() {
+    let entries2 = root2.as_array().unwrap();
+    assert_eq!(entries2.len(), 1, "切换后只留新启用的那条");
+    assert_eq!(entries2[0]["name"], json!("b"));
+    assert_eq!(entries2[0]["id"], json!("gpt-5.6-sol"), "id 始终是原模型名");
+    assert_eq!(entries2[0]["url"], json!("https://x.example/v1"));
+}
+
+#[test]
+fn legacy_disabled_keys_are_cleaned_up() {
+    // 早期版本写过 `disabled: true`。现在这个键不再有含义（停用靠不写条目表达），
+    // 旧文件里残留的一律清掉，免得让人以为还有别的开关。
+    let saved = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1",
+          "disabled": true },
+        { "id": "claude-opus-5", "name": "b", "url": "https://x.example/v1",
+          "disabled": false }
+    ]);
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let text = serde_json::to_string(&saved).unwrap();
+    let load = b.parse(&text).unwrap();
+    let root = b.serialize_root(&[], &load.providers, &load.extras, Some(&saved));
+    for e in root.as_array().unwrap() {
         assert!(
             e.get("disabled").is_none(),
-            "启用后不得残留 disabled 键：{e:#?}"
+            "历史 disabled 键必须清掉：{e:#?}"
         );
     }
 }

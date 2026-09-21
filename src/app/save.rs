@@ -450,7 +450,7 @@ impl App {
             Ok(backup) => {
                 let mut msg = format!("{}: 已保存", fmt.label());
                 if let Some(backup) = backup {
-                    msg.push_str(&format!("（跨格式转换，原文件已备份为 {}）", backup));
+                    msg.push_str(&format!("（原文件已备份为 {}）", backup));
                 }
                 msg
             }
@@ -534,14 +534,28 @@ impl App {
         } else {
             None
         };
+        // WorkBuddy 的「停用」语义是**整条不写**：同一个模型 id 只保留第一条，其余连
+        // 所属厂商一起从文件里消失（包括那些厂商的 API key）。这让一次普通保存删掉的
+        // 东西可能比跨格式转换还多，所以它也必须先备份，不能沿用「同格式保存不备份」。
+        let wb_shrinks = fmt == ConfigFormat::WorkBuddy
+            && is_current
+            && util::read_config_content(path)
+                .ok()
+                .and_then(|old| util::parse_config_content(&old).ok())
+                .map(|old_root| {
+                    let before = old_root.as_array().map(Vec::len).unwrap_or(0);
+                    let after = root.as_array().map(Vec::len).unwrap_or(0);
+                    before > after
+                })
+                .unwrap_or(false);
         // 跨格式转换会整体接管目标文件的 provider/agent：先把原文件滚动备份为 .bak，
         // 备份失败则取消保存（宁可不让存，也不能把旧配置静默抵掉）。
-        let backup = if cross_format && !is_current {
+        let backup = if (cross_format && !is_current) || wb_shrinks {
             match util::read_config_content(path) {
                 Ok(old) if !old.is_empty() && old != content => {
                     let backup_path = format!("{}.bak", path);
                     backends::write_config(&backup_path, &old).map_err(|e| {
-                        format!("跨格式转换前备份失败（{}），已取消保存: {}", backup_path, e)
+                        format!("保存前备份失败（{}），已取消保存: {}", backup_path, e)
                     })?;
                     Some(backup_path)
                 }

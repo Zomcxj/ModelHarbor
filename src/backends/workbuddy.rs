@@ -12,8 +12,13 @@
 //! - `false`（默认）：WorkBuddy 自动补 `/chat/completions`
 //! - `true`：URL 原样使用，需自己写全（如 `.../v1/messages`）
 //!
-//! 因此界面上的协议选择在保存时落到两处：非 Chat 协议自动置
+//! **界面不给「自定义协议」开关**：它与协议选择表达同一件事，两个控件可以互相矛盾。
+//! 协议选择非 `chat/completions` 就等价于自定义协议，保存时由这里落到
 //! `useCustomProtocol = true` 并补上对应后缀。
+//!
+//! 启用/停用：WorkBuddy 的选择器**按裸 id 全局去重**（同名模型无论挂在哪个厂商下都
+//! 只列出一行、只认第一条），所以同一个 id 的其余条目写进去也不会生效。界面上每个 id
+//! 只允许开一个，**关掉的一律不写盘**（不是写 `disabled: true`）。
 //!
 //! 渲染**不能**复用 `app::compact_json` / `pretty_json`——那两个函数写死了
 //! `root.as_object()`，数组根经过它们会静默变成 `{}`，直接毁掉用户配置。
@@ -255,13 +260,9 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
         if obj.contains_key("supportsReasoning") {
             obj.insert("supportsReasoning".into(), Value::Bool(m.reasoning));
         }
-        // 启用/停用：`disabled: true` 让选择器里的该行变灰、不可选（仍在列表里）。
-        // 这里只在停用时写入；**清除**由 `serialize_root` 在合并旧条目后统一处理
-        // （合并只增不减，旧键必须在那里删）。启用时不写 `false` 是为了最小 diff：
-        // WorkBuddy 的 `normalizeCustomModel` 是 `{disabled: false, ...model}`，缺键即 false。
-        if m.disabled {
-            obj.insert("disabled".into(), Value::Bool(true));
-        }
+        // 启用/停用**不落盘**：关掉的模型保存时整条跳过（见 `serialize_root`）。
+        // WorkBuddy 的选择器按裸 id 全局去重，同一 id 的其余条目写进去也不会生效，
+        // 只会占地方、让人以为已经配上了。所以这里不写 `disabled` 键。
     }
 
     Value::Object(obj)
@@ -344,6 +345,18 @@ impl Backend for WorkBuddyBackend {
                 }),
             }
         }
+        // 启用状态按**位置**推导，不读文件里的 `disabled` 键：
+        // WorkBuddy 的选择器按裸 id 全局去重，同一个模型名只有**第一条**生效，
+        // 后面同名的全都不生效。界面就该如实显示这个事实——每个 id 的第一条启用，
+        // 其余关闭。这样用户一眼看到的就是 WorkBuddy 真正会用的那份清单。
+        // （早前写过 `disabled` 键，现已不再写入；旧文件里若残留也一律忽略。）
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for p in providers.iter_mut() {
+            for m in p.models.iter_mut() {
+                let id = m.id.trim().to_string();
+                m.disabled = !seen.insert(id);
+            }
+        }
         // extras 也换成还原后的数组：保存时 `existing` 索引取的就是它，
         // 带着序号会让「同名同模型」匹配不上，旧条目里继承的字段（tags / credits）丢失。
         let extras = Value::Array(entries);
@@ -390,6 +403,11 @@ impl Backend for WorkBuddyBackend {
                 p.models.iter().map(Some).collect()
             };
             for model in models {
+                // 关掉的模型整条不写：WorkBuddy 按裸 id 全局去重，同 id 的其余条目
+                // 写进去也不会生效（只有第一条被采用），留在文件里只会占地方。
+                if model.map(|m| m.disabled).unwrap_or(false) {
+                    continue;
+                }
                 let model_id = model
                     .map(|m| m.id.trim())
                     .filter(|s| !s.is_empty())
@@ -405,17 +423,27 @@ impl Backend for WorkBuddyBackend {
                         entry.insert(k.clone(), v.clone());
                     }
                 }
-                // 启用状态要在合并**之后**单独处理：`entry_from_provider` 只在停用时
-                // 写入 `disabled: true`（启用时压根不写该键），而这里的合并只增不减，
-                // 于是旧条目里的 `disabled: true` 会残留——用户关掉开关，模型仍然选不了。
-                if model.map(|m| m.disabled).unwrap_or(false) {
-                    entry.insert("disabled".into(), Value::Bool(true));
-                } else {
-                    entry.remove("disabled");
-                }
+                // 历史文件里可能残留 `disabled` 键（早期版本写过），一律清掉：
+                // 停用现在靠「不写这条」表达，留着这个键只会让人以为还有别的开关。
+                entry.remove("disabled");
                 out.push(Value::Object(entry));
             }
         }
+        // 兜底：同一个模型 id 只保留**第一条**。WorkBuddy 的选择器按裸 id 全局去重，
+        // 第二条起写进去也不会被采用，留在文件里只会让人以为配了。
+        // 解析时已把同名的其余条目标记为关闭，正常情况下走不到这里；
+        // 但以编程方式构造的 provider（测试、跨格式转换）未必设过这些标记，
+        // 所以在写盘这一层再收一次，保证「文件里不存在不生效的条目」这个不变量。
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        out.retain(|entry| {
+            let id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            seen_ids.insert(id)
+        });
         // **不要给重复 id 加序号来绕开选择器去重。** 曾经这么做过，结论是错的：
         // WorkBuddy 的 `id` 既是选择器的去重键，**也是发给上游的模型名**
         // （`configureModelConfig` 把 `ec.id` 赋给 `agent.model`，`ModelProvider.getModel`

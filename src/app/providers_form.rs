@@ -151,29 +151,9 @@ pub(super) fn provider_api_combo(
                         api.to_string()
                     };
                     p.npm = convert::api_to_npm(api);
-                    // WorkBuddy：选非 Chat 协议就默认勾上「自定义协议」，
-                    // 让界面与保存结果一致（保存时后端仍会强制对齐一次）。
-                    if page == ConfigFormat::WorkBuddy {
-                        set_workbuddy_custom(p, api != "openai-completions");
-                    }
                 }
             }
         });
-}
-
-/// 写入 WorkBuddy 的「自定义协议」开关（存在 raw 的 `useCustomProtocol`）。
-pub(super) fn set_workbuddy_custom(p: &mut ProviderRow, custom: bool) {
-    if let serde_json::Value::Object(obj) = &mut p.raw {
-        obj.insert("useCustomProtocol".into(), serde_json::Value::Bool(custom));
-    }
-}
-
-/// 读取 WorkBuddy 的「自定义协议」开关。
-pub(super) fn workbuddy_custom(p: &ProviderRow) -> bool {
-    p.raw
-        .get("useCustomProtocol")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
 }
 
 /// 思考档位多选：按钮展开、勾选写回逗号分隔文本。
@@ -335,6 +315,7 @@ impl App {
         ui: &mut egui::Ui,
         idx: usize,
         model_hover_target: &mut Option<String>,
+        model_enable_target: &mut Option<(usize, usize)>,
     ) {
         let prev_key = self.providers[idx].key.clone();
         let other_keys: HashSet<String> = self
@@ -369,6 +350,25 @@ impl App {
             input_label,
             ..
         } = ProviderFormFlags::new(self);
+        // WorkBuddy 的重复判定是**全局**的（按裸 id 去重，跨厂商也只生效一次），
+        // 所以它的「重复」提示要看所有 provider，而不是只看同一张卡片。
+        // 必须在 `p = &mut self.providers[idx]` **之前**算好：之后 self.providers
+        // 已被可变借用，再读一遍会冲突。
+        let global_dup_ids: HashSet<String> = if show_model_disabled {
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut dup: HashSet<String> = HashSet::new();
+            for pv in self.providers.iter() {
+                for m in pv.models.iter() {
+                    let id = m.id.trim().to_string();
+                    if !id.is_empty() && !seen.insert(id.clone()) {
+                        dup.insert(id);
+                    }
+                }
+            }
+            dup
+        } else {
+            HashSet::new()
+        };
         let p = &mut self.providers[idx];
         ui.horizontal_wrapped(|ui| {
             field_label(ui, 120.0, "key");
@@ -422,19 +422,10 @@ impl App {
                 field_label(ui, 120.0, base_label);
                 ui.add(egui::TextEdit::singleline(&mut p.base_url).desired_width(200.0));
             }
-            // WorkBuddy 的协议由 URL 后缀 + 这个开关表达（文件里没有协议字段）：
-            // 不勾选 = 自动补 /chat/completions，勾选 = URL 原样使用。
-            if show_wb {
-                let mut value = workbuddy_custom(p);
-                let resp = ui.checkbox(&mut value, "自定义协议").on_hover_text(
-                    "不勾选：保存后由 WorkBuddy 自动补 /chat/completions；\n\
-                         勾选：URL 原样使用，需自行写全路径（如 .../v1/messages）。\n\
-                         选择非 Chat 协议时保存会自动勾上并补后缀。",
-                );
-                if resp.changed() {
-                    set_workbuddy_custom(p, value);
-                }
-            }
+            // WorkBuddy 的协议由 URL 后缀表达（文件里没有协议字段），**不给手动开关**：
+            // 上面选的协议决定保存时补什么后缀，选非 chat/completions 就是自定义协议。
+            // 曾经有个「自定义协议」勾选框，但它与协议选择表达同一件事，两个控件可以
+            // 互相矛盾（勾了却选着 chat、或没勾却选了 messages），保存时还得强制对齐一次。
             field_label(ui, 120.0, api_key_label);
             if show_dsh {
                 ui.add(egui::TextEdit::singleline(&mut p.api_key_env).desired_width(192.0));
@@ -518,6 +509,9 @@ impl App {
         let mut rm: Option<usize> = None;
         let mut model_hover_here: Option<String> = None;
         let mut model_drag_stopped = false;
+        // 本帧被勾上的启用开关，用 `(provider 下标, 模型下标)` 记录。同一模型 id
+        // 全局只能开一个，互斥在全部卡片渲染完后统一处理（见 `ui_providers_section`）。
+        let mut enable_request: Option<(usize, usize)> = None;
         for j in 0..p.models.len() {
             let model_key = format!("{}\u{1f}{}", p.key, p.models[j].id);
             let model_highlight = if self.model_drag_target.as_deref() == Some(model_key.as_str()) {
@@ -555,24 +549,6 @@ impl App {
                         }
                         // 单模型延迟测试：按钮在拖动按钮右侧，结果显示在按钮右侧。
                         let model_id = p.models[j].id.trim().to_string();
-                        // 启用/停用（仅 WorkBuddy 认这个字段）：`disabled: true` 让该模型
-                        // 在 WorkBuddy 的选择器里变灰、不可选，但**仍留在列表里**。
-                        // 放在标题行是为了能一眼扫出哪些被停用；停用的行整体压淡。
-                        if show_model_disabled {
-                            let on = !p.models[j].disabled;
-                            let mut enabled = on;
-                            let cb = ui.checkbox(&mut enabled, "启用");
-                            if enabled != on {
-                                p.models[j].disabled = !enabled;
-                            }
-                            cb.on_hover_text(
-                                "WorkBuddy 的选择器**按模型 id 全局去重**：同一个 id 只会列出一行，\
-                                 其余同名条目会被忽略。\n\
-                                 停用后该条目在选择器里变灰、不可选，但仍在列表里（不会被删）。\n\
-                                 ⚠ 不要为了区分同名模型去改 id —— id 同时就是发给上游的模型名，\
-                                 改了会直接请求失败。",
-                            );
-                        }
                         // 只借两个字段（不是 `&self` 方法）：此处 `p` 还借着 providers，
                         // 且外层闭包需要独占 `*self`，整结构借用编译不过。
                         let gate =
@@ -588,11 +564,38 @@ impl App {
                         }
                         let latency = self.latency.get(&p.key);
                         model_latency_label(ui, latency, &model_id);
+                        // 右对齐区放在**行尾**：`with_layout` 会吃掉本行剩余宽度，
+                        // 放在中间会把后面的探测按钮挤出可视区。
+                        // 先加的靠最右，所以「删」在右、「启用」紧贴其左（用户指定的位置）。
+                        let enabled_now = !p.models[j].disabled;
+                        let mut enable_clicked: Option<bool> = None;
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("删").clicked() {
                                 rm = Some(j);
                             }
+                            if show_model_disabled {
+                                let mut enabled = enabled_now;
+                                ui.checkbox(&mut enabled, "启用").on_hover_text(
+                                    "WorkBuddy 的选择器**按模型 id 全局去重**：同一个模型名\
+                                     无论挂在哪个厂商下，都只会列出一行、只有第一条生效。\n\
+                                     所以同一 id 全局只能开一个——勾上这个，同名的其他条目\
+                                     会自动关闭。\n\
+                                     关闭的模型**不会写入配置文件**（写进去也不生效，\n\
+                                     只会占地方）。想换一家厂商的同一个模型，直接勾它即可。\n\
+                                     ⚠ 不要为了区分同名模型去改 id —— id 同时就是发给上游的\
+                                     模型名，改了会直接请求失败。",
+                                );
+                                if enabled != enabled_now {
+                                    enable_clicked = Some(enabled);
+                                }
+                            }
                         });
+                        if let Some(on) = enable_clicked {
+                            p.models[j].disabled = !on;
+                            if on {
+                                enable_request = Some((idx, j));
+                            }
+                        }
                     });
                     ui.horizontal_wrapped(|ui| {
                         field_label(ui, 120.0, "id:");
@@ -600,17 +603,19 @@ impl App {
                             egui::TextEdit::singleline(&mut p.models[j].id).desired_width(120.0),
                         );
                         if !p.models[j].id.trim().is_empty()
-                            && other_ids.contains(p.models[j].id.trim())
+                            && (other_ids.contains(p.models[j].id.trim())
+                                || global_dup_ids.contains(p.models[j].id.trim()))
                         {
                             // 保存**不会**因为模型 id 重复而失败（只有 provider key 重复才拦），
                             // 所以这里不能说「保存将被阻止」。WorkBuddy 是唯一按 id 全局去重的
                             // 后端：重复的 id 里只有第一条会在它的选择器里生效。
                             let hint = if show_model_disabled {
-                                "id 与同 provider 内其他模型重复。\n\
-                                 WorkBuddy 的选择器**按模型 id 全局去重**，同一个 id 只会列出一行，\
-                                 重复条目里只有第一条生效。\n\
-                                 保留多条请把其余条目「停用」（变灰不可选），\
-                                 不要改 id —— id 就是发给上游的模型名。"
+                                "这个模型名在**全局**出现多次（含其他厂商）。\n\
+                                 WorkBuddy 的选择器按模型 id 全局去重，同名只会列出一行、\
+                                 只有第一条生效。\n\
+                                 要用哪一家，就在那一家的卡片上勾「启用」——勾上后同名的\
+                                 其他条目会自动关闭，关闭的不写入配置。\n\
+                                 不要改 id —— id 就是发给上游的模型名，改了会直接请求失败。"
                             } else {
                                 "id 与同 provider 内其他模型重复；保存仍会写入，\
                                  但同名模型在部分后端只会生效一次。"
@@ -708,6 +713,9 @@ impl App {
         // 只登记「本 provider 内被拖到的模型」，跨卡片的聚合交给调用方
         // （ui_providers_section 在全部卡片渲染完之后统一写入 self.model_drag_target）。
         merge_drag_target(model_hover_target, model_hover_here);
+        if let Some(picked) = enable_request {
+            model_enable_target.get_or_insert(picked);
+        }
         if model_drag_stopped {
             if let Some(src) = self.model_drag_src.take() {
                 let target = self.model_drag_target.take();
@@ -876,17 +884,7 @@ impl App {
                         .hint_text("https://api.openai.com/v1")
                         .desired_width(200.0),
                 );
-                // WorkBuddy：与已有 provider 卡片一致的「自定义协议」开关。
-                if show_wb {
-                    let mut value = workbuddy_custom(&self.new_provider);
-                    let resp = ui.checkbox(&mut value, "自定义协议").on_hover_text(
-                        "不勾选：保存后由 WorkBuddy 自动补 /chat/completions；\n\
-                             勾选：URL 原样使用，需自行写全路径（如 .../v1/messages）。",
-                    );
-                    if resp.changed() {
-                        set_workbuddy_custom(&mut self.new_provider, value);
-                    }
-                }
+                // WorkBuddy：协议由上面的协议选择 + 保存时补后缀表达，没有手动开关。
                 field_label(ui, 120.0, api_key_label);
                 if show_dsh {
                     ui.add(

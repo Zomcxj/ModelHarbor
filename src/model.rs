@@ -166,10 +166,11 @@ pub struct ModelRow {
     pub reasoning: bool,
     pub tool_call: bool,
     pub store: bool,
-    /// WorkBuddy 专属：`disabled: true` 让该模型在选择器里变灰、不可选（**但仍在列表里**）。
+    /// WorkBuddy 专属：关闭的模型**不写入配置文件**（保存时整条跳过）。
     ///
-    /// 这是应对 WorkBuddy「全局按裸 id 去重」的手段：同一个模型名在文件里只能生效一次，
-    /// 想保留多条同 id 条目又不让它们互相顶掉，就把其余的停用。
+    /// WorkBuddy 的选择器**按裸 id 全局去重**，同一个模型名无论挂在哪个厂商下都只列出一行、
+    /// 只认第一条，所以同一 id 的其余条目写进去也不会生效，只会占地方、让人以为配了。
+    /// 因此 UI 上同一 id 只允许开一个（开关互斥），关掉的一律不落盘。
     /// **不能靠改 id 去重**——`id` 同时是发给上游的模型名，改名会让请求 model-not-found。
     pub disabled: bool,
     pub context: String,

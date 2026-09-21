@@ -484,11 +484,9 @@ impl App {
         match self.save_backend_to(fmt, &path) {
             Ok(backup) => {
                 self.status = match backup {
-                    Some(backup) => format!(
-                        "{}: 已实时保存（跨格式转换，原文件已备份为 {}）",
-                        fmt.label(),
-                        backup
-                    ),
+                    Some(backup) => {
+                        format!("{}: 已实时保存（原文件已备份为 {}）", fmt.label(), backup)
+                    }
                     None => format!("{}: 已实时保存", fmt.label()),
                 }
             }

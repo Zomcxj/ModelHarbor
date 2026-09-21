@@ -22,6 +22,9 @@ pub(super) struct CardActions {
     pub(super) hover: Option<String>,
     /// model 卡片的拖拽落点。
     pub(super) model_hover: Option<String>,
+    /// 本帧被勾上「启用」的模型，用 `(provider 下标, 模型下标)` 定位。
+    /// 同一模型 id 全局互斥，统一在 [`App::ui_providers_section`] 里处理。
+    pub(super) model_enable: Option<(usize, usize)>,
 }
 
 /// provider / model 表单的字段可见性与方言标签（六个页面共用）。
@@ -199,6 +202,36 @@ impl App {
         ui.add_space(crate::theme::SPACE_2);
     }
 
+    /// 让 `(provider 下标, 模型下标)` 成为其模型 id 下唯一启用的条目。
+    ///
+    /// WorkBuddy 的选择器按**裸 model id 全局去重**：同一个模型名无论挂在哪个厂商下，
+    /// 都只列出一行、只认第一条。所以「同一个模型开两个」没有意义——第二个根本不会生效，
+    /// 用户却以为配了两份。这里勾上一个就把同 id 的其他条目全部关掉，让界面与
+    /// WorkBuddy 的实际行为一致；想换厂商就直接勾那一家。
+    fn enable_model_exclusively(&mut self, picked: (usize, usize)) {
+        let (pi, mi) = picked;
+        let Some(target) = self
+            .providers
+            .get(pi)
+            .and_then(|p| p.models.get(mi))
+            .map(|m| m.id.trim().to_string())
+        else {
+            return;
+        };
+        if target.is_empty() {
+            return;
+        }
+        for (i, p) in self.providers.iter_mut().enumerate() {
+            for (j, m) in p.models.iter_mut().enumerate() {
+                if m.id.trim() == target {
+                    // 按下标比对：同一张卡片里也可能有两条同 id 的条目
+                    // （用户文件里就有这种形态），只比 id 会让它们同时保持启用。
+                    m.disabled = (i, j) != picked;
+                }
+            }
+        }
+    }
+
     /// Providers 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
     pub(super) fn ui_providers_section(&mut self, ui: &mut egui::Ui) {
         // 吸顶区是**固定高度矩形**（sticky_end 用 max_rect 建子 ui）：
@@ -225,6 +258,11 @@ impl App {
         card_list(ui, &matched, card_gap, |ui, idx| {
             self.render_provider_card(ui, idx, &mut actions);
         });
+        // 同一模型 id 全局只能开一个（WorkBuddy 按裸 id 去重，同名的只有第一条生效）。
+        // 必须在**所有卡片渲染完之后**统一处理：卡片各自改会漏掉别的卡片里的同名条目。
+        if let Some(picked) = actions.model_enable.take() {
+            self.enable_model_exclusively(picked);
+        }
         if let Some(idx) = actions.remove {
             self.providers.remove(idx);
             self.status = "已删除 provider".into();
@@ -536,7 +574,12 @@ impl App {
             });
             // 折叠 / 展开带高度动画；动画 id 按 key 派生，改名即换 id（状态不串卡）。
             crate::motion::animated_collapse(ui, card_id, open, |ui| {
-                self.render_provider_form(ui, idx, &mut actions.model_hover);
+                self.render_provider_form(
+                    ui,
+                    idx,
+                    &mut actions.model_hover,
+                    &mut actions.model_enable,
+                );
             });
         });
         if let Some(src_key) = &self.provider_drag_src {

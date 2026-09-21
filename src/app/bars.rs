@@ -257,22 +257,27 @@ impl App {
                             self.tab_drag_src = Some(id);
                         }
                         // 换位目标：拖动中指针所在的槽位画绿环（与卡片落点同色）。
-                        // 必须在按钮画完后补画——`hovered()` 要等控件 allocate 之后才为真，
+                        // 必须在按钮画完后补画——指针是否在本控件上要等 allocate 之后才定，
                         // 建按钮时还不知道会不会成为落点。
+                        //
+                        // **这里必须用 `contains_pointer()`，不能用 `hovered()`。** egui 在
+                        // 「有指针按键按下且按下的不是本控件」时会**强制清掉** HOVERED
+                        // （context.rs: `if input.pointer.any_down() && !is_interacted_with`），
+                        // 而拖拽全程按着键、落点又不是被按下的那个控件——于是 `hovered()`
+                        // 在拖动中恒为 false，绿环一次都画不出来，`drop_on` 也永远是 None，
+                        // **换位整个功能是坏的**。`contains_pointer()` 正是 egui 为拖放落点
+                        // 提供的判定（文档原话：即使别的控件正被拖动也可能为 true）。
                         // 用 `Inside` 与按钮自身的描边同几何（egui 的 `Frame` 就是 Inside），
                         // 换位目标与选中态的环粗细/位置才完全一致；`Outside` 会多出一圈。
-                        if self.tab_drag_src.is_some()
-                            && self.tab_drag_src != Some(id)
-                            && btn_resp.hovered()
-                        {
-                            ui.painter().rect_stroke(
-                                btn_resp.rect,
-                                3.0,
-                                egui::Stroke::new(2.0f32, crate::ui::DROP_TARGET_COLOR),
-                                egui::StrokeKind::Inside,
-                            );
-                        }
-                        if self.tab_drag_src.is_some() && btn_resp.hovered() {
+                        if self.tab_drag_src.is_some() && btn_resp.contains_pointer() {
+                            if self.tab_drag_src != Some(id) {
+                                ui.painter().rect_stroke(
+                                    btn_resp.rect,
+                                    3.0,
+                                    egui::Stroke::new(2.0f32, crate::ui::DROP_TARGET_COLOR),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
                             drop_on = Some(slot);
                         }
                         if btn_resp.drag_stopped() {
