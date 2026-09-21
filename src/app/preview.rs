@@ -173,10 +173,7 @@ impl App {
                     egui::Label::new(egui::RichText::new(e).small().color(palette.error)).wrap(),
                 )
                 .on_hover_text("继续编辑修正，或点「重新生成」/ 切走再切回以撤销文本修改");
-                regenerate = ui
-                    .button("重新生成")
-                    .on_hover_text("放弃预览里的修改，按左侧组件状态重新生成待保存文档")
-                    .clicked();
+                regenerate = ui.button("重新生成").clicked();
             } else if let Err(e) = &doc {
                 ui.colored_label(crate::theme::semantics(ui).err, "生成失败")
                     .on_hover_text(e);

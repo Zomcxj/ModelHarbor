@@ -784,9 +784,11 @@ fn disabled_models_are_omitted_from_the_file() {
 }
 
 #[test]
-fn legacy_disabled_keys_are_cleaned_up() {
-    // 早期版本写过 `disabled: true`。现在这个键不再有含义（停用靠不写条目表达），
-    // 旧文件里残留的一律清掉，免得让人以为还有别的开关。
+fn legacy_disabled_keys_are_honored_not_ignored() {
+    // 早期版本写过 `disabled`。这个键**现在是有含义的**（全量副本靠它记录勾选），
+    // 但只在读全量副本时才采信。这里读的是主配置（`parse`，按位置推导），
+    // 所以文件里的 `disabled: true` 不参与判定——主配置本身就是生效清单，
+    // 里面的条目都是启用的，写出的生效清单也不该带这个键。
     let saved = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1",
           "disabled": true },
@@ -800,15 +802,18 @@ fn legacy_disabled_keys_are_cleaned_up() {
     for e in root.as_array().unwrap() {
         assert!(
             e.get("disabled").is_none(),
-            "历史 disabled 键必须清掉：{e:#?}"
+            "生效清单里必须清掉 disabled 键：{e:#?}"
         );
     }
 }
 
+/// 生效清单（`models.json`）里不该出现 `disabled` 键：它全是启用的条目。
+///
+/// 注意这只约束**生效清单**。全量副本反过来必须逐条写显式标记
+/// （见 `the_full_store_records_every_entrys_flag_explicitly`）——两份文件口径
+/// 不同是有意的：副本要能区分「用户把重复项全勾上了」和「从没记录过勾选」。
 #[test]
-fn enabled_models_do_not_gain_a_disabled_key() {
-    // 用户文件里 36 条都没有 `disabled`。保存一遍不能凭空给它们加上
-    // `disabled: false`——那是把「未声明」变成「明确声明」，整文件 diff 会被污染。
+fn the_effective_list_never_carries_a_disabled_key() {
     let saved = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1" },
         { "id": "claude-opus-5", "name": "b", "url": "https://x.example/v1" }
@@ -820,9 +825,153 @@ fn enabled_models_do_not_gain_a_disabled_key() {
     for e in root.as_array().unwrap() {
         assert!(
             e.get("disabled").is_none(),
-            "启用的模型不该出现 disabled 键：{e:#?}"
+            "生效清单里不该出现 disabled 键：{e:#?}"
         );
     }
+}
+
+/// 全量副本必须**每条都写** `disabled`，勾选的写 `false`。
+///
+/// 用户报的「重复的模型名都启用了」根因就在这里：早期副本省掉了 `false`，
+/// 于是「用户全勾了」和「从没记录过勾选」在文件里长得一模一样（都缺这个键），
+/// 加载时只能一律当启用，而且会自我延续——全启用读进来、原样写回去，
+/// 永远生不出勾选记录。
+#[test]
+fn the_full_store_records_every_entrys_flag_explicitly() {
+    let dir = temp_path("models.json");
+    let path = dir.display().to_string();
+    let saved = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1" },
+        { "id": "gpt-5.6-sol", "name": "b", "url": "https://b.example/v1" },
+        { "id": "claude-opus-5", "name": "c", "url": "https://c.example/v1" }
+    ]);
+    std::fs::write(&dir, serde_json::to_string(&saved).unwrap()).unwrap();
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let load = b.parse_at(&saved.to_string(), &path).unwrap();
+    b.save_sidecars(&path, &load.providers).expect("写全量副本");
+
+    let full: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(model_harbor::backends::workbuddy::full_store_path(&path))
+            .unwrap(),
+    )
+    .unwrap();
+    let items = full.as_array().unwrap();
+    assert_eq!(items.len(), 3, "全量副本含全部条目");
+    for (i, e) in items.iter().enumerate() {
+        assert!(
+            e.get("disabled").is_some(),
+            "第 {i} 条必须显式写 disabled（勾选也要写 false）：{e:#?}"
+        );
+    }
+    // 按位置推导：每个 id 第一条启用（false），其余关闭（true）。
+    assert_eq!(items[0]["disabled"], json!(false), "第一条启用");
+    assert_eq!(items[1]["disabled"], json!(true), "同 id 第二条关闭");
+    assert_eq!(items[2]["disabled"], json!(false), "另一个 id 启用");
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+/// 旧副本（一条 `disabled` 都没写）加载时必须**自愈**成按位置推导。
+///
+/// 这是用户实际遇到的情形：`models.full.json` 里 35 条、16 个 id、零个标记。
+/// 逐条回退到按位置推导后，界面得到「每个模型名只勾第一条」，
+/// 保存一次即把推导结果落成显式标记，之后不再推导。
+#[test]
+fn a_full_store_without_flags_heals_to_first_occurrence_enabled() {
+    let dir = temp_path("models.json");
+    let path = dir.display().to_string();
+    // 复刻线上那份旧副本：三条同名条目，一个 disabled 键都没有。
+    let flagless = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1" },
+        { "id": "gpt-5.6-sol", "name": "b", "url": "https://b.example/v1" },
+        { "id": "claude-opus-5", "name": "c", "url": "https://c.example/v1" }
+    ]);
+    std::fs::write(&dir, serde_json::to_string(&flagless).unwrap()).unwrap();
+    std::fs::write(
+        model_harbor::backends::workbuddy::full_store_path(&path),
+        serde_json::to_string(&flagless).unwrap(),
+    )
+    .unwrap();
+
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let load = b
+        .parse_at(&std::fs::read_to_string(&dir).unwrap(), &path)
+        .unwrap();
+    let flags: Vec<(String, bool)> = load
+        .providers
+        .iter()
+        .flat_map(|p| {
+            p.models
+                .iter()
+                .map(|m| (m.id.clone(), m.disabled))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        vec![
+            ("gpt-5.6-sol".to_string(), false),
+            ("gpt-5.6-sol".to_string(), true),
+            ("claude-opus-5".to_string(), false),
+        ],
+        "没有标记的旧副本必须回退到按位置推导，而不是把每条都当成启用"
+    );
+
+    // 保存一次，标记落盘；再加载就不该再依赖推导。
+    b.save_sidecars(&path, &load.providers).expect("写全量副本");
+    let healed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(model_harbor::backends::workbuddy::full_store_path(&path))
+            .unwrap(),
+    )
+    .unwrap();
+    for e in healed.as_array().unwrap() {
+        assert!(e.get("disabled").is_some(), "自愈后每条都有标记：{e:#?}");
+    }
+    let again = b
+        .parse_at(&std::fs::read_to_string(&dir).unwrap(), &path)
+        .unwrap();
+    let flags2: Vec<bool> = again
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter().map(|m| m.disabled))
+        .collect();
+    assert_eq!(flags2, vec![false, true, false], "二次加载保持一致");
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+/// 用户手动调整过勾选后，不能再按位置重新推导——否则他勾的那条会被挤掉。
+#[test]
+fn explicit_flags_survive_the_round_trip_even_when_they_break_position_order() {
+    let dir = temp_path("models.json");
+    let path = dir.display().to_string();
+    let saved = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1",
+          "apiKey": "sk-a" },
+        { "id": "gpt-5.6-sol", "name": "b", "url": "https://b.example/v1",
+          "apiKey": "sk-b" }
+    ]);
+    std::fs::write(&dir, serde_json::to_string(&saved).unwrap()).unwrap();
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let load = b.parse_at(&saved.to_string(), &path).unwrap();
+    // 用户改成启用第二条（与「第一条生效」相反）。
+    let mut providers = load.providers.clone();
+    providers[0].models[0].disabled = true;
+    providers[1].models[0].disabled = false;
+    let root = b.serialize_root(&[], &providers, &load.extras, Some(&saved));
+    b.save_sidecars(&path, &providers).expect("写全量副本");
+    std::fs::write(&dir, b.render(&root, false).unwrap()).unwrap();
+
+    let reloaded = b
+        .parse_at(&std::fs::read_to_string(&dir).unwrap(), &path)
+        .unwrap();
+    assert!(
+        reloaded.providers[0].models[0].disabled,
+        "用户关掉的第一条必须还是关闭"
+    );
+    assert!(
+        !reloaded.providers[1].models[0].disabled,
+        "用户勾上的第二条必须还是勾选——不能被按位置推导覆盖回第一条"
+    );
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
 /// 全量副本路径：与主配置同目录、固定文件名。

@@ -327,11 +327,7 @@ impl App {
                     }
                 }
                 // 连通性测试：放在标题行右侧，收起全部卡片时也始终可见。
-                if ui
-                    .button("连通性测试")
-                    .on_hover_text("并发测试当前页面全部厂商的接口连通性")
-                    .clicked()
-                {
+                if ui.button("连通性测试").clicked() {
                     let targets: Vec<(String, String, String, String)> = self
                         .providers
                         .iter()
@@ -354,14 +350,7 @@ impl App {
                 // 查询用户数据：一次查完当前页面全部厂商（只读管理接口，直连不走代理）。
                 // 一份结果里能有什么就显示什么：余额 / 已用 / 今日 / 近 7 天 / 签到状态。
                 // 查不到的站点不在卡片上显示，只在状态栏汇总（避免一堆红字噪音）。
-                if ui
-                    .button("查询用户数据")
-                    .on_hover_text(
-                        "查询全部厂商的账号数据（已用 / 余额 / 签到状态），显示在卡片上\n\
-                         只读接口、直连不走代理；同一站点两次查询至少间隔 5 秒",
-                    )
-                    .clicked()
-                {
+                if ui.button("查询用户数据").clicked() {
                     let targets: Vec<balance::Query> = self
                         .providers
                         .iter()

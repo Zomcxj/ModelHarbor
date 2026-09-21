@@ -333,35 +333,17 @@ pub(super) fn model_probe_button(
     net_guard: Option<&str>,
 ) -> bool {
     let state = gate.state(provider_key, now, net_guard);
-    let (label, hint) = match &state {
-        ProbeGateState::Ready => ("测试".to_string(), None),
-        ProbeGateState::Busy => (
-            "测试中".to_string(),
-            Some("该厂商上一个延迟测试尚未结束（同一厂商一次只测一个）".to_string()),
-        ),
-        ProbeGateState::Cooling(left) => (
-            format!("测试({}s)", left.ceil() as u64),
-            Some(format!(
-                "节流中：{} 秒后可再测（同一厂商的任意两次探测（同模型 / 不同模型都算）至少间隔 5 秒，避免中转站测活风控；其他厂商不受影响）",
-                left.ceil() as u64
-            )),
-        ),
-        ProbeGateState::NetBlocked(reason) => (
-            "测试".to_string(),
-            Some(format!(
-                "{}：{}。请关闭系统代理 / VPN 后重试",
-                crate::netguard::BLOCK_PREFIX,
-                reason
-            )),
-        ),
+    // 状态一律写在按钮文案里（`测试中` / `测试(5s)`），不再挂悬停提示：
+    // 「为什么点不了」的原因由别处可见文本承担（节流看倒计时、网络封锁在页头
+    // 已经有一条红字说明），按钮自己不必再复述一遍。
+    let label = match &state {
+        ProbeGateState::Ready => "测试".to_string(),
+        ProbeGateState::Busy => "测试中".to_string(),
+        ProbeGateState::Cooling(left) => format!("测试({}s)", left.ceil() as u64),
+        ProbeGateState::NetBlocked(_) => "测试".to_string(),
     };
     let enabled = matches!(state, ProbeGateState::Ready);
-    let button = ui.add_enabled(enabled, egui::Button::new(label));
-    match hint {
-        Some(hint) if !enabled => button.on_disabled_hover_text(hint).clicked(),
-        Some(hint) => button.on_hover_text(hint).clicked(),
-        None => button.clicked(),
-    }
+    ui.add_enabled(enabled, egui::Button::new(label)).clicked()
 }
 
 /// 线上协议（api）的调用形状：端点、鉴权与最小请求体各不相同。

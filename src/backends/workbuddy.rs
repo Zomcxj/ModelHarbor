@@ -26,7 +26,14 @@
 //! - `~/.workbuddy/models.json` —— WorkBuddy 真正读的生效清单：**只含勾选的条目**，
 //!   且每个 id 只留第一条（即 [`serialize_root`] 的产物）。
 //! - 同目录下的 `models.full.json` —— ModelHarbor 自己维护的**全量副本**：所有条目都在，
-//!   每条带 `disabled` 标记记录勾选状态（见 [`save_sidecars`] / [`full_store_path`]）。
+//!   每条**都带** `disabled` 标记记录勾选状态（见 [`save_sidecars`] / [`full_store_path`]）。
+//!
+//! 全量副本里 `disabled` 是**每条必写**的，勾选也要写 `false`。省掉 `false` 会让
+//! 「用户把重复项全勾上了」与「这份副本从没记录过勾选」变成同一种状态（都缺这个键），
+//! 加载时只能一律当启用——那正是「重复的模型名都启用了」的成因，而且会自我延续：
+//! 全启用读进来、原样写回去，永远生不出勾选记录。为兼容已经写坏的旧副本，加载时
+//! 逐条判断：没写 `disabled` 的条目回退到按位置推导（每个模型名只勾第一条），
+//! 保存一次即落成显式标记（见 [`build_load`]）。
 //!
 //! 加载时优先读全量副本，没有才退回 `models.json`。这样「取消勾选」不会让条目从界面上
 //! 消失、更不会丢字段：它只是从生效清单里移出，本体仍在全量副本里，随时能勾回来。
@@ -353,9 +360,10 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
         if obj.contains_key("supportsReasoning") {
             obj.insert("supportsReasoning".into(), Value::Bool(m.reasoning));
         }
-        // 启用/停用**不落盘**：关掉的模型保存时整条跳过（见 `serialize_root`）。
-        // WorkBuddy 的选择器按裸 id 全局去重，同一 id 的其余条目写进去也不会生效，
-        // 只会占地方、让人以为已经配上了。所以这里不写 `disabled` 键。
+        // 启用/停用**不在这里写**：生效清单（`serialize_root`）里全是启用的条目，
+        // 勾选状态由全量副本 `models.full.json` 逐条显式记录（见 `all_entries`）。
+        // WorkBuddy 的选择器按裸 id 全局去重，同一 id 的其余条目写进生效清单也不会
+        // 生效，只会占地方、让人以为已经配上了。
     }
 
     Value::Object(obj)
@@ -383,8 +391,15 @@ fn existing_index(base: &Value) -> HashMap<(String, String), Value> {
 /// 一家提供商的**每个模型各写一条**条目，**不过滤、不去重**。
 ///
 /// 这是两份配置共用的构造步骤：全量副本要全部条目，生效清单再从结果里筛。
-/// 勾选状态在这里落成 `disabled: true`（勾选的**不写这个键**——把「未声明」变成
-/// `disabled: false` 会污染 diff，与项目里「不凭空声明能力字段」同一口径）。
+///
+/// 勾选状态**每条都显式写**：勾选写 `disabled: false`、未勾选写 `true`。
+///
+/// 这跟「不凭空声明能力字段」不是一回事。`disabled` 是 ModelHarbor 自己用来记录
+/// 勾选的簿记，不是留给 WorkBuddy 去推断的能力位；WorkBuddy 对它的处理是
+/// `normalizeCustomModel = {disabled: false, ...model}`，缺席与 `false` 对它完全等价，
+/// 所以写 `false` 不会改变 WorkBuddy 的行为。反过来，省掉 `false` 会把「没有标记」
+/// 变成一个有歧义的状态：加载时无法区分「用户把重复项全勾上了」和「这份副本从来没
+/// 记录过勾选」，只能一律当成启用——用户报的「重复的模型名都启用了」正是这么来的。
 fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
     let existing = existing_index(base);
     let mut out: Vec<Value> = Vec::new();
@@ -412,11 +427,12 @@ fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
                     entry.insert(k.clone(), v.clone());
                 }
             }
-            if model.map(|m| m.disabled).unwrap_or(false) {
-                entry.insert("disabled".into(), Value::Bool(true));
-            } else {
-                entry.remove("disabled");
-            }
+            // 每条都显式写勾选状态（勾选 = false、未勾选 = true）。省掉 false 会让
+            // 「用户把重复项全勾上」与「这份副本没记录过勾选」在加载时无法区分。
+            entry.insert(
+                "disabled".into(),
+                Value::Bool(model.map(|m| m.disabled).unwrap_or(false)),
+            );
             out.push(Value::Object(entry));
         }
     }
@@ -461,39 +477,44 @@ fn effective_entries(all: &[Value]) -> Vec<Value> {
 /// 界面按 provider 分组，所以同 `name` 的条目合并成一张卡片、各自成为一个模型行，
 /// 保存时再一条条目一个模型写回去，来回不丢模型。
 ///
-/// `trusted_flags` 决定勾选状态从哪来：
-/// - `true`（读的是全量副本）：直接读每条自己的 `disabled` 键，那是用户在界面上
-///   亲手勾的结果，必须原样还原，不能再按位置重新推导——否则用户勾了第二条、
-///   界面却把第一条显示成勾选，下一次保存就把他勾的那条从生效清单里挤掉了。
-/// - `false`（读的是 `models.json`，没有副本可用）：按**位置**推导。WorkBuddy 的
-///   选择器按裸 id 全局去重，同一个模型名只有第一条生效，后面同名的都不生效，
-///   界面就该如实显示这个事实——每个 id 的第一条启用、其余关闭。
+/// `trusted_flags` 表示「这批条目的 `disabled` 键可以信任」（读的是全量副本时为 `true`）。
+/// 但**信任是逐条的**：只有条目**确实写了** `disabled` 键时才采信，没写的仍然按位置推导。
+/// 两者的差别很要紧：
+/// - 写了（用户在全量副本里亲手勾过）：原样还原，不能再按位置重新推导——否则用户勾了
+///   第二条、界面却把第一条显示成勾选，下一次保存就把他勾的那条从生效清单里挤掉了。
+/// - 没写：按**位置**推导。WorkBuddy 的选择器按裸 id 全局去重，同一个模型名只有第一条
+///   生效，后面同名的都不生效，界面就该如实显示这个事实。
+///
+/// 之所以要「逐条」而不是「整份」，是为了让**没有勾选记录的旧副本自愈**：拆分方案刚上线时
+/// 写出的 `models.full.json` 里一条 `disabled` 都没有，若整份信任就等于把 35 条全当成启用，
+/// 用户看到的正是「重复的模型名都启用了」；而这种状态还会自我延续——全启用读进来、
+/// 原样写回去，永远不会有勾选记录。逐条回退到按位置推导，首次打开即得到
+/// 「每个模型名只勾第一条」，下一次保存就把这份推导落成显式标记，之后不再推导。
 fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
     let mut providers: Vec<ProviderRow> = Vec::new();
+    // 按位置推导要按**文件顺序**算，所以在这里就地判定，而不是等分组之后再遍历——
+    // 分组会把同厂商的条目聚到一起，A,a / B,b / A,c 这种顺序压平后 a、c 会先于 b，
+    // 「第一条生效」就不再是文件里的第一条了。
+    let mut seen: HashSet<String> = HashSet::new();
     for entry in &entries {
-        let Some(row) = provider_from_entry(entry) else {
+        let Some(mut row) = provider_from_entry(entry) else {
             continue;
         };
-        let Some(model) = row.models.first().cloned() else {
+        let Some(model) = row.models.first_mut() else {
             continue;
         };
+        let by_position = !seen.insert(model.id.trim().to_string());
+        // 「这条条目自己写了 disabled 吗」直接问条目本身，而不是另开一个与条目同序的
+        // 数组：分组会把同厂商的条目聚到一起，按下标对齐迟早错位。
+        let explicit = entry.get("disabled").is_some();
+        if !(trusted_flags && explicit) {
+            model.disabled = by_position;
+        }
         match providers.iter_mut().find(|p| p.key == row.key) {
             // 同 provider 的 url / apiKey / vendor 本就相同，以首条为准；
             // 后续条目只贡献模型行（各模型自己的 raw 保留在该模型行里）。
-            Some(existing) => existing.models.push(model),
-            None => providers.push(ProviderRow {
-                models: vec![model],
-                ..row
-            }),
-        }
-    }
-    if !trusted_flags {
-        let mut seen: HashSet<String> = HashSet::new();
-        for p in providers.iter_mut() {
-            for m in p.models.iter_mut() {
-                let id = m.id.trim().to_string();
-                m.disabled = !seen.insert(id);
-            }
+            Some(existing) => existing.models.push(row.models.remove(0)),
+            None => providers.push(row),
         }
     }
     // extras 用原始条目数组：保存时按 (name, id) 继承未知字段（tags / credits）取的就是它。

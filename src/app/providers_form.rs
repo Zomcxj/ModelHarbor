@@ -76,9 +76,12 @@ pub(super) fn provider_preset_combo(
         .width(240.0)
         .show_ui(ui, |ui| {
             ui.label(
-                egui::RichText::new("套用后仅覆盖 key / baseUrl / 协议，其余字段可照旧手填")
-                    .small()
-                    .weak(),
+                egui::RichText::new(
+                    "套用后仅覆盖 key / baseUrl / 协议，其余字段可照旧手填；\n\
+                     不写密钥、不改动模型列表。第三方 / 中转站 / 自建端点请直接在下方手填",
+                )
+                .small()
+                .weak(),
             );
             ui.separator();
             for preset in crate::presets::PRESETS {
@@ -87,9 +90,7 @@ pub(super) fn provider_preset_combo(
                     crate::presets::apply(p, preset, dialect);
                 }
             }
-        })
-        .response
-        .on_hover_text("预设不写密钥、不改动模型列表；第三方 / 中转站 / 自建端点请直接在下方手填");
+        });
 }
 
 /// api 下拉：omp 官方 9 值 / pi KnownApi 10 值；首项「(空)」与 opencode 页 npm 的空选项同义。
@@ -129,11 +130,13 @@ pub(super) fn provider_api_combo(
         })
         .width(180.0)
         .show_ui(ui, |ui| {
-            if ui
-                .selectable_label(!explicit, EMPTY_API_LABEL)
-                .on_hover_text("不指定协议：写盘时按兼容层 openai-completions 处理")
-                .clicked()
-            {
+            ui.label(
+                egui::RichText::new("(空) = 不指定协议：写盘时按兼容层 openai-completions 处理")
+                    .small()
+                    .weak(),
+            );
+            ui.separator();
+            if ui.selectable_label(!explicit, EMPTY_API_LABEL).clicked() {
                 p.clear_api();
             }
             for &api in options {

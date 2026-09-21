@@ -221,9 +221,10 @@ impl App {
                         }
                         (false, false) => btn,
                     };
-                    // 未安装的页面画淡一点，与已安装的区分开。
+                    // 悬停提示只报页面名（未安装的补一句状态）。不写「可拖动换位」：
+                    // 未安装的页签本来就是灰的、拖不动，写了反而要读者自己去对号。
                     let tip = if is_installed {
-                        format!("{}（已安装，可拖动换位）", id.label())
+                        id.label().to_string()
                     } else {
                         format!("{}（未安装）", id.label())
                     };
@@ -360,7 +361,6 @@ impl App {
                     ui.separator();
                     let look_btn = ui
                         .button("外观")
-                        .on_hover_text("主题、形状与圆角")
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     egui::Popup::menu(&look_btn)
                         // 菜单默认是 `top_down_justified`：每一项的填充会撑满整个
@@ -592,24 +592,8 @@ impl App {
                 .filter(|t| t.available && !t.path.trim().is_empty())
                 .map(|t| (t.backend.label().to_string(), t.path.clone()))
                 .collect();
-            let tip = if installed.is_empty() {
-                "本地与 WSL 都没探测到已安装的配置，没有可写目标".to_string()
-            } else {
-                let mut s = format!(
-                    "一次写完以下 {} 个已安装后端（各自的目标路径）：\n",
-                    installed.len()
-                );
-                for (label, path) in &installed {
-                    s.push_str(&format!("· {label}: {path}\n"));
-                }
-                s.push_str(
-                    "未安装的跳过；跨格式转换前会把目标文件原样备份为 .bak；\n结果逐页列在状态栏。",
-                );
-                s
-            };
             if ui
                 .button(format!("一键保存 ({})", installed.len()))
-                .on_hover_text(tip)
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
             {
@@ -657,9 +641,6 @@ impl App {
                     } else {
                         "预览"
                     })
-                    .on_hover_text(
-                        "在右侧打开当前页面「待保存文档」预览；可直接编辑，改动实时应用并自动保存",
-                    )
                     .clicked()
                 {
                     self.show_preview = !self.show_preview;
@@ -676,24 +657,12 @@ impl App {
                     } else {
                         "显示密钥"
                     })
-                    .on_hover_text(if self.show_api_keys {
-                        "点击掩码全部 API Key（默认状态）"
-                    } else {
-                        "点击显示全部 API Key 明文（注意防窥）"
-                    })
                     .clicked()
                 {
                     self.show_api_keys = !self.show_api_keys;
                 }
                 // 令牌：站点面板访问令牌（PAT）管理；填了才能查账号级真实余额。
-                if ui
-                    .button("令牌")
-                    .on_hover_text(
-                        "管理站点的面板访问令牌（PAT）：同一站点的 provider 共用一份\n\
-                         只用于只读查询账号数据，不参与配置保存；存在 .modelharbor/tokens.json",
-                    )
-                    .clicked()
-                {
+                if ui.button("令牌").clicked() {
                     self.show_tokens = !self.show_tokens;
                     if self.show_tokens {
                         // 重新打开时按已保存的值重填草稿（避免残留上次未保存的改动）。
