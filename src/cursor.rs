@@ -15,7 +15,9 @@ use windows_sys::Win32::Graphics::Gdi::{
     RGBQUAD,
 };
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass, SUBCLASSPROC};
-use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, SetCursor, ICONINFO};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateIconIndirect, LoadCursorW, SetCursor, ICONINFO, IDC_HAND,
+};
 
 #[cfg(debug_assertions)]
 static DEBUG_FILE: OnceLock<std::sync::Mutex<Option<std::fs::File>>> = OnceLock::new();
@@ -40,20 +42,29 @@ fn debug_log(_msg: &str) {}
 
 /// 当前要用的自定义光标。
 ///
-/// 两态是为了让拖动把手 / 页签的反馈和真实桌面软件一致：**悬停是张开的
-/// 手掌，按住才握成拳头**。只做拳头（旧实现）时，鼠标一进热区就显示「已抓住」，
+/// 两态是为了让拖动把手 / 页签的反馈和真实桌面软件一致：**悬停是张开的手掌，
+/// 按住才握成拳头**。只做拳头（旧实现）时，鼠标一进热区就显示「已抓住」，
 /// 但此时还没按下，语义提前了。
+///
+/// 悬停态的「手掌」直接用**系统自带的 `IDC_HAND`**，不再自绘。
+/// 自绘过两版都不行：20×20 是光标的真实尺寸，四指的指缝在那个尺寸下只有
+/// 亚像素宽，降采样后指缝糊掉、整只手化成一坨；把手指加粗又变成连指手套。
+/// 系统光标是按这个尺寸专门手工调过像素的，任何缩放的位图都比不过它。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CustomCursor {
     /// 不接管光标，交给 egui / 系统。
     None,
-    /// 悬停在可拖动处：张开的手掌。
+    /// 悬停在可拖动处：系统自带的手形光标（`IDC_HAND`）。
     Palm,
     /// 已按住拖动中：握起的拳头。
     Fist,
 }
 
 static CUSTOM_CURSOR: AtomicU8 = AtomicU8::new(CustomCursor::None as u8);
+/// 系统手形光标句柄（`LoadCursorW(null, IDC_HAND)`）。
+///
+/// 这是**共享资源**，不属于本进程，绝不能 `DestroyIcon`——销毁它会破坏
+/// 整个系统的手形光标，其他程序也跟着坏。
 static PALM_HANDLE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static FIST_HANDLE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -85,8 +96,6 @@ const CURSOR_HY: i32 = 10;
 
 /// 拳头（按下拖动中）。手指短、握起。
 const FIST_RGBA: &[u8] = include_bytes!("../assets/grab_rgba.bin");
-/// 手掌（悬停）。四指张开，与拳头刻意区分。
-const PALM_RGBA: &[u8] = include_bytes!("../assets/palm_rgba.bin");
 
 /// Create a cursor from BGRA pixel data using Win32 GDI.
 ///
@@ -194,11 +203,13 @@ unsafe extern "system" fn cursor_subclass_proc(
 /// 对二进制目标是公开 API（`src/main.rs` 在窗口创建后调用），因此不能收窄可见性。
 pub unsafe fn init_cursors(hwnd: HWND) {
     debug_log(&format!("init_cursors hwnd={:?}\r\n", hwnd));
-    let palm = create_icon_from_rgba(PALM_RGBA, CURSOR_W, CURSOR_H, CURSOR_HX, CURSOR_HY);
+    // 手掌直接用系统自带的 IDC_HAND：这个句柄归系统所有、跨进程共享，
+    // 所以本进程既不创建也不销毁它（销毁会连带弄坏别处的手形光标）。
+    let palm = LoadCursorW(std::ptr::null_mut(), IDC_HAND);
     let fist = create_icon_from_rgba(FIST_RGBA, CURSOR_W, CURSOR_H, CURSOR_HX, CURSOR_HY);
     PALM_HANDLE.store(palm, Ordering::Relaxed);
     FIST_HANDLE.store(fist, Ordering::Relaxed);
-    debug_log(&format!("cursors created palm={palm:?} fist={fist:?}\r\n"));
+    debug_log(&format!("cursors loaded palm={palm:?} fist={fist:?}\r\n"));
 
     let subclass_proc: SUBCLASSPROC = Some(cursor_subclass_proc);
     let ret = SetWindowSubclass(hwnd, subclass_proc, 1, 0);

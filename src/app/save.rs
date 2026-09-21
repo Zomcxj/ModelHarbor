@@ -564,7 +564,10 @@ impl App {
         } else {
             None
         };
-        if fmt == ConfigFormat::DeepSeekHarness {
+        // sidecar 一律在主配置**之前**写：WorkBuddy 的全量副本要靠读主配置继承
+        // 未知字段，而主配置马上会被筛成「只剩勾选的条目」；副本先落盘才拿得到全量字段。
+        // DSH 的凭据 sidecar 无此依赖，同一位置写即可。
+        if matches!(fmt, ConfigFormat::DeepSeekHarness | ConfigFormat::WorkBuddy) {
             backend.save_sidecars(path, &self.providers)?;
         }
         if let Err(error) = backends::write_config(path, &content) {

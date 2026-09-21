@@ -1535,9 +1535,12 @@ mod save_all_tests {
 
     #[test]
     fn a_workbuddy_save_that_drops_entries_backs_up_first() {
-        // WorkBuddy 的「停用」是**整条不写**：同 id 只留第一条，其余连同所属厂商
-        // 一起消失（含那些厂商的 API key）。这是同格式保存，老规矩不给备份——
-        // 于是它删得比跨格式转换还狠却一点后路都不留。这里锁死必须备份。
+        // 生效清单会比界面上的条目少（同 id 只留第一条、未勾选的不写），
+        // 所以这份文件确实被「删」过东西。虽然是同格式保存，也必须先备份——
+        // 老规矩只在跨格式转换时备份，这种删得比跨格式还狠的情况反而没有后路。
+        //
+        // 注意备份和全量副本是**两件事**：备份是「上一次的 models.json 原文」，
+        // 全量副本是「ModelHarbor 维护的全部条目 + 勾选状态」。两者都要有。
         let dir = temp_dir("wb_shrink");
         let wb_path = dir.join("models.json");
         let saved = serde_json::json!([
@@ -1573,6 +1576,74 @@ mod save_all_tests {
             2,
             "备份必须是删之前的两条（含被删厂商的 key）"
         );
+        // 全量副本也必须在：它才是「取消勾选不会丢配置」的依托。
+        let full_path = crate::backends::workbuddy::full_store_path(&wb_path.display().to_string());
+        let full: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&full_path).unwrap()).unwrap();
+        assert_eq!(
+            full.as_array().unwrap().len(),
+            2,
+            "全量副本必须两条都在（含被筛掉那条的 key）: {full:#?}"
+        );
+        assert_eq!(
+            full.as_array().unwrap()[1]["apiKey"],
+            serde_json::json!("sk-b"),
+            "被筛掉那条的 key 必须留在副本里"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn workbuddy_reload_restores_unchecked_entries_from_the_full_store() {
+        // 端到端：保存 → 重新加载，界面上的条目数必须回到保存前。
+        // 这是用户真正在意的性质——取消勾选是「不生效」，不是「删掉」。
+        let dir = temp_dir("wb_restore");
+        let wb_path = dir.join("models.json");
+        let saved = serde_json::json!([
+            { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1",
+              "apiKey": "sk-a", "tags": ["a-only"] },
+            { "id": "gpt-5.6-sol", "name": "b", "url": "https://y.example/v1",
+              "apiKey": "sk-b", "tags": ["b-only"] },
+            { "id": "unique", "name": "c", "url": "https://z.example/v1",
+              "apiKey": "sk-c" }
+        ]);
+        std::fs::write(&wb_path, serde_json::to_string_pretty(&saved).unwrap()).unwrap();
+        let path = wb_path.display().to_string();
+        let text = std::fs::read_to_string(&wb_path).unwrap();
+        let b = crate::backends::backend(ConfigFormat::WorkBuddy);
+        let load = b.parse_at(&text, &path).unwrap();
+        let before: usize = load.providers.iter().map(|p| p.models.len()).sum();
+        assert_eq!(before, 3, "首次加载应看到全部三条");
+
+        let mut app = App {
+            providers: load.providers,
+            config_path: path.clone(),
+            loaded_path: path.clone(),
+            source_format: ConfigFormat::WorkBuddy,
+            current_page: ConfigFormat::WorkBuddy,
+            ..App::default()
+        };
+        app.save_backend_to(ConfigFormat::WorkBuddy, &path)
+            .expect("保存应当成功");
+
+        // 生效清单确实变少了。
+        let eff: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&wb_path).unwrap()).unwrap();
+        assert_eq!(eff.as_array().unwrap().len(), 2, "生效清单 = 唯一 id 数");
+
+        // 但重新加载后条目数必须回到 3——从全量副本还原。
+        let reloaded = b
+            .parse_at(&std::fs::read_to_string(&wb_path).unwrap(), &path)
+            .unwrap();
+        let after: usize = reloaded.providers.iter().map(|p| p.models.len()).sum();
+        assert_eq!(after, before, "重新加载必须从全量副本还原全部条目");
+        // 被筛掉那条的字段也必须完好。
+        let all: Vec<(String, String)> = reloaded
+            .providers
+            .iter()
+            .flat_map(|p| p.models.iter().map(move |m| (p.key.clone(), m.id.clone())))
+            .collect();
+        assert!(all.contains(&("b".to_string(), "gpt-5.6-sol".to_string())));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1719,11 +1790,16 @@ mod tab_highlight_tests {
     type IconBox = (egui::Rect, egui::Color32);
 
     /// 页签条这一帧收集到的原始矩形：
-    /// (矩形, 填充, 描边色, 是否贴图(brush), 描边宽度)。
-    type RawRect = (egui::Rect, egui::Color32, egui::Color32, bool, f32);
+    /// (矩形, 填充, 描边色, 是否贴图(brush), 描边宽度, 圆角)。
+    type RawRect = (egui::Rect, egui::Color32, egui::Color32, bool, f32, u8);
 
     /// `tab_shapes_at` 的三段结果：按钮本体 / 图标 / 每个槽位的落点绿环。
-    type TabShapes = (Vec<TabBox>, Vec<IconBox>, Vec<Option<egui::Color32>>);
+    /// 绿环那一段带上矩形与圆角，用来断言它和按钮本体同几何（只换颜色、不改形状）。
+    type TabShapes = (
+        Vec<TabBox>,
+        Vec<IconBox>,
+        Vec<Option<(egui::Rect, egui::Color32, u8)>>,
+    );
 
     /// 与 `tab_shapes` 同一个主题下的「悬浮底色 / 悬浮描边色」。
     ///
@@ -1812,6 +1888,7 @@ mod tab_highlight_tests {
                     r.stroke.color,
                     r.brush.is_some(),
                     r.stroke.width,
+                    r.corner_radius.nw,
                 )),
                 egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
                 _ => {}
@@ -1835,18 +1912,18 @@ mod tab_highlight_tests {
         };
         let mut candidates: Vec<RawRect> = rects
             .iter()
-            .filter(|(r, _, _, textured, w)| in_strip(r) && !*textured && *w > 0.0)
+            .filter(|(r, _, _, textured, w, _)| in_strip(r) && !*textured && *w > 0.0)
             .copied()
             .collect();
         candidates.sort_by(|a, b| a.0.center().x.partial_cmp(&b.0.center().x).unwrap());
 
         let mut bodies: Vec<TabBox> = Vec::new();
-        let mut rings: Vec<Option<egui::Color32>> = Vec::new();
+        let mut rings: Vec<Option<(egui::Rect, egui::Color32, u8)>> = Vec::new();
         for group in cluster_by_center_x(&candidates) {
             // 本体 = 该簇里填充非透明的那一个；若全透明（不该发生）取最宽的。
             let body = group
                 .iter()
-                .find(|(_, fill, _, _, _)| *fill != egui::Color32::TRANSPARENT)
+                .find(|(_, fill, _, _, _, _)| *fill != egui::Color32::TRANSPARENT)
                 .or_else(|| {
                     group
                         .iter()
@@ -1857,15 +1934,15 @@ mod tab_highlight_tests {
             rings.push(
                 group
                     .iter()
-                    .find(|(_, fill, stroke, textured, w)| is_ring(fill, stroke, *textured, *w))
-                    .map(|(_, _, stroke, _, _)| *stroke),
+                    .find(|(_, fill, stroke, textured, w, _)| is_ring(fill, stroke, *textured, *w))
+                    .map(|(rect, _, stroke, _, _, radius)| (*rect, *stroke, *radius)),
             );
         }
 
         let mut icons: Vec<IconBox> = rects
             .iter()
-            .filter(|(r, _, _, textured, _)| in_strip(r) && *textured)
-            .map(|(r, fill, _, _, _)| (*r, *fill))
+            .filter(|(r, _, _, textured, _, _)| in_strip(r) && *textured)
+            .map(|(r, fill, _, _, _, _)| (*r, *fill))
             .collect();
         icons.sort_by(|a, b| a.0.left().partial_cmp(&b.0.left()).unwrap());
         (bodies, icons, rings)
@@ -1896,7 +1973,10 @@ mod tab_highlight_tests {
     }
 
     /// 把指针停在第 `slot` 个页签上再跑一帧，返回每个槽位的绿环（无则 `None`）。
-    fn tab_rings_with_pointer_on(app: &mut App, slot: usize) -> Vec<Option<egui::Color32>> {
+    fn tab_rings_with_pointer_on(
+        app: &mut App,
+        slot: usize,
+    ) -> Vec<Option<(egui::Rect, egui::Color32, u8)>> {
         // 先跑一帧拿到稳定的几何（布局由页签数量决定，不随指针变），
         // 再按目标槽位的中心点跑第二帧，让 hover 真正命中。
         let boxes = tab_fills(app);
@@ -1909,7 +1989,7 @@ mod tab_highlight_tests {
         app: &mut App,
         from: usize,
         to: usize,
-    ) -> Vec<Option<egui::Color32>> {
+    ) -> Vec<Option<(egui::Rect, egui::Color32, u8)>> {
         let boxes = tab_fills(app);
         let start = boxes[from].0.center();
         let end = boxes[to].0.center();
@@ -2031,7 +2111,7 @@ mod tab_highlight_tests {
         let hovered = 2usize;
         let rings = tab_rings_with_pointer_on(&mut app, hovered);
         assert_eq!(
-            rings[hovered],
+            rings[hovered].map(|(_, c, _)| c),
             Some(crate::ui::DROP_TARGET_COLOR),
             "指针所在的槽位必须是绿色换位目标"
         );
@@ -2040,7 +2120,7 @@ mod tab_highlight_tests {
                 continue;
             }
             assert_ne!(
-                *ring,
+                ring.map(|(_, c, _)| c),
                 Some(crate::ui::DROP_TARGET_COLOR),
                 "第 {i} 个不是落点，不该有绿色环"
             );
@@ -2063,7 +2143,7 @@ mod tab_highlight_tests {
         let rings = tab_rings_with_pointer_on(&mut app, 2);
         for (i, ring) in rings.iter().enumerate() {
             assert_ne!(
-                *ring,
+                ring.map(|(_, c, _)| c),
                 Some(crate::ui::DROP_TARGET_COLOR),
                 "第 {i} 个：没在拖动却画了绿色落点环"
             );
@@ -2084,7 +2164,7 @@ mod tab_highlight_tests {
         let (from, to) = (0usize, 2usize);
         let rings = tab_rings_while_dragging(&mut app, from, to);
         assert_eq!(
-            rings[to],
+            rings[to].map(|(_, c, _)| c),
             Some(crate::ui::DROP_TARGET_COLOR),
             "按住键拖动时，指针所在的槽位仍然必须是绿色换位目标"
         );
@@ -2093,10 +2173,44 @@ mod tab_highlight_tests {
                 continue;
             }
             assert_ne!(
-                *ring,
+                ring.map(|(_, c, _)| c),
                 Some(crate::ui::DROP_TARGET_COLOR),
                 "第 {i} 个不是落点，不该有绿色环"
             );
         }
+    }
+
+    /// 换位绿环必须与按钮**同圆角**，只换颜色、不改形状。
+    ///
+    /// 用户报的「被选中图标按钮绿色对了，不要变圆角啊，我只是让你改边框颜色」：
+    /// 绿环曾经写死圆角 3.0，而云朵档的按钮圆角是 16——于是绿环成了套在圆角按钮上的
+    /// 一个方框，看着像另画了个矩形。这里钉住两者取同一个值。
+    #[test]
+    fn the_green_ring_shares_the_buttons_corner_radius() {
+        let mut app = app_with_tabs();
+        app.current_page = ConfigFormat::Opencode;
+        app.tab_drag_src = Some(ConfigFormat::Opencode);
+        let (from, to) = (0usize, 2usize);
+        let shapes = {
+            let boxes = tab_fills(&mut app);
+            let start = boxes[from].0.center();
+            let end = boxes[to].0.center();
+            tab_shapes_at_with(&mut app, Some(end), Some(start))
+        };
+        let (bodies, _, rings) = shapes;
+        let (_, _, radius) = rings[to].expect("目标槽位必须有绿环");
+        // 按钮本体的圆角：取本体矩形的圆角（`TabBox` 只带颜色，所以用主题值核对）。
+        let expected = crate::theme::UiStyle::from_key("cloud").radius();
+        assert_eq!(
+            radius, expected,
+            "绿环圆角必须等于按钮圆角（云朵档 = {expected}），不能写死"
+        );
+        assert_ne!(radius, 3, "曾经写死 3.0，正是「变圆角了」的根因");
+        // 绿环与按钮本体几何一致（矩形完全相同），说明只换了描边颜色、没改形状。
+        assert_eq!(
+            rings[to].map(|(r, _, _)| r),
+            Some(bodies[to].0),
+            "绿环矩形必须与按钮本体完全重合"
+        );
     }
 }

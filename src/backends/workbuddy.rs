@@ -16,9 +16,26 @@
 //! 协议选择非 `chat/completions` 就等价于自定义协议，保存时由这里落到
 //! `useCustomProtocol = true` 并补上对应后缀。
 //!
-//! 启用/停用：WorkBuddy 的选择器**按裸 id 全局去重**（同名模型无论挂在哪个厂商下都
-//! 只列出一行、只认第一条），所以同一个 id 的其余条目写进去也不会生效。界面上每个 id
-//! 只允许开一个，**关掉的一律不写盘**（不是写 `disabled: true`）。
+//! ## 两份配置：ModelHarbor 的全量副本 + WorkBuddy 的生效清单
+//!
+//! WorkBuddy 的选择器**按裸 id 全局去重**（同名模型无论挂在哪个厂商下都只列出一行、
+//! 只认第一条），所以 `models.json` 里同 id 的其余条目写进去也不生效。但界面必须
+//! 显示**全部**配置（用户要看得见每一条、才能决定勾哪一个），这两件事不可能由同一个
+//! 文件承担，于是拆成两份：
+//!
+//! - `~/.workbuddy/models.json` —— WorkBuddy 真正读的生效清单：**只含勾选的条目**，
+//!   且每个 id 只留第一条（即 [`serialize_root`] 的产物）。
+//! - 同目录下的 `models.full.json` —— ModelHarbor 自己维护的**全量副本**：所有条目都在，
+//!   每条带 `disabled` 标记记录勾选状态（见 [`save_sidecars`] / [`full_store_path`]）。
+//!
+//! 加载时优先读全量副本，没有才退回 `models.json`。这样「取消勾选」不会让条目从界面上
+//! 消失、更不会丢字段：它只是从生效清单里移出，本体仍在全量副本里，随时能勾回来。
+//!
+//! 放同目录而不是 `.modelharbor` 是有意的：这份副本含 API key 与完整模型配置，
+//! 属于「配置内容」，按本项目一贯的边界应留在 agent 自己的配置目录里，而不是塞进
+//! 只放界面偏好的工具设置目录。WorkBuddy 只按**精确文件名**读 `models.json`
+//! （`join(dataFolder, "models.json")`），同目录的其他文件它一概不看——`models.json.bak`
+//! 一直躺在那里也没被它读走，就是现成的证据。
 //!
 //! 渲染**不能**复用 `app::compact_json` / `pretty_json`——那两个函数写死了
 //! `root.as_object()`，数组根经过它们会静默变成 `{}`，直接毁掉用户配置。
@@ -27,9 +44,9 @@ use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::{parse_config_content, read_config_content, wsl_home, WslPathProbe};
+use crate::util::{is_wsl_path, parse_config_content, read_config_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub struct WorkBuddyBackend;
@@ -40,11 +57,87 @@ pub static BACKEND: WorkBuddyBackend = WorkBuddyBackend;
 const MESSAGES_SUFFIX: &str = "/v1/messages";
 const RESPONSES_SUFFIX: &str = "/v1/responses";
 
+/// 全量副本的文件名（与 `models.json` 同目录）。
+///
+/// 名字必须与 `models.json` 不同：WorkBuddy 按精确文件名读后者，
+/// 同目录的其他文件它不读（`.bak` 一直是旁证）。
+const FULL_STORE_NAME: &str = "models.full.json";
+
 fn default_local_path() -> String {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
     format!("{}\\.workbuddy\\models.json", home)
+}
+
+/// 全量副本的路径：与主配置同目录、固定文件名。
+///
+/// 分隔符按主配置路径的形态选（WSL 路径用 `/`），与 `credentials::sidecar_path` 同一套规则。
+pub fn full_store_path(config_path: &str) -> String {
+    let separator = if is_wsl_path(config_path) || config_path.contains('/') {
+        '/'
+    } else {
+        '\\'
+    };
+    match config_path.rsplit_once(separator) {
+        Some((parent, _)) if !parent.is_empty() => {
+            format!("{}{}{}", parent, separator, FULL_STORE_NAME)
+        }
+        _ => FULL_STORE_NAME.to_string(),
+    }
+}
+
+/// 读全量副本的条目；不存在 / 不是数组 / 解析失败都返回 `None`（调用方退回主配置）。
+fn load_full_store(config_path: &str) -> Option<Vec<Value>> {
+    if config_path.trim().is_empty() {
+        return None;
+    }
+    let text = read_config_content(&full_store_path(config_path)).ok()?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    let root = parse_config_content(&text).ok()?;
+    let items = entries_of(&root)?;
+    if items.is_empty() {
+        None
+    } else {
+        Some(items.clone())
+    }
+}
+
+/// 合并两份配置，得到界面上要显示的全部条目。
+///
+/// 以全量副本为主（它带每条自己的勾选状态），再把**主配置里有、副本里没有**的条目
+/// 补进来（按已勾选处理——它出现在生效清单里，就说明它是启用的）。
+///
+/// 这一步是为了「用户手改了 `models.json`」这种情况：副本是 ModelHarbor 上次保存的
+/// 快照，手加进去的条目不在里面；不补的话那条模型在界面上根本看不见，
+/// 而用户刚亲手加过它。WorkBuddy 自己并不写这个文件（它是用户手编的配置），
+/// 所以主配置里出现副本没有的条目是正常情况，不是异常。
+fn merge_full_and_effective(full: &[Value], effective: &[Value]) -> Vec<Value> {
+    let key_of = |v: &Value| {
+        (
+            v.get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            v.get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        )
+    };
+    let known: HashSet<(String, String)> = full.iter().map(key_of).collect();
+    let mut out = full.to_vec();
+    for entry in effective {
+        if known.contains(&key_of(entry)) {
+            continue;
+        }
+        // 生效清单里的条目一律是启用的；这里不写 `disabled: false`，
+        // 落盘时由 `all_entries` 决定这个键的取舍。
+        out.push(entry.clone());
+    }
+    out
 }
 
 /// 数组根 → 条目列表（兼容 `{ "models": [...] }` 形态，与 WorkBuddy 的
@@ -268,6 +361,151 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
     Value::Object(obj)
 }
 
+/// 按 **(name, id) 二元组**索引旧条目。
+///
+/// WorkBuddy 按模型扁平存储，不同 provider 可以有同名模型（用户文件里 `gpt-5.6-sol`
+/// 就有 4 条），只按 `id` 建索引会让后写的 provider 继承到别家条目的 tags / credits。
+fn existing_index(base: &Value) -> HashMap<(String, String), Value> {
+    entries_of(base)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| {
+                    let id = v.get("id").and_then(Value::as_str)?;
+                    let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
+                    Some(((name.to_string(), id.to_string()), v.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 一家提供商的**每个模型各写一条**条目，**不过滤、不去重**。
+///
+/// 这是两份配置共用的构造步骤：全量副本要全部条目，生效清单再从结果里筛。
+/// 勾选状态在这里落成 `disabled: true`（勾选的**不写这个键**——把「未声明」变成
+/// `disabled: false` 会污染 diff，与项目里「不凭空声明能力字段」同一口径）。
+fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
+    let existing = existing_index(base);
+    let mut out: Vec<Value> = Vec::new();
+    for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
+        // 没有模型的 provider 也要留一条（id 回落到 provider key），
+        // 否则刚建好还没填模型的卡片一保存就消失。
+        let models: Vec<Option<&ModelRow>> = if p.models.is_empty() {
+            vec![None]
+        } else {
+            p.models.iter().map(Some).collect()
+        };
+        for model in models {
+            let model_id = model
+                .map(|m| m.id.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(p.key.trim())
+                .to_string();
+            let mut entry = existing
+                .get(&(p.key.trim().to_string(), model_id))
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(fresh) = entry_from_provider(p, model).as_object() {
+                for (k, v) in fresh {
+                    entry.insert(k.clone(), v.clone());
+                }
+            }
+            if model.map(|m| m.disabled).unwrap_or(false) {
+                entry.insert("disabled".into(), Value::Bool(true));
+            } else {
+                entry.remove("disabled");
+            }
+            out.push(Value::Object(entry));
+        }
+    }
+    out
+}
+
+/// 生效清单：从全部条目里取出**勾选的**，且每个 id 只留第一条。
+///
+/// WorkBuddy 的选择器按裸 id 全局去重（`appendModel` 里 `if (ids.has(model.id)) return`），
+/// 第二条起写进去也不会被采用，所以生效清单里不能有不生效的条目——留着只会让人以为配了。
+/// 被筛掉的条目**不会丢**：它们仍在全量副本里，界面上随时能勾回来。
+fn effective_entries(all: &[Value]) -> Vec<Value> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for entry in all {
+        if entry.get("disabled").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !seen.insert(id) {
+            continue;
+        }
+        let mut entry = entry.clone();
+        // 生效清单里不该出现 `disabled` 键：这里全是启用的条目。
+        if let Some(obj) = entry.as_object_mut() {
+            obj.remove("disabled");
+        }
+        out.push(entry);
+    }
+    out
+}
+
+/// 条目列表 → [`BackendLoad`]（两份配置共用）。
+///
+/// WorkBuddy 文件按模型扁平存储：一家提供商的多个模型就是多条 `name` 相同的条目
+/// （用户的文件里 `gpt-5.6-sol` 就有 4 条、`claude-opus-5` 5 条，靠 `name` 区分）。
+/// 界面按 provider 分组，所以同 `name` 的条目合并成一张卡片、各自成为一个模型行，
+/// 保存时再一条条目一个模型写回去，来回不丢模型。
+///
+/// `trusted_flags` 决定勾选状态从哪来：
+/// - `true`（读的是全量副本）：直接读每条自己的 `disabled` 键，那是用户在界面上
+///   亲手勾的结果，必须原样还原，不能再按位置重新推导——否则用户勾了第二条、
+///   界面却把第一条显示成勾选，下一次保存就把他勾的那条从生效清单里挤掉了。
+/// - `false`（读的是 `models.json`，没有副本可用）：按**位置**推导。WorkBuddy 的
+///   选择器按裸 id 全局去重，同一个模型名只有第一条生效，后面同名的都不生效，
+///   界面就该如实显示这个事实——每个 id 的第一条启用、其余关闭。
+fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
+    let mut providers: Vec<ProviderRow> = Vec::new();
+    for entry in &entries {
+        let Some(row) = provider_from_entry(entry) else {
+            continue;
+        };
+        let Some(model) = row.models.first().cloned() else {
+            continue;
+        };
+        match providers.iter_mut().find(|p| p.key == row.key) {
+            // 同 provider 的 url / apiKey / vendor 本就相同，以首条为准；
+            // 后续条目只贡献模型行（各模型自己的 raw 保留在该模型行里）。
+            Some(existing) => existing.models.push(model),
+            None => providers.push(ProviderRow {
+                models: vec![model],
+                ..row
+            }),
+        }
+    }
+    if !trusted_flags {
+        let mut seen: HashSet<String> = HashSet::new();
+        for p in providers.iter_mut() {
+            for m in p.models.iter_mut() {
+                let id = m.id.trim().to_string();
+                m.disabled = !seen.insert(id);
+            }
+        }
+    }
+    // extras 用原始条目数组：保存时按 (name, id) 继承未知字段（tags / credits）取的就是它。
+    let extras = Value::Array(entries);
+    BackendLoad {
+        root: extras.clone(),
+        agents: Vec::new(),
+        providers,
+        extras,
+    }
+}
+
 /// 数组根的 JSON 渲染（两空格缩进，对齐 WorkBuddy 自己的
 /// `JSON.stringify(v, null, 2)`；compact 版去掉缩进）。
 fn render_array(items: &[Value], compact: bool) -> String {
@@ -323,49 +561,32 @@ impl Backend for WorkBuddyBackend {
     fn parse(&self, content: &str) -> Result<BackendLoad, String> {
         let root = parse_config_content(content)?;
         let entries = entries_of(&root).cloned().unwrap_or_default();
-        // WorkBuddy 文件按模型扁平存储：一家提供商的多个模型就是多条 `name` 相同的条目
-        // （用户的文件里 `gpt-5.6-sol` 就有 4 条、`claude-opus-5` 5 条，靠 `name` 区分）。
-        // 界面按 provider 分组，所以同 `name` 的条目合并成一张卡片、各自成为一个模型行，
-        // 保存时再一条条目一个模型写回去，来回不丢模型。
-        let mut providers: Vec<ProviderRow> = Vec::new();
-        for entry in &entries {
-            let Some(row) = provider_from_entry(entry) else {
-                continue;
-            };
-            let Some(model) = row.models.first().cloned() else {
-                continue;
-            };
-            match providers.iter_mut().find(|p| p.key == row.key) {
-                // 同 provider 的 url / apiKey / vendor 本就相同，以首条为准；
-                // 后续条目只贡献模型行（各模型自己的 raw 保留在该模型行里）。
-                Some(existing) => existing.models.push(model),
-                None => providers.push(ProviderRow {
-                    models: vec![model],
-                    ..row
-                }),
-            }
+        Ok(build_load(entries, false))
+    }
+
+    /// 带路径的解析：优先读 ModelHarbor 的全量副本（`models.full.json`）。
+    ///
+    /// 全量副本才是界面上那份「全部配置」的真源——它含所有条目（含未勾选的）以及
+    /// 每条自己的勾选状态。只读 `models.json` 会看到「勾选的那几条」，取消勾选的条目
+    /// 在界面上凭空消失，用户既看不到也勾不回来。
+    ///
+    /// 副本不存在（首次使用、用户自己删了、从别处拷来的配置）时退回 `models.json`，
+    /// 此时按**位置**推导勾选状态（见 [`build_load`]），行为与拆分之前一致。
+    ///
+    /// 副本存在时仍要读一遍主配置并**并集**进去：用户可能手改了 `models.json`
+    /// （WorkBuddy 自己不写它），手加的条目不在副本里，不补就看不见。
+    fn parse_at(&self, content: &str, path: &str) -> Result<BackendLoad, String> {
+        if let Some(full) = load_full_store(path) {
+            let effective = parse_config_content(content)
+                .ok()
+                .and_then(|root| entries_of(&root).cloned())
+                .unwrap_or_default();
+            return Ok(build_load(
+                merge_full_and_effective(&full, &effective),
+                true,
+            ));
         }
-        // 启用状态按**位置**推导，不读文件里的 `disabled` 键：
-        // WorkBuddy 的选择器按裸 id 全局去重，同一个模型名只有**第一条**生效，
-        // 后面同名的全都不生效。界面就该如实显示这个事实——每个 id 的第一条启用，
-        // 其余关闭。这样用户一眼看到的就是 WorkBuddy 真正会用的那份清单。
-        // （早前写过 `disabled` 键，现已不再写入；旧文件里若残留也一律忽略。）
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for p in providers.iter_mut() {
-            for m in p.models.iter_mut() {
-                let id = m.id.trim().to_string();
-                m.disabled = !seen.insert(id);
-            }
-        }
-        // extras 也换成还原后的数组：保存时 `existing` 索引取的就是它，
-        // 带着序号会让「同名同模型」匹配不上，旧条目里继承的字段（tags / credits）丢失。
-        let extras = Value::Array(entries);
-        Ok(BackendLoad {
-            root: extras.clone(),
-            agents: Vec::new(),
-            providers,
-            extras,
-        })
+        self.parse(content)
     }
 
     fn serialize_root(
@@ -375,86 +596,41 @@ impl Backend for WorkBuddyBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
-        let base = target_root.unwrap_or(extras);
-        // 旧条目按 **(name, id) 二元组**保留：WorkBuddy 按模型扁平存储，不同 provider
-        // 可以有同名模型（用户文件里 `gpt-5.6-sol` 就有 4 条），只按 `id` 建索引会让
-        // 后写的 provider 继承到别家条目的 tags / credits 等字段。
-        let existing: HashMap<(String, String), Value> = entries_of(base)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| {
-                        let id = v.get("id").and_then(Value::as_str)?;
-                        let name = v.get("name").and_then(Value::as_str).unwrap_or_default();
-                        Some(((name.to_string(), id.to_string()), v.clone()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // 一家提供商的**每个模型各写一条**条目（旧实现只写第一条，第二个模型起全部丢失）。
-        let mut out: Vec<Value> = Vec::new();
-        for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
-            // 没有模型的 provider 也要留一条（id 回落到 provider key），
-            // 否则刚建好还没填模型的卡片一保存就消失。
-            let models: Vec<Option<&ModelRow>> = if p.models.is_empty() {
-                vec![None]
-            } else {
-                p.models.iter().map(Some).collect()
-            };
-            for model in models {
-                // 关掉的模型整条不写：WorkBuddy 按裸 id 全局去重，同 id 的其余条目
-                // 写进去也不会生效（只有第一条被采用），留在文件里只会占地方。
-                if model.map(|m| m.disabled).unwrap_or(false) {
-                    continue;
-                }
-                let model_id = model
-                    .map(|m| m.id.trim())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(p.key.trim())
-                    .to_string();
-                let mut entry = existing
-                    .get(&(p.key.trim().to_string(), model_id))
-                    .and_then(Value::as_object)
-                    .cloned()
-                    .unwrap_or_default();
-                if let Some(fresh) = entry_from_provider(p, model).as_object() {
-                    for (k, v) in fresh {
-                        entry.insert(k.clone(), v.clone());
-                    }
-                }
-                // 历史文件里可能残留 `disabled` 键（早期版本写过），一律清掉：
-                // 停用现在靠「不写这条」表达，留着这个键只会让人以为还有别的开关。
-                entry.remove("disabled");
-                out.push(Value::Object(entry));
-            }
-        }
-        // 兜底：同一个模型 id 只保留**第一条**。WorkBuddy 的选择器按裸 id 全局去重，
-        // 第二条起写进去也不会被采用，留在文件里只会让人以为配了。
-        // 解析时已把同名的其余条目标记为关闭，正常情况下走不到这里；
-        // 但以编程方式构造的 provider（测试、跨格式转换）未必设过这些标记，
-        // 所以在写盘这一层再收一次，保证「文件里不存在不生效的条目」这个不变量。
-        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        out.retain(|entry| {
-            let id = entry
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            seen_ids.insert(id)
-        });
+        // 这个函数的产物是 **WorkBuddy 的生效清单**：只含勾选的条目、每个 id 只留第一条。
+        // 全量副本（含所有条目与勾选标记）由 `save_sidecars` 另写一份，两者共用
+        // `all_entries` 构造，因此同一次保存里字段口径完全一致。
+        //
         // **不要给重复 id 加序号来绕开选择器去重。** 曾经这么做过，结论是错的：
         // WorkBuddy 的 `id` 既是选择器的去重键，**也是发给上游的模型名**
         // （`configureModelConfig` 把 `ec.id` 赋给 `agent.model`，`ModelProvider.getModel`
         // 再把这个字符串原样交给请求体；唯一改动是发送前 `stripCustomLocalModelPrefix`
         // 去掉 `custom-local:` 前缀）。加序号的 `id` 会让请求体变成
         // `gpt-5.6-sol01`，上游直接 model-not-found。
+        Value::Array(effective_entries(&all_entries(
+            providers,
+            target_root.unwrap_or(extras),
+        )))
+    }
+
+    /// 全量副本（`models.full.json`）：所有条目 + 每条自己的勾选状态。
+    ///
+    /// 这是界面上那份「全部配置」的落盘形态。有了它，取消勾选只是把条目从生效清单
+    /// 移到副本里，条目本身和它的字段（含 API key、tags、credits）都还在，
+    /// 勾回来即可恢复——不会再出现「取消勾选 = 永久删除」。
+    fn save_sidecars(&self, path: &str, providers: &[ProviderRow]) -> Result<(), String> {
+        // 继承未知字段的基底取**全量副本**，没有才退回主配置。
         //
-        // 选择器只列 15 行的真正原因是**全局按裸 id 去重**，这是 WorkBuddy 的既有机制，
-        // 不是配置错误：同一个模型名在文件里只能生效一次。要减少重复，只能删条目或
-        // 用 `disabled` 停用（见 UI 上的启用/停用开关），不能改 id。
-        Value::Array(out)
+        // 不能只用主配置当基底：`models.json` 里只有勾选的条目，拿它当基底会让未勾选
+        // 条目的未知字段（tags / credits / 用户自己加的键）在每次保存时被抹掉——
+        // 那正是这份副本要解决的问题。副本是「上次的完整状态」，字段最全。
+        //
+        // 用副本当基底**不会让已删除的条目复活**：条目是从 `providers`（界面状态）
+        // 生成的，删掉模型行就不再生成，基底里有没有它都一样。
+        let base = load_full_store(path)
+            .map(Value::Array)
+            .unwrap_or_else(|| self.load_target_root(path));
+        let all = all_entries(providers, &base);
+        super::write_config(&full_store_path(path), &render_array(&all, false))
     }
 
     fn load_target_root(&self, path: &str) -> Value {

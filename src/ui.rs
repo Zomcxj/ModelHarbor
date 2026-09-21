@@ -9,7 +9,7 @@ use eframe::egui;
 pub enum GrabCursor {
     #[default]
     None,
-    /// 悬停在可拖动处：张开的手掌。
+    /// 悬停在可拖动处：系统自带的手形光标（`IDC_HAND`）。
     Palm,
     /// 已按住：握起的拳头。
     Fist,

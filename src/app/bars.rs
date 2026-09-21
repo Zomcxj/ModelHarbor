@@ -269,11 +269,16 @@ impl App {
                         // 提供的判定（文档原话：即使别的控件正被拖动也可能为 true）。
                         // 用 `Inside` 与按钮自身的描边同几何（egui 的 `Frame` 就是 Inside），
                         // 换位目标与选中态的环粗细/位置才完全一致；`Outside` 会多出一圈。
+                        //
+                        // 圆角必须取**按钮自己的** `corner_radius`，不能写死。写死 3.0 时
+                        // 云朵档的按钮圆角是 16，绿环就成了套在圆角按钮上的一个方框，
+                        // 看着像另画了个矩形而不是「把边框换成绿色」。取同一个值，
+                        // 绿环就精确压在按钮原有描边上，只换颜色、不改形状。
                         if self.tab_drag_src.is_some() && btn_resp.contains_pointer() {
                             if self.tab_drag_src != Some(id) {
                                 ui.painter().rect_stroke(
                                     btn_resp.rect,
-                                    3.0,
+                                    ui.visuals().widgets.inactive.corner_radius,
                                     egui::Stroke::new(2.0f32, crate::ui::DROP_TARGET_COLOR),
                                     egui::StrokeKind::Inside,
                                 );

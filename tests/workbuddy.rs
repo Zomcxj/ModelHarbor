@@ -824,3 +824,171 @@ fn enabled_models_do_not_gain_a_disabled_key() {
         );
     }
 }
+
+/// 全量副本路径：与主配置同目录、固定文件名。
+#[test]
+fn full_store_sits_next_to_models_json() {
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    // 通过 trait 对象拿不到 full_store_path（它是本模块的自由函数），
+    // 所以这里用 parse_at 的副作用间接验证：副本不存在时必须退回主配置。
+    let _ = b;
+    let path = r"C:\Users\me\.workbuddy\models.json";
+    let full = model_harbor::backends::workbuddy::full_store_path(path);
+    assert_eq!(full, r"C:\Users\me\.workbuddy\models.full.json");
+    // 名字必须与 models.json 不同：WorkBuddy 按精确文件名读后者，
+    // 同名会直接把生效清单覆盖成全量清单，去重就白做了。
+    assert!(!full.ends_with("models.json") || full.ends_with("models.full.json"));
+    assert_ne!(
+        std::path::Path::new(&full).file_name(),
+        std::path::Path::new(path).file_name()
+    );
+    // WSL 路径用 `/` 分隔，与 credentials::sidecar_path 同一套规则。
+    assert_eq!(
+        model_harbor::backends::workbuddy::full_store_path("/home/me/.workbuddy/models.json"),
+        "/home/me/.workbuddy/models.full.json"
+    );
+}
+
+/// 核心回归：取消勾选的条目**不能丢**。
+///
+/// 拆成两份配置之前，「取消勾选」= 保存时整条跳过 = 条目连同 API key 一起从磁盘上
+/// 永久消失（用户的 36 条会掉到 15 条、12 个厂商整体消失）。现在取消勾选只是把它
+/// 从生效清单移到全量副本里，勾回来必须能原样恢复。
+#[test]
+fn unchecking_a_model_keeps_it_in_the_full_store() {
+    let dir = temp_path("models.json");
+    let path = dir.display().to_string();
+    let saved = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1",
+          "apiKey": "sk-a", "tags": ["a-only"] },
+        { "id": "gpt-5.6-sol", "name": "b", "url": "https://b.example/v1",
+          "apiKey": "sk-b", "tags": ["b-only"] }
+    ]);
+    let text = serde_json::to_string(&saved).unwrap();
+    std::fs::write(&dir, &text).unwrap();
+
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let load = b.parse_at(&text, &path).unwrap();
+    assert_eq!(load.providers.len(), 2, "两条都要进界面");
+
+    // 用户把第二条也勾上（互斥：第一条自动关闭）。
+    let mut providers = load.providers.clone();
+    providers[0].models[0].disabled = true;
+    providers[1].models[0].disabled = false;
+
+    let root = b.serialize_root(&[], &providers, &load.extras, Some(&saved));
+    assert_eq!(root.as_array().unwrap().len(), 1, "生效清单只留勾选那条");
+    assert_eq!(root.as_array().unwrap()[0]["name"], json!("b"));
+    // 写两份，**顺序与 save.rs 一致**：先写全量副本，再写主配置。
+    // 副本的字段继承基底读的是副本自己，所以必须赶在主配置被筛过之前写。
+    b.save_sidecars(&path, &providers).expect("写全量副本");
+    std::fs::write(&dir, b.render(&root, false).unwrap()).unwrap();
+
+    // 全量副本里两条都在，且各自带着自己的字段。
+    let full_path = model_harbor::backends::workbuddy::full_store_path(&path);
+    let full: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&full_path).unwrap()).unwrap();
+    let items = full.as_array().unwrap();
+    assert_eq!(items.len(), 2, "全量副本必须保留被取消勾选的那条");
+    assert_eq!(items[0]["tags"], json!(["a-only"]));
+    assert_eq!(items[1]["tags"], json!(["b-only"]));
+    assert_eq!(
+        items[0]["apiKey"],
+        json!("sk-a"),
+        "被取消勾选那条的 key 不能丢"
+    );
+    assert_eq!(items[0]["disabled"], json!(true), "勾选状态记录在副本里");
+
+    // 重新加载：必须优先读副本，两条都在、勾选状态原样还原。
+    let reloaded = b
+        .parse_at(&std::fs::read_to_string(&dir).unwrap(), &path)
+        .unwrap();
+    assert_eq!(reloaded.providers.len(), 2, "副本存在时按副本还原全部条目");
+    assert!(reloaded.providers[0].models[0].disabled, "第一条仍是关闭");
+    assert!(!reloaded.providers[1].models[0].disabled, "第二条仍是勾选");
+
+    // 勾回来：生效清单重新变成两条？不——同 id 只能生效一条，
+    // 但把第一条也勾上后，界面两条都启用，保存时按顺序留第一条。
+    let mut back = reloaded.providers.clone();
+    back[0].models[0].disabled = false;
+    let root2 = b.serialize_root(&[], &back, &reloaded.extras, None);
+    assert_eq!(root2.as_array().unwrap().len(), 1);
+    assert_eq!(
+        root2.as_array().unwrap()[0]["name"],
+        json!("a"),
+        "按顺序取第一条"
+    );
+
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+/// 副本不存在时必须退回主配置，且按位置推导勾选状态。
+#[test]
+fn without_the_full_store_the_effective_list_is_read_by_position() {
+    let dir = temp_path("models.json");
+    let path = dir.display().to_string();
+    let saved = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1" },
+        { "id": "gpt-5.6-sol", "name": "b", "url": "https://b.example/v1" }
+    ]);
+    std::fs::write(&dir, serde_json::to_string(&saved).unwrap()).unwrap();
+    assert!(
+        !std::path::Path::new(&model_harbor::backends::workbuddy::full_store_path(&path)).exists(),
+        "这个用例里不该有副本"
+    );
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let load = b.parse_at(&saved.to_string(), &path).unwrap();
+    assert_eq!(load.providers.len(), 2);
+    assert!(!load.providers[0].models[0].disabled, "第一条启用");
+    assert!(load.providers[1].models[0].disabled, "同 id 的第二条关闭");
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+/// 用户手改 `models.json` 后，新加的条目必须出现在界面上。
+///
+/// 全量副本是 ModelHarbor 上次保存的快照；WorkBuddy 自己不写 `models.json`
+/// （它是用户手编的），所以「主配置里有、副本里没有」是正常情况。
+/// 只读副本会让用户刚手加的模型在界面上凭空消失。
+#[test]
+fn hand_added_entries_in_models_json_still_show_up() {
+    let dir = temp_path("models.json");
+    let path = dir.display().to_string();
+    let saved = json!([
+        { "id": "old-model", "name": "a", "url": "https://a.example/v1", "apiKey": "sk-a" }
+    ]);
+    std::fs::write(&dir, serde_json::to_string(&saved).unwrap()).unwrap();
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+
+    // 先保存一次，生成全量副本（此时只有 old-model）。
+    let load = b.parse_at(&saved.to_string(), &path).unwrap();
+    b.save_sidecars(&path, &load.providers).unwrap();
+
+    // 用户手改主配置，加了一条新模型。
+    let hand = json!([
+        { "id": "old-model", "name": "a", "url": "https://a.example/v1", "apiKey": "sk-a" },
+        { "id": "hand-added", "name": "z", "url": "https://z.example/v1", "apiKey": "sk-z" }
+    ]);
+    std::fs::write(&dir, serde_json::to_string(&hand).unwrap()).unwrap();
+
+    let reloaded = b.parse_at(&hand.to_string(), &path).unwrap();
+    let ids: Vec<String> = reloaded
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter().map(|m| m.id.clone()))
+        .collect();
+    assert!(
+        ids.contains(&"hand-added".to_string()),
+        "手加的条目必须出现在界面上：{ids:?}"
+    );
+    assert!(ids.contains(&"old-model".to_string()));
+    // 手加的条目属于生效清单，必须是启用的。
+    let added = reloaded
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter())
+        .find(|m| m.id == "hand-added")
+        .unwrap();
+    assert!(!added.disabled, "主配置里的条目是生效的，应显示为启用");
+
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
