@@ -324,6 +324,12 @@ fn opencode_family_serializes_identically() {
 }
 
 /// 三个成员的默认路径与图标各自独立，不能串。
+///
+/// 图标这里必须比**视觉**差异，不能只比字节：MiMo Code 是 opencode 的 fork，官方
+/// favicon / 桌面应用图标 / console logo 全都沿用 opencode 的同一份图形，所以照抄
+/// 官方资产会得到一个"字节不同、看起来一模一样"的图标——页签上根本分不出是哪一页。
+/// 只断言 `assert_ne!` 恰好放过这种情形（旧图标与 opencode 有 13% 像素不同，全是抗锯齿
+/// 差异）。这里改成量 RGB 差异像素占比，阈值取 25%：同图形换抗锯齿达不到，换图形能过。
 #[test]
 fn opencode_family_members_have_distinct_paths_and_icons() {
     let paths: Vec<String> = [
@@ -340,16 +346,47 @@ fn opencode_family_members_have_distinct_paths_and_icons() {
     assert_ne!(paths[0], paths[1]);
     assert_ne!(paths[1], paths[2]);
 
-    let icons: Vec<&[u8]> = [
+    let formats = [
         ConfigFormat::Opencode,
         ConfigFormat::Kilocode,
         ConfigFormat::Mimocode,
-    ]
-    .iter()
-    .map(|f| backends::backend(*f).icon_rgba().expect("有图标").0)
-    .collect();
-    assert_ne!(icons[0], icons[1], "kilocode 图标不能与 opencode 相同");
-    assert_ne!(icons[1], icons[2], "mimocode 图标不能与 kilocode 相同");
-    assert_eq!(icons[0].len(), 32 * 32 * 4, "图标必须是 32×32 RGBA");
-    assert_eq!(icons[2].len(), 32 * 32 * 4);
+    ];
+    let icons: Vec<&[u8]> = formats
+        .iter()
+        .map(|f| backends::backend(*f).icon_rgba().expect("有图标").0)
+        .collect();
+    for icon in &icons {
+        assert_eq!(icon.len(), 32 * 32 * 4, "图标必须是 32×32 RGBA");
+    }
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        let d = differing_pixel_fraction(icons[a], icons[b]);
+        assert!(
+            d > 0.25,
+            "{:?} 与 {:?} 的图标视觉上几乎相同（差异像素仅 {:.1}%），页签上分不出来",
+            formats[a],
+            formats[b],
+            d * 100.0
+        );
+    }
+}
+
+/// 两个 32×32 RGBA 图标里「肉眼可辨不同」的像素占比。
+///
+/// 单通道差之和超过 30 才算不同，以滤掉抗锯齿与缩放的细微偏差；完全一致返回 0.0。
+fn differing_pixel_fraction(a: &[u8], b: &[u8]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let mut differing = 0usize;
+    let mut total = 0usize;
+    for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        total += 1;
+        let delta: i32 = pa[..3]
+            .iter()
+            .zip(&pb[..3])
+            .map(|(x, y)| (*x as i32 - *y as i32).abs())
+            .sum();
+        if delta > 30 {
+            differing += 1;
+        }
+    }
+    differing as f32 / total as f32
 }

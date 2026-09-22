@@ -54,6 +54,8 @@ cargo build --release
 
 **目录名优先于文件名**：Kilo 那份遗留的 `~/.config/kilo/opencode.json` 名字像 opencode，但目录已经把它判给了 kilocode，所以归 kilocode 页面（反过来 `~/.config/opencode/kilo.json` 归 opencode）。否则按注册顺序先到的 opencode 会抢走它，页面与保存路径都会指错目录。
 
+**MiMo Code 的页签图标不是官方 favicon。** MiMo Code 是 opencode 的 fork，它仓库里的 favicon、桌面应用图标、console logo 全都沿用 opencode 的同一份图形（`favicon.svg` 与 opencode 官方逐字节相同），照抄官方资产会得到一个和 opencode 页签**看起来一模一样**的图标。所以这里改用小米官方 logo（橙底白色 `mi`）。测试 `opencode_family_members_have_distinct_paths_and_icons` 因此按**像素差异占比**（阈值 25%）判定，而不是只比字节——同图形换抗锯齿只有约 13% 差异，换图形可达 97%。
+
 ## 获取模型
 
 每个 provider 卡片与「新增 Provider」弹窗的 Models 标题右侧都有「获取模型」按钮，按 provider 的 api 类型请求模型列表并弹层展示：

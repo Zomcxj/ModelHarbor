@@ -63,6 +63,11 @@ pub static KILOCODE: Flavor = Flavor {
 /// MiMo Code（`@mimo-ai/cli`，小米）：opencode 的 fork，配置目录
 /// `~/.config/mimocode/`（Windows 亦为 `%LOCALAPPDATA%\mimocode\`，两者同源解析），
 /// 主配置 `mimocode.json`（也接受 `mimocode.jsonc`）。它**不读** `opencode.json`。
+///
+/// 图标用小米官方 logo（橙底白 `mi`），**不取 MiMo Code 的 favicon**：MiMo 仓库里的
+/// favicon / 桌面应用图标 / console logo 全都沿用 opencode 的同一份图形
+/// （`favicon.svg` 与 opencode 官方逐字节相同），照抄会得到一个和 opencode 页签
+/// 看起来一样的图标。
 pub static MIMOCODE: Flavor = Flavor {
     id: ConfigFormat::Mimocode,
     dir: "mimocode",
