@@ -339,7 +339,7 @@ impl eframe::App for App {
                     // 且按需求放在 Providers 下方（只影响界面顺序，不动配置文件里的字段顺序）。
                     self.ui_providers_section(ui);
                     ui.add_space(crate::theme::SPACE_2);
-                    if self.current_page == ConfigFormat::Opencode {
+                    if self.current_page.is_opencode_family() {
                         self.ui_agents_section(ui);
                         ui.add_space(crate::theme::SPACE_2);
                     }
@@ -371,7 +371,7 @@ impl eframe::App for App {
 impl App {
     /// 是否有任意拖动源正在拖拽。
     ///
-    /// 页签（六个后端图标）也是拖动源：它此前漏在这一组之外，于是拖卡片是抓取光标、
+    /// 页签（后端图标）也是拖动源：它此前漏在这一组之外，于是拖卡片是抓取光标、
     /// 拖图标却退回系统手型。自定义抓取光标是整窗生效的（子类过程拦 WM_SETCURSOR），
     /// 只要拖拽期间置位，对所有控件一视同仁。
     fn is_dragging_anything(&self) -> bool {
@@ -415,6 +415,8 @@ impl App {
             sync_wsl: self.sync_wsl,
             config_paths: crate::prefs::ConfigPathPrefs {
                 opencode: self.path_override(ConfigFormat::Opencode),
+                kilocode: self.path_override(ConfigFormat::Kilocode),
+                mimocode: self.path_override(ConfigFormat::Mimocode),
                 pi: self.path_override(ConfigFormat::Pi),
                 oh_my_pi: self.path_override(ConfigFormat::OhMyPi),
                 deepseek_harness: self.path_override(ConfigFormat::DeepSeekHarness),

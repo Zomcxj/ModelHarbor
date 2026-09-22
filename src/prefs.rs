@@ -132,10 +132,12 @@ pub fn legacy_collapsed_id(kind: &str, key: &str) -> String {
     format!("{kind}/{key}")
 }
 
-/// 六个后端的配置路径覆盖（空字符串 = 不覆盖，用启动时自动探测到的默认路径）。
+/// 八个后端的配置路径覆盖（空字符串 = 不覆盖，用启动时自动探测到的默认路径）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConfigPathPrefs {
     pub opencode: String,
+    pub kilocode: String,
+    pub mimocode: String,
     pub pi: String,
     pub oh_my_pi: String,
     pub deepseek_harness: String,
@@ -148,6 +150,8 @@ impl ConfigPathPrefs {
     pub fn get(&self, format: crate::format::ConfigFormat) -> &str {
         match format {
             crate::format::ConfigFormat::Opencode => &self.opencode,
+            crate::format::ConfigFormat::Kilocode => &self.kilocode,
+            crate::format::ConfigFormat::Mimocode => &self.mimocode,
             crate::format::ConfigFormat::Pi => &self.pi,
             crate::format::ConfigFormat::OhMyPi => &self.oh_my_pi,
             crate::format::ConfigFormat::DeepSeekHarness => &self.deepseek_harness,
@@ -160,6 +164,8 @@ impl ConfigPathPrefs {
     pub fn set(&mut self, format: crate::format::ConfigFormat, path: &str) {
         let slot = match format {
             crate::format::ConfigFormat::Opencode => &mut self.opencode,
+            crate::format::ConfigFormat::Kilocode => &mut self.kilocode,
+            crate::format::ConfigFormat::Mimocode => &mut self.mimocode,
             crate::format::ConfigFormat::Pi => &mut self.pi,
             crate::format::ConfigFormat::OhMyPi => &mut self.oh_my_pi,
             crate::format::ConfigFormat::DeepSeekHarness => &mut self.deepseek_harness,
@@ -272,6 +278,8 @@ impl Prefs {
                 .unwrap_or(false),
             config_paths: ConfigPathPrefs {
                 opencode: nested_str(&root, "config_paths", "opencode"),
+                kilocode: nested_str(&root, "config_paths", "kilocode"),
+                mimocode: nested_str(&root, "config_paths", "mimocode"),
                 pi: nested_str(&root, "config_paths", "pi"),
                 oh_my_pi: nested_str(&root, "config_paths", "oh_my_pi"),
                 deepseek_harness: nested_str(&root, "config_paths", "deepseek_harness"),
@@ -308,6 +316,8 @@ impl Prefs {
         let mut paths = Map::new();
         for (key, value) in [
             ("opencode", &self.config_paths.opencode),
+            ("kilocode", &self.config_paths.kilocode),
+            ("mimocode", &self.config_paths.mimocode),
             ("pi", &self.config_paths.pi),
             ("oh_my_pi", &self.config_paths.oh_my_pi),
             ("deepseek_harness", &self.config_paths.deepseek_harness),
@@ -406,6 +416,8 @@ mod tests {
             sync_wsl: true,
             config_paths: ConfigPathPrefs {
                 opencode: "D:\\conf\\opencode.json".to_string(),
+                kilocode: String::new(),
+                mimocode: String::new(),
                 pi: String::new(),
                 oh_my_pi: String::new(),
                 deepseek_harness: "D:\\conf\\dsh.yaml".to_string(),

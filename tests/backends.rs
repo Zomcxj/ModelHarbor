@@ -235,3 +235,121 @@ fn write_config_creates_parent_dirs() {
     std::fs::remove_file(&p).ok();
     p.parent().map(|d| std::fs::remove_dir(d).ok());
 }
+
+/// opencode 系（opencode / kilocode / mimocode）三者内容形状相同，判别只能靠路径。
+///
+/// Kilo Code 与 MiMo Code 都是 opencode 的 fork，配置 schema 逐字相同，所以任何
+/// 基于内容的判别都无法区分它们——只有配置目录名 / 主配置文件名能区分。
+#[test]
+fn opencode_family_members_are_told_apart_by_path() {
+    let body = r#"{"provider":{"p":{"options":{"baseURL":"https://x.example/v1"}}}}"#;
+    // 同一份内容：路径决定归属。
+    for (path, want) in [
+        (
+            r"C:\Users\me\.config\opencode\opencode.json",
+            ConfigFormat::Opencode,
+        ),
+        (
+            r"C:\Users\me\.config\kilo\kilo.json",
+            ConfigFormat::Kilocode,
+        ),
+        (
+            r"C:\Users\me\.config\mimocode\mimocode.json",
+            ConfigFormat::Mimocode,
+        ),
+        ("/home/me/.config/kilo/kilo.jsonc", ConfigFormat::Kilocode),
+        (
+            "/home/me/.config/mimocode/mimocode.jsonc",
+            ConfigFormat::Mimocode,
+        ),
+    ] {
+        assert_eq!(
+            backends::detect_format(body, path),
+            want,
+            "路径 {path} 应判为 {want:?}"
+        );
+    }
+    // 无路径线索时回落 opencode 本家（它是这一族的代表与回落项）。
+    assert_eq!(backends::detect_format(body, ""), ConfigFormat::Opencode);
+}
+
+/// Kilo 会读同目录下遗留的 `~/.config/kilo/opencode.json`：文件名像 opencode，
+/// 但**目录名**已经把这份文件判给了 kilocode，内容兜底不得再抢。
+///
+/// 这是路径优先于内容的必要结果——否则注册顺序在前的 opencode 会把它抢走，
+/// 页面与保存路径都会指向 `~/.config/opencode/opencode.json`，写错门。
+#[test]
+fn a_siblings_directory_name_beats_a_matching_filename() {
+    let body = r#"{"provider":{"p":{"options":{"baseURL":"https://x.example/v1"}}}}"#;
+    for path in [
+        r"C:\Users\me\.config\kilo\opencode.json",
+        "/home/me/.config/kilo/opencode.jsonc",
+    ] {
+        assert_eq!(
+            backends::detect_format(body, path),
+            ConfigFormat::Kilocode,
+            "kilo 目录下的 opencode.json 属于 kilocode：{path}"
+        );
+    }
+    // 反过来同样成立：目录名永远优先于文件名。
+    assert_eq!(
+        backends::detect_format(body, r"C:\Users\me\.config\opencode\kilo.json"),
+        ConfigFormat::Opencode,
+        "opencode 目录下的 kilo.json 属于 opencode"
+    );
+}
+
+/// 三者写盘口径完全一致：同一份界面状态序列化出的 provider / agent 字段相同。
+#[test]
+fn opencode_family_serializes_identically() {
+    let providers = vec![pi_provider("openai_x", "gpt-5.6-sol")];
+    let agents = vec![oc_agent("build")];
+    let mut roots = Vec::new();
+    for fmt in [
+        ConfigFormat::Opencode,
+        ConfigFormat::Kilocode,
+        ConfigFormat::Mimocode,
+    ] {
+        let b = backends::backend(fmt);
+        let extras = json!({ "mcp": { "x": { "type": "local" } } });
+        let root = b.serialize_root(&agents, &providers, &extras, None);
+        // 顶层未知字段必须保留，provider / agent 必须写进去。
+        assert!(root.get("mcp").is_some(), "{fmt:?} 丢了顶层字段");
+        assert!(root.get("provider").is_some(), "{fmt:?} 未写 provider");
+        assert!(root.get("agent").is_some(), "{fmt:?} 未写 agent");
+        roots.push(serde_json::to_string(&root).unwrap());
+    }
+    assert_eq!(roots[0], roots[1], "opencode 与 kilocode 写盘应一致");
+    assert_eq!(roots[1], roots[2], "kilocode 与 mimocode 写盘应一致");
+}
+
+/// 三个成员的默认路径与图标各自独立，不能串。
+#[test]
+fn opencode_family_members_have_distinct_paths_and_icons() {
+    let paths: Vec<String> = [
+        ConfigFormat::Opencode,
+        ConfigFormat::Kilocode,
+        ConfigFormat::Mimocode,
+    ]
+    .iter()
+    .map(|f| ConfigPaths::default_local_path(*f))
+    .collect();
+    assert!(paths[0].contains("opencode"), "{:?}", paths[0]);
+    assert!(paths[1].contains("kilo"), "{:?}", paths[1]);
+    assert!(paths[2].contains("mimocode"), "{:?}", paths[2]);
+    assert_ne!(paths[0], paths[1]);
+    assert_ne!(paths[1], paths[2]);
+
+    let icons: Vec<&[u8]> = [
+        ConfigFormat::Opencode,
+        ConfigFormat::Kilocode,
+        ConfigFormat::Mimocode,
+    ]
+    .iter()
+    .map(|f| backends::backend(*f).icon_rgba().expect("有图标").0)
+    .collect();
+    assert_ne!(icons[0], icons[1], "kilocode 图标不能与 opencode 相同");
+    assert_ne!(icons[1], icons[2], "mimocode 图标不能与 kilocode 相同");
+    assert_eq!(icons[0].len(), 32 * 32 * 4, "图标必须是 32×32 RGBA");
+    assert_eq!(icons[2].len(), 32 * 32 * 4);
+}

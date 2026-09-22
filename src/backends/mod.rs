@@ -103,8 +103,14 @@ pub trait Backend: Sync {
 /// （omp 在 pi 之前：.yml 扩展名优先归 omp，无扩展名时 JSON 语法内容让位给 pi；
 /// workbuddy / zcode 有各自的唯一顶层标记——数组根 / `config.providerOrder`——
 /// 放在 pi 系之前，避免被 `providers` 判定抢走）。
+///
+/// opencode 系（opencode / kilocode / mimocode）三者内容形状一致，靠**路径**互相区分
+/// （见 [`opencode::path_matches`]），所以它们的相对顺序不影响判别结果；本家 opencode
+/// 仍是第 0 个回落项。
 pub static BACKENDS: &[&dyn Backend] = &[
     &opencode::BACKEND,
+    &opencode::KILOCODE_BACKEND,
+    &opencode::MIMOCODE_BACKEND,
     &workbuddy::BACKEND,
     &zcode::BACKEND,
     &deepseek_harness::BACKEND,

@@ -28,7 +28,7 @@ pub(super) struct CardActions {
     pub(super) model_enable: Option<(usize, usize)>,
 }
 
-/// provider / model 表单的字段可见性与方言标签（六个页面共用）。
+/// provider / model 表单的字段可见性与方言标签（各页面共用）。
 #[derive(Clone, Copy)]
 pub(super) struct ProviderFormFlags {
     pub(super) show_oc: bool,
@@ -57,7 +57,9 @@ pub(super) struct ProviderFormFlags {
 
 impl ProviderFormFlags {
     pub(super) fn new(app: &App) -> Self {
-        let show_oc = app.current_page == ConfigFormat::Opencode;
+        // opencode 系（opencode / kilocode / mimocode）字段口径相同：都用 npm 包名表达
+        // 协议、都有 options.baseURL / options.timeout，所以这一族共用一个开关。
+        let show_oc = app.current_page.is_opencode_family();
         let show_dsh = app.current_page == ConfigFormat::DeepSeekHarness;
         let show_zcode = app.current_page == ConfigFormat::ZCode;
         let show_wb = app.current_page == ConfigFormat::WorkBuddy;
@@ -134,7 +136,8 @@ impl App {
     /// 当前页面的思考档位标签。
     pub(super) fn dialect_variants(&self) -> (&'static str, &'static [&'static str]) {
         match self.current_page {
-            ConfigFormat::Opencode => (
+            // opencode 系三者档位字段名相同。
+            ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => (
                 "variants",
                 &["none", "low", "medium", "high", "xhigh", "max", "ultra"],
             ),

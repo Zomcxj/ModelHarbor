@@ -1,7 +1,6 @@
-//! Agents 区块：卡片列表、编辑表单与新增表单（仅 opencode 页面使用）。
+//! Agents 区块：卡片列表、编辑表单与新增表单（仅 opencode 系页面使用）。
 use super::App;
 use crate::app::bars::{sticky_begin, sticky_end};
-use crate::format::ConfigFormat;
 use crate::model::AgentRow;
 use crate::ui::{card_frame, card_list, field_label, move_item, numeric_text_edit, DragHandle};
 use eframe::egui;
@@ -56,7 +55,7 @@ impl App {
                 ui.strong(egui::RichText::new("Agents").size(crate::theme::TEXT_HEADING));
                 // agents 只属于 opencode 页：来源不是 opencode 时界面没有 agents 数据，
                 // 跨格式保存不会接管目标文件的 agent 容器（避免静默清空）。
-                if self.source_format != ConfigFormat::Opencode {
+                if !self.source_format.is_opencode_family() {
                     let src = self.source_format.label();
                     ui.label(
                         egui::RichText::new(format!(

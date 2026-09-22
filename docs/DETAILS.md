@@ -18,13 +18,13 @@ cargo build --release
 
 ## 页面与格式
 
-顶栏图标切换四个页面（opencode / pi / omp / DSH）。加载任意一份配置后，各页面共享同一份数据，修改 provider 参数在所有页面同步生效（provider / model 顺序亦跨页同步）；Agents 区块仅属于 opencode 页面。
+顶栏图标切换页面（opencode / Kilo Code / MiMo Code / pi / omp / DSH / ZCode / WorkBuddy）。加载任意一份配置后，各页面共享同一份数据，修改 provider 参数在所有页面同步生效（provider / model 顺序亦跨页同步）；Agents 区块仅属于 opencode 系页面。
 
-各页表单按自身方言显示字段与枚举，**没有的字段不占位**。四页的对应关系：
+各页表单按自身方言显示字段与枚举，**没有的字段不占位**。各页的对应关系：
 
-| 概念 | opencode | pi | oh-my-pi | DSH |
+| 概念 | opencode 系 | pi | oh-my-pi | DSH |
 |---|---|---|---|---|
-| 配置路径 | `.config/opencode/opencode.json` | `.pi/agent/models.json` | `.omp/agent/models.yml` | `.dsh/settings.yaml` |
+| 配置路径 | `.config/opencode/opencode.json`<br>`.config/kilo/kilo.json`<br>`.config/mimocode/mimocode.json` | `.pi/agent/models.json` | `.omp/agent/models.yml` | `.dsh/settings.yaml` |
 | 协议 | `npm` | `api`（KnownApi 10 值） | `api`（官方 9 值） | `api` |
 | Base URL | `options.baseURL` | `baseUrl` | `baseUrl` | `baseURL` |
 | 密钥 | `options.apiKey` | `apiKey` | `apiKey`（环境变量名或字面量） | `apiKeyEnv` + `.credentials.yaml` |
@@ -36,7 +36,23 @@ cargo build --release
 | 模型存储 | Map（键 = model id） | Array（含 `id`） | 同 pi | 同 pi |
 | Agents 区块 | 支持 | — | — | — |
 
-协议（`npm` / `api`）四页共用同一份数据，判定顺序为：`npm` 非空按 npm 包推导 → `api` 非空直接用 → 原文件的 `api` → 都没有则按兼容层 `openai-completions`。下拉首项「(空)」表示不指定协议（`npm` 与 `api` 都清空），与 opencode 页 `npm` 的空选项同义且跨页同步。
+协议（`npm` / `api`）各页共用同一份数据，判定顺序为：`npm` 非空按 npm 包推导 → `api` 非空直接用 → 原文件的 `api` → 都没有则按兼容层 `openai-completions`。下拉首项「(空)」表示不指定协议（`npm` 与 `api` 都清空），与 opencode 页 `npm` 的空选项同义且跨页同步。
+
+### opencode 系：opencode / kilocode / mimocode
+
+[Kilo Code](https://kilo.ai) 与 [MiMo Code](https://mimo.xiaomi.com/coder)（小米）都是 opencode 的 fork，配置 schema **逐字相同**——顶层 `provider` / `agent` 两个容器、`options.baseURL` / `options.apiKey` / `options.timeout`、`models.<id>.limit.context|output`、`tool_call`、`reasoning`、`modalities.input` 全部一致。因此这三页共用**同一套**解析、序列化、字段可见性与 Agents 支持实现，差别只有三项：
+
+| | 配置目录 | 主配置文件名 | `$schema` |
+|---|---|---|---|
+| opencode | `.config/opencode/` | `opencode.json`（也接受 `opencode.jsonc`） | `https://opencode.ai/config.json` |
+| kilocode | `.config/kilo/` | `kilo.json`（也接受 `kilo.jsonc`） | `https://app.kilo.ai/config.json` |
+| mimocode | `.config/mimocode/` | `mimocode.json`（也接受 `mimocode.jsonc`） | `https://mimo.xiaomi.com/mimocode/config.json` |
+
+因为三者内容形状完全一致，**没有任何内容特征能区分它们**，判别只能靠**路径**：命中目录名或文件名即认领对应页面，没有路径线索时才按内容（顶层 `provider` 对象）回落 opencode。后果是：把 `kilo.json` 的内容复制到 `opencode.json`，会被认作 opencode 页面——这不影响正确性，因为三者写出的 schema 完全相同，只是图标与保存路径跟着文件名走。
+
+配置目录名以各家官方文档为准：Kilo Code 读 `~/.config/kilo/kilo.json`（另外兼容读取同目录下旧版 `opencode.json`，但不读 `.opencode/`）；MiMo Code 读 `~/.config/mimocode/mimocode.json`（同目录也接受 `config.json`），不读 `opencode.json`。
+
+**目录名优先于文件名**：Kilo 那份遗留的 `~/.config/kilo/opencode.json` 名字像 opencode，但目录已经把它判给了 kilocode，所以归 kilocode 页面（反过来 `~/.config/opencode/kilo.json` 归 opencode）。否则按注册顺序先到的 opencode 会抢走它，页面与保存路径都会指错目录。
 
 ## 获取模型
 
@@ -148,7 +164,7 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 ### 卡片折叠状态
 
 - 记录的是**折叠**的卡片，不在记录里的就是展开：新加载的卡片默认展开
-- 折叠键按“配置文件身份 / 类别 / 名字”分区；同一份配置在四个页面里共享状态，不同配置文件互不覆盖
+- 折叠键按“配置文件身份 / 类别 / 名字”分区；同一份配置在各页面里共享状态，不同配置文件互不覆盖
 - 加载成功后只清理当前配置身份里已经不存在的记录（删掉 / 改名后不残留）；其他配置身份和加载失败场景都保留
 - v2 的 `providers/名字`、`agents/名字` 旧键会在首次成功加载配置后迁移到当前配置身份
 
@@ -196,9 +212,9 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 
 ## 配置文件格式参考
 
-字段细节由界面表单呈现，这里只说明四个格式的**结构形状**（加新 agent 时按同一张表扩展）。
+字段细节由界面表单呈现，这里只说明各格式的**结构形状**（加新 agent 时按同一张表扩展）。
 
-**JSON 系**——opencode 的 `provider` 与 `models` 都是 **Map**（键 = 名字 / model id）；pi 的 `providers` 是 Map、`models` 是 **Array**（每项含 `id`）：
+**JSON 系**——opencode 系三页的 `provider` 与 `models` 都是 **Map**（键 = 名字 / model id），schema 相同，此处以 opencode 为例；pi 的 `providers` 是 Map、`models` 是 **Array**（每项含 `id`）：
 
 ```jsonc
 // opencode.json —— 顶层另有 agent 容器

@@ -1723,7 +1723,7 @@ mod real_file_grouping {
 
 /// 拖动光标：任一拖动源（含页签/后端图标）都必须点亮自定义抓取光标。
 ///
-/// 背景：抓取态的判定此前漏了 `tab_drag_src`，于是拖卡片是抓取光标、拖六个后端图标
+/// 背景：抓取态的判定此前漏了 `tab_drag_src`，于是拖卡片是抓取光标、拖后端图标
 /// 却退回系统手型。自定义光标是整窗生效的，漏一个拖动源就少一处。
 #[cfg(all(test, target_os = "windows"))]
 mod drag_cursor_tests {
@@ -1758,7 +1758,7 @@ mod drag_cursor_tests {
     }
 }
 
-/// 页签（六个后端图标）的状态配色：底色随状态走，图标色**不随状态走**。
+/// 页签（后端图标）的状态配色：底色随状态走，图标色**不随状态走**。
 ///
 /// 背景：高亮此前只改按钮填充，而 16px 图标几乎占满按钮，能看见的只剩一圈细边。
 /// 后来改成「选中就把图标 tint 成强调色上的文字色」，深色主题下那正好是黑色，
@@ -2009,7 +2009,11 @@ mod tab_highlight_tests {
         let mut app = app_with_tabs();
         app.current_page = ConfigFormat::Opencode;
         let tabs = tab_fills(&mut app);
-        assert_eq!(tabs.len(), 6, "六个后端图标各一个按钮");
+        assert_eq!(
+            tabs.len(),
+            crate::backends::BACKENDS.len(),
+            "每个后端图标各一个按钮"
+        );
         assert_eq!(
             tabs[0].1,
             hover_visuals().0,
@@ -2077,7 +2081,11 @@ mod tab_highlight_tests {
             let mut app = app_with_tabs();
             app.current_page = page;
             let tints = tab_icon_tints(&mut app);
-            assert_eq!(tints.len(), 6, "六个页签各有一个图标 tint");
+            assert_eq!(
+                tints.len(),
+                crate::backends::BACKENDS.len(),
+                "每个页签各有一个图标 tint"
+            );
             tints
         };
         let baseline = tints_for(ConfigFormat::Opencode);

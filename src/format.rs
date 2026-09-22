@@ -7,6 +7,8 @@ use std::path::Path;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ConfigFormat {
     Opencode,
+    Kilocode,
+    Mimocode,
     Pi,
     OhMyPi,
     DeepSeekHarness,
@@ -18,6 +20,8 @@ impl ConfigFormat {
     pub fn label(&self) -> &str {
         match self {
             ConfigFormat::Opencode => "opencode",
+            ConfigFormat::Kilocode => "kilocode",
+            ConfigFormat::Mimocode => "mimocode",
             ConfigFormat::Pi => "pi",
             ConfigFormat::OhMyPi => "oh-my-pi",
             ConfigFormat::DeepSeekHarness => "deepseek-harness",
@@ -25,11 +29,29 @@ impl ConfigFormat {
             ConfigFormat::WorkBuddy => "workbuddy",
         }
     }
+
+    /// 是否属于 **opencode 系**：opencode / kilocode / mimocode。
+    ///
+    /// 三者是同一份代码的后代（Kilo Code 与 MiMo Code 都是 opencode 的 fork），配置
+    /// schema **逐字相同**：顶层 `provider` map + `agent` map，provider 用
+    /// `options.baseURL` / `options.apiKey`，模型用 `models.<id>.limit.context|output`
+    /// / `tool_call` / `reasoning`。差别只有**配置目录名、主配置文件名、图标**。
+    ///
+    /// 所以解析、序列化、字段可见性、agents 支持全部共用一套实现；也正因为内容形状
+    /// 完全一致，**判别只能靠路径**（目录名或文件名），不能靠内容特征。
+    pub fn is_opencode_family(&self) -> bool {
+        matches!(
+            self,
+            ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode
+        )
+    }
 }
 
 /// 各后端的解析后路径容器（含用户可覆盖的本地路径）。
 pub struct ConfigPaths {
     pub opencode: String,
+    pub kilocode: String,
+    pub mimocode: String,
     pub pi: String,
     pub oh_my_pi: String,
     pub deepseek_harness: String,
@@ -41,6 +63,8 @@ impl Default for ConfigPaths {
     fn default() -> Self {
         Self {
             opencode: backends::backend(ConfigFormat::Opencode).default_local_path(),
+            kilocode: backends::backend(ConfigFormat::Kilocode).default_local_path(),
+            mimocode: backends::backend(ConfigFormat::Mimocode).default_local_path(),
             pi: backends::backend(ConfigFormat::Pi).default_local_path(),
             oh_my_pi: backends::backend(ConfigFormat::OhMyPi).default_local_path(),
             deepseek_harness: backends::backend(ConfigFormat::DeepSeekHarness).default_local_path(),
@@ -55,6 +79,8 @@ impl ConfigPaths {
     pub fn local_path(&self, format: ConfigFormat) -> String {
         match format {
             ConfigFormat::Opencode => self.opencode.clone(),
+            ConfigFormat::Kilocode => self.kilocode.clone(),
+            ConfigFormat::Mimocode => self.mimocode.clone(),
             ConfigFormat::Pi => self.pi.clone(),
             ConfigFormat::OhMyPi => self.oh_my_pi.clone(),
             ConfigFormat::DeepSeekHarness => self.deepseek_harness.clone(),
@@ -67,6 +93,8 @@ impl ConfigPaths {
     pub fn set_local_path(&mut self, format: ConfigFormat, path: &str) {
         match format {
             ConfigFormat::Opencode => self.opencode = path.to_string(),
+            ConfigFormat::Kilocode => self.kilocode = path.to_string(),
+            ConfigFormat::Mimocode => self.mimocode = path.to_string(),
             ConfigFormat::Pi => self.pi = path.to_string(),
             ConfigFormat::OhMyPi => self.oh_my_pi = path.to_string(),
             ConfigFormat::DeepSeekHarness => self.deepseek_harness = path.to_string(),
@@ -209,6 +237,8 @@ mod tests {
                 "workbuddy",
                 "zcode",
                 "deepseek-harness",
+                "kilocode",
+                "mimocode",
                 "oh-my-pi",
                 "opencode"
             ],
@@ -230,7 +260,14 @@ mod tests {
         // 未安装的仍按字母序跟在后面，不受 saved 影响
         assert_eq!(
             &labels[2..],
-            &["deepseek-harness", "oh-my-pi", "opencode", "workbuddy"],
+            &[
+                "deepseek-harness",
+                "kilocode",
+                "mimocode",
+                "oh-my-pi",
+                "opencode",
+                "workbuddy"
+            ],
         );
     }
 
@@ -274,6 +311,8 @@ mod tests {
             labels,
             vec![
                 "deepseek-harness",
+                "kilocode",
+                "mimocode",
                 "oh-my-pi",
                 "opencode",
                 "pi",

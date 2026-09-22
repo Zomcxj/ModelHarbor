@@ -624,7 +624,7 @@ impl App {
             )
             .on_hover_text(format!("{kind}\n{path}"));
             // 该格式不支持的区块提前提示，避免保存后才发现数据没写入
-            if fmt != ConfigFormat::Opencode && !self.agents.is_empty() {
+            if !fmt.is_opencode_family() && !self.agents.is_empty() {
                 ui.label(
                     egui::RichText::new(format!(
                         "⚠ {} 个 agents 不会写入该格式",

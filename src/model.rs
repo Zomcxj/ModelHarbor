@@ -249,11 +249,11 @@ impl ModelRow {
     }
 
     pub fn to_value(&self) -> Value {
-        // pi/omp/DSH 来源需要转换方言，因此从干净对象构造；opencode 来源
+        // pi/omp/DSH 来源需要转换方言，因此从干净对象构造；opencode 系来源
         // 则以 raw 为基底，并只更新 UI 实际改动过的字段。
         let convert_dialect = self
             .source_format
-            .is_some_and(|format| format != ConfigFormat::Opencode);
+            .is_some_and(|format| !format.is_opencode_family());
         let raw_empty = raw_object_is_empty(&self.raw);
         let mut m = if convert_dialect {
             Map::new()
@@ -670,11 +670,11 @@ impl ProviderRow {
     }
 
     pub fn to_value(&self) -> Value {
-        // pi/omp/DSH 来源全新构造，防止方言键泄漏进 opencode；opencode
+        // pi/omp/DSH 来源全新构造，防止方言键泄漏进 opencode 系；opencode 系
         // 来源则以 raw 为基底，只更新发生变化的 provider 字段。
         let convert_dialect = self
             .source_format
-            .is_some_and(|format| format != ConfigFormat::Opencode);
+            .is_some_and(|format| !format.is_opencode_family());
         let mut m = if convert_dialect {
             Map::new()
         } else {

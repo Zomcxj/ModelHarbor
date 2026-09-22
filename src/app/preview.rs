@@ -111,14 +111,15 @@ impl App {
         ) {
             return PreviewSyntax::Json;
         }
-        // opencode: opencode.json(c) / pi: ~/.pi/agent/models.json（JSONC）
+        // opencode 系: opencode.json / kilo.json / mimocode.json（均 JSONC）
+        // pi: ~/.pi/agent/models.json（JSONC）
         // omp: models.yml / DSH: settings.yaml（YAML）
         // zcode: provider_config.json / workbuddy: models.json（均为 JSON）
         match self.current_page {
-            ConfigFormat::Opencode
-            | ConfigFormat::Pi
-            | ConfigFormat::ZCode
-            | ConfigFormat::WorkBuddy => PreviewSyntax::Json,
+            ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
+                PreviewSyntax::Json
+            }
+            ConfigFormat::Pi | ConfigFormat::ZCode | ConfigFormat::WorkBuddy => PreviewSyntax::Json,
             ConfigFormat::OhMyPi | ConfigFormat::DeepSeekHarness => PreviewSyntax::Yaml,
         }
     }

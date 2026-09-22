@@ -52,7 +52,8 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
         return;
     };
     match fmt {
-        ConfigFormat::Opencode => {
+        // opencode 系（opencode / kilocode / mimocode）容器名相同，共用一套剔除。
+        ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
             obj.shift_remove("provider");
             if agents_owned {
                 obj.shift_remove("agent");
@@ -119,19 +120,22 @@ impl App {
         self.providers
             .iter()
             .any(|provider| match self.current_page {
-                ConfigFormat::Opencode => match field {
-                    "base_url" => provider
-                        .raw
-                        .get("options")
-                        .and_then(|v| v.get("baseURL"))
-                        .is_some(),
-                    "timeout" => provider
-                        .raw
-                        .get("options")
-                        .and_then(|v| v.get("timeout"))
-                        .is_some(),
-                    _ => false,
-                },
+                // opencode 系三者字段口径相同，共用一套判定。
+                ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
+                    match field {
+                        "base_url" => provider
+                            .raw
+                            .get("options")
+                            .and_then(|v| v.get("baseURL"))
+                            .is_some(),
+                        "timeout" => provider
+                            .raw
+                            .get("options")
+                            .and_then(|v| v.get("timeout"))
+                            .is_some(),
+                        _ => false,
+                    }
+                }
                 ConfigFormat::Pi | ConfigFormat::OhMyPi => match field {
                     "base_url" => provider.raw.get("baseUrl").is_some(),
                     _ => false,
@@ -165,33 +169,36 @@ impl App {
         }
         self.providers.iter().any(|provider| {
             provider.models.iter().any(|model| match self.current_page {
-                ConfigFormat::Opencode => match field {
-                    "name" => model.raw.get("name").is_some(),
-                    "reasoning" => model.raw.get("reasoning").is_some(),
-                    "tool_call" => model.raw.get("tool_call").is_some(),
-                    "store" => model
-                        .raw
-                        .get("options")
-                        .and_then(|v| v.get("store"))
-                        .is_some(),
-                    "context" => model
-                        .raw
-                        .get("limit")
-                        .and_then(|v| v.get("context"))
-                        .is_some(),
-                    "output" => model
-                        .raw
-                        .get("limit")
-                        .and_then(|v| v.get("output"))
-                        .is_some(),
-                    "input" => model
-                        .raw
-                        .get("modalities")
-                        .and_then(|v| v.get("input"))
-                        .is_some(),
-                    "variants" => model.raw.get("variants").is_some(),
-                    _ => false,
-                },
+                // opencode 系三者模型字段口径相同，共用一套判定。
+                ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
+                    match field {
+                        "name" => model.raw.get("name").is_some(),
+                        "reasoning" => model.raw.get("reasoning").is_some(),
+                        "tool_call" => model.raw.get("tool_call").is_some(),
+                        "store" => model
+                            .raw
+                            .get("options")
+                            .and_then(|v| v.get("store"))
+                            .is_some(),
+                        "context" => model
+                            .raw
+                            .get("limit")
+                            .and_then(|v| v.get("context"))
+                            .is_some(),
+                        "output" => model
+                            .raw
+                            .get("limit")
+                            .and_then(|v| v.get("output"))
+                            .is_some(),
+                        "input" => model
+                            .raw
+                            .get("modalities")
+                            .and_then(|v| v.get("input"))
+                            .is_some(),
+                        "variants" => model.raw.get("variants").is_some(),
+                        _ => false,
+                    }
+                }
                 ConfigFormat::Pi | ConfigFormat::OhMyPi => match field {
                     "name" => model.raw.get("name").is_some(),
                     // reasoning 也可由 pi/omp 的 thinking 块 / thinkingLevelMap 表达，
@@ -458,7 +465,7 @@ impl App {
         };
         if ok {
             // 该格式不支持 agents 时明确告知，避免误以为已写入
-            if fmt != ConfigFormat::Opencode && !self.agents.is_empty() {
+            if !fmt.is_opencode_family() && !self.agents.is_empty() {
                 status.push_str(&format!(
                     "（{} 个 agents 未写入：该格式不支持）",
                     self.agents.len()
@@ -588,7 +595,7 @@ impl App {
             return Err(error);
         }
         // 当前文件保存成功后，回填 opencode 的 extras 载体（self.root）保持与磁盘一致
-        if is_current && fmt == ConfigFormat::Opencode {
+        if is_current && fmt.is_opencode_family() {
             self.root = root;
         }
         Ok(backup)
@@ -597,7 +604,8 @@ impl App {
     /// 当前文件保存时使用的基底 extras（按后端取对应载体）。
     pub(super) fn extras_for(&self, fmt: ConfigFormat) -> &Value {
         match fmt {
-            ConfigFormat::Opencode => &self.root,
+            // opencode 系（含 kilocode / mimocode）extras 就是完整 root。
+            ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => &self.root,
             // pi 系（pi / oh-my-pi）共用 extras 载体：providers 之外的顶层字段
             ConfigFormat::Pi | ConfigFormat::OhMyPi => &self.pi_extras,
             // ZCode / WorkBuddy 与 opencode、DSH 一样，extras 就是完整 root

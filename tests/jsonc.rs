@@ -81,6 +81,8 @@ fn target_path_prefers_local_when_exists() {
     std::fs::write(&p, "{}").unwrap();
     let paths = ConfigPaths {
         opencode: p.to_string_lossy().to_string(),
+        kilocode: p.to_string_lossy().to_string(),
+        mimocode: p.to_string_lossy().to_string(),
         pi: p.to_string_lossy().to_string(),
         oh_my_pi: p.to_string_lossy().to_string(),
         deepseek_harness: p.to_string_lossy().to_string(),
