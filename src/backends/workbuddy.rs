@@ -40,8 +40,14 @@
 //!
 //! 但**光靠信任显式标记还不够**：用户可能把重复项真的全勾过（那份副本于是全是
 //! `false`），也可能读到的文件压根没有勾选记录。所以 [`build_load`] 末尾还有一道
-//! **按 id 去重兜底**：无论标记从哪来，同一 id 至多留一条启用、其余关掉。WorkBuddy
-//! 既然按裸 id 全局去重，多开的条目本就不生效，界面就不该显示成全部启用。
+//! **按 id 去重兜底**：同一 id 至多留一条启用、其余关掉。WorkBuddy 既然按裸 id
+//! 全局去重，多开的条目本就不生效，界面就不该显示成全部启用。
+//!
+//! 去重的**优先级是「谁更有发言权」，不是「谁是文件里的第一条」**：显式标记为启用的
+//! 条目胜过按位置推出来的条目，只有多条同属一种来源时才取文件里最靠前的。用户明确
+//! 设置过启用哪一条、且该 id 不重复，就不该再按读取顺序重新推导——位置推导只是旧文件
+//! 的兜底，与用户的意图相遇时必须让位。
+//!
 //! 这道去重在**加载时**做（而不是只在写 WorkBuddy 的生效清单时做），因为界面显示的
 //! 状态本身就得是真实的。
 //!
@@ -508,20 +514,23 @@ fn effective_entries(all: &[Value]) -> Vec<Value> {
 /// 原样写回去，永远不会有勾选记录。逐条回退到按位置推导，首次打开即得到
 /// 「每个模型名只勾第一条」，下一次保存就把这份推导落成显式标记，之后不再推导。
 ///
-/// **最后还有一道去重兜底**（见第二遍循环）：无论标记从哪来，同一个 id 只要有多条被判成
-/// 启用，就只留文件里第一条、其余关掉。光靠「信任显式标记」不够——用户可能把重复项**全勾**
-/// 过（那份副本于是全是 `false`），也可能读到的是别人给的、从没记录过勾选的文件。这两种
-/// 情况下界面都会显示「重复的模型名都启用了」，可 WorkBuddy 的选择器按裸 id 全局去重，
-/// 多开的那些根本不会生效。去重必须在这里做，而不是只在写 WorkBuddy 的生效清单时做：
-/// 界面显示的状态本身就得是真实的。
+/// **最后还有一道去重兜底**（见第二遍循环），但它的判定是**谁更有发言权**，而不是
+/// 「谁是文件里的第一条」：同一个 id 有多条被判成启用时，保留**显式标记为启用**的那条；
+/// 只有当多条都是「没有标记、按位置推出来的」时才退回到第一条。理由就是用户的要求——
+/// 只有「重复 id 都被启用」才需要去重，用户自己设置过启用哪一条就不该再按读取顺序推导。
+/// 显式标记是用户的意图，位置推导只是旧文件的兜底，两者相遇时兜底必须让位。
+///
+/// 这条去重必须在这里做，而不是只在写 WorkBuddy 的生效清单时做：界面显示的状态本身
+/// 就得是真实的，而 WorkBuddy 的选择器按裸 id 全局去重，多开的那些根本不会生效。
 fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
-    // 第一遍：按**文件顺序**逐条定勾选状态。
+    // 第一遍：按**文件顺序**逐条定勾选状态，并记下这条状态是「显式标记」还是「位置推导」。
     //
     // 顺序很关键，所以就地判定，而不是等分组之后再遍历——分组会把同厂商的条目聚到
     // 一起，A,a / B,b / A,c 这种顺序压平后 a、c 会先于 b，「第一条生效」就不再是
     // 文件里的第一条了。
     let mut seen: HashSet<String> = HashSet::new();
-    let mut flags: Vec<Option<bool>> = Vec::with_capacity(entries.len());
+    // (勾选状态, 是否来自显式标记)
+    let mut flags: Vec<Option<(bool, bool)>> = Vec::with_capacity(entries.len());
     for entry in &entries {
         let id = entry
             .get("id")
@@ -537,20 +546,43 @@ fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
         let by_position = !seen.insert(id);
         // 「这条条目自己写了 disabled 吗」直接问条目本身，而不是另开一个与条目同序的
         // 数组：分组会把同厂商的条目聚到一起，按下标对齐迟早错位。
-        let disabled = match (
-            trusted_flags,
-            entry.get("disabled").and_then(Value::as_bool),
-        ) {
+        let explicit = trusted_flags && entry.get("disabled").and_then(Value::as_bool).is_some();
+        let disabled = match (explicit, entry.get("disabled").and_then(Value::as_bool)) {
             (true, Some(flag)) => flag,
             _ => by_position,
         };
-        flags.push(Some(disabled));
+        flags.push(Some((disabled, explicit)));
     }
 
-    // 第二遍：同一 id 若有多条被判成启用，只留第一条。见函数文档末段。
-    let mut first_enabled: HashSet<String> = HashSet::new();
+    // 第二遍：同一 id 若有多条被判成启用，只留一条。
+    //
+    // 优先级：显式标记为启用的 > 位置推导出来的。两者都有多条时才取文件里最靠前的
+    // 那条。见函数文档末段。
+    let mut winner: HashMap<String, usize> = HashMap::new();
     for (i, entry) in entries.iter().enumerate() {
-        if flags[i] != Some(false) {
+        let Some((false, explicit)) = flags[i] else {
+            continue;
+        };
+        let id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        match winner.get(&id) {
+            // 已有胜出者：只有「本条是显式、上一条不是」时才改判。
+            Some(&prev) if explicit && !flags[prev].is_some_and(|(_, e)| e) => {
+                winner.insert(id, i);
+            }
+            Some(_) => {}
+            None => {
+                winner.insert(id, i);
+            }
+        }
+    }
+    // 落败的启用条目一律关掉。
+    for (i, entry) in entries.iter().enumerate() {
+        if flags[i].map(|(disabled, _)| disabled) != Some(false) {
             continue;
         }
         let id = entry
@@ -559,8 +591,8 @@ fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
             .unwrap_or_default()
             .trim()
             .to_string();
-        if !first_enabled.insert(id) {
-            flags[i] = Some(true);
+        if winner.get(&id) != Some(&i) {
+            flags[i] = Some((true, flags[i].is_some_and(|(_, e)| e)));
         }
     }
 
@@ -572,7 +604,7 @@ fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
         let Some(model) = row.models.first_mut() else {
             continue;
         };
-        if let Some(disabled) = flags[i] {
+        if let Some((disabled, _)) = flags[i] {
             model.disabled = disabled;
         }
         match providers.iter_mut().find(|p| p.key == row.key) {

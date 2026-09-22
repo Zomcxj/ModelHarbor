@@ -1208,3 +1208,49 @@ fn duplicate_ids_all_marked_enabled_are_reduced_to_the_first() {
     assert_eq!(entries[0]["disabled"], json!(false));
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
+
+/// 用户明确指定了启用哪一条时，去重必须**尊重他的选择**，不能按文件顺序顶掉。
+///
+/// 规则（用户原话）：只有「重复 id 都被启用」才需要去重；用户自己设置过启用哪一条、
+/// 且不重复，就不该再按读取顺序推导。所以当一个 id 上既有**显式**标记的条目、
+/// 又有**没有标记、按位置推导**出来的条目时，显式的那条才是用户的意图，位置推导
+/// 的只是旧文件的兜底，必须让位。
+#[test]
+fn an_explicit_choice_wins_over_position_derived_duplicates() {
+    let dir = temp_path("models.json");
+    let path = dir.display().to_string();
+    // 全量副本：同名两条。第一条没有标记（旧文件，按位置会推成启用），
+    // 第二条是用户显式勾选的（`disabled: false`）。
+    let store = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1" },
+        { "id": "gpt-5.6-sol", "name": "b", "url": "https://b.example/v1",
+          "disabled": false }
+    ]);
+    std::fs::write(&dir, serde_json::to_string(&store).unwrap()).unwrap();
+    std::fs::write(
+        model_harbor::backends::workbuddy::full_store_path(&path),
+        serde_json::to_string(&store).unwrap(),
+    )
+    .unwrap();
+
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let load = b
+        .parse_at(&std::fs::read_to_string(&dir).unwrap(), &path)
+        .unwrap();
+    let flags: Vec<(String, bool)> = load
+        .providers
+        .iter()
+        .flat_map(|p| {
+            p.models
+                .iter()
+                .map(|m| (p.key.clone(), m.disabled))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        vec![("a".to_string(), true), ("b".to_string(), false)],
+        "用户显式勾的 b 必须保持启用；没有标记、按位置推出来的 a 让位"
+    );
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
