@@ -7,6 +7,7 @@ use crate::credentials;
 use crate::format::ConfigFormat;
 use crate::ui::{card_frame, card_list, move_item, DragHandle};
 use eframe::egui;
+use std::collections::HashSet;
 
 /// 卡片渲染时向外收集的动作与落点。
 ///
@@ -227,6 +228,32 @@ impl App {
                     // 按下标比对：同一张卡片里也可能有两条同 id 的条目
                     // （用户文件里就有这种形态），只比 id 会让它们同时保持启用。
                     m.disabled = (i, j) != picked;
+                }
+            }
+        }
+    }
+
+    /// 进入 WorkBuddy 页时，把「同一 id 多条都启用」收敛成「只留第一条启用」。
+    ///
+    /// WorkBuddy 的选择器按**裸 id 全局去重**，同一个模型名多开根本不会生效——界面显示成
+    /// 全部启用就是在骗人。而数据可能来自别的方言：那些格式没有 `disabled` 概念
+    /// （`convert` 里一律读成启用），所以「各页共享同一份数据」这件事会让 WorkBuddy 页
+    /// 一开始就全是勾选状态。收敛必须在这里做，**不能只在写 WorkBuddy 的生效清单时做**：
+    /// 界面显示的状态本身就得是真实的。
+    ///
+    /// 幂等：收敛后每个 id 至多一条启用，再跑一次不改动任何东西。因此用户自己勾的那条
+    /// 不会被顶掉——只有「一个 id 有多条启用」这种在 WorkBuddy 里本就不成立的状态才会被改。
+    pub(super) fn normalize_workbuddy_enable_flags(&mut self) {
+        let mut seen: HashSet<String> = HashSet::new();
+        for p in self.providers.iter_mut() {
+            for m in p.models.iter_mut() {
+                let id = m.id.trim().to_string();
+                // 空 id 的行保存时回落到 provider key，谈不上「同一个模型」，跳过。
+                if id.is_empty() || m.disabled {
+                    continue;
+                }
+                if !seen.insert(id) {
+                    m.disabled = true;
                 }
             }
         }

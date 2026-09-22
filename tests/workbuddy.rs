@@ -743,7 +743,9 @@ fn saving_twice_is_byte_stable() {
 #[test]
 fn disabled_models_are_omitted_from_the_file() {
     // 关闭的模型**不写入配置**：WorkBuddy 按裸 id 全局去重，写进去也不生效，
-    // 只会占地方、让人以为配了。所以「关闭」靠不写这条表达，不是写 `disabled: true`。
+    // 只会占地方、让人以为配了。所以「关闭」靠不写这条表达。
+    // 但留下的那条要显式写 `disabled: false`——这份文件是用户自己的配置，
+    // 勾选状态应当在它自己里面看得见，而不是只能去副本里找。
     let saved = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1" },
         { "id": "gpt-5.6-sol", "name": "b", "url": "https://x.example/v1" }
@@ -766,9 +768,10 @@ fn disabled_models_are_omitted_from_the_file() {
     let entries = root.as_array().unwrap();
     assert_eq!(entries.len(), 1, "关闭的模型不写盘：{entries:#?}");
     assert_eq!(entries[0]["name"], json!("a"));
-    assert!(
-        entries.iter().all(|e| e.get("disabled").is_none()),
-        "不写 disabled 键：关闭靠不写这条表达"
+    assert_eq!(
+        entries[0]["disabled"],
+        json!(false),
+        "生效清单里的条目要显式写 disabled: false"
     );
 
     // 换成启用 b：文件里就该只剩 b，且 b 的字段完整。
@@ -785,10 +788,10 @@ fn disabled_models_are_omitted_from_the_file() {
 
 #[test]
 fn legacy_disabled_keys_are_honored_not_ignored() {
-    // 早期版本写过 `disabled`。这个键**现在是有含义的**（全量副本靠它记录勾选），
+    // 早期版本写过 `disabled`。这个键**现在是有含义的**（两份文件都靠它记录勾选），
     // 但只在读全量副本时才采信。这里读的是主配置（`parse`，按位置推导），
     // 所以文件里的 `disabled: true` 不参与判定——主配置本身就是生效清单，
-    // 里面的条目都是启用的，写出的生效清单也不该带这个键。
+    // 里面的条目都是启用的，写出的生效清单里该键恒为 `false`。
     let saved = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1",
           "disabled": true },
@@ -800,20 +803,21 @@ fn legacy_disabled_keys_are_honored_not_ignored() {
     let load = b.parse(&text).unwrap();
     let root = b.serialize_root(&[], &load.providers, &load.extras, Some(&saved));
     for e in root.as_array().unwrap() {
-        assert!(
-            e.get("disabled").is_none(),
-            "生效清单里必须清掉 disabled 键：{e:#?}"
+        assert_eq!(
+            e.get("disabled"),
+            Some(&json!(false)),
+            "生效清单里的每条都是启用的，该键恒为 false：{e:#?}"
         );
     }
 }
 
-/// 生效清单（`models.json`）里不该出现 `disabled` 键：它全是启用的条目。
+/// 生效清单（`models.json`）里的条目一律启用，所以 `disabled` 恒为 `false`。
 ///
-/// 注意这只约束**生效清单**。全量副本反过来必须逐条写显式标记
-/// （见 `the_full_store_records_every_entrys_flag_explicitly`）——两份文件口径
-/// 不同是有意的：副本要能区分「用户把重复项全勾上了」和「从没记录过勾选」。
+/// 这个键必须**显式写出**：这份文件是用户自己的配置，勾选状态应当在它自己里面看得见，
+/// 而不是只能去同目录的全量副本里找。写 `false` 对 WorkBuddy 是无操作——
+/// `normalizeCustomModel` 的基底就是 `disabled: false`。
 #[test]
-fn the_effective_list_never_carries_a_disabled_key() {
+fn the_effective_list_marks_every_entry_enabled() {
     let saved = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1" },
         { "id": "claude-opus-5", "name": "b", "url": "https://x.example/v1" }
@@ -823,9 +827,10 @@ fn the_effective_list_never_carries_a_disabled_key() {
     let load = b.parse(&text).unwrap();
     let root = b.serialize_root(&[], &load.providers, &load.extras, Some(&saved));
     for e in root.as_array().unwrap() {
-        assert!(
-            e.get("disabled").is_none(),
-            "生效清单里不该出现 disabled 键：{e:#?}"
+        assert_eq!(
+            e.get("disabled"),
+            Some(&json!(false)),
+            "生效清单里每条都要显式写 disabled: false：{e:#?}"
         );
     }
 }
@@ -1139,5 +1144,67 @@ fn hand_added_entries_in_models_json_still_show_up() {
         .unwrap();
     assert!(!added.disabled, "主配置里的条目是生效的，应显示为启用");
 
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+/// 用户报的原始症状：**同一个 id 的多条全被判成启用**时，加载必须收敛成只启用第一条。
+///
+/// 两种来源都会造成这种状态：
+/// 1. 旧副本/别人给的文件里一条 `disabled` 都没写（按位置推导本就能治）；
+/// 2. 用户把重复项**全勾上过**，于是副本里全是显式 `false`——这时「信任显式标记」
+///    反而会把全启用原样读回来，正是「打开全部启用」。
+///
+/// WorkBuddy 的选择器按裸 id 全局去重，多开的根本不生效，所以无论标记从哪来，
+/// 同一 id 只留文件里第一条启用。
+#[test]
+fn duplicate_ids_all_marked_enabled_are_reduced_to_the_first() {
+    let dir = temp_path("models.json");
+    let path = dir.display().to_string();
+    // 复刻「全勾过」的副本：三条同名条目，**每条都显式写了 disabled: false**。
+    let all_on = json!([
+        { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1",
+          "disabled": false },
+        { "id": "gpt-5.6-sol", "name": "b", "url": "https://b.example/v1",
+          "disabled": false },
+        { "id": "gpt-5.6-sol", "name": "c", "url": "https://c.example/v1",
+          "disabled": false }
+    ]);
+    std::fs::write(&dir, serde_json::to_string(&all_on).unwrap()).unwrap();
+    std::fs::write(
+        model_harbor::backends::workbuddy::full_store_path(&path),
+        serde_json::to_string(&all_on).unwrap(),
+    )
+    .unwrap();
+
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let load = b
+        .parse_at(&std::fs::read_to_string(&dir).unwrap(), &path)
+        .unwrap();
+    let flags: Vec<(String, bool)> = load
+        .providers
+        .iter()
+        .flat_map(|p| {
+            p.models
+                .iter()
+                .map(|m| (p.key.clone(), m.disabled))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        vec![
+            ("a".to_string(), false),
+            ("b".to_string(), true),
+            ("c".to_string(), true),
+        ],
+        "同一 id 全标记为启用时必须收敛：只留第一条，其余关闭"
+    );
+
+    // 写出的生效清单里只该有一条，且显式标为启用。
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let entries = root.as_array().unwrap();
+    assert_eq!(entries.len(), 1, "生效清单只留一条：{entries:#?}");
+    assert_eq!(entries[0]["name"], json!("a"));
+    assert_eq!(entries[0]["disabled"], json!(false));
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }

@@ -636,6 +636,12 @@ impl App {
                 self.status = format!("加载失败: {}", e);
             }
         }
+        // WorkBuddy 页：同一 id 多条启用收敛成「只启用第一条」。文件里本来就可能有
+        // 这种状态（用户把重复项全勾过），WorkBuddy 按裸 id 全局去重、多开的都不生效，
+        // 界面显示成全部启用就是在骗人。加载后立刻收敛，显示的状态才与真实一致。
+        if self.source_format == ConfigFormat::WorkBuddy {
+            self.normalize_workbuddy_enable_flags();
+        }
         // baseUrl 体检：加载后统计可疑 URL（如 `//v1` 重复斜杠），在状态栏提示，
         // 详情看 provider 卡片上的 ⚠ 标签（仅提示，不自动改写）。
         let suspicious = self

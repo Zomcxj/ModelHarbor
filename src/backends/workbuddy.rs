@@ -24,7 +24,10 @@
 //! 文件承担，于是拆成两份：
 //!
 //! - `~/.workbuddy/models.json` —— WorkBuddy 真正读的生效清单：**只含勾选的条目**，
-//!   且每个 id 只留第一条（即 [`serialize_root`] 的产物）。
+//!   且每个 id 只留第一条（即 [`serialize_root`] 的产物）。每条都显式写
+//!   `disabled: false`：这份文件是用户自己的配置，勾选状态要在**它自己**里面看得见，
+//!   而不是只能去副本里找。`false` 对 WorkBuddy 是无操作（`normalizeCustomModel`
+//!   的基底就是 `disabled: false`），所以写它不改变 WorkBuddy 的任何行为。
 //! - 同目录下的 `models.full.json` —— ModelHarbor 自己维护的**全量副本**：所有条目都在，
 //!   每条**都带** `disabled` 标记记录勾选状态（见 [`save_sidecars`] / [`full_store_path`]）。
 //!
@@ -34,6 +37,13 @@
 //! 全启用读进来、原样写回去，永远生不出勾选记录。为兼容已经写坏的旧副本，加载时
 //! 逐条判断：没写 `disabled` 的条目回退到按位置推导（每个模型名只勾第一条），
 //! 保存一次即落成显式标记（见 [`build_load`]）。
+//!
+//! 但**光靠信任显式标记还不够**：用户可能把重复项真的全勾过（那份副本于是全是
+//! `false`），也可能读到的文件压根没有勾选记录。所以 [`build_load`] 末尾还有一道
+//! **按 id 去重兜底**：无论标记从哪来，同一 id 至多留一条启用、其余关掉。WorkBuddy
+//! 既然按裸 id 全局去重，多开的条目本就不生效，界面就不该显示成全部启用。
+//! 这道去重在**加载时**做（而不是只在写 WorkBuddy 的生效清单时做），因为界面显示的
+//! 状态本身就得是真实的。
 //!
 //! 加载时优先读全量副本，没有才退回 `models.json`。这样「取消勾选」不会让条目从界面上
 //! 消失、更不会丢字段：它只是从生效清单里移出，本体仍在全量副本里，随时能勾回来。
@@ -444,6 +454,11 @@ fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
 /// WorkBuddy 的选择器按裸 id 全局去重（`appendModel` 里 `if (ids.has(model.id)) return`），
 /// 第二条起写进去也不会被采用，所以生效清单里不能有不生效的条目——留着只会让人以为配了。
 /// 被筛掉的条目**不会丢**：它们仍在全量副本里，界面上随时能勾回来。
+///
+/// 留下的每条都显式写 `disabled: false`。这份文件是**用户自己的配置**，勾选状态应当在
+/// 它自己里面看得见，而不是只能去同目录的副本里找。写 `false` 对 WorkBuddy 是无操作：
+/// `normalizeCustomModel` 的基底就是 `disabled: false`（`{ disabled: false, ...model }`），
+/// 所以「写了 false」和「不写」在它眼里完全一样，不会改变任何行为。
 fn effective_entries(all: &[Value]) -> Vec<Value> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
@@ -461,9 +476,11 @@ fn effective_entries(all: &[Value]) -> Vec<Value> {
             continue;
         }
         let mut entry = entry.clone();
-        // 生效清单里不该出现 `disabled` 键：这里全是启用的条目。
+        // 生效清单里的条目一律启用，所以这个键的值恒为 `false`；写出来是为了让文件
+        // 自解释——只有勾选的条目会进这份清单，缺键会让「没记录过」与「记了启用」
+        // 无法区分。
         if let Some(obj) = entry.as_object_mut() {
-            obj.remove("disabled");
+            obj.insert("disabled".into(), Value::Bool(false));
         }
         out.push(entry);
     }
@@ -490,25 +507,73 @@ fn effective_entries(all: &[Value]) -> Vec<Value> {
 /// 用户看到的正是「重复的模型名都启用了」；而这种状态还会自我延续——全启用读进来、
 /// 原样写回去，永远不会有勾选记录。逐条回退到按位置推导，首次打开即得到
 /// 「每个模型名只勾第一条」，下一次保存就把这份推导落成显式标记，之后不再推导。
+///
+/// **最后还有一道去重兜底**（见第二遍循环）：无论标记从哪来，同一个 id 只要有多条被判成
+/// 启用，就只留文件里第一条、其余关掉。光靠「信任显式标记」不够——用户可能把重复项**全勾**
+/// 过（那份副本于是全是 `false`），也可能读到的是别人给的、从没记录过勾选的文件。这两种
+/// 情况下界面都会显示「重复的模型名都启用了」，可 WorkBuddy 的选择器按裸 id 全局去重，
+/// 多开的那些根本不会生效。去重必须在这里做，而不是只在写 WorkBuddy 的生效清单时做：
+/// 界面显示的状态本身就得是真实的。
 fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
-    let mut providers: Vec<ProviderRow> = Vec::new();
-    // 按位置推导要按**文件顺序**算，所以在这里就地判定，而不是等分组之后再遍历——
-    // 分组会把同厂商的条目聚到一起，A,a / B,b / A,c 这种顺序压平后 a、c 会先于 b，
-    // 「第一条生效」就不再是文件里的第一条了。
+    // 第一遍：按**文件顺序**逐条定勾选状态。
+    //
+    // 顺序很关键，所以就地判定，而不是等分组之后再遍历——分组会把同厂商的条目聚到
+    // 一起，A,a / B,b / A,c 这种顺序压平后 a、c 会先于 b，「第一条生效」就不再是
+    // 文件里的第一条了。
     let mut seen: HashSet<String> = HashSet::new();
+    let mut flags: Vec<Option<bool>> = Vec::with_capacity(entries.len());
     for entry in &entries {
+        let id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let Some(id) = id else {
+            // 没有 id 的条目进不了界面（`provider_from_entry` 会跳过），
+            // 占位 None 只为让 flags 与 entries 同序。
+            flags.push(None);
+            continue;
+        };
+        let by_position = !seen.insert(id);
+        // 「这条条目自己写了 disabled 吗」直接问条目本身，而不是另开一个与条目同序的
+        // 数组：分组会把同厂商的条目聚到一起，按下标对齐迟早错位。
+        let disabled = match (
+            trusted_flags,
+            entry.get("disabled").and_then(Value::as_bool),
+        ) {
+            (true, Some(flag)) => flag,
+            _ => by_position,
+        };
+        flags.push(Some(disabled));
+    }
+
+    // 第二遍：同一 id 若有多条被判成启用，只留第一条。见函数文档末段。
+    let mut first_enabled: HashSet<String> = HashSet::new();
+    for (i, entry) in entries.iter().enumerate() {
+        if flags[i] != Some(false) {
+            continue;
+        }
+        let id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !first_enabled.insert(id) {
+            flags[i] = Some(true);
+        }
+    }
+
+    let mut providers: Vec<ProviderRow> = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
         let Some(mut row) = provider_from_entry(entry) else {
             continue;
         };
         let Some(model) = row.models.first_mut() else {
             continue;
         };
-        let by_position = !seen.insert(model.id.trim().to_string());
-        // 「这条条目自己写了 disabled 吗」直接问条目本身，而不是另开一个与条目同序的
-        // 数组：分组会把同厂商的条目聚到一起，按下标对齐迟早错位。
-        let explicit = entry.get("disabled").is_some();
-        if !(trusted_flags && explicit) {
-            model.disabled = by_position;
+        if let Some(disabled) = flags[i] {
+            model.disabled = disabled;
         }
         match providers.iter_mut().find(|p| p.key == row.key) {
             // 同 provider 的 url / apiKey / vendor 本就相同，以首条为准；

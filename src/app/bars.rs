@@ -334,6 +334,12 @@ impl App {
                         self.sync_wsl = false;
                     }
                     self.current_page = id;
+                    // WorkBuddy 页的数据可能来自别的方言（那些格式没有 `disabled` 概念，
+                    // 一律读成启用），而 WorkBuddy 按裸 id 全局去重、多开的根本不生效。
+                    // 进页时收敛成「每个 id 只启用第一条」，界面才不会显示成「重复的全启用了」。
+                    if id == ConfigFormat::WorkBuddy {
+                        self.normalize_workbuddy_enable_flags();
+                    }
                     // 切换页面后必须重建预览草稿：草稿只在「预览未聚焦且上次解析成功」时才
                     // 跟随组件状态，否则会停留在上一页的内容上（预览框仍有焦点或上次解析失败）。
                     self.reset_preview_draft();
