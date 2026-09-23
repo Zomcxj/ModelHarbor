@@ -17,7 +17,7 @@ mod save;
 mod serialize;
 mod syntax;
 
-use fetch::{LatencyState, ModelFetchState, ProbeGate};
+use fetch::{FreeModelsState, LatencyState, ModelFetchState, ProbeGate};
 use save::SaveTarget;
 
 pub use save::{
@@ -86,18 +86,15 @@ pub struct App {
     model_fetch: HashMap<String, ModelFetchState>,
     /// 已展开的模型获取面板（provider key）。
     model_fetch_open: HashSet<String>,
-    /// opencode 内置 Zen 网关的免费模型 id（裸 id；界面显示时加 `opencode/` 前缀）。
+    /// 各后端内置网关的免费模型（后端 → 状态）。
     ///
-    /// 动态拉取而非写死：Zen 的免费模型会随上游上下架，写死的 id 迟早变成
-    /// 「选了却跑不起来」的过期项（见 [`crate::opencode_models`]）。启动先用落盘缓存
-    /// 填充，缓存缺失或过期才在后台重新拉取。
-    opencode_free: Vec<String>,
-    /// 免费模型列表的后台拉取状态（`Some` = 正在飞）。
-    opencode_free_rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
-    /// 最近一次拉取失败的原因（成功后清空），在 Agents 的模型下拉旁提示。
-    opencode_free_error: Option<String>,
-    /// 启动时缓存缺失 / 过期 → 首帧自动后台拉取一次；拉过就置 `false`。
-    opencode_free_auto: bool,
+    /// 动态拉取而非写死：免费层会随上游上下架，写死的 id 迟早变成「选了却跑不起来」
+    /// 的过期项（见 [`crate::opencode_models`]）。opencode 与 kilocode 各有自己的
+    /// 网关与列表，mimocode 没有免费层（不进这张表）。启动先用落盘缓存填充，
+    /// 缓存缺失或过期才在后台重新拉取。
+    free_models: HashMap<ConfigFormat, FreeModelsState>,
+    /// 首帧需要自动后台拉取的后端（缓存缺失 / 过期）；拉过即清空。
+    free_models_auto: Vec<ConfigFormat>,
     /// 每个 provider 的延迟测试状态（key → 状态）。
     latency: HashMap<String, LatencyState>,
     /// 每个 provider 的「已用 / 余额」查询状态（key → 状态）。
@@ -217,13 +214,38 @@ impl Default for App {
         // 方言去读会解析出 0 条，表现为「写了路径却不自动加载」。这里按实际
         // 内容纠正方言——与手动加载（`reload_for_page`）走同一套判定。
         let format = startup_format(format, &path);
-        // opencode 免费模型：读一次落盘缓存，界面先用它渲染；缓存缺失或过期时
-        // 由首帧自动在后台重取（不阻塞启动）。
-        let free_cache = crate::opencode_models::load_cache();
-        let (free_models, free_stale) = match free_cache {
-            Some(cache) => (cache.models, !cache.fresh),
-            None => (Vec::new(), true),
-        };
+        // 各后端内置网关的免费模型：逐后端读一次落盘缓存，界面先用它渲染；
+        // 缓存缺失或过期的后端由首帧自动在后台重取（不阻塞启动）。
+        // 只对确实有免费层的后端建状态（见 `opencode_models::source_for`）。
+        let mut free_models: HashMap<ConfigFormat, FreeModelsState> = HashMap::new();
+        let mut free_models_auto: Vec<ConfigFormat> = Vec::new();
+        for format in [
+            ConfigFormat::Opencode,
+            ConfigFormat::Kilocode,
+            ConfigFormat::Mimocode,
+        ] {
+            if crate::opencode_models::source_for(format).is_none() {
+                continue;
+            }
+            match crate::opencode_models::load_cache(format) {
+                Some(cache) => {
+                    if !cache.fresh {
+                        free_models_auto.push(format);
+                    }
+                    free_models.insert(
+                        format,
+                        FreeModelsState {
+                            models: cache.models,
+                            ..FreeModelsState::default()
+                        },
+                    );
+                }
+                None => {
+                    free_models_auto.push(format);
+                    free_models.insert(format, FreeModelsState::default());
+                }
+            }
+        }
         let mut app = Self {
             root: Value::Object(Map::new()),
             agents: Vec::new(),
@@ -247,10 +269,8 @@ impl Default for App {
             model_fetch: HashMap::new(),
             model_fetch_open: HashSet::new(),
             // 免费模型：先用落盘缓存，缺失 / 过期由第一帧的后台刷新补上。
-            opencode_free: free_models,
-            opencode_free_rx: None,
-            opencode_free_error: None,
-            opencode_free_auto: free_stale,
+            free_models,
+            free_models_auto,
             latency: HashMap::new(),
             balance: HashMap::new(),
             balance_batch: false,
@@ -329,12 +349,11 @@ impl eframe::App for App {
         self.poll_model_fetch();
         self.poll_latency();
         self.poll_balance();
-        self.poll_opencode_free();
-        // 首次启动 / 缓存过期：只自动拉一次（拉过即置 false，失败也不反复重试，
+        self.poll_free_models();
+        // 首次启动 / 缓存过期：只自动拉一次（拉过即清空，失败也不反复重试，
         // 用户可在 Agents 的模型下拉旁点「刷新」手动重取）。
-        if self.opencode_free_auto {
-            self.opencode_free_auto = false;
-            self.start_opencode_free_fetch();
+        for format in std::mem::take(&mut self.free_models_auto) {
+            self.start_free_models_fetch(format);
         }
         self.persist_prefs_if_changed();
         self.ui_top_bar(ctx);

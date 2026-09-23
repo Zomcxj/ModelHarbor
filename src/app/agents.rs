@@ -1,30 +1,39 @@
 //! Agents 区块：卡片列表、编辑表单与新增表单（仅 opencode 系页面使用）。
+use super::fetch::FreeModelsState;
 use super::App;
 use crate::app::bars::{sticky_begin, sticky_end};
+use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
 use crate::ui::{card_frame, card_list, field_label, move_item, numeric_text_edit, DragHandle};
 use eframe::egui;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-/// Agents 的 `model` 下拉候选：已配置 provider 的模型 + opencode 内置 Zen 网关的
-/// 免费模型（裸 id 加 `opencode/` 前缀）+ 当前值。
+/// Agents 的 `model` 下拉候选：已配置 provider 的模型 + **当前页面后端**内置网关的
+/// 免费模型（加该后端的 `provider_id/` 前缀）+ 当前值。
 ///
 /// 写成自由函数（而不是 `&self` 方法）是为了能在表单里调用：那里
 /// `self.agents[idx]` 已被可变借用，整结构借用会编译不过，只能按字段拆分。
+///
+/// **免费模型按页面区分**：opencode 页列 Zen 网关的、kilocode 页列 Kilo 网关的，
+/// 两者互不出现（各自的网关只认自己的 id）；mimocode 没有免费层，只列用户自己配的
+/// provider 模型。`free_prefix` 为 `None` 表示该后端没有免费层。
 ///
 /// **当前值一定保留**：远程列表随时会变，若某个已配置的模型被下架，直接从候选里
 /// 抹掉会让用户看到「下拉是空的 / 选中项不见了」，误以为配置坏了。保留它并排在
 /// 原位，用户能看见自己配的是什么，想换再换。
 fn model_options(
     providers: &[ProviderRow],
-    opencode_free: &[String],
+    free_prefix: Option<&str>,
+    free_models: &[String],
     current: &str,
 ) -> Vec<String> {
     let mut options: Vec<String> = providers
         .iter()
         .flat_map(|p| p.models.iter().map(|m| format!("{}/{}", p.key, m.id)))
         .collect();
-    options.extend(opencode_free.iter().map(|id| format!("opencode/{}", id)));
+    if let Some(prefix) = free_prefix {
+        options.extend(free_models.iter().map(|id| format!("{}/{}", prefix, id)));
+    }
     let current = current.trim();
     if !current.is_empty() && !options.iter().any(|option| option == current) {
         options.push(current.to_string());
@@ -43,6 +52,7 @@ fn model_options(
 /// 集中在视觉上贴着下拉的位置，用户不必去状态栏找原因。
 fn model_options_hint(
     ui: &mut egui::Ui,
+    backend: &str,
     free_count: usize,
     error: Option<&str>,
     fetching: bool,
@@ -61,13 +71,13 @@ fn model_options_hint(
             .on_hover_text(err);
         } else if free_count == 0 {
             ui.label(
-                egui::RichText::new("未获取到 opencode 免费模型")
+                egui::RichText::new(format!("未获取到 {} 免费模型", backend))
                     .small()
                     .weak(),
             );
         } else {
             ui.label(
-                egui::RichText::new(format!("opencode 免费模型 {} 个", free_count))
+                egui::RichText::new(format!("{} 免费模型 {} 个", backend, free_count))
                     .small()
                     .weak(),
             );
@@ -75,13 +85,45 @@ fn model_options_hint(
         clicked = ui
             .button("刷新")
             .on_hover_text(format!(
-                "重新从 {} 拉取 opencode 免费模型列表\n（默认每 {} 小时自动更新一次）",
-                crate::opencode_models::SOURCE_URL,
+                "重新拉取 {} 的免费模型列表\n（默认每 {} 小时自动更新一次）",
+                backend,
                 crate::opencode_models::CACHE_TTL_SECS / 3600
             ))
             .clicked();
     }
     clicked
+}
+
+/// 当前页面后端的免费模型 `(引用前缀, 裸 id 列表)`；没有免费层时前缀为 `None`。
+///
+/// 前缀来自 [`crate::opencode_models::source_for`]，与拉取时用的 provider id 同源，
+/// 避免两处各写一份字符串而漂移。
+///
+/// 写成自由函数（不是 `&self` 方法）：表单里 `self.agents[idx]` 已被可变借用，
+/// 只能按字段拆分借用，整结构借用会编译不过。
+fn current_free_models(
+    page: ConfigFormat,
+    free_models: &HashMap<ConfigFormat, FreeModelsState>,
+) -> (Option<&'static str>, &[String]) {
+    let Some(source) = crate::opencode_models::source_for(page) else {
+        return (None, &[]);
+    };
+    let models = free_models
+        .get(&page)
+        .map(|state| state.models.as_slice())
+        .unwrap_or(&[]);
+    (Some(source.provider_id), models)
+}
+
+/// 当前页面后端的免费模型拉取状态：`(是否在飞, 失败原因)`。
+fn current_free_status(
+    page: ConfigFormat,
+    free_models: &HashMap<ConfigFormat, FreeModelsState>,
+) -> (bool, Option<&str>) {
+    match free_models.get(&page) {
+        Some(state) => (state.fetching(), state.error.as_deref()),
+        None => (false, None),
+    }
 }
 
 impl App {
@@ -276,7 +318,9 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             field_label(ui, 120.0, "model");
             let current = a.model.clone();
-            let options = model_options(&self.providers, &self.opencode_free, &current);
+            let (free_prefix, free_list) =
+                current_free_models(self.current_page, &self.free_models);
+            let options = model_options(&self.providers, free_prefix, free_list, &current);
             let mut selected_idx = options.iter().position(|m| m == &current);
             egui::ComboBox::from_id_salt(format!("agent_model_{}", a.key))
                 .selected_text(if current.is_empty() {
@@ -296,15 +340,13 @@ impl App {
             if let Some(idx) = selected_idx {
                 a.model = options[idx].clone();
             }
-            let free_count = self.opencode_free.len();
-            let fetching = self.opencode_free_rx.is_some();
-            if model_options_hint(
-                ui,
-                free_count,
-                self.opencode_free_error.as_deref(),
-                fetching,
-            ) {
-                refresh_free = true;
+            // 只对确实有免费层的后端显示提示与刷新按钮（mimocode 没有，不占位置）。
+            if free_prefix.is_some() {
+                let (fetching, error) = current_free_status(self.current_page, &self.free_models);
+                let backend = self.current_page.label();
+                if model_options_hint(ui, backend, free_list.len(), error, fetching) {
+                    refresh_free = true;
+                }
             }
             field_label(ui, 120.0, "variant");
             let variant_options = ["", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -346,7 +388,7 @@ impl App {
             self.sync_agent_rename(&prev_key, &new_key);
         }
         if refresh_free {
-            self.start_opencode_free_fetch();
+            self.start_free_models_fetch(self.current_page);
         }
     }
 
@@ -375,7 +417,9 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 field_label(ui, 120.0, "model");
                 let current = self.new_agent.model.clone();
-                let options = model_options(&self.providers, &self.opencode_free, &current);
+                let (free_prefix, free_list) =
+                    current_free_models(self.current_page, &self.free_models);
+                let options = model_options(&self.providers, free_prefix, free_list, &current);
                 let mut selected_idx = options.iter().position(|m| m == &current);
                 let _response = egui::ComboBox::from_id_salt("new_agent_model")
                     .selected_text(if current.is_empty() {
@@ -395,15 +439,14 @@ impl App {
                 if let Some(idx) = selected_idx {
                     self.new_agent.model = options[idx].clone();
                 }
-                let free_count = self.opencode_free.len();
-                let fetching = self.opencode_free_rx.is_some();
-                if model_options_hint(
-                    ui,
-                    free_count,
-                    self.opencode_free_error.as_deref(),
-                    fetching,
-                ) {
-                    self.start_opencode_free_fetch();
+                // 只对确实有免费层的后端显示提示与刷新按钮（mimocode 没有，不占位置）。
+                if free_prefix.is_some() {
+                    let (fetching, error) =
+                        current_free_status(self.current_page, &self.free_models);
+                    let backend = self.current_page.label();
+                    if model_options_hint(ui, backend, free_list.len(), error, fetching) {
+                        self.start_free_models_fetch(self.current_page);
+                    }
                 }
                 field_label(ui, 120.0, "variant");
                 let variant_options = ["", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -503,22 +546,42 @@ mod model_options_tests {
     #[test]
     fn includes_provider_models_with_key_prefix() {
         let providers = vec![provider("sensenova", &["deepseek-v4-flash"])];
-        let options = model_options(&providers, &[], "");
+        let options = model_options(&providers, None, &[], "");
         assert_eq!(options, vec!["sensenova/deepseek-v4-flash"]);
     }
 
     #[test]
-    fn includes_free_models_with_opencode_prefix() {
+    fn includes_free_models_with_the_backend_prefix() {
         let free = vec!["big-pickle".to_string(), "some-free".to_string()];
-        let options = model_options(&[], &free, "");
+        let options = model_options(&[], Some("opencode"), &free, "");
         assert_eq!(options, vec!["opencode/big-pickle", "opencode/some-free"]);
+    }
+
+    /// 关键行为：每个页面只列**自己网关**的免费模型，不能串台。
+    #[test]
+    fn free_models_use_the_pages_own_prefix() {
+        let free = vec!["kilo-auto/free".to_string()];
+        let kilo = model_options(&[], Some("kilo"), &free, "");
+        assert_eq!(kilo, vec!["kilo/kilo-auto/free"]);
+        // 同一个裸 id 在 opencode 页会带上 opencode 前缀
+        let oc = model_options(&[], Some("opencode"), &free, "");
+        assert_eq!(oc, vec!["opencode/kilo-auto/free"]);
+    }
+
+    /// 没有免费层的后端（mimocode）不注入任何免费候选。
+    #[test]
+    fn no_free_tier_means_no_free_options() {
+        let free = vec!["big-pickle".to_string()];
+        // 前缀为 None：即便传了列表也不注入
+        let options = model_options(&[], None, &free, "");
+        assert!(options.is_empty(), "无免费层时不应注入：{:?}", options);
     }
 
     /// 关键行为：远程列表变了也不能把已配置的当前值弄丢，否则用户会以为配置坏了。
     #[test]
     fn keeps_current_value_even_when_absent_from_remote_list() {
         let free = vec!["big-pickle".to_string()];
-        let options = model_options(&[], &free, "opencode/mimo-v2.5-free");
+        let options = model_options(&[], Some("opencode"), &free, "opencode/mimo-v2.5-free");
         assert!(
             options.contains(&"opencode/mimo-v2.5-free".to_string()),
             "当前值被下架后仍须留在候选里：{:?}",
@@ -526,26 +589,33 @@ mod model_options_tests {
         );
     }
 
+    /// 无免费层的页面同样要保留当前值。
+    #[test]
+    fn keeps_current_value_without_any_free_tier() {
+        let options = model_options(&[], None, &[], "xiaomi/mimo-v2.5-pro");
+        assert_eq!(options, vec!["xiaomi/mimo-v2.5-pro"]);
+    }
+
     #[test]
     fn does_not_duplicate_current_value_already_present() {
         let free = vec!["big-pickle".to_string()];
-        let options = model_options(&[], &free, "opencode/big-pickle");
+        let options = model_options(&[], Some("opencode"), &free, "opencode/big-pickle");
         assert_eq!(options, vec!["opencode/big-pickle"]);
     }
 
     #[test]
     fn empty_current_value_adds_nothing() {
-        let options = model_options(&[], &[], "");
+        let options = model_options(&[], None, &[], "");
         assert!(options.is_empty());
         // 只有空白的当前值同样不占位
-        assert!(model_options(&[], &[], "   ").is_empty());
+        assert!(model_options(&[], None, &[], "   ").is_empty());
     }
 
     #[test]
     fn output_is_sorted_and_deduplicated() {
         let providers = vec![provider("a", &["m2", "m1"]), provider("b", &["m1"])];
         let free = vec!["big-pickle".to_string()];
-        let options = model_options(&providers, &free, "");
+        let options = model_options(&providers, Some("opencode"), &free, "");
         let mut expected = options.clone();
         expected.sort();
         expected.dedup();

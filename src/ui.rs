@@ -445,9 +445,97 @@ pub fn numeric_text_edit(
     }
 }
 
+/// 滑动开关（toggle）的几何：轨道尺寸与滑块直径。
+///
+/// 抽成常量便于单测断言「滑块始终在轨道内」，也保证各处的开关尺寸一致。
+pub const TOGGLE_WIDTH: f32 = 34.0;
+pub const TOGGLE_HEIGHT: f32 = 18.0;
+/// 滑块与轨道边缘的间距。
+pub const TOGGLE_INSET: f32 = 2.0;
+/// 滑块直径 = 轨道高 − 2×内边距，保证四周留出一圈描边可见的缝。
+pub const TOGGLE_KNOB: f32 = TOGGLE_HEIGHT - 2.0 * TOGGLE_INSET;
+
+/// 几何常量必须自洽：滑块要小于轨道（留出描边），轨道要横向长于纵向。
+/// 编译期检查——改坏常量时构建就失败，不必等测试跑起来。
+const _: () = {
+    assert!(TOGGLE_KNOB < TOGGLE_HEIGHT, "滑块要小于轨道高，留出描边");
+    assert!(TOGGLE_WIDTH > TOGGLE_HEIGHT, "轨道应横向长于纵向");
+};
+
+/// 滑动开关的滑块圆心：`on` 时靠右、`off` 时靠左，垂直居中。
+///
+/// 抽成纯函数是为了直接断言「开/关两态的圆心都在轨道内、且确实左右分开」——
+/// 写死偏移在轨道尺寸调整后会立刻越界，而这种越界在截图里很难一眼看出。
+pub fn toggle_knob_center(rect: egui::Rect, on: bool) -> egui::Pos2 {
+    let radius = TOGGLE_KNOB / 2.0;
+    let x = if on {
+        rect.right() - TOGGLE_INSET - radius
+    } else {
+        rect.left() + TOGGLE_INSET + radius
+    };
+    egui::pos2(x, rect.center().y)
+}
+
+/// 滑动开关：一个明显的「点击即切换」控件，替代原来的小勾选框。
+///
+/// 与 `egui::Checkbox` 的区别在**可发现性**：勾选框只有一个小方块加文字，
+/// 在密集的模型卡片里很容易被当成装饰；开关有明确的轨道与滑块，状态一眼可辨，
+/// 且整块轨道都是点击热区。
+///
+/// 视觉规则遵循项目既有约束：
+/// - 状态只靠**填充 + 滑块位置**表达，不靠文字颜色（文字色在各主题下不可控）；
+/// - 圆角取主题的控件圆角，与同一行其他控件对齐；
+/// - 不给按钮挂悬停提示（说明文字由调用方以可见文本承担）。
+pub fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let desired = egui::vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT);
+    let (rect, mut resp) = ui.allocate_exact_size(desired, egui::Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&resp);
+        let colors = crate::theme::semantics(ui);
+        let radius = TOGGLE_HEIGHT / 2.0;
+        // 轨道：开=绿色（与「生效中」的语义一致），关=中性灰。
+        // 悬停时提亮一档，让「可点」这件事在密集列表里也能看出来。
+        let track = if *on {
+            if resp.hovered() {
+                colors.ok.gamma_multiply(1.15)
+            } else {
+                colors.ok
+            }
+        } else if resp.hovered() {
+            ui.visuals().widgets.hovered.bg_fill
+        } else {
+            ui.visuals().widgets.inactive.bg_fill
+        };
+        ui.painter().rect(
+            rect,
+            radius,
+            track,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        // 滑块：白色圆点，带一圈细描边保证在浅色轨道上也看得清边界。
+        let center = toggle_knob_center(rect, *on);
+        ui.painter()
+            .circle_filled(center, TOGGLE_KNOB / 2.0, egui::Color32::WHITE);
+        ui.painter().circle_stroke(
+            center,
+            TOGGLE_KNOB / 2.0,
+            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        );
+    }
+    resp
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{drag_handle_dots, merge_drag_target, DRAG_HANDLE_GAP};
+    use super::{
+        drag_handle_dots, merge_drag_target, toggle_knob_center, DRAG_HANDLE_GAP, TOGGLE_HEIGHT,
+        TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
+    };
     use eframe::egui;
 
     /// 色带只覆盖卡片顶部 3px：越界就会盖住卡片文字（曾经整卡刷白）。
@@ -585,5 +673,171 @@ mod tests {
         merge_drag_target(&mut acc, None);
         merge_drag_target(&mut acc, None);
         assert_eq!(acc, None);
+    }
+
+    /// 滑块在两态下都必须完整落在轨道内（含内边距），且左右确实分开。
+    #[test]
+    fn toggle_knob_stays_inside_the_track() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(10.0, 20.0),
+            egui::vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT),
+        );
+        let radius = TOGGLE_KNOB / 2.0;
+        let off = toggle_knob_center(rect, false);
+        let on = toggle_knob_center(rect, true);
+        for (label, c) in [("off", off), ("on", on)] {
+            assert!(
+                c.x - radius >= rect.left() - 0.01 && c.x + radius <= rect.right() + 0.01,
+                "{label} 态滑块越出轨道：{:?}",
+                c
+            );
+            assert!(
+                c.y - radius >= rect.top() - 0.01 && c.y + radius <= rect.bottom() + 0.01,
+                "{label} 态滑块越出轨道（纵向）：{:?}",
+                c
+            );
+        }
+        // 两态圆心必须分开，否则「开/关」看不出区别
+        assert!(on.x > off.x, "开态应在右、关态应在左");
+        // 垂直居中
+        assert!((off.y - rect.center().y).abs() < 0.01);
+        assert!((on.y - rect.center().y).abs() < 0.01);
+    }
+
+    /// 滑块直径必须等于「轨道高 − 2×内边距」（其余几何断言已在编译期常量块里）。
+    #[test]
+    fn toggle_knob_diameter_follows_the_track() {
+        assert!((TOGGLE_KNOB - (TOGGLE_HEIGHT - 2.0 * TOGGLE_INSET)).abs() < 0.01);
+    }
+
+    /// 关态滑块贴左、开态贴右，且左右内边距对称。
+    #[test]
+    fn toggle_knob_inset_is_symmetric() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT),
+        );
+        let radius = TOGGLE_KNOB / 2.0;
+        let off = toggle_knob_center(rect, false);
+        let on = toggle_knob_center(rect, true);
+        let left_gap = off.x - radius - rect.left();
+        let right_gap = rect.right() - (on.x + radius);
+        assert!(
+            (left_gap - right_gap).abs() < 0.01,
+            "左右内边距应一致：{left_gap} vs {right_gap}"
+        );
+        assert!((left_gap - TOGGLE_INSET).abs() < 0.01);
+    }
+
+    /// 离屏渲染开关：两态都必须画出轨道（圆角矩形）+ 滑块（圆），
+    /// 且开态轨道的填充色与关态不同——否则用户看不出开关状态。
+    ///
+    /// 用离屏 `ctx.run` + 形状遍历（项目既有的验证手法），比截图稳定：
+    /// 开关只有两个形状，不存在「一个控件发两个矩形」那种索引陷阱。
+    #[test]
+    fn toggle_paints_a_track_and_a_knob_in_both_states() {
+        use egui::epaint::Shape;
+        // 收集 (矩形填充色, 圆心) 两类形状
+        fn collect(shape: &Shape, rects: &mut Vec<egui::Color32>, knobs: &mut Vec<egui::Pos2>) {
+            match shape {
+                Shape::Rect(r) => rects.push(r.fill),
+                Shape::Circle(c) => knobs.push(c.center),
+                Shape::Vec(items) => {
+                    for item in items {
+                        collect(item, rects, knobs);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let run = |on: bool| {
+            let ctx = egui::Context::default();
+            crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(200.0, 60.0),
+                )),
+                ..Default::default()
+            };
+            let mut value = on;
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut v = value;
+                    super::toggle_switch(ui, &mut v);
+                    value = v;
+                });
+            });
+            let mut rects = Vec::new();
+            let mut knobs = Vec::new();
+            for clipped in &out.shapes {
+                collect(&clipped.shape, &mut rects, &mut knobs);
+            }
+            (rects, knobs, value)
+        };
+
+        let (off_rects, off_knobs, off_value) = run(false);
+        let (on_rects, on_knobs, on_value) = run(true);
+        assert!(!off_value, "关态渲染不应自行切换");
+        assert!(on_value, "开态渲染不应自行切换");
+        assert!(!off_knobs.is_empty(), "两态都应画出滑块圆点");
+        assert_eq!(on_knobs.len(), off_knobs.len());
+        assert!(!off_rects.is_empty(), "两态都应画出轨道");
+        assert_ne!(
+            on_rects, off_rects,
+            "开/关的轨道填充必须不同，否则看不出状态"
+        );
+    }
+
+    /// 点击切换：整块轨道都是热区，点一下就翻转。
+    #[test]
+    fn toggle_click_flips_the_value() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+        let mut value = false;
+        let mut rect = egui::Rect::NOTHING;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(200.0, 60.0),
+            )),
+            ..Default::default()
+        };
+        // 第一帧：拿到开关的实际矩形（egui 按上一帧登记的矩形做命中测试）。
+        let out = ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut v = value;
+                rect = super::toggle_switch(ui, &mut v).rect;
+                value = v;
+            });
+        });
+        assert!(rect.is_positive(), "开关应占据正面积");
+        let _ = out;
+        // 第二帧：在开关中心按下并抬起 -> 值翻转。
+        let center = rect.center();
+        let mut input2 = input.clone();
+        input2.events = vec![
+            egui::Event::PointerMoved(center),
+            egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ];
+        let _ = ctx.run(input2, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut v = value;
+                super::toggle_switch(ui, &mut v);
+                value = v;
+            });
+        });
+        assert!(value, "点击后应从关变开");
     }
 }

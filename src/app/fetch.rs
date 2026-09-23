@@ -16,6 +16,25 @@ pub(super) struct ModelFetchState {
     pub(super) result: Option<Result<Vec<String>, String>>,
 }
 
+/// 单个后端的「内置网关免费模型」状态（列表 + 拉取通道 + 失败原因）。
+///
+/// 裸 id 存这里，界面显示时再拼 `provider_id/` 前缀（见 [`crate::opencode_models`]）。
+#[derive(Default)]
+pub(super) struct FreeModelsState {
+    /// 免费模型 id（裸 id，按字典序）。
+    pub(super) models: Vec<String>,
+    /// 后台拉取通道（`Some` = 正在飞）。
+    pub(super) rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    /// 最近一次拉取失败的原因（成功后清空），在模型下拉旁提示。
+    pub(super) error: Option<String>,
+}
+
+impl FreeModelsState {
+    pub(super) fn fetching(&self) -> bool {
+        self.rx.is_some()
+    }
+}
+
 /// 新增 Provider 表单使用固定的内部 key 保存获取状态。
 pub(super) const NEW_PROVIDER_FETCH_KEY: &str = "__new_provider__";
 
@@ -1034,47 +1053,54 @@ impl App {
         }
     }
 
-    /// 后台拉取 opencode 免费模型列表（已有请求在飞时不重复发起）。
+    /// 后台拉取某个后端的内置网关免费模型列表（已有请求在飞时不重复发起）。
     ///
     /// 与 provider 的「获取模型」共用同一套「后台线程 + 通道」形状，但请求的是
     /// 公共模型库而非某个用户 provider，因此不需要 baseURL / API Key。
-    pub(super) fn start_opencode_free_fetch(&mut self) {
-        if self.opencode_free_rx.is_some() {
+    /// 没有免费层的后端（mimocode）直接忽略。
+    pub(super) fn start_free_models_fetch(&mut self, format: crate::format::ConfigFormat) {
+        if crate::opencode_models::source_for(format).is_none() {
+            return;
+        }
+        let state = self.free_models.entry(format).or_default();
+        if state.fetching() {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::opencode_models::fetch_remote());
+            let _ = tx.send(crate::opencode_models::fetch_remote(format));
         });
-        self.opencode_free_rx = Some(rx);
+        state.rx = Some(rx);
     }
 
-    /// 每帧轮询免费模型拉取结果：成功则刷新列表并落盘缓存。
+    /// 每帧轮询各后端的免费模型拉取结果：成功则刷新列表并落盘缓存。
     ///
     /// 拉取失败**不清空**已有列表：宁可继续用旧缓存，也不要因为一次网络抖动
     /// 让下拉变空（用户会以为配置坏了）。失败原因只在 Agents 区块旁提示。
-    pub(super) fn poll_opencode_free(&mut self) {
-        let Some(rx) = &self.opencode_free_rx else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(Ok(models)) => {
-                self.opencode_free_rx = None;
-                self.opencode_free_error = None;
-                if !models.is_empty() {
-                    // 缓存写失败不影响本次使用（下次启动重取即可）。
-                    let _ = crate::opencode_models::save_cache(&models);
-                    self.opencode_free = models;
+    pub(super) fn poll_free_models(&mut self) {
+        for (format, state) in self.free_models.iter_mut() {
+            let Some(rx) = &state.rx else {
+                continue;
+            };
+            match rx.try_recv() {
+                Ok(Ok(models)) => {
+                    state.rx = None;
+                    state.error = None;
+                    if !models.is_empty() {
+                        // 缓存写失败不影响本次使用（下次启动重取即可）。
+                        let _ = crate::opencode_models::save_cache(*format, &models);
+                        state.models = models;
+                    }
                 }
-            }
-            Ok(Err(err)) => {
-                self.opencode_free_rx = None;
-                self.opencode_free_error = Some(err);
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            // 线程异常退出：终止等待，避免按钮永远显示「刷新中」。
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.opencode_free_rx = None;
+                Ok(Err(err)) => {
+                    state.rx = None;
+                    state.error = Some(err);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                // 线程异常退出：终止等待，避免按钮永远显示「刷新中」。
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    state.rx = None;
+                }
             }
         }
     }

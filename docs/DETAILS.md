@@ -65,13 +65,27 @@ cargo build --release
 - 已配置的模型自动勾选；勾选未配置的模型即新增，取消勾选不会删除已有配置
 - 兼容 `data` / `models` / 裸数组三种响应结构（含 `models/` 前缀清理与去重）
 
-## Agents 的 model 下拉与 opencode 免费模型
+## Agents 的 model 下拉与免费模型
 
-opencode 系（opencode / kilocode / mimocode）页面的 Agents 区块里，`model` 下拉的候选取三部分：**已配置 provider 的模型**（`provider/model`）、**opencode 内置 Zen 网关的免费模型**（`opencode/<id>`）、以及**该 agent 当前的取值**。
+opencode 系（opencode / kilocode / mimocode）页面的 Agents 区块里，`model` 下拉的候选取三部分：**已配置 provider 的模型**（`provider/model`）、**当前页面后端内置网关的免费模型**（`<该后端 provider id>/<id>`）、以及**该 agent 当前的取值**。
 
 前两部分会随配置与上游变化，第三部分**永远保留**：某个已配置的模型被上游下架后，若直接从候选里抹掉，用户会看到「下拉里选中项不见了」，误以为配置坏了。保留它就能看见自己配的是什么，想换再换。
 
-免费模型**不写死在代码里**，而是动态获取——Zen 的免费模型会随上游上下架，写死的 id（早期版本是 `opencode/mimo-v2.5-free` 与 `opencode/big-pickle` 两个）迟早变成「选了却跑不起来」的过期项。实现见 `src/opencode_models.rs`，数据源取两个、各答一半：
+免费模型**不写死在代码里**，而是动态获取——免费层会随上游上下架，写死的 id（早期版本是 `opencode/mimo-v2.5-free` 与 `opencode/big-pickle` 两个）迟早变成「选了却跑不起来」的过期项。实现见 `src/opencode_models.rs`。
+
+### 各后端的免费模型来源
+
+| 后端 | 引用前缀 | 免费模型来源 | 判定 |
+|---|---|---|---|
+| opencode | `opencode` | models.dev 的 `opencode` 厂商 + Zen 网关可用性 | 价格为零 **且** 网关在供 |
+| kilocode | `kilo` | Kilo 网关 `api.kilo.ai/api/gateway/models` | 响应里的 `isFree` 字段 |
+| mimocode | — | **无免费层**，只列用户自己配的 provider 模型 | — |
+
+引用前缀就是各网关自己的 provider id，与 agent 配置里 `provider/model` 的写法同源（MiMo 官方文档的 `xiaomi/mimo-v2.5-pro` 即此规则）。**三页互不串台**：opencode 页只列 Zen 网关的模型、kilocode 页只列 Kilo 网关的，因为各自的网关只认自己的 id。
+
+**MiMo Code 没有免费层。** models.dev 上它对应的 `xiaomi` 厂商 9 个模型全部收费；免费的那些挂在 `xiaomi-token-plan-{cn,sgp,ams}` 下，那是**订阅套餐**（Token Plan）而不是免费层，与「不花钱就能用」不是一回事。所以 mimocode 页不显示免费模型提示与刷新按钮。
+
+### opencode 为什么要两个源求交
 
 | 源 | 提供 | 用途 |
 |---|---|---|
@@ -82,7 +96,11 @@ opencode 系（opencode / kilocode / mimocode）页面的 Agents 区块里，`mo
 
 免费判定要求 `cost.input` 与 `cost.output` **都是显式的 0**；字段缺失说明数据源还没收录价格，按收费处理，避免把收费模型当免费的推荐出去。
 
-`api.json` 未压缩约 4.8 MB（gzip 后约 470 KB），每次启动都下载太浪费，因此结果落盘到 `.modelharbor/opencode-free-models.json`，超过 24 小时才在后台重新拉取。启动先用缓存渲染（不阻塞界面），缓存缺失或过期才在首帧后台刷新。下拉旁的提示会显示当前条数，失败时给出红字与原因，并带一个「刷新」按钮可随时强制重取。拉取失败**不清空**已有列表：宁可继续用旧缓存，也不要因为一次网络抖动让下拉变空。
+Kilo 侧用网关响应自带的 `isFree` 字段，而不是「id 以 `:free` 结尾」或价格推断：`kilo-auto/free` 与 `openrouter/free` 两个免费项并不带 `:free` 后缀，按后缀筛会漏掉它们。
+
+### 缓存
+
+`api.json` 未压缩约 4.8 MB（gzip 后约 470 KB），每次启动都下载太浪费，因此结果**按后端分别**落盘到 `.modelharbor/free-models-<后端>.json`，超过 24 小时才在后台重新拉取。启动先用缓存渲染（不阻塞界面），缓存缺失或过期才在首帧后台刷新。下拉旁的提示会显示当前条数，失败时给出红字与原因，并带一个「刷新」按钮可随时强制重取。拉取失败**不清空**已有列表：宁可继续用旧缓存，也不要因为一次网络抖动让下拉变空。
 
 ## 延迟 / 连通性测试
 
@@ -285,6 +303,7 @@ llm-pi-ai:
 
 ## 注意事项
 
+- WorkBuddy 的模型行有一个**启用开关**（滑动开关，写 `disabled` 字段）：WorkBuddy 的选择器按裸 model id **全局去重**，同一 id 只有第一条生效，所以界面上的开关是**全局互斥**的——打开一个，同名的其他条目自动关闭。只有开启的会写进 `models.json`；关闭**不删配置**，条目仍保存在同目录的 `models.full.json`，开回来即恢复。开关用滑动控件而不是勾选框：在密集的模型卡片里勾选框容易被当成装饰，轨道的填充色与滑块位置让状态一眼可辨
 - `baseURL` 末尾 `/v1` 的归一化按目标 agent 的客户端行为决定，**读入与写出都做**：pi / omp / DSH 的 `anthropic-messages` **去掉**末尾 `/v1`（这三家客户端自己拼 `/v1/messages`，base 里再带会请求成 `/v1/v1/messages`）；opencode 的 `@ai-sdk/anthropic` 相反，baseURL **必须带** `/v1`（客户端只追加 `/messages`）。其他 api 一律不动
 - provider / model 只保存各自支持的字段，方言字段不会互相泄漏
 - omp 的 `apiKey` 为「环境变量名或字面量」语义；推理档位保存为官方 `thinking` 块

@@ -577,19 +577,24 @@ impl App {
                                 rm = Some(j);
                             }
                             if show_model_disabled {
+                                // 滑动开关代替原来的小勾选框：在密集的模型卡片里，
+                                // 勾选框太容易被当成装饰，开关的轨道与滑块一眼可辨。
+                                // 先加开关、后加文字，右对齐布局下读作「启用 [开关] 删」。
                                 let mut enabled = enabled_now;
-                                ui.checkbox(&mut enabled, "启用").on_hover_text(
-                                    "WorkBuddy 的选择器**按模型 id 全局去重**：同一个模型名\
+                                let toggle = crate::ui::toggle_switch(ui, &mut enabled)
+                                    .on_hover_text(
+                                        "WorkBuddy 的选择器**按模型 id 全局去重**：同一个模型名\
                                      无论挂在哪个厂商下，都只会列出一行、只有第一条生效。\n\
-                                     所以同一 id 全局只能开一个——勾上这个，同名的其他条目\
+                                     所以同一 id 全局只能开一个——打开这个，同名的其他条目\
                                      会自动关闭。\n\
-                                     只有勾选的会写进 WorkBuddy 的 models.json；取消勾选**不会\
+                                     只有开启的会写进 WorkBuddy 的 models.json；关闭**不会\
                                      删除配置**，条目仍保存在同目录的 models.full.json 里，\n\
-                                     勾回来即可恢复。想换一家厂商的同一个模型，直接勾它即可。\n\
+                                     开回来即可恢复。想换一家厂商的同一个模型，直接开它即可。\n\
                                      ⚠ 不要为了区分同名模型去改 id —— id 同时就是发给上游的\
                                      模型名，改了会直接请求失败。",
-                                );
-                                if enabled != enabled_now {
+                                    );
+                                ui.label("启用");
+                                if toggle.clicked() {
                                     enable_clicked = Some(enabled);
                                 }
                             }
