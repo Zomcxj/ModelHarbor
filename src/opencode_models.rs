@@ -13,7 +13,7 @@
 //! |---|---|---|---|
 //! | opencode | `opencode` | models.dev 的 `opencode` 厂商 + Zen 网关可用性 | 价格为零 **且** 网关在供 |
 //! | kilocode | `kilo` | Kilo 网关 `api.kilo.ai/api/gateway/models` | 响应里的 `isFree` 字段 |
-//! | mimocode | — | **无免费层**，列表恒为空 | — |
+//! | mimocode | `mimo` / `xiaomi` | **无免费层**，列表恒为空 | — |
 //!
 //! **MiMo Code 为什么没有**：models.dev 上它对应的 `xiaomi` 厂商 9 个模型全部收费；
 //! 免费的那些挂在 `xiaomi-token-plan-{cn,sgp,ams}` 下，那是**订阅套餐**（Token Plan）
@@ -90,6 +90,123 @@ pub fn source_for(format: ConfigFormat) -> Option<Source> {
         // MiMo Code：没有免费层（见模块说明），不提供候选。
         _ => None,
     }
+}
+
+/// 某个 opencode 系页面**自家网关**认的 provider id（agent `model` 的前半段）。
+///
+/// 与 [`source_for`] 的区别：`source_for` 只回答「免费层从哪拉」，这里回答
+/// 「哪些前缀在本页算自家」。两者不是一回事——mimocode 没有免费层，却同样有自己的
+/// 网关；而 agent 的 `model` 若指向别家网关（如把 `opencode/ling-3.0-flash-fin-free`
+/// 写进 kilo.json），kilo 网关根本不认这个前缀，agent 跑不起来。
+///
+/// MiMo Code 有两个：`mimo/`（网关自身的自动路由）与 `xiaomi/`（小米模型族）。
+pub fn gateway_provider_ids(format: ConfigFormat) -> &'static [&'static str] {
+    match format {
+        ConfigFormat::Opencode => &["opencode"],
+        ConfigFormat::Kilocode => &["kilo"],
+        ConfigFormat::Mimocode => &["mimo", "xiaomi"],
+        _ => &[],
+    }
+}
+
+/// 某页网关的首选模型：替换 agent 的 model 时的目标，也是下拉里的第一项。
+///
+/// 一律选**自动路由**类 id（kilo 的 `kilo-auto/free`、mimo 的 `mimo/mimo-auto`）：
+/// 这类 id 由网关自己挑后端，不会因为某个具体模型上下架而失效，正适合当兜底默认值。
+/// opencode 没有自动路由，用它最经典的免费模型 `big-pickle`。
+fn preferred_gateway_model(format: ConfigFormat) -> Option<&'static str> {
+    match format {
+        ConfigFormat::Opencode => Some("opencode/big-pickle"),
+        ConfigFormat::Kilocode => Some("kilo/kilo-auto/free"),
+        ConfigFormat::Mimocode => Some("mimo/mimo-auto"),
+        _ => None,
+    }
+}
+
+/// 动态列表拿不到时用的内置兜底清单（**已带 `provider/` 前缀**）。
+///
+/// 只在动态列表为空时生效。写死 id 会过期，所以这里只放最稳的那几个；
+/// 有动态来源的页面一旦拉到列表就以动态为准（见 [`gateway_models`]）。
+fn builtin_gateway_models(format: ConfigFormat) -> &'static [&'static str] {
+    match format {
+        ConfigFormat::Opencode => &["opencode/big-pickle"],
+        ConfigFormat::Kilocode => &["kilo/kilo-auto/free"],
+        // MiMo Code 的网关模型（`mimo models` 的全量输出），顺序即官方顺序。
+        ConfigFormat::Mimocode => &[
+            "mimo/mimo-auto",
+            "xiaomi/mimo-v2.5",
+            "xiaomi/mimo-v2.5-pro",
+            "xiaomi/mimo-v2.5-pro-ultraspeed",
+            "xiaomi/mimo-v2.6-flash",
+            "xiaomi/mimo-v2.6-pro",
+            "xiaomi/mimo-v2.6-pro-ultraspeed",
+        ],
+        _ => &[],
+    }
+}
+
+/// 某页自家网关的模型候选（已带 `provider/` 前缀，**首选在最前**）。
+///
+/// `free` 是该页动态拉到的免费模型裸 id（见 [`Source::provider_id`]）。有动态列表就
+/// 以它为准，为空才退回内置兜底——否则「切页即替换」会因为列表还没拉回来而静默失效。
+///
+/// 排序：首选（自动路由）第一，其余按字典序。下拉的「前几家」因此就是最稳的那几个，
+/// 替换时取第一个也才是对的。
+pub fn gateway_models(format: ConfigFormat, free: &[String]) -> Vec<String> {
+    let mut models: Vec<String> = match source_for(format) {
+        Some(source) if !free.is_empty() => free
+            .iter()
+            .map(|id| format!("{}/{}", source.provider_id, id))
+            .collect(),
+        _ => builtin_gateway_models(format)
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
+    };
+    models.sort();
+    models.dedup();
+    if let Some(preferred) = preferred_gateway_model(format) {
+        if let Some(at) = models.iter().position(|m| m == preferred) {
+            let head = models.remove(at);
+            models.insert(0, head);
+        }
+    }
+    models
+}
+
+/// 把 agent 的 model 换成自家网关模型时的目标：候选列表的第一个。
+pub fn default_gateway_model(format: ConfigFormat, free: &[String]) -> Option<String> {
+    gateway_models(format, free).into_iter().next()
+}
+
+/// `model` 引用（`provider/model`）的 provider 前缀；没有斜杠时返回 `None`。
+pub fn model_provider_prefix(model: &str) -> Option<&str> {
+    let model = model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let (prefix, rest) = model.split_once('/')?;
+    let prefix = prefix.trim();
+    if prefix.is_empty() || rest.trim().is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
+}
+
+/// `model` 引用在指定页面上是否有效：前缀要么是本页网关，要么是用户自己配的 provider。
+///
+/// 判据与保存时的实际结果一致——opencode 系三页共用同一份 provider 列表，保存时
+/// provider 容器会一并写进目标文件，所以「已配置的 provider key」在任何一页都有效；
+/// 只有**别家网关**的前缀（本页既没这个网关、也没这个 provider）才是无效的。
+///
+/// 前缀解析不出来（没有斜杠 / 空）一律算无效：这种引用在任何网关上都无法解析，
+/// 换成自家网关模型是修正而不是破坏。
+pub fn model_is_valid_on(page: ConfigFormat, configured_keys: &[String], model: &str) -> bool {
+    let Some(prefix) = model_provider_prefix(model) else {
+        return false;
+    };
+    gateway_provider_ids(page).contains(&prefix) || configured_keys.iter().any(|key| key == prefix)
 }
 
 /// 落盘缓存的内容（`fetched_at` + 模型 id 列表）。
@@ -533,6 +650,182 @@ mod tests {
         let b = cache_file(ConfigFormat::Kilocode);
         assert_ne!(a, b);
         assert!(a.contains("opencode") && b.contains("kilocode"));
+    }
+
+    /// 每页认的自家网关前缀必须与各 CLI 实测一致（`kilo models` / `mimo models`）。
+    #[test]
+    fn gateway_provider_ids_match_the_real_clis() {
+        assert_eq!(gateway_provider_ids(ConfigFormat::Opencode), ["opencode"]);
+        assert_eq!(gateway_provider_ids(ConfigFormat::Kilocode), ["kilo"]);
+        // MiMo Code 有两个：网关自身的自动路由 + 小米模型族
+        assert_eq!(
+            gateway_provider_ids(ConfigFormat::Mimocode),
+            ["mimo", "xiaomi"]
+        );
+        // 非 opencode 系没有 agent 概念，也就没有自家网关
+        assert!(gateway_provider_ids(ConfigFormat::WorkBuddy).is_empty());
+        assert!(gateway_provider_ids(ConfigFormat::ZCode).is_empty());
+    }
+
+    /// 动态列表为空时必须有兜底，否则「切页即替换」会因为列表没拉回来而静默失效。
+    #[test]
+    fn every_opencode_family_page_has_a_gateway_default() {
+        for page in [
+            ConfigFormat::Opencode,
+            ConfigFormat::Kilocode,
+            ConfigFormat::Mimocode,
+        ] {
+            let default = default_gateway_model(page, &[]);
+            assert!(default.is_some(), "{} 页缺兜底模型", page.label());
+            let default = default.unwrap();
+            let prefix = model_provider_prefix(&default).unwrap();
+            assert!(
+                gateway_provider_ids(page).contains(&prefix),
+                "{} 页的兜底 {} 不属于自家网关",
+                page.label(),
+                default
+            );
+        }
+    }
+
+    /// 兜底值必须是各页**最稳**的那个 id：自动路由优先。
+    #[test]
+    fn gateway_defaults_prefer_auto_routing_models() {
+        assert_eq!(
+            default_gateway_model(ConfigFormat::Kilocode, &[]).unwrap(),
+            "kilo/kilo-auto/free"
+        );
+        assert_eq!(
+            default_gateway_model(ConfigFormat::Mimocode, &[]).unwrap(),
+            "mimo/mimo-auto"
+        );
+        assert_eq!(
+            default_gateway_model(ConfigFormat::Opencode, &[]).unwrap(),
+            "opencode/big-pickle"
+        );
+    }
+
+    /// 动态列表拿到后以它为准（写死的兜底不能盖过实测列表）。
+    #[test]
+    fn live_free_models_win_over_the_builtin_fallback() {
+        let live = vec!["zzz-free".to_string(), "aaa-free".to_string()];
+        let models = gateway_models(ConfigFormat::Kilocode, &live);
+        // 首选（kilo-auto/free）不在动态列表里，就不该被硬塞进来
+        assert_eq!(models, vec!["kilo/aaa-free", "kilo/zzz-free"]);
+        assert!(!models.iter().any(|m| m == "kilo/kilo-auto/free"));
+    }
+
+    /// 首选若在动态列表里，必须被提到第一位——下拉的「前几家」才有意义。
+    #[test]
+    fn the_preferred_model_is_promoted_to_the_front() {
+        let live = vec![
+            "aaa-free".to_string(),
+            "big-pickle".to_string(),
+            "zzz-free".to_string(),
+        ];
+        let models = gateway_models(ConfigFormat::Opencode, &live);
+        assert_eq!(models.first().unwrap(), "opencode/big-pickle");
+        // 其余仍按字典序，且不重复
+        assert_eq!(
+            models,
+            vec![
+                "opencode/big-pickle",
+                "opencode/aaa-free",
+                "opencode/zzz-free"
+            ]
+        );
+    }
+
+    /// mimo 页的兜底清单必须与 `mimo models` 的实测输出逐条一致。
+    #[test]
+    fn mimocode_fallback_matches_the_cli_output() {
+        let models = gateway_models(ConfigFormat::Mimocode, &[]);
+        assert_eq!(
+            models,
+            vec![
+                "mimo/mimo-auto",
+                "xiaomi/mimo-v2.5",
+                "xiaomi/mimo-v2.5-pro",
+                "xiaomi/mimo-v2.5-pro-ultraspeed",
+                "xiaomi/mimo-v2.6-flash",
+                "xiaomi/mimo-v2.6-pro",
+                "xiaomi/mimo-v2.6-pro-ultraspeed",
+            ]
+        );
+    }
+
+    /// 前缀解析：没有斜杠、空段、只有斜杠都要判成「解析不出来」。
+    #[test]
+    fn model_prefix_parsing_rejects_malformed_references() {
+        assert_eq!(model_provider_prefix("kilo/kilo-auto/free"), Some("kilo"));
+        assert_eq!(
+            model_provider_prefix("  xiaomi/mimo-v2.5  "),
+            Some("xiaomi")
+        );
+        assert_eq!(model_provider_prefix(""), None);
+        assert_eq!(model_provider_prefix("   "), None);
+        assert_eq!(model_provider_prefix("no-slash"), None);
+        assert_eq!(model_provider_prefix("/model"), None);
+        assert_eq!(model_provider_prefix("provider/"), None);
+    }
+
+    /// 核心判据：别家网关的前缀在本页无效，自家网关与自配 provider 都有效。
+    #[test]
+    fn validity_is_about_the_pages_own_gateway() {
+        let configured = vec!["sensenova".to_string()];
+        // 本页网关
+        assert!(model_is_valid_on(
+            ConfigFormat::Kilocode,
+            &configured,
+            "kilo/kilo-auto/free"
+        ));
+        // 自配 provider：保存时 provider 容器一并写入，任何一页都有效
+        assert!(model_is_valid_on(
+            ConfigFormat::Kilocode,
+            &configured,
+            "sensenova/deepseek-v4-flash"
+        ));
+        // 别家网关：kilo 网关不认 opencode/ 前缀 —— 这正是要替换掉的情形
+        assert!(!model_is_valid_on(
+            ConfigFormat::Kilocode,
+            &configured,
+            "opencode/ling-3.0-flash-fin-free"
+        ));
+        // 同一份引用在 opencode 页是有效的（对照）
+        assert!(model_is_valid_on(
+            ConfigFormat::Opencode,
+            &configured,
+            "opencode/ling-3.0-flash-fin-free"
+        ));
+        // mimo 页认 mimo/ 与 xiaomi/，不认 kilo/
+        assert!(model_is_valid_on(
+            ConfigFormat::Mimocode,
+            &[],
+            "xiaomi/mimo-v2.5-pro"
+        ));
+        assert!(!model_is_valid_on(
+            ConfigFormat::Mimocode,
+            &[],
+            "kilo/kilo-auto/free"
+        ));
+    }
+
+    /// 解析不出来的引用一律算无效：换成自家网关模型是修正，不是破坏。
+    #[test]
+    fn malformed_references_are_never_valid() {
+        for page in [
+            ConfigFormat::Opencode,
+            ConfigFormat::Kilocode,
+            ConfigFormat::Mimocode,
+        ] {
+            assert!(!model_is_valid_on(page, &[], ""));
+            assert!(!model_is_valid_on(page, &[], "no-slash"));
+            assert!(!model_is_valid_on(
+                page,
+                &["no-slash".to_string()],
+                "no-slash"
+            ));
+        }
     }
 
     /// 缓存往返：写入后能读回，且被判定为有效期内。

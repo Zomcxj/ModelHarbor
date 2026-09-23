@@ -93,6 +93,15 @@ pub struct App {
     /// 网关与列表，mimocode 没有免费层（不进这张表）。启动先用落盘缓存填充，
     /// 缓存缺失或过期才在后台重新拉取。
     free_models: HashMap<ConfigFormat, FreeModelsState>,
+    /// 各 opencode 系页面**各自**的 agent model 视图（页面 → agent key → model）。
+    ///
+    /// 三页共用同一份 `agents`，但每页网关不同，`model` 的前缀必须换成本页认的
+    /// （见 [`crate::app::agents`] 的切页归一）。没有这份记忆的话，切到 kilo 页再切回
+    /// opencode 页，原来配好的 `opencode/…` 已经被换掉了，**用户什么也没改却丢了配置**。
+    /// 所以离开一页时把该页的 model 视图记下来，回到该页时先还原、再对仍然无效的做替换。
+    ///
+    /// 只在**离开**页面时写入：当前页的权威值永远是 `agents` 本身（用户可能正在编辑）。
+    agent_models_by_page: HashMap<ConfigFormat, HashMap<String, String>>,
     /// 首帧需要自动后台拉取的后端（缓存缺失 / 过期）；拉过即清空。
     free_models_auto: Vec<ConfigFormat>,
     /// 每个 provider 的延迟测试状态（key → 状态）。
@@ -271,6 +280,7 @@ impl Default for App {
             // 免费模型：先用落盘缓存，缺失 / 过期由第一帧的后台刷新补上。
             free_models,
             free_models_auto,
+            agent_models_by_page: HashMap::new(),
             latency: HashMap::new(),
             balance: HashMap::new(),
             balance_batch: false,
@@ -716,6 +726,9 @@ impl App {
         self.model_fetch.clear();
         self.model_fetch_open.clear();
         self.latency.clear();
+        // 各页的 agent model 视图是「上一个文件」的，键（agent 名）可能已经不存在，
+        // 留着会让下次切页把陈旧的值覆盖到新文件上。
+        self.agent_models_by_page.clear();
         // 用户数据查询结果同样跟着配置走，重新加载后重查。
         self.balance.clear();
         self.balance_batch = false;

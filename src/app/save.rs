@@ -502,17 +502,26 @@ impl App {
         // provider / agent 容器整体丢弃（条目与顺序都来自界面），其余顶层字段保留。
         let is_current = self.source_format == fmt && path == self.loaded_path;
         let cross_format = self.source_format != fmt;
+        // 写往**别的**页面时，agent 的 model 必须先按目标页网关归一：三页共用同一份
+        // agents 数据，而 `model` 的 provider 前缀必须是目标页网关认的（kilo 网关不认
+        // `opencode/…`）。当前页写自己加载来的数据则原样落盘——那一份在切页时已经
+        // 归一并显示给用户看过，这里再动一次反而会悄悄改掉用户没看到的东西。
+        let agents = if cross_format {
+            self.agents_for_page(fmt)
+        } else {
+            self.agents.clone()
+        };
         let target_root: Option<Value> = if is_current {
             None
         } else {
             let mut target = backend.load_target_root(path);
             if cross_format {
-                strip_cross_format_containers(fmt, &mut target, !self.agents.is_empty());
+                strip_cross_format_containers(fmt, &mut target, !agents.is_empty());
             }
             Some(target)
         };
         let root = backend.serialize_root(
-            &self.agents,
+            &agents,
             &self.providers,
             self.extras_for(fmt),
             target_root.as_ref(),

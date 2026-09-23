@@ -323,6 +323,9 @@ impl App {
                 }
 
                 if let Some(id) = clicked_page {
+                    // 离开的是哪一页：切页归一要先把它当前的 agent model 视图存下来，
+                    // 否则切走再切回会把用户原来配好的值弄丢（见 normalize_agent_models_for_page）。
+                    let previous_page = self.current_page;
                     if id == ConfigFormat::DeepSeekHarness
                         && self.current_page != ConfigFormat::DeepSeekHarness
                     {
@@ -339,6 +342,23 @@ impl App {
                     // 进页时收敛成「每个 id 只启用第一条」，界面才不会显示成「重复的全启用了」。
                     if id == ConfigFormat::WorkBuddy {
                         self.normalize_workbuddy_enable_flags();
+                    }
+                    // opencode 系三页共用同一份 agent 数据，但每页网关不同：agent 的
+                    // `model` 前缀若指向别家网关（如把 opencode/… 带到 kilo 页），
+                    // 目标页的网关根本不认，agent 跑不起来。进页即换成目标页自家网关的
+                    // 首选模型——界面立即可见，保存时自然写入正确的值。
+                    // 传入「刚离开的页面」：先把它的 model 视图存下来，否则切走再切回
+                    // 会把用户原来配好的值弄丢（详见 `normalize_agent_models_for_page`）。
+                    if id.is_opencode_family() {
+                        let leaving = (previous_page != id).then_some(previous_page);
+                        let replaced = self.normalize_agent_models_for_page(id, leaving);
+                        if replaced > 0 {
+                            self.status = format!(
+                                "已把 {} 个指向其他网关的 agent model 换为 {} 自家模型",
+                                replaced,
+                                id.label()
+                            );
+                        }
                     }
                     // 切换页面后必须重建预览草稿：草稿只在「预览未聚焦且上次解析成功」时才
                     // 跟随组件状态，否则会停留在上一页的内容上（预览框仍有焦点或上次解析失败）。

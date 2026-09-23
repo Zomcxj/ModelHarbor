@@ -48,7 +48,7 @@ cargo build --release
 | kilocode | `.config/kilo/` | `kilo.json`（也接受 `kilo.jsonc`） | `https://app.kilo.ai/config.json` |
 | mimocode | `.config/mimocode/` | `mimocode.json`（也接受 `mimocode.jsonc`） | `https://mimo.xiaomi.com/mimocode/config.json` |
 
-因为三者内容形状完全一致，**没有任何内容特征能区分它们**，判别只能靠**路径**：命中目录名或文件名即认领对应页面，没有路径线索时才按内容（顶层 `provider` 对象）回落 opencode。后果是：把 `kilo.json` 的内容复制到 `opencode.json`，会被认作 opencode 页面——这不影响正确性，因为三者写出的 schema 完全相同，只是图标与保存路径跟着文件名走。
+因为三者内容形状完全一致，**没有任何内容特征能区分它们**，判别只能靠**路径**：命中目录名或文件名即认领对应页面，没有路径线索时才按内容（顶层 `provider` 对象）回落 opencode。后果是：把 `kilo.json` 的内容复制到 `opencode.json`，会被认作 opencode 页面——这不影响正确性，因为三者写出的字段结构完全相同（只有 `$schema` 的 URL 按各页取值），只是图标与保存路径跟着文件名走。
 
 配置目录名以各家官方文档为准：Kilo Code 读 `~/.config/kilo/kilo.json`（另外兼容读取同目录下旧版 `opencode.json`，但不读 `.opencode/`）；MiMo Code 读 `~/.config/mimocode/mimocode.json`（同目录也接受 `config.json`），不读 `opencode.json`。
 
@@ -71,9 +71,15 @@ cargo build --release
 
 ## Agents 的 model 下拉与免费模型
 
-opencode 系（opencode / kilocode / mimocode）页面的 Agents 区块里，`model` 下拉的候选取三部分：**已配置 provider 的模型**（`provider/model`）、**当前页面后端内置网关的免费模型**（`<该后端 provider id>/<id>`）、以及**该 agent 当前的取值**。
+opencode 系（opencode / kilocode / mimocode）页面的 Agents 区块里，`model` 下拉的候选按**三段固定顺序**排列：
 
-前两部分会随配置与上游变化，第三部分**永远保留**：某个已配置的模型被上游下架后，若直接从候选里抹掉，用户会看到「下拉里选中项不见了」，误以为配置坏了。保留它就能看见自己配的是什么，想换再换。
+1. **当前页面自家网关的模型**（`<网关 provider id>/<id>`，排最前）；
+2. **已配置 provider 的模型**（`provider/model`，保持用户自己的配置顺序）；
+3. **该 agent 当前的取值**（若前两段都没有它）。
+
+顺序本身是需求：**自家网关必须排最前**。早先的实现把三段混在一起整体排序，`kilo-auto/free` 这类网关里的关键项会被 `kilo/~anthropic/…` 按字典序挤到后面，「前几家」也就不是自家可用的了。现在只去重、不排序，各段内部保持给定顺序（网关段由 `gateway_models` 决定，首选在最前）。
+
+第三段**永远保留**：某个已配置的模型被上游下架后，若直接从候选里抹掉，用户会看到「下拉里选中项不见了」，误以为配置坏了。保留它就能看见自己配的是什么，想换再换。
 
 免费模型**不写死在代码里**，而是动态获取——免费层会随上游上下架，写死的 id（早期版本是 `opencode/mimo-v2.5-free` 与 `opencode/big-pickle` 两个）迟早变成「选了却跑不起来」的过期项。实现见 `src/opencode_models.rs`。
 
@@ -83,11 +89,41 @@ opencode 系（opencode / kilocode / mimocode）页面的 Agents 区块里，`mo
 |---|---|---|---|
 | opencode | `opencode` | models.dev 的 `opencode` 厂商 + Zen 网关可用性 | 价格为零 **且** 网关在供 |
 | kilocode | `kilo` | Kilo 网关 `api.kilo.ai/api/gateway/models` | 响应里的 `isFree` 字段 |
-| mimocode | — | **无免费层**，只列用户自己配的 provider 模型 | — |
+| mimocode | `mimo` / `xiaomi` | **无免费层**，只列用户自己配的 provider 模型 | — |
 
 引用前缀就是各网关自己的 provider id，与 agent 配置里 `provider/model` 的写法同源（MiMo 官方文档的 `xiaomi/mimo-v2.5-pro` 即此规则）。**三页互不串台**：opencode 页只列 Zen 网关的模型、kilocode 页只列 Kilo 网关的，因为各自的网关只认自己的 id。
 
 **MiMo Code 没有免费层。** models.dev 上它对应的 `xiaomi` 厂商 9 个模型全部收费；免费的那些挂在 `xiaomi-token-plan-{cn,sgp,ams}` 下，那是**订阅套餐**（Token Plan）而不是免费层，与「不花钱就能用」不是一回事。所以 mimocode 页不显示免费模型提示与刷新按钮。
+
+**「自家网关」比「免费层」宽。** `source_for` 只回答「免费层从哪拉」，mimocode 没有免费层却同样有自己的网关。所以下拉排序与下面的切页替换用的是 `gateway_provider_ids`（opencode → `opencode`；kilocode → `kilo`；mimocode → `mimo`、`xiaomi`）与 `gateway_models`。后者优先用动态拉到的免费列表，**列表为空时退回内置兜底**——否则「切页即替换」会因为列表还没拉回来而静默失效。兜底值取各页最稳的那个 id（网关的自动路由优先）：
+
+| 后端 | 兜底模型（动态列表为空时） |
+|---|---|
+| opencode | `opencode/big-pickle` |
+| kilocode | `kilo/kilo-auto/free` |
+| mimocode | `mimo/mimo-auto`，其后是 `xiaomi/mimo-v2.5*` / `mimo-v2.6*` 全量（与 `mimo models` 输出一致） |
+
+### 切页即替换：指向别家网关的 model
+
+`model` 的前半段必须是**目标页网关认的 provider id**。把 opencode 页配好的 `opencode/ling-3.0-flash-fin-free` 带到 kilo 页，kilo 网关不认这个前缀，agent 直接跑不起来——而界面看不出问题（下拉里就显示着那串字）。
+
+所以在两个位置各做一次归一，规则同一套（`opencode_models::model_is_valid_on`）：
+
+- **切页时**：进到 opencode 系页面就检查每个 agent，`model` 非空且前缀既不是本页网关、也不是用户自己配的 provider key 时，换成该页自家网关的首选模型。界面立即可见，状态栏提示替换了几条。
+- **写往别的页面时**：保存（含「一键保存」）与右侧预览都按**目标页**归一。三页共用同一份 agents 数据，不按目标页分别归一的话，最后访问过的那一页的模型会被写进所有文件。当前页写自己加载来的数据则原样落盘——那份在切页时已经归一过并显示给用户看过。
+
+判据里「用户自己配的 provider key」在任何一页都算有效：保存时 provider 容器一并写进目标文件，引用不会落空。空 `model` 不动（那是「还没选」，不是「选错了」）；拿不到任何自家模型时也一律不动，宁可少替换也不把配置清成空串。
+
+### 每页各记一份 agent model（否则切走再切回会丢配置）
+
+单向替换有个隐蔽后果：用户从 opencode 页切到 kilo 页（`opencode/…` 被换成 `kilo/kilo-auto/free`），再切回 opencode 页——**原来那个 `opencode/…` 已经没了**。用户什么也没改，配置却变了。
+
+所以进程内另存一份 `agent_models_by_page`（页面 → agent 名 → model）：**离开一页时**记下该页当前的 model 视图，**回到该页时**先还原、再对仍然无效的引用做替换。于是「各页各配各的」能同时成立：
+
+- 用户在 kilo 页挑了 `kilo/kilo-auto/balanced`，切走再切回，看到的还是 `kilo/kilo-auto/balanced`（不是被重置成默认值）；
+- 一键保存写到 kilo 的那份，用的是用户在 kilo 页挑的值，而不是当前页那份被归一过的引用。
+
+三条边界：当前页的权威值永远是 `agents` 本身（用户可能正在编辑，记忆对它已过期）；记忆只在离开页面时写入，所以**首次**进入某页没有记忆可还原，按无效引用替换；重新加载配置或从预览内容重建时**清空**记忆——键（agent 名）可能已经不存在，留着会把陈旧的值盖到新文件上。
 
 ### opencode 为什么要两个源求交
 
@@ -191,6 +227,7 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 - **启动时按文件内容判定方言**，而不是只按「哪一页填了路径」：把 opencode 的配置文件填到 pi 页时，用 pi 方言去读会解析出 0 条 provider（表现为「写了路径却不自动加载」）。现在启动探测与手动加载走同一套内容判定，页面会跟随实际格式切换。文件读不出内容时保持页面推断不改判——无内容时判定会按扩展名回落 opencode，据此改判会把页面误判并污染持久化路径
 - 跨格式写入由界面接管的容器：`provider`（opencode）/ `providers`（pi / omp / DSH）——容器内的条目与顺序完全来自界面，目标文件里多出来的旧条目不残留；目标文件其余顶层配置（如 `mcp`、`instructions`）原样保留
 - opencode 的 `agent` 容器只在界面确实持有 agents 数据时才接管（来源为 opencode，或在 opencode 页手动新增）；来源为 pi / omp / DSH 时界面无从表达 agents，**目标文件已有的 agents 原样保留**，不会被清空
+- 写往 opencode 系**别的**页面时，agent 的 `model` 按目标页网关归一（指向别家网关的前缀换成该页自家网关模型，见「切页即替换」）；当前页写自己加载来的数据则原样落盘
 - 跨格式写入覆盖已存在的文件前，先把原内容备份为 `<文件>.bak`（内容相同或文件为空时跳过）；备份失败则取消保存，不会静默替换旧配置
 - 勾选「WSL同步」后同时写入 WSL 侧对应路径；未在 WSL 中安装对应 agent 时禁用勾选
 

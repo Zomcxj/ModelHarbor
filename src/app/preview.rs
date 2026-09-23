@@ -403,18 +403,24 @@ impl App {
         };
         let is_current = self.source_format == fmt && path == self.loaded_path;
         // 与 save_backend_to 同一套语义：跨格式目标做干净转换（provider 容器由界面接管），
-        // 预览显示的内容就是保存将要写出的内容。
+        // 预览显示的内容就是保存将要写出的内容。agent 的 model 也必须按目标页网关归一，
+        // 否则预览会显示一份「看着没问题、写出去却是无效引用」的内容。
+        let agents = if self.source_format != fmt {
+            self.agents_for_page(fmt)
+        } else {
+            self.agents.clone()
+        };
         let target_root = if is_current {
             None
         } else {
             let mut target = backend.load_target_root(&path);
             if self.source_format != fmt {
-                strip_cross_format_containers(fmt, &mut target, !self.agents.is_empty());
+                strip_cross_format_containers(fmt, &mut target, !agents.is_empty());
             }
             Some(target)
         };
         let root = backend.serialize_root(
-            &self.agents,
+            &agents,
             &self.providers,
             self.extras_for(fmt),
             target_root.as_ref(),
@@ -443,6 +449,8 @@ impl App {
                 self.model_fetch.clear();
                 self.model_fetch_open.clear();
                 self.latency.clear();
+                // agent 的 key 集合可能已被预览内容换掉，各页的 model 视图随之失效。
+                self.agent_models_by_page.clear();
                 self.probe.release(None);
                 true
             }
