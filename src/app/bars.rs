@@ -141,7 +141,7 @@ pub(super) fn http_status_code(err: &str) -> Option<u16> {
 /// 网络错误文本脱敏：ureq 的 Transport Display 会包含目标 URL，
 /// 若用户把凭据放进 URL query（如 `?key=sk-…`）会随错误泄漏到
 /// 状态栏/悬停提示；剥离 URL 的 query/fragment 后返回。
-pub(super) fn sanitize_network_error(text: &str) -> String {
+pub(crate) fn sanitize_network_error(text: &str) -> String {
     const MARK: &str = "for URL \"";
     if let Some(idx) = text.find(MARK) {
         let head = &text[..idx + MARK.len()];

@@ -65,6 +65,25 @@ cargo build --release
 - 已配置的模型自动勾选；勾选未配置的模型即新增，取消勾选不会删除已有配置
 - 兼容 `data` / `models` / 裸数组三种响应结构（含 `models/` 前缀清理与去重）
 
+## Agents 的 model 下拉与 opencode 免费模型
+
+opencode 系（opencode / kilocode / mimocode）页面的 Agents 区块里，`model` 下拉的候选取三部分：**已配置 provider 的模型**（`provider/model`）、**opencode 内置 Zen 网关的免费模型**（`opencode/<id>`）、以及**该 agent 当前的取值**。
+
+前两部分会随配置与上游变化，第三部分**永远保留**：某个已配置的模型被上游下架后，若直接从候选里抹掉，用户会看到「下拉里选中项不见了」，误以为配置坏了。保留它就能看见自己配的是什么，想换再换。
+
+免费模型**不写死在代码里**，而是动态获取——Zen 的免费模型会随上游上下架，写死的 id（早期版本是 `opencode/mimo-v2.5-free` 与 `opencode/big-pickle` 两个）迟早变成「选了却跑不起来」的过期项。实现见 `src/opencode_models.rs`，数据源取两个、各答一半：
+
+| 源 | 提供 | 用途 |
+|---|---|---|
+| [models.dev](https://models.dev) `api.json` | 价格（`cost`）与上下架标记（`status`） | 判断哪些**免费** |
+| `opencode.ai/zen/v1/models` | 当前真实提供的模型 id | 判断哪些**还在供** |
+
+单靠任何一个都不够：Zen 的接口只有 id、没有价格，分不出免费与收费；models.dev 的价格准确，但 `deprecated` 标记**偏保守**——实测 `mimo-v2.5-free` 被标记为 deprecated，Zen 网关却仍在正常提供（返回 403 FreeTierError，意思是「模型存在，只是限定在 opencode 内使用」）。所以判定取**两者交集**：models.dev 说免费 **且** 网关确实提供。这样既不会推荐已下架的 id（`glm-5-free` / `kimi-k2.5-free` / `grok-code` 在网关上返回 401「Model is not supported」），也不会漏掉仍可用但被保守标记的模型。网关请求失败时回退为「只信 models.dev，并排除 deprecated 标记的条目」——拿不到实测依据时宁可少列几个。
+
+免费判定要求 `cost.input` 与 `cost.output` **都是显式的 0**；字段缺失说明数据源还没收录价格，按收费处理，避免把收费模型当免费的推荐出去。
+
+`api.json` 未压缩约 4.8 MB（gzip 后约 470 KB），每次启动都下载太浪费，因此结果落盘到 `.modelharbor/opencode-free-models.json`，超过 24 小时才在后台重新拉取。启动先用缓存渲染（不阻塞界面），缓存缺失或过期才在首帧后台刷新。下拉旁的提示会显示当前条数，失败时给出红字与原因，并带一个「刷新」按钮可随时强制重取。拉取失败**不清空**已有列表：宁可继续用旧缓存，也不要因为一次网络抖动让下拉变空。
+
 ## 延迟 / 连通性测试
 
 - **厂商连通性**：Providers 标题行右侧「连通性测试」按钮，一键测试当前页面全部厂商，耗时显示在各厂商卡片名字右侧（失败显示错误码，悬停看完整错误）；卡片收起时依然可见

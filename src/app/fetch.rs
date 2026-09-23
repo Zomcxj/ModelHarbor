@@ -1033,4 +1033,49 @@ impl App {
             self.status = msg;
         }
     }
+
+    /// 后台拉取 opencode 免费模型列表（已有请求在飞时不重复发起）。
+    ///
+    /// 与 provider 的「获取模型」共用同一套「后台线程 + 通道」形状，但请求的是
+    /// 公共模型库而非某个用户 provider，因此不需要 baseURL / API Key。
+    pub(super) fn start_opencode_free_fetch(&mut self) {
+        if self.opencode_free_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::opencode_models::fetch_remote());
+        });
+        self.opencode_free_rx = Some(rx);
+    }
+
+    /// 每帧轮询免费模型拉取结果：成功则刷新列表并落盘缓存。
+    ///
+    /// 拉取失败**不清空**已有列表：宁可继续用旧缓存，也不要因为一次网络抖动
+    /// 让下拉变空（用户会以为配置坏了）。失败原因只在 Agents 区块旁提示。
+    pub(super) fn poll_opencode_free(&mut self) {
+        let Some(rx) = &self.opencode_free_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(models)) => {
+                self.opencode_free_rx = None;
+                self.opencode_free_error = None;
+                if !models.is_empty() {
+                    // 缓存写失败不影响本次使用（下次启动重取即可）。
+                    let _ = crate::opencode_models::save_cache(&models);
+                    self.opencode_free = models;
+                }
+            }
+            Ok(Err(err)) => {
+                self.opencode_free_rx = None;
+                self.opencode_free_error = Some(err);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            // 线程异常退出：终止等待，避免按钮永远显示「刷新中」。
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.opencode_free_rx = None;
+            }
+        }
+    }
 }
