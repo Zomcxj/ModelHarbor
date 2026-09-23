@@ -462,18 +462,21 @@ const _: () = {
     assert!(TOGGLE_WIDTH > TOGGLE_HEIGHT, "轨道应横向长于纵向");
 };
 
-/// 滑动开关的滑块圆心：`on` 时靠右、`off` 时靠左，垂直居中。
+/// 滑动开关的滑块圆心：按**进度**插值，`t = 0` 贴左、`t = 1` 贴右，垂直居中。
 ///
-/// 抽成纯函数是为了直接断言「开/关两态的圆心都在轨道内、且确实左右分开」——
-/// 写死偏移在轨道尺寸调整后会立刻越界，而这种越界在截图里很难一眼看出。
-pub fn toggle_knob_center(rect: egui::Rect, on: bool) -> egui::Pos2 {
+/// 抽成纯函数是为了能直接断言「任意进度下滑块都在轨道内」——动画的中间帧同样会
+/// 越界，而中间帧的越界几乎看不出来（一帧就过去了），靠肉眼审不出来。
+pub fn toggle_knob_center_at(rect: egui::Rect, t: f32) -> egui::Pos2 {
     let radius = TOGGLE_KNOB / 2.0;
-    let x = if on {
-        rect.right() - TOGGLE_INSET - radius
-    } else {
-        rect.left() + TOGGLE_INSET + radius
-    };
-    egui::pos2(x, rect.center().y)
+    let left = rect.left() + TOGGLE_INSET + radius;
+    let right = rect.right() - TOGGLE_INSET - radius;
+    let t = t.clamp(0.0, 1.0);
+    egui::pos2(left + (right - left) * t, rect.center().y)
+}
+
+/// 滑动开关的滑块圆心（两态版本：`on` 即进度 1，`off` 即进度 0）。
+pub fn toggle_knob_center(rect: egui::Rect, on: bool) -> egui::Pos2 {
+    toggle_knob_center_at(rect, on as u8 as f32)
 }
 
 /// 滑动开关：一个明显的「点击即切换」控件，替代原来的小勾选框。
@@ -482,34 +485,42 @@ pub fn toggle_knob_center(rect: egui::Rect, on: bool) -> egui::Pos2 {
 /// 在密集的模型卡片里很容易被当成装饰；开关有明确的轨道与滑块，状态一眼可辨，
 /// 且整块轨道都是点击热区。
 ///
+/// **`id` 必须由调用方给出稳定值**（如「卡片键 + 字段名」），不能省。动画状态挂在
+/// 这个 id 上；若改用 egui 的自动 id，同一行里**条件渲染**的控件（延迟标签只在有
+/// 结果时才占位）会让 id 随状态漂移，动画就会串到别的行上去。
+///
 /// 视觉规则遵循项目既有约束：
 /// - 状态只靠**填充 + 滑块位置**表达，不靠文字颜色（文字色在各主题下不可控）；
 /// - 圆角取主题的控件圆角，与同一行其他控件对齐；
 /// - 不给按钮挂悬停提示（说明文字由调用方以可见文本承担）。
-pub fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+pub fn toggle_switch(ui: &mut egui::Ui, id: egui::Id, on: &mut bool) -> egui::Response {
     let desired = egui::vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT);
     let (rect, mut resp) = ui.allocate_exact_size(desired, egui::Sense::click());
     if resp.clicked() {
         *on = !*on;
         resp.mark_changed();
     }
+    // 进度先取：即使本帧不画（被裁剪），动画也要继续推进，
+    // 否则滚回来时会看到它停在半路。
+    let t = crate::motion::toggle_progress(ui.ctx(), id, *on);
     if ui.is_rect_visible(rect) {
         let visuals = ui.style().interact(&resp);
         let colors = crate::theme::semantics(ui);
         let radius = TOGGLE_HEIGHT / 2.0;
-        // 轨道：开=绿色（与「生效中」的语义一致），关=中性灰。
-        // 悬停时提亮一档，让「可点」这件事在密集列表里也能看出来。
-        let track = if *on {
-            if resp.hovered() {
-                colors.ok.gamma_multiply(1.15)
-            } else {
-                colors.ok
-            }
-        } else if resp.hovered() {
+        // 轨道：开=绿色（与「生效中」的语义一致），关=中性灰。悬停各提亮一档，
+        // 让「可点」这件事在密集列表里也能看出来。两端的颜色先各自定好，
+        // 再按进度插值——于是滑动过程中轨道颜色与滑块位置是同步的。
+        let off = if resp.hovered() {
             ui.visuals().widgets.hovered.bg_fill
         } else {
             ui.visuals().widgets.inactive.bg_fill
         };
+        let on_fill = if resp.hovered() {
+            colors.ok.gamma_multiply(1.15)
+        } else {
+            colors.ok
+        };
+        let track = crate::motion::lerp_color(off, on_fill, t);
         ui.painter().rect(
             rect,
             radius,
@@ -518,7 +529,7 @@ pub fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
             egui::StrokeKind::Inside,
         );
         // 滑块：白色圆点，带一圈细描边保证在浅色轨道上也看得清边界。
-        let center = toggle_knob_center(rect, *on);
+        let center = toggle_knob_center_at(rect, t);
         ui.painter()
             .circle_filled(center, TOGGLE_KNOB / 2.0, egui::Color32::WHITE);
         ui.painter().circle_stroke(
@@ -533,8 +544,8 @@ pub fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        drag_handle_dots, merge_drag_target, toggle_knob_center, DRAG_HANDLE_GAP, TOGGLE_HEIGHT,
-        TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
+        drag_handle_dots, merge_drag_target, toggle_knob_center, toggle_knob_center_at,
+        DRAG_HANDLE_GAP, TOGGLE_HEIGHT, TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
     };
     use eframe::egui;
 
@@ -764,7 +775,7 @@ mod tests {
             let out = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut v = value;
-                    super::toggle_switch(ui, &mut v);
+                    super::toggle_switch(ui, egui::Id::new("t"), &mut v);
                     value = v;
                 });
             });
@@ -807,7 +818,7 @@ mod tests {
         let out = ctx.run(input.clone(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut v = value;
-                rect = super::toggle_switch(ui, &mut v).rect;
+                rect = super::toggle_switch(ui, egui::Id::new("t"), &mut v).rect;
                 value = v;
             });
         });
@@ -834,10 +845,123 @@ mod tests {
         let _ = ctx.run(input2, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut v = value;
-                super::toggle_switch(ui, &mut v);
+                super::toggle_switch(ui, egui::Id::new("t"), &mut v);
                 value = v;
             });
         });
         assert!(value, "点击后应从关变开");
+    }
+
+    /// 动画中间帧：进度在 (0,1) 之间时，滑块必须落在两态之间——既不贴左也不贴右。
+    ///
+    /// 这是「滑动」这件事的核心断言。只断言两端（`toggle_knob_center`）看不出
+    /// 动画是否真的存在：把进度写死成 0 或 1 也满足两端断言，但那就退化成瞬切。
+    #[test]
+    fn toggle_knob_sweeps_between_the_two_ends() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(10.0, 20.0),
+            egui::vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT),
+        );
+        let off = toggle_knob_center(rect, false);
+        let on = toggle_knob_center(rect, true);
+        // 单调：进度越大越靠右，中途不能回折。
+        let mut prev = f32::NEG_INFINITY;
+        for step in 0..=10 {
+            let t = step as f32 / 10.0;
+            let x = toggle_knob_center_at(rect, t).x;
+            assert!(x > prev, "进度 {t} 处滑块没有继续向右：{x} <= {prev}");
+            prev = x;
+        }
+        // 端点必须精确等于两态（否则动画收尾会留下一点偏移）。
+        assert!((toggle_knob_center_at(rect, 0.0).x - off.x).abs() < 0.01);
+        assert!((toggle_knob_center_at(rect, 1.0).x - on.x).abs() < 0.01);
+        // 中间帧确实在中间。
+        let mid = toggle_knob_center_at(rect, 0.5).x;
+        assert!(
+            mid > off.x + 1.0 && mid < on.x - 1.0,
+            "进度 0.5 时滑块应在两态之间：off={} mid={mid} on={}",
+            off.x,
+            on.x
+        );
+    }
+
+    /// 任意进度（含越界值）下滑块都必须完整留在轨道内。
+    ///
+    /// 中间帧的越界只闪一帧，肉眼审不出来；这里把整个行程扫一遍。
+    #[test]
+    fn toggle_knob_stays_inside_at_every_progress() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(10.0, 20.0),
+            egui::vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT),
+        );
+        let radius = TOGGLE_KNOB / 2.0;
+        // 越界的 t（负数 / 大于 1）会被 clamp，同样不能越出轨道。
+        for t in [-1.0, -0.001, 0.0, 0.25, 0.5, 0.75, 1.0, 1.001, 2.0] {
+            let c = toggle_knob_center_at(rect, t);
+            assert!(
+                c.x - radius >= rect.left() - 0.01 && c.x + radius <= rect.right() + 0.01,
+                "进度 {t} 处滑块越出轨道：{c:?}"
+            );
+            assert!(
+                c.y - radius >= rect.top() - 0.01 && c.y + radius <= rect.bottom() + 0.01,
+                "进度 {t} 处滑块纵向越出轨道：{c:?}"
+            );
+        }
+    }
+
+    /// `toggle_progress` 的确定性路径：调试 / 单测下直接给终值，不经过动画管理器。
+    #[test]
+    fn toggle_progress_is_binary_when_everything_is_visible() {
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|mem| mem.set_everything_is_visible(true));
+        let id = egui::Id::new("toggle_anim");
+        assert_eq!(crate::motion::toggle_progress(&ctx, id, false), 0.0);
+        assert_eq!(crate::motion::toggle_progress(&ctx, id, true), 1.0);
+    }
+
+    /// 动画真的会推进：连跑几帧，滑块应离开起点、并最终停到终点。
+    ///
+    /// 用真实时间（`RawInput::time`）驱动，因为 egui 的 `animate_bool` 按时间差推进，
+    /// 不是按帧数——只跑帧不给时间的话进度永远不动，这条测试就会假绿。
+    #[test]
+    fn toggle_animates_towards_the_target_over_time() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+        let id = egui::Id::new("toggle_anim");
+        let base = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(200.0, 60.0),
+            )),
+            ..Default::default()
+        };
+        // 起始：关态，先把 id 登记成 0。
+        let mut time = 0.0f64;
+        let progress_at = |time: f64, on: bool| {
+            let mut input = base.clone();
+            input.time = Some(time);
+            let mut out = 0.0f32;
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    out = crate::motion::toggle_progress(ui.ctx(), id, on);
+                });
+            });
+            out
+        };
+        assert_eq!(progress_at(time, false), 0.0, "首帧未登记 -> 直接给终值 0");
+        // 打开：进度立刻开始离开 0，但还没到 1。
+        time += 1.0 / 60.0;
+        let early = progress_at(time, true);
+        assert!(early > 0.0, "开启动画没有推进：{early}");
+        assert!(early < 1.0, "开启动画一帧就到位，没有滑动过程：{early}");
+        // 推进超过动画时长：必须精确停在 1。
+        time += crate::motion::TOGGLE_TIME as f64 + 0.05;
+        assert_eq!(progress_at(time, true), 1.0, "动画应收敛到 1");
+        // 关回去同样要经过中间态。
+        time += 1.0 / 60.0;
+        let back = progress_at(time, false);
+        assert!(back < 1.0 && back > 0.0, "关闭动画应在中间：{back}");
+        time += crate::motion::TOGGLE_TIME as f64 + 0.05;
+        assert_eq!(progress_at(time, false), 0.0, "动画应收敛到 0");
     }
 }

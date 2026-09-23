@@ -49,6 +49,25 @@ pub trait Backend: Sync {
     /// 默认 WSL 路径（None = 不支持 WSL）。
     fn default_wsl_path(&self) -> Option<String>;
 
+    /// 某个配置路径的**等价候选**，按优先级排列（首个是主名）。
+    ///
+    /// 覆写它的是那些「主配置可能有多个等价文件名」的后端：opencode 系首次运行
+    /// 生成的可能是 `.jsonc` 变体（`kilo.jsonc`），而默认路径写的是 `.json`。
+    /// 若只认默认名，页面会判成「未安装」，保存还会**另建**一个 `.json`，
+    /// 把用户真正的配置晾在一边。
+    fn path_candidates(&self, path: &str) -> Vec<String> {
+        vec![path.to_string()]
+    }
+
+    /// 实际要读写的本地文件路径：候选里第一个真实存在的；都不存在则用主名
+    /// （新建场景要往主名写）。
+    fn resolve_local_path(&self, local_path: &str) -> String {
+        self.path_candidates(local_path)
+            .into_iter()
+            .find(|c| Path::new(c.as_str()).exists())
+            .unwrap_or_else(|| local_path.to_string())
+    }
+
     /// 本地目标是否可用（一般：文件存在；宽松后端：文件或父目录存在）。
     fn local_available(&self, local_path: &str) -> bool;
 
@@ -157,19 +176,48 @@ pub fn wsl_target(id: ConfigFormat) -> Option<String> {
 }
 
 /// 一次 `wsl` 调用探测全部后端的默认 WSL 路径，返回“已安装”后端的路径。
+///
+/// 每个后端可能有多条**等价候选**路径（opencode 系的 `.json` / `.jsonc`），
+/// 全部一起探。选择顺序：先取**确实是文件**的候选——否则在「父目录存在即算安装」的
+/// 宽松判定下，会挑中那个并不存在的 `.json`，写盘时就凭空多出一个文件、
+/// 用户真正的 `.jsonc` 反而没人动。都不存在文件时才退回落到的宽松条件。
 fn probe_wsl_targets() -> HashMap<ConfigFormat, Option<String>> {
     let mut out = HashMap::new();
-    let entries: Vec<(ConfigFormat, String)> = BACKENDS
+    // (后端, 候选路径) —— 候选按优先级排（主名在前）。
+    let entries: Vec<(ConfigFormat, Vec<String>)> = BACKENDS
         .iter()
-        .filter_map(|b| b.default_wsl_path().map(|p| (b.id(), p)))
+        .filter_map(|b| {
+            let base = b.default_wsl_path()?;
+            Some((b.id(), b.path_candidates(&base)))
+        })
         .collect();
     if entries.is_empty() {
         return out;
     }
-    let paths: Vec<String> = entries.iter().map(|(_, p)| p.clone()).collect();
-    let probes = crate::util::wsl_batch_probe(&paths);
-    for ((id, path), probe) in entries.into_iter().zip(probes) {
-        if backend(id).wsl_available(probe) {
+    // 扁平化后一次性探测，再按后端切回来。
+    let mut flat: Vec<String> = Vec::new();
+    for (_, candidates) in &entries {
+        flat.extend(candidates.iter().cloned());
+    }
+    let probes = crate::util::wsl_batch_probe(&flat);
+    let mut cursor = 0;
+    for (id, candidates) in entries {
+        let slice = &probes[cursor..cursor + candidates.len()];
+        cursor += candidates.len();
+        let backend = backend(id);
+        // 优先：候选里真实存在的文件。
+        let by_file = candidates
+            .iter()
+            .zip(slice)
+            .find(|(_, probe)| probe.file_exists)
+            .map(|(path, _)| path.clone());
+        // 其次：后端自己的宽松判定（父目录存在即算已安装）。
+        let by_rule = candidates
+            .iter()
+            .zip(slice)
+            .find(|(_, probe)| backend.wsl_available(**probe))
+            .map(|(path, _)| path.clone());
+        if let Some(path) = by_file.or(by_rule) {
             out.insert(id, Some(path));
         }
     }
@@ -181,15 +229,21 @@ pub fn target_available(id: ConfigFormat, local_path: &str) -> bool {
     backend(id).local_available(local_path) || wsl_target(id).is_some()
 }
 
+/// 本地实际要读写的路径：后端可在默认名之外回退等价文件名（opencode 系的 `.jsonc`）。
+pub fn resolve_local_path(id: ConfigFormat, local_path: &str) -> String {
+    backend(id).resolve_local_path(local_path)
+}
+
 /// 实际写入路径：本地优先，本地不可用回落 WSL，最后回退本地默认（新建场景）。
 pub fn target_path(id: ConfigFormat, local_path: &str) -> String {
-    if Path::new(local_path).exists() {
-        return local_path.to_string();
+    let local = backend(id).resolve_local_path(local_path);
+    if Path::new(&local).exists() {
+        return local;
     }
     if let Some(wsl) = wsl_target(id) {
         return wsl;
     }
-    local_path.to_string()
+    local
 }
 
 /// 统一写入：WSL 路径走 wsl 命令，本地路径自动创建父目录。

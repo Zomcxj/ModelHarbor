@@ -52,6 +52,10 @@ cargo build --release
 
 配置目录名以各家官方文档为准：Kilo Code 读 `~/.config/kilo/kilo.json`（另外兼容读取同目录下旧版 `opencode.json`，但不读 `.opencode/`）；MiMo Code 读 `~/.config/mimocode/mimocode.json`（同目录也接受 `config.json`），不读 `opencode.json`。
 
+**首次运行生成的可能是 `.jsonc`，页面必须照样认。** 两个 CLI 第一次启动时写的是 `.jsonc` 变体（实测 `kilo.jsonc` / `mimocode.jsonc`），而默认路径指向 `.json`。若只认默认名，会同时错两处：页面判成「未安装」（页签变灰、一键保存跳过它），保存还会**另建**一个 `.json`，把用户真正的配置晾在一边。所以路径知识统一走「候选列表」：`Backend::path_candidates()` 给出 `[主名, .jsonc 变体]`，`resolve_local_path()` 取其中第一个真实存在的文件（都不存在才用主名，供新建）。`local_available()`、启动探测 `ConfigPaths::detect()`、WSL 批量探测、保存目标 `refresh_targets()` 全部走这条解析。两个细节：候选只替换**文件名**那一段（父目录里恰好出现同名字串时不能误替换），且解析结果再喂回去必须幂等（不能滚出 `.jsonc.jsonc`）；WSL 侧优先取「确实是文件」的候选，否则在「父目录存在即算安装」的宽松判定下会挑中并不存在的 `.json`。
+
+**`$schema` 会写进配置。** CLI 自己生成的配置就带这个字段（`kilo.json` 里只有一行 `$schema`），它让编辑器与 CLI 拿到字段补全。此前只在目标文件已有该字段时才会保留，新建 / 合并到不存在的目标写出的是一份裸的 `{"agent":{},"provider":{}}`，预览里看不到 `$schema`。现在序列化时统一补齐各家官方地址并排在**首位**；**已有值一律保留**——用户可能手动改成镜像地址，覆盖等于替用户改配置。
+
 **目录名优先于文件名**：Kilo 那份遗留的 `~/.config/kilo/opencode.json` 名字像 opencode，但目录已经把它判给了 kilocode，所以归 kilocode 页面（反过来 `~/.config/opencode/kilo.json` 归 opencode）。否则按注册顺序先到的 opencode 会抢走它，页面与保存路径都会指错目录。
 
 **MiMo Code 的页签图标不是官方 favicon。** MiMo Code 是 opencode 的 fork，它仓库里的 favicon、桌面应用图标、console logo 全都沿用 opencode 的同一份图形（`favicon.svg` 与 opencode 官方逐字节相同），照抄官方资产会得到一个和 opencode 页签**看起来一模一样**的图标。所以这里改用小米官方 logo（橙底白色 `mi`）。测试 `opencode_family_members_have_distinct_paths_and_icons` 因此按**像素差异占比**（阈值 25%）判定，而不是只比字节——同图形换抗锯齿只有约 13% 差异，换图形可达 97%。
@@ -303,7 +307,7 @@ llm-pi-ai:
 
 ## 注意事项
 
-- WorkBuddy 的模型行有一个**启用开关**（滑动开关，写 `disabled` 字段）：WorkBuddy 的选择器按裸 model id **全局去重**，同一 id 只有第一条生效，所以界面上的开关是**全局互斥**的——打开一个，同名的其他条目自动关闭。只有开启的会写进 `models.json`；关闭**不删配置**，条目仍保存在同目录的 `models.full.json`，开回来即恢复。开关用滑动控件而不是勾选框：在密集的模型卡片里勾选框容易被当成装饰，轨道的填充色与滑块位置让状态一眼可辨
+- WorkBuddy 的模型行有一个**启用开关**（滑动开关，写 `disabled` 字段）：WorkBuddy 的选择器按裸 model id **全局去重**，同一 id 只有第一条生效，所以界面上的开关是**全局互斥**的——打开一个，同名的其他条目自动关闭。只有开启的会写进 `models.json`；关闭**不删配置**，条目仍保存在同目录的 `models.full.json`，开回来即恢复。开关用滑动控件而不是勾选框：在密集的模型卡片里勾选框容易被当成装饰，轨道的填充色与滑块位置让状态一眼可辨。点击时滑块**滑动到位**（`motion::TOGGLE_TIME` = 0.14s，轨道填充色与滑块位置同步插值），比悬停过渡略长——滑块要看得见在移动，太快就退化成瞬切。动画状态挂在一个**调用方给出的稳定 id** 上（`("model_enable", model_key)`），不能用 egui 的自动 id：同一行里延迟标签是条件渲染的，自动 id 会随它出现而漂移，动画就串到别的行去了。egui 的 `animate_bool` 对未登记的 id 首帧直接返回终值，所以页面刚打开时开关不会从左边滑进来——只有点击造成的状态变化才走动画
 - `baseURL` 末尾 `/v1` 的归一化按目标 agent 的客户端行为决定，**读入与写出都做**：pi / omp / DSH 的 `anthropic-messages` **去掉**末尾 `/v1`（这三家客户端自己拼 `/v1/messages`，base 里再带会请求成 `/v1/v1/messages`）；opencode 的 `@ai-sdk/anthropic` 相反，baseURL **必须带** `/v1`（客户端只追加 `/messages`）。其他 api 一律不动
 - provider / model 只保存各自支持的字段，方言字段不会互相泄漏
 - omp 的 `apiKey` 为「环境变量名或字面量」语义；推理档位保存为官方 `thinking` 块

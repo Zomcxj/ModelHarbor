@@ -580,10 +580,19 @@ impl App {
                                 // 滑动开关代替原来的小勾选框：在密集的模型卡片里，
                                 // 勾选框太容易被当成装饰，开关的轨道与滑块一眼可辨。
                                 // 先加开关、后加文字，右对齐布局下读作「启用 [开关] 删」。
+                                //
+                                // id 用**行的稳定键**（`model_key` = provider 键 + 模型 id），
+                                // 不能用 egui 自动 id：同一行里延迟标签是条件渲染的
+                                // （只在测过之后才占位），自动 id 会随它出现而漂移，
+                                // 滑动动画就会串到别的行上。
                                 let mut enabled = enabled_now;
-                                let toggle = crate::ui::toggle_switch(ui, &mut enabled)
-                                    .on_hover_text(
-                                        "WorkBuddy 的选择器**按模型 id 全局去重**：同一个模型名\
+                                let toggle = crate::ui::toggle_switch(
+                                    ui,
+                                    egui::Id::new(("model_enable", model_key.as_str())),
+                                    &mut enabled,
+                                )
+                                .on_hover_text(
+                                    "WorkBuddy 的选择器**按模型 id 全局去重**：同一个模型名\
                                      无论挂在哪个厂商下，都只会列出一行、只有第一条生效。\n\
                                      所以同一 id 全局只能开一个——打开这个，同名的其他条目\
                                      会自动关闭。\n\
@@ -592,7 +601,7 @@ impl App {
                                      开回来即可恢复。想换一家厂商的同一个模型，直接开它即可。\n\
                                      ⚠ 不要为了区分同名模型去改 id —— id 同时就是发给上游的\
                                      模型名，改了会直接请求失败。",
-                                    );
+                                );
                                 ui.label("启用");
                                 if toggle.clicked() {
                                     enable_clicked = Some(enabled);

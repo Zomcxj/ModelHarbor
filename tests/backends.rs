@@ -236,6 +236,199 @@ fn write_config_creates_parent_dirs() {
     p.parent().map(|d| std::fs::remove_dir(d).ok());
 }
 
+/// CLI 首次运行可能只生成 `.jsonc` 变体（`kilo.jsonc` / `mimocode.jsonc`），
+/// 此时默认的 `.json` 并不存在——**仍须判为已安装**，且读写路径要指向真实的那个文件。
+///
+/// 否则页面显示「未安装」（用户实测报过），保存还会另建一个 `.json`，
+/// 把用户真正的配置晾在一边。
+#[test]
+fn a_jsonc_only_install_still_counts_as_installed() {
+    let root = std::env::temp_dir().join(format!("mh-jsonc-only-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let kilo_dir = root.join(".config").join("kilo");
+    std::fs::create_dir_all(&kilo_dir).unwrap();
+    let jsonc = kilo_dir.join("kilo.jsonc");
+    std::fs::write(&jsonc, r#"{"$schema":"https://app.kilo.ai/config.json"}"#).unwrap();
+
+    let b = backends::backend(ConfigFormat::Kilocode);
+    // 默认名（.json）不存在，但等价候选 .jsonc 存在
+    let default = kilo_dir.join("kilo.json").to_string_lossy().into_owned();
+    assert!(
+        b.local_available(&default),
+        "只有 kilo.jsonc 时也应算已安装"
+    );
+    let resolved = backends::resolve_local_path(ConfigFormat::Kilocode, &default);
+    assert_eq!(
+        resolved,
+        jsonc.to_string_lossy(),
+        "读写路径应指向真实存在的 .jsonc"
+    );
+
+    // 两者都在时优先主名：不该悄悄改写到 .jsonc
+    std::fs::write(kilo_dir.join("kilo.json"), "{}").unwrap();
+    assert_eq!(
+        backends::resolve_local_path(ConfigFormat::Kilocode, &default),
+        default,
+        "主名存在时应优先主名"
+    );
+
+    // 都不存在时回落到主名（新建场景要往主名写）
+    std::fs::remove_file(&jsonc).unwrap();
+    std::fs::remove_file(kilo_dir.join("kilo.json")).unwrap();
+    assert_eq!(
+        backends::resolve_local_path(ConfigFormat::Kilocode, &default),
+        default
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 候选顺序：主名在前，`.jsonc` 变体在后；且只替换**文件名**那一段。
+///
+/// 父目录里恰好出现同名字串时不能被误替换（`.../kilo.json-backup/kilo.json`
+/// 这种路径换错就写到别的目录去了）。
+#[test]
+fn jsonc_candidate_only_rewrites_the_file_name() {
+    for (fmt, path, want_variant) in [
+        (
+            ConfigFormat::Kilocode,
+            r"C:\Users\me\.config\kilo\kilo.json",
+            r"C:\Users\me\.config\kilo\kilo.jsonc",
+        ),
+        (
+            ConfigFormat::Mimocode,
+            r"C:\Users\me\.config\mimocode\mimocode.json",
+            r"C:\Users\me\.config\mimocode\mimocode.jsonc",
+        ),
+    ] {
+        let b = backends::backend(fmt);
+        let candidates = b.path_candidates(path);
+        assert_eq!(candidates[0], path, "首个候选必须是主名");
+        assert_eq!(candidates[1], want_variant, "{fmt:?} 的 .jsonc 变体不对");
+    }
+    // 父目录里出现同名子串：只动文件名
+    let b = backends::backend(ConfigFormat::Kilocode);
+    let odd = r"C:\kilo.json-backup\kilo.json";
+    assert_eq!(
+        b.path_candidates(odd)[1],
+        r"C:\kilo.json-backup\kilo.jsonc",
+        "不得替换父目录里的同名字串"
+    );
+    // 幂等：把解析结果再喂回去，候选不能滚出 `.jsonc.jsonc`
+    for (fmt, p) in [
+        (
+            ConfigFormat::Kilocode,
+            r"C:\Users\me\.config\kilo\kilo.jsonc",
+        ),
+        (
+            ConfigFormat::Mimocode,
+            "/home/me/.config/mimocode/mimocode.jsonc",
+        ),
+    ] {
+        assert_eq!(
+            backends::backend(fmt).path_candidates(p).len(),
+            1,
+            "已是 .jsonc 时不应再追加变体：{p}"
+        );
+    }
+}
+
+/// 非 opencode 系后端只有一条候选（默认实现），不会被这次改动波及。
+#[test]
+fn other_backends_have_a_single_candidate() {
+    for fmt in [
+        ConfigFormat::Pi,
+        ConfigFormat::OhMyPi,
+        ConfigFormat::DeepSeekHarness,
+        ConfigFormat::ZCode,
+        ConfigFormat::WorkBuddy,
+    ] {
+        let b = backends::backend(fmt);
+        let p = b.default_local_path();
+        assert_eq!(
+            b.path_candidates(&p),
+            vec![p.clone()],
+            "{fmt:?} 不应有额外候选"
+        );
+    }
+}
+
+/// 新建 / 合并到不存在的目标时也要写出 `$schema`：CLI 自己生成的配置就带它，
+/// 缺了编辑器与 CLI 都拿不到字段补全（用户实测报过「预览里没有 $schema」）。
+#[test]
+fn serialize_always_writes_the_schema_url() {
+    let agents = vec![oc_agent("build")];
+    let providers = vec![pi_provider("openai_x", "gpt-5.6-sol")];
+    for (fmt, want) in [
+        (ConfigFormat::Opencode, "https://opencode.ai/config.json"),
+        (ConfigFormat::Kilocode, "https://app.kilo.ai/config.json"),
+        (
+            ConfigFormat::Mimocode,
+            "https://mimo.xiaomi.com/mimocode/config.json",
+        ),
+    ] {
+        let b = backends::backend(fmt);
+        // 目标不存在（空对象）→ 必须补上
+        let fresh = b.serialize_root(&agents, &providers, &json!({}), Some(&json!({})));
+        assert_eq!(
+            fresh.get("$schema").and_then(Value::as_str),
+            Some(want),
+            "{fmt:?} 新建时未写 $schema"
+        );
+        // 当前文件保存（extras 里没有 $schema）→ 同样补上
+        let current = b.serialize_root(&agents, &providers, &json!({"mcp":{}}), None);
+        assert_eq!(
+            current.get("$schema").and_then(Value::as_str),
+            Some(want),
+            "{fmt:?} 当前文件保存时未写 $schema"
+        );
+        // 顺序：$schema 在首位（CLI 生成的文件就是这么排的）
+        assert_eq!(
+            current
+                .as_object()
+                .and_then(|o| o.keys().next())
+                .map(String::as_str),
+            Some("$schema"),
+            "{fmt:?} 的 $schema 应排在首位"
+        );
+    }
+}
+
+/// 已有的 `$schema` 一律保留：用户可能改成别的地址，覆盖等于替用户改配置。
+#[test]
+fn an_existing_schema_url_is_preserved() {
+    let agents = vec![oc_agent("build")];
+    let providers = vec![pi_provider("openai_x", "gpt-5.6-sol")];
+    let custom = "https://my-mirror.example/kilo.schema.json";
+    for fmt in [
+        ConfigFormat::Opencode,
+        ConfigFormat::Kilocode,
+        ConfigFormat::Mimocode,
+    ] {
+        let b = backends::backend(fmt);
+        let existing = json!({ "$schema": custom, "theme": "x" });
+        let merged = b.serialize_root(&agents, &providers, &json!({}), Some(&existing));
+        assert_eq!(
+            merged.get("$schema").and_then(Value::as_str),
+            Some(custom),
+            "{fmt:?} 覆盖了用户自定义的 $schema"
+        );
+        assert_eq!(
+            merged.get("theme").and_then(Value::as_str),
+            Some("x"),
+            "{fmt:?} 丢了目标文件的其他顶层字段"
+        );
+        // 当前文件保存（extras 自带 $schema）同样不能改写
+        let extras = json!({ "$schema": custom });
+        let kept = b.serialize_root(&agents, &providers, &extras, None);
+        assert_eq!(
+            kept.get("$schema").and_then(Value::as_str),
+            Some(custom),
+            "{fmt:?} 覆盖了当前文件里的 $schema"
+        );
+    }
+}
+
 /// opencode 系（opencode / kilocode / mimocode）三者内容形状相同，判别只能靠路径。
 ///
 /// Kilo Code 与 MiMo Code 都是 opencode 的 fork，配置 schema 逐字相同，所以任何
@@ -300,6 +493,10 @@ fn a_siblings_directory_name_beats_a_matching_filename() {
 }
 
 /// 三者写盘口径完全一致：同一份界面状态序列化出的 provider / agent 字段相同。
+///
+/// **唯一允许的差异是 `$schema` 地址**——三者各有自己的官方 schema（`app.kilo.ai`
+/// / `mimo.xiaomi.com`），那正是它们被区分开的标记之一。比较前把它摘掉，
+/// 剩下的部分必须逐字相同；否则就是某个成员悄悄长出了自己的字段口径。
 #[test]
 fn opencode_family_serializes_identically() {
     let providers = vec![pi_provider("openai_x", "gpt-5.6-sol")];
@@ -317,7 +514,14 @@ fn opencode_family_serializes_identically() {
         assert!(root.get("mcp").is_some(), "{fmt:?} 丢了顶层字段");
         assert!(root.get("provider").is_some(), "{fmt:?} 未写 provider");
         assert!(root.get("agent").is_some(), "{fmt:?} 未写 agent");
-        roots.push(serde_json::to_string(&root).unwrap());
+        assert!(root.get("$schema").is_some(), "{fmt:?} 未写 $schema");
+        // 摘掉 $schema 再比：其余字段必须逐字一致。
+        let mut without_schema = root.clone();
+        without_schema
+            .as_object_mut()
+            .unwrap()
+            .shift_remove("$schema");
+        roots.push(serde_json::to_string(&without_schema).unwrap());
     }
     assert_eq!(roots[0], roots[1], "opencode 与 kilocode 写盘应一致");
     assert_eq!(roots[1], roots[2], "kilocode 与 mimocode 写盘应一致");

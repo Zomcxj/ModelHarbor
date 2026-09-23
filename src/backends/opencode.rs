@@ -32,7 +32,8 @@ pub struct Flavor {
     /// 主配置文件名。Kilo 也接受 `kilo.jsonc`、MiMo 也接受 `mimocode.jsonc`，
     /// 这里取官方文档给出的首选（`kilo.json` / `mimocode.json`）。
     pub file: &'static str,
-    /// 官方 `$schema` 地址（仅用于文档/判别提示，不写盘）。
+    /// 官方 `$schema` 地址。**新建 / 合并后缺失时会写进配置**：CLI 自己生成的
+    /// 配置就带这个字段，缺了编辑器与 CLI 都拿不到 schema 提示。已有值一律保留。
     pub schema: &'static str,
     /// 32×32 未预乘 RGBA 原始字节。
     pub icon: &'static [u8],
@@ -104,6 +105,17 @@ impl Flavor {
             self.file
         ))
     }
+
+    /// 主配置的 `.jsonc` 变体路径（`kilo.json` → `kilo.jsonc`）。
+    fn jsonc_variant(&self, path: &str) -> String {
+        let stem = self.file.trim_end_matches(".json");
+        // 只替换**文件名**那一段，别动父目录里可能出现的同名子串。
+        match path.rfind(&self.file) {
+            Some(at) => format!("{}{}.jsonc", &path[..at], stem),
+            // 路径里没有主文件名（用户自定义名）：按扩展名整体换。
+            None => format!("{}.jsonc", path.trim_end_matches(".json")),
+        }
+    }
 }
 
 impl Backend for OpenCodeFamilyBackend {
@@ -119,8 +131,23 @@ impl Backend for OpenCodeFamilyBackend {
         self.0.default_wsl_path()
     }
 
+    /// 默认名不存在时回退 `.jsonc` 变体（CLI 首次运行可能只生成那个）。
+    ///
+    /// 传进来的已经是 `.jsonc` 时不重复追加（解析结果会被再喂回来，
+    /// 候选必须幂等，否则会滚出 `kilo.jsonc.jsonc` 这种路径）。
+    fn path_candidates(&self, path: &str) -> Vec<String> {
+        let variant = self.0.jsonc_variant(path);
+        if variant == path {
+            vec![path.to_string()]
+        } else {
+            vec![path.to_string(), variant]
+        }
+    }
+
     fn local_available(&self, local_path: &str) -> bool {
-        Path::new(local_path).exists()
+        self.path_candidates(local_path)
+            .iter()
+            .any(|p| Path::new(p.as_str()).exists())
     }
 
     fn wsl_available(&self, probe: WslPathProbe) -> bool {
@@ -183,6 +210,7 @@ impl Backend for OpenCodeFamilyBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
+        let schema = self.0.schema;
         match target_root {
             None => {
                 // 当前文件：以 UI 状态为准整体替换 agent / provider（删除即生效）；
@@ -213,9 +241,9 @@ impl Backend for OpenCodeFamilyBackend {
                         o.insert("provider".into(), Value::Object(pm));
                     }
                 }
-                r
+                with_schema(r, schema)
             }
-            Some(target) => merge_opencode_root(target, agents, providers),
+            Some(target) => with_schema(merge_opencode_root(target, agents, providers), schema),
         }
     }
 
@@ -269,6 +297,24 @@ fn path_matches(flavor: &Flavor, path: &str) -> bool {
     let stem = flavor.file.trim_end_matches(".json");
     let names = [format!("/{}", flavor.file), format!("/{}.jsonc", stem)];
     names.iter().any(|n| lower.ends_with(n.as_str()))
+}
+
+/// 保证 `$schema` 存在、且排在首位。
+///
+/// CLI 自己生成的配置就带这个字段（`kilo.json` 里只有一行 `$schema`），它让编辑器与
+/// CLI 拿到字段补全。此前新建 / 合并到不存在的目标时完全不写它，写出的配置是个裸的
+/// `{"agent":{},"provider":{}}`，用户会看到「预览里没有 $schema」。
+///
+/// **已有值一律保留**：用户可能手动改成别的 schema 地址（或旧版本地址），
+/// 覆盖成官方值等于替用户改配置。
+fn with_schema(root: Value, schema: &str) -> Value {
+    let Value::Object(mut o) = root else {
+        return root;
+    };
+    if !o.contains_key("$schema") {
+        o.insert("$schema".into(), Value::String(schema.to_string()));
+    }
+    Value::Object(convert::order_fields(o, &["$schema"]))
 }
 
 /// 将 UI 状态合并进 opencode 系目标 root（跨格式保存用）：

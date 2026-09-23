@@ -483,9 +483,14 @@ impl App {
 
     /// 某一页「相对默认路径」的覆盖值：与默认相同（或没改过）返回空串，
     /// 这样 prefs 里只留真正手动指定过的路径，默认路径永远跟着自动探测走。
+    ///
+    /// 比较基准用**解析后的默认路径**（`resolve_local_path`）：自动落到 `.jsonc`
+    /// 变体上只是探测结果，不是用户的选择，不该被当成手动覆盖记进 settings.json——
+    /// 否则 CLI 之后把文件改名成 `.json`，这条覆盖就指向一个不存在的路径了。
     fn path_override(&self, format: ConfigFormat) -> String {
         let current = self.config_paths.local_path(format);
-        let default = ConfigPaths::default_local_path(format);
+        let default =
+            backends::resolve_local_path(format, &ConfigPaths::default_local_path(format));
         if current.trim() == default.trim() {
             String::new()
         } else {
@@ -646,11 +651,13 @@ impl App {
     fn refresh_targets(&mut self) {
         // 默认目标固定为 Windows 本地路径；WSL 侧仅通过“WSL同步”勾选写入，
         // 且写入前按页面检测对应 agent 是否已安装。
+        // 路径走 `resolve_local_path`：默认名不存在但等价的 `.jsonc` 存在时，
+        // 用后者——否则「已安装」判成 false，保存还会另建一个 `.json`。
         self.targets = backends::BACKENDS
             .iter()
             .map(|b| {
                 let id = b.id();
-                let local = self.config_paths.local_path(id);
+                let local = backends::resolve_local_path(id, &self.config_paths.local_path(id));
                 SaveTarget {
                     backend: id,
                     available: self.config_paths.validate_target(id),

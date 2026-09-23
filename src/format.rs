@@ -128,7 +128,9 @@ impl ConfigPaths {
             if overrides.get(id).trim().is_empty() {
                 continue;
             }
-            let path = self.local_path(id);
+            // 覆盖路径也要走候选解析：用户填 `.json`、盘上是 `.jsonc` 时，
+            // 这里若按原样判存在，覆盖就永远命中不了，表现为「填了路径却不打开」。
+            let path = backends::resolve_local_path(id, &self.local_path(id));
             if Path::new(&path).exists() {
                 return Some((id, path));
             }
@@ -137,11 +139,15 @@ impl ConfigPaths {
     }
 
     /// 启动探测：找到第一个本地存在的默认配置。
+    ///
+    /// 路径走候选解析（opencode 系的 `.json` / `.jsonc`）：只认默认名的话，
+    /// CLI 首次运行生成 `.jsonc` 的机器会一个都探测不到，启动就落在空配置上。
     pub fn detect() -> Option<(ConfigFormat, String)> {
         for b in backends::BACKENDS {
-            let p = b.default_local_path();
+            let id = b.id();
+            let p = backends::resolve_local_path(id, &b.default_local_path());
             if Path::new(&p).exists() {
-                return Some((b.id(), p));
+                return Some((id, p));
             }
         }
         None

@@ -12,6 +12,12 @@ pub const HOVER_TIME: f32 = 0.12;
 /// 折叠 / 展开时长（秒）。与 egui 默认 CollapsingHeader 的动画节奏同级。
 pub const COLLAPSE_TIME: f32 = 0.18;
 
+/// 滑动开关的滑块行程时长（秒）。
+///
+/// 比悬停过渡略长：滑块要**看得见在移动**，太快就退化成瞬切、失去「滑动」的观感；
+/// 又要短到点完立刻到位，不能等。0.14s 是「看清是滑过去的」与「不觉得卡」的折中。
+pub const TOGGLE_TIME: f32 = 0.14;
+
 /// 动画时长必须「短到跟手」：改大了整个界面会显得拖沓。
 /// 编译期检查——改坏常量时构建就失败，不必等测试跑起来。
 const _: () = {
@@ -20,6 +26,9 @@ const _: () = {
         COLLAPSE_TIME <= 0.25,
         "折叠动画时长超过 0.25s，界面会显得拖沓"
     );
+    assert!(TOGGLE_TIME <= 0.2, "开关滑动时长超过 0.2s，点击会显得迟钝");
+    // 时长归零等于瞬切，动画形同虚设——必须真的有一段滑动过程。
+    assert!(TOGGLE_TIME > 0.0, "开关滑动时长不能为零，否则没有滑动过程");
 };
 
 /// gamma 空间的逐通道插值（预乘 alpha 原样插）。
@@ -54,6 +63,25 @@ pub fn collapse_openness(ctx: &egui::Context, id: egui::Id, open: bool) -> f32 {
         return open as u8 as f32;
     }
     ctx.animate_bool_with_time(id.with("collapse"), open, COLLAPSE_TIME)
+}
+
+/// 滑动开关的滑块进度（0 = 贴左的关态，1 = 贴右的开态）。
+///
+/// 走 `animate_bool_with_time`：它按**每帧的真实时间差**推进，所以帧率波动时
+/// 滑行速度仍然一致（不是「每帧挪固定距离」）。动画期间它会自行 `request_repaint`，
+/// 不必调用方再驱动重绘。
+///
+/// 未登记过的 id 首帧直接返回终值（见 egui `AnimationManager::animate_bool` 的
+/// `None => end` 分支），所以**页面刚打开时开关不会从左边滑进来**——只有点击
+/// 造成的状态变化才走动画。
+///
+/// `everything_is_visible`（调试模式 / 确定性单测）下直接给终值，与
+/// [`hover_t`] / [`collapse_openness`] 保持一致。
+pub fn toggle_progress(ctx: &egui::Context, id: egui::Id, on: bool) -> f32 {
+    if ctx.memory(|mem| mem.everything_is_visible()) {
+        return on as u8 as f32;
+    }
+    ctx.animate_bool_with_time(id.with("toggle"), on, TOGGLE_TIME)
 }
 
 /// 把折叠动画立刻钉到终值（时长 0）。
