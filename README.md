@@ -1,6 +1,6 @@
 # ModelHarbor
 
-可视化编辑 [`opencode`](https://opencode.ai)、[`Kilo Code`](https://kilo.ai)（kilocode）、[`MiMo Code`](https://mimo.xiaomi.com/coder)（mimocode，小米）、[`pi`](https://github.com/earendil-works/pi)、[`oh-my-pi`](https://github.com/can1357/oh-my-pi)（omp）、[`DeepSeek Harness`](https://github.com/amorvincit-omnia/llm-pi-ai)（DSH）、ZCode 与 WorkBuddy 配置文件的桌面 GUI 工具。
+可视化编辑 opencode、Kilo Code（kilocode）、MiMo Code（mimocode，小米）、pi、oh-my-pi（omp）、DeepSeek Harness（DSH）、ZCode 与 WorkBuddy 配置文件的桌面 GUI 工具。
 
 Rust + egui 构建，单文件可执行程序，无需安装运行时。
 
