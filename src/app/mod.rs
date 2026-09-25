@@ -31,6 +31,14 @@ enum SaveFormat {
 }
 
 impl SaveFormat {
+    /// 切到另一种保存格式（滚轮与点击共用同一翻转，别处不得另写一份）。
+    fn toggled(self) -> Self {
+        match self {
+            SaveFormat::Current => SaveFormat::Compact,
+            SaveFormat::Compact => SaveFormat::Current,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Current => "默认格式",

@@ -1,5 +1,5 @@
 //! 顶栏 / 状态栏 / 页头等外围栏位，以及吸顶标题与错误文本处理小工具。
-use super::{App, SaveFormat};
+use super::App;
 use crate::app::preview::PREVIEW_EDITOR_ID;
 use crate::app::save::PageTarget;
 use crate::backends;
@@ -21,6 +21,44 @@ pub(super) fn sticky_begin(ui: &mut egui::Ui, height: f32) -> (f32, f32, f32, f3
 /// 外观面板里的形状预览按钮：填强调色、按预设圆角，选中画 2px 高亮描边。
 ///
 /// 选中描边**统一 2px**、与形状自身的 `border_width` 解耦——云朵这类
+/// 外观弹层里的一行主题按钮：按钮用主题强调色填充、文字按底色取黑/白，
+/// 当前主题加一圈描边（颜色由调用方按面板底色定）。返回本帧被点中的主题。
+fn theme_button_row(
+    ui: &mut egui::Ui,
+    themes: &[Theme],
+    current: Theme,
+    radius: f32,
+    ring: egui::Color32,
+) -> Option<Theme> {
+    let mut clicked = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for t in themes {
+            let accent = t.accent_color();
+            // 文字颜色：根据背景亮暗自动选择黑/白
+            let text_color = if accent.r() as u32 + accent.g() as u32 + accent.b() as u32 > 384 {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::WHITE
+            };
+            let stroke = if *t == current {
+                egui::Stroke::new(2.0f32, ring)
+            } else {
+                egui::Stroke::NONE
+            };
+            let btn = egui::Button::new(egui::RichText::new(t.label()).color(text_color))
+                .fill(accent)
+                .stroke(stroke)
+                .min_size(egui::vec2(52.0, 0.0))
+                .corner_radius(radius);
+            if ui.add(btn).clicked() {
+                clicked = Some(*t);
+            }
+        }
+    });
+    clicked
+}
+
 /// 「卡片不描边」的预设若沿用自身宽度，选中后就没有和其他形状一样的
 /// 高亮圈。浅底用深描边、深底用白描边，保证任何主题下都看得清。
 fn shape_button(
@@ -401,65 +439,29 @@ impl App {
                             let current_radius = self.ui_style.radius() as f32;
                             // 当前主题的强调色（用于形状按钮填充）
                             let current_accent = self.theme.accent_color();
-                            // 深色主题一行
+                            // 两行按钮共用同一个绘制函数（见 theme_button_row）；
+                            // 当前主题的描边色随行不同：深色行用白、亮色行用深灰，
+                            // 各自与所在面板底色保持对比。
                             ui.label(egui::RichText::new("深色").size(10.0).weak());
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                for t in &Theme::ALL[0..4] {
-                                    let is_current = self.theme == *t;
-                                    let accent = t.accent_color();
-                                    // 按钮用主题色填充
-                                    let fill = accent;
-                                    // 文字颜色：根据背景亮暗自动选择黑/白
-                                    let text_color = if accent.r() as u32 + accent.g() as u32 + accent.b() as u32 > 384 {
-                                        egui::Color32::BLACK
-                                    } else {
-                                        egui::Color32::WHITE
-                                    };
-                                    // 当前主题：加一圈对比色边框
-                                    let stroke = if is_current {
-                                        egui::Stroke::new(2.0f32, egui::Color32::WHITE)
-                                    } else {
-                                        egui::Stroke::NONE
-                                    };
-                                    let btn = egui::Button::new(egui::RichText::new(t.label()).color(text_color))
-                                        .fill(fill)
-                                        .stroke(stroke)
-                                        .min_size(egui::vec2(52.0, 0.0))
-                                        .corner_radius(current_radius);
-                                    if ui.add(btn).clicked() {
-                                        self.theme = *t;
-                                    }
-                                }
-                            });
-                            // 亮色主题一行
+                            if let Some(t) = theme_button_row(
+                                ui,
+                                &Theme::ALL[0..4],
+                                self.theme,
+                                current_radius,
+                                egui::Color32::WHITE,
+                            ) {
+                                self.theme = t;
+                            }
                             ui.label(egui::RichText::new("亮色").size(10.0).weak());
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                for t in &Theme::ALL[4..8] {
-                                    let is_current = self.theme == *t;
-                                    let accent = t.accent_color();
-                                    let fill = accent;
-                                    let text_color = if accent.r() as u32 + accent.g() as u32 + accent.b() as u32 > 384 {
-                                        egui::Color32::BLACK
-                                    } else {
-                                        egui::Color32::WHITE
-                                    };
-                                    let stroke = if is_current {
-                                        egui::Stroke::new(2.0f32, egui::Color32::from_gray(40))
-                                    } else {
-                                        egui::Stroke::NONE
-                                    };
-                                    let btn = egui::Button::new(egui::RichText::new(t.label()).color(text_color))
-                                        .fill(fill)
-                                        .stroke(stroke)
-                                        .min_size(egui::vec2(52.0, 0.0))
-                                        .corner_radius(current_radius);
-                                    if ui.add(btn).clicked() {
-                                        self.theme = *t;
-                                    }
-                                }
-                            });
+                            if let Some(t) = theme_button_row(
+                                ui,
+                                &Theme::ALL[4..8],
+                                self.theme,
+                                current_radius,
+                                egui::Color32::from_gray(40),
+                            ) {
+                                self.theme = t;
+                            }
                             ui.add_space(crate::theme::SPACE_2);
                             ui.label(egui::RichText::new("形状").small().weak());
                             let dark = ui.visuals().dark_mode;
@@ -538,20 +540,14 @@ impl App {
                     .input(|i| i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. })));
                 // 滚轮切换：一次连续滚动手势只切换一次，避免快速滚动时来回翻转
                 if hovering && scroll && !self.save_format_wheel_latch {
-                    self.save_format = match self.save_format {
-                        SaveFormat::Current => SaveFormat::Compact,
-                        SaveFormat::Compact => SaveFormat::Current,
-                    };
+                    self.save_format = self.save_format.toggled();
                     self.save_format_wheel_latch = true;
                 }
                 if !scroll || !hovering {
                     self.save_format_wheel_latch = false;
                 }
                 if format_btn.clicked() {
-                    self.save_format = match self.save_format {
-                        SaveFormat::Current => SaveFormat::Compact,
-                        SaveFormat::Compact => SaveFormat::Current,
-                    };
+                    self.save_format = self.save_format.toggled();
                 }
             });
         });
