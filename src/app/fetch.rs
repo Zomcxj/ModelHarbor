@@ -472,29 +472,51 @@ pub(super) fn probe_user_agent(wire: ApiWire) -> &'static str {
     }
 }
 
-/// 测量 provider 模型列表接口的往返延迟（毫秒）。
-pub(super) fn measure_provider_latency(url: &str, secret: &str, api: &str) -> Result<u64, String> {
+/// 三个远程测量入口共用的前置：协议支持性、URL 与密钥判空，然后解析 wire / auth。
+///
+/// `why` 拼在「缺少 baseURL / API Key」后面区分入口（模型列表接口加「，无法获取模型」）。
+fn request_prelude(
+    api: &str,
+    url_empty: bool,
+    secret_empty: bool,
+    why: &str,
+) -> Result<(ApiWire, AuthKind), String> {
     if let Some(reason) = unsupported_reason(api) {
         return Err(reason);
     }
-    if url.is_empty() {
-        return Err("缺少 baseURL".to_string());
+    if url_empty {
+        return Err(format!("缺少 baseURL{why}"));
     }
-    if secret.is_empty() {
-        return Err("缺少 API Key".to_string());
+    if secret_empty {
+        return Err(format!("缺少 API Key{why}"));
     }
     let wire = api_wire(api);
-    let auth = auth_kind(wire);
-    let target = with_query_key(url, auth, secret);
-    let agent = latency_agent();
-    let request = apply_auth(
+    Ok((wire, auth_kind(wire)))
+}
+
+/// 测量入口共用的「已鉴权 GET」构造：UA 伪装成白名单客户端 + Accept: json。
+fn authed_get(
+    agent: &ureq::Agent,
+    target: &str,
+    wire: ApiWire,
+    auth: AuthKind,
+    secret: &str,
+) -> ureq::Request {
+    apply_auth(
         agent
-            .get(&target)
+            .get(target)
             .set("User-Agent", probe_user_agent(wire))
             .set("Accept", "application/json"),
         auth,
         secret,
-    );
+    )
+}
+
+/// 测量 provider 模型列表接口的往返延迟（毫秒）。
+pub(super) fn measure_provider_latency(url: &str, secret: &str, api: &str) -> Result<u64, String> {
+    let (wire, auth) = request_prelude(api, url.is_empty(), secret.is_empty(), "")?;
+    let target = with_query_key(url, auth, secret);
+    let request = authed_get(&latency_agent(), &target, wire, auth, secret);
     let started = std::time::Instant::now();
     let result = request.call();
     let elapsed = started.elapsed().as_millis() as u64;
@@ -693,23 +715,11 @@ pub(super) fn measure_model_latency(
     model: &str,
     question: &str,
 ) -> Result<u64, String> {
-    if let Some(reason) = unsupported_reason(api) {
-        return Err(reason);
-    }
-    if base_url.trim().is_empty() {
-        return Err("缺少 baseURL".to_string());
-    }
-    if secret.is_empty() {
-        return Err("缺少 API Key".to_string());
-    }
-    let wire = api_wire(api);
-    let auth = auth_kind(wire);
+    let (wire, auth) = request_prelude(api, base_url.trim().is_empty(), secret.is_empty(), "")?;
     let url = with_query_key(&chat_url(base_url, api, model, true), auth, secret);
     let body = minimal_body(wire, model, question).to_string();
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout_read(std::time::Duration::from_millis(LATENCY_TIMEOUT_MS))
-        .build();
+    // 与列表测延迟同一个 agent：连接 5s / 读 10s（见 latency_agent）。
+    let agent = latency_agent();
     let started = std::time::Instant::now();
     // Accept 与主流 SDK 的流式口径一致；UA 伪装成白名单客户端（见 probe_user_agent）。
     let result = apply_auth(
@@ -746,30 +756,14 @@ pub(super) fn fetch_models_remote(
     secret: &str,
     api: &str,
 ) -> Result<Vec<String>, String> {
-    if let Some(reason) = unsupported_reason(api) {
-        return Err(reason);
-    }
-    if url.is_empty() {
-        return Err("缺少 baseURL，无法获取模型".to_string());
-    }
-    if secret.is_empty() {
-        return Err("缺少 API Key，无法获取模型".to_string());
-    }
-    let wire = api_wire(api);
-    let auth = auth_kind(wire);
+    let (wire, auth) = request_prelude(api, url.is_empty(), secret.is_empty(), "，无法获取模型")?;
     let target = with_query_key(url, auth, secret);
+    // 模型列表可能来自很慢的中转站：连接 10s / 读 30s，比测延迟宽松得多。
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout_read(std::time::Duration::from_secs(30))
         .build();
-    let request = apply_auth(
-        agent
-            .get(&target)
-            .set("User-Agent", probe_user_agent(wire))
-            .set("Accept", "application/json"),
-        auth,
-        secret,
-    );
+    let request = authed_get(&agent, &target, wire, auth, secret);
     let response = request.call().map_err(|err| match err {
         ureq::Error::Status(code, resp) => {
             // 「HTTP 404 接口或模型不存在：Not Found」+ 换行给出处理建议。
