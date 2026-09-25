@@ -22,14 +22,16 @@ cargo build --release
 
 | 页面 | 配置路径 |
 |---|---|
-| opencode | `.config/opencode/opencode.json`（也接受 `.jsonc`） |
-| Kilo Code | `.config/kilo/kilo.json`（也接受 `.jsonc`） |
-| MiMo Code | `.config/mimocode/mimocode.json`（也接受 `.jsonc`） |
+| opencode | `.config/opencode/opencode.json` |
+| Kilo Code | `.config/kilo/kilo.json` |
+| MiMo Code | `.config/mimocode/mimocode.json` |
 | pi | `.pi/agent/models.json` |
 | oh-my-pi | `.omp/agent/models.yml` |
 | DeepSeek Harness | `.dsh/settings.yaml` |
 | ZCode | `.zcode/v2/provider_config.json` |
 | WorkBuddy | `.workbuddy/models.json` |
+
+以上是各页默认探测的路径。**JSON 配置一律接受 `.jsonc`**（含注释的 JSON）；默认路径不存在时，opencode 系三页还会自动找同名的 `.jsonc`。
 
 加载任意一份配置后，各页面共享同一份数据，修改 provider 参数在所有页面同步生效（provider / model 顺序亦跨页同步）；Agents 区块仅属于 opencode 系页面。
 
