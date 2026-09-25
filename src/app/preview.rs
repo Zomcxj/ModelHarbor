@@ -48,6 +48,19 @@ pub(super) fn find_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// 把字节偏移向下钳到字符边界（并钳到长度内）。
+///
+/// 查找偏移按帧首文本计算；同帧内草稿被编辑过后，过期偏移可能落在多字节字符
+/// 中间，直接切片会 panic（`byte index is not a char boundary`）——
+/// `min(len)` 只兜上界，兜不了字符边界，所以向下找最近的边界。
+pub(super) fn floor_char_boundary(text: &str, mut byte: usize) -> usize {
+    byte = byte.min(text.len());
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    byte
+}
+
 /// 预览分隔条所在的层级。
 ///
 /// 用 `Middle`：预览面板本身在 `background` 层，`Middle` 已经足够接住拖拽
@@ -273,7 +286,8 @@ impl App {
         // 查找高亮：命中段加底色，当前命中用更亮的底色。
         let find_query = self.preview_find.clone();
         let find_active = self.preview_find_active && !find_query.is_empty();
-        let find_matches = if find_active {
+        // 可变：layouter 里要按当前文本过滤过期偏移（见下方 retain）。
+        let mut find_matches = if find_active {
             find_matches(&self.preview_draft, &find_query)
         } else {
             Vec::new()
@@ -319,6 +333,11 @@ impl App {
             }
             // 2) 查找命中底色叠加在语法色之上
             if !find_matches.is_empty() {
+                // 命中偏移是帧首按当时草稿算的；TextEdit 在本帧应用按键后草稿已变，
+                // 过期偏移可能落在多字节字符中间——galley 按它切片会 panic
+                // （查找开着时在预览框里打字，每一帧都有这个窗口）。
+                // 按当前文本只保留两端都是字符边界的命中；内容级刷新等下一帧。
+                find_matches.retain(|&(s, e)| text.is_char_boundary(s) && text.is_char_boundary(e));
                 apply_find_background(&mut job, &find_matches, find_current, palette);
             }
             ui.painter().layout_job(job)
@@ -340,7 +359,9 @@ impl App {
                 let resp = output.response;
                 // 查找命中跳转：把光标移到命中处并写回状态，滚动区随之滚动。
                 if let Some(byte) = find_jump {
-                    let bounded = byte.min(self.preview_draft.len());
+                    // 跳转偏移同样可能过期（帧首算的、本帧已编辑）：先钳回字符边界，
+                    // 否则切片 panic（`min(len)` 只兜上界，兜不了字符边界）。
+                    let bounded = floor_char_boundary(&self.preview_draft, byte);
                     let char_idx = self.preview_draft[..bounded].chars().count();
                     let ccursor = egui::text::CCursor::new(char_idx);
                     let mut state = output.state.clone();
@@ -413,7 +434,9 @@ impl App {
         let target_root = if is_current {
             None
         } else {
-            let mut target = backend.load_target_root(&path);
+            // 与保存同一语义：目标文件读不出就报错，而不是显示一份
+            // 「保存时根本写不出去」的预览。
+            let mut target = backend.load_target_root(&path)?;
             if self.source_format != fmt {
                 strip_cross_format_containers(fmt, &mut target, !agents.is_empty());
             }

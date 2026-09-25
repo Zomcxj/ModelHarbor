@@ -337,9 +337,9 @@ impl App {
                         self.sync_wsl = false;
                     }
                     self.current_page = id;
-                    // WorkBuddy 页的数据可能来自别的方言（那些格式没有 `disabled` 概念，
-                    // 一律读成启用），而 WorkBuddy 按裸 id 全局去重、多开的根本不生效。
-                    // 进页时收敛成「每个 id 只启用第一条」，界面才不会显示成「重复的全启用了」。
+                    // WorkBuddy 页的数据可能来自别的方言（没有 `disabled` 概念，一律读成
+                    // 启用）；进页时收敛成「每个 id 只启用第一条」（为什么见
+                    // `normalize_workbuddy_enable_flags`）。
                     if id == ConfigFormat::WorkBuddy {
                         self.normalize_workbuddy_enable_flags();
                     }

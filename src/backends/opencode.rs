@@ -24,7 +24,7 @@ use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
-use crate::util::{parse_config_content, read_config_content, wsl_home, WslPathProbe};
+use crate::util::{parse_config_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -256,11 +256,8 @@ impl Backend for OpenCodeFamilyBackend {
         root
     }
 
-    fn load_target_root(&self, path: &str) -> Value {
-        match read_config_content(path) {
-            Ok(content) => parse_config_content(&content).unwrap_or(Value::Object(Map::new())),
-            Err(_) => Value::Object(Map::new()),
-        }
+    fn load_target_root(&self, path: &str) -> Result<Value, String> {
+        super::load_target_root_with(path, parse_config_content, || Value::Object(Map::new()))
     }
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
@@ -276,13 +273,13 @@ impl Backend for OpenCodeFamilyBackend {
     }
 }
 
-/// 路径是否属于某个 opencode 系成员：看路径段里有没有它的目录名或文件名。
-///
-/// 同时接受 `/` 与 `\` 分隔（WSL 路径用 `/`），且大小写不敏感（Windows）。
 /// opencode 系全体成员。`path_matches` 需要知道「同族还有谁」，才能判断某个目录名
 /// 是否已经明确把文件判给了别的成员。
 pub static FAMILY: &[&Flavor] = &[&OPENCODE, &KILOCODE, &MIMOCODE];
 
+/// 路径是否属于某个 opencode 系成员：看路径段里有没有它的目录名或文件名。
+///
+/// 同时接受 `/` 与 `\` 分隔（WSL 路径用 `/`），且大小写不敏感（Windows）。
 fn path_matches(flavor: &Flavor, path: &str) -> bool {
     if path.trim().is_empty() {
         return false;

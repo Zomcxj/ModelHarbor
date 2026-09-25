@@ -112,10 +112,14 @@ pub fn set_num_opt(m: &mut Map<String, Value>, k: &str, v: &str) {
         }
     }
     if let Ok(f) = t.parse::<f64>() {
-        m.insert(k.into(), f.into());
-    } else {
-        m.remove(k);
+        // 非有限数（inf / nan）serde_json 会序列化成 `Null`，等于把字段值清掉——
+        // 按「无效数字」处理，不写。
+        if f.is_finite() {
+            m.insert(k.into(), f.into());
+            return;
+        }
     }
+    m.remove(k);
 }
 
 pub fn parse_number_text(v: &str) -> Option<Value> {
@@ -129,19 +133,14 @@ pub fn parse_number_text(v: &str) -> Option<Value> {
         }
     }
     if let Ok(f) = t.parse::<f64>() {
-        return Some(f.into());
-    }
-    None
-}
-
-pub fn ensure_parent_dir(path: &str) -> Result<(), String> {
-    let p = Path::new(path);
-    if let Some(parent) = p.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+        // `inf` / `nan` / `1e400` 都能被 `f64::parse` 接受，但 serde_json 会把它们
+        // 序列化成 `Null`——静默丢字段值。按「无效数字」处理（不计入有效值，
+        // 保存状态栏会提示已忽略）。
+        if f.is_finite() {
+            return Some(f.into());
         }
     }
-    Ok(())
+    None
 }
 
 /// 原子写入文本文件：先写同目录临时文件并 `sync_all`，再替换正式文件。
@@ -552,9 +551,38 @@ pub fn url_suspicions(url: &str) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{atomic_write_text, url_suspicions, CONFIG_FILE_EXTENSIONS};
+    use super::{
+        atomic_write_text, parse_number_text, set_num_opt, url_suspicions, CONFIG_FILE_EXTENSIONS,
+    };
+    use serde_json::{json, Map};
     use std::fs;
     use std::path::PathBuf;
+
+    /// 非有限浮点（inf / nan）必须按「无效数字」处理：serde_json 会把它们序列化成
+    /// `Null`，落盘等于静默清掉字段值。
+    #[test]
+    fn parse_number_text_rejects_non_finite_floats() {
+        for bad in ["inf", "-inf", "infinity", "NaN", "nan", "1e400", "-1e400"] {
+            assert_eq!(parse_number_text(bad), None, "{bad} 不该被判成有效数字");
+        }
+        assert_eq!(parse_number_text("12"), Some(json!(12)));
+        assert_eq!(parse_number_text("1.5"), Some(json!(1.5)));
+        assert_eq!(parse_number_text("1e10"), Some(json!(1e10f64)));
+    }
+
+    #[test]
+    fn set_num_opt_drops_non_finite_instead_of_writing_null() {
+        let mut m = Map::new();
+        set_num_opt(&mut m, "context", "inf");
+        assert!(
+            m.get("context").is_none(),
+            "inf 不能落盘（会序列化成 null）"
+        );
+        set_num_opt(&mut m, "context", "1.25");
+        assert_eq!(m["context"], json!(1.25));
+        set_num_opt(&mut m, "context", "abc");
+        assert!(m.get("context").is_none(), "无效数字按既有口径删除该键");
+    }
 
     /// 反向守住对话框滤镜：每个后端的默认配置扩展名都必须在列表里。
     ///

@@ -472,7 +472,6 @@ impl App {
             }
         });
         if let Some((key, base, secret, api)) = fetch_request {
-            // 后台线程拉取模型列表（避免阻塞 UI），结果经通道回传。
             let url = Self::models_url(&base, &api);
             let secret = secret.trim().to_string();
             let (tx, rx) = std::sync::mpsc::channel();
@@ -882,7 +881,6 @@ impl App {
                     numeric_text_edit(ui, &mut self.new_provider.timeout, 70.0, "180000");
                 }
                 // pi / omp 的 compat 与 api 同排显示（紧跟 api 之后）。
-                // ZCode / WorkBuddy 没有 compat 字段，不显示。
                 if !show_oc && !show_dsh && !show_zcode && !show_wb {
                     field_label(ui, 120.0, "compat");
                     ui.checkbox(&mut self.new_provider.compat, "supportsDeveloperRole");

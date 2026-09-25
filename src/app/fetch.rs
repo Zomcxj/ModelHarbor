@@ -77,10 +77,6 @@ pub(super) const LATENCY_GOOD_MS: u64 = 2_000;
 /// 首字延迟超过此值算慢（红）。
 pub(super) const LATENCY_SLOW_MS: u64 = 5_000;
 
-/// 延迟配色：<2s 绿色、2~5s 黄色、≥5s 红色（超时同样显示红色错误）。
-///
-/// 具体色值由 [`crate::theme::semantics`] 提供：五种主题共享一套语义色，
-/// 并在主题的 panel / faint / extreme 三类底色上保持可读性。///
 /// 模型延迟探测的风控节流参数（中转站的「多 IP 检测 / 测活封号」）：
 /// **同一个 provider** 的任意两次探测（同模型、不同模型都算）间隔 ≥5 秒；
 /// **不同 provider 互不牵连**（不同中转站是不同站点，各自独立计数、可并行）。
@@ -260,6 +256,10 @@ pub(super) fn http_error(err: ureq::Error, elapsed: u64) -> String {
     }
 }
 
+/// 延迟配色：<2s 绿色、2~5s 黄色、≥5s 红色（超时同样显示红色错误）。
+///
+/// 具体色值由 [`crate::theme::semantics`] 提供：全部主题共享一套语义色，
+/// 并在主题的 panel / faint / extreme 三类底色上保持可读性。
 pub(super) fn latency_color(ms: u64, colors: crate::theme::Semantics) -> egui::Color32 {
     if ms < LATENCY_GOOD_MS {
         colors.ok
@@ -706,7 +706,6 @@ pub(super) fn measure_model_latency(
     let auth = auth_kind(wire);
     let url = with_query_key(&chat_url(base_url, api, model, true), auth, secret);
     let body = minimal_body(wire, model, question).to_string();
-    // 首字延迟：读取超时固定为 LATENCY_TIMEOUT_MS，超过即视为超时。
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout_read(std::time::Duration::from_millis(LATENCY_TIMEOUT_MS))

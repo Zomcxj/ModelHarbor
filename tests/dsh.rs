@@ -389,3 +389,56 @@ fn dsh_max_retries_accepts_padded_and_float_input() {
     assert_eq!(demo["retryPolicy"]["maxRetries"], 2);
     assert_eq!(demo["timeoutMs"], 180000, "timeoutMs 带空白输入应写入");
 }
+
+/// sidecar 损坏必须报错并保持原文件不变，而不是静默拿骨架当基底覆写——
+/// 那会丢掉全部 refs / records / 未知字段（load_root 旧版的行为）。
+#[test]
+fn corrupt_sidecar_is_an_error_and_never_gets_overwritten() {
+    let settings = temp_path("settings.yaml");
+    let sidecar = model_harbor::credentials::sidecar_path(settings.to_str().unwrap());
+    let broken = "refs: [unclosed\n\trecords: {";
+    std::fs::write(&sidecar, broken).unwrap();
+
+    let err = model_harbor::credentials::load_root(settings.to_str().unwrap())
+        .expect_err("坏 YAML 必须报错而不是回落骨架");
+    assert!(
+        err.contains(sidecar.as_str()),
+        "错误信息必须带路径，用户才知道哪个文件坏了: {err}"
+    );
+
+    let mut p = ProviderRow::new();
+    p.key = "dsh".into();
+    p.api_key_secret = "new-secret".into();
+    let save = model_harbor::credentials::save(settings.to_str().unwrap(), &[p]);
+    assert!(save.is_err(), "sidecar 损坏时保存必须被拒绝: {:?}", save);
+    assert_eq!(
+        std::fs::read_to_string(&sidecar).unwrap(),
+        broken,
+        "保存被拒绝后原文件必须原样保留"
+    );
+    std::fs::remove_file(&sidecar).ok();
+}
+
+/// 根不是对象（外来工具 / 手改写成数组）同样报错，不能骨架化后覆写。
+#[test]
+fn non_object_sidecar_root_is_an_error() {
+    let settings = temp_path("settings.yaml");
+    let sidecar = model_harbor::credentials::sidecar_path(settings.to_str().unwrap());
+    std::fs::write(&sidecar, "- just\n- a list\n").unwrap();
+    let err = model_harbor::credentials::load_root(settings.to_str().unwrap())
+        .expect_err("数组根必须报错");
+    assert!(err.contains("对象"), "错误要说明根必须是对象: {err}");
+    std::fs::remove_file(&sidecar).ok();
+}
+
+/// 文件不存在 = 新建场景：骨架照常返回，保存正常建立 sidecar。
+#[test]
+fn missing_sidecar_still_loads_as_skeleton() {
+    let settings = temp_path("settings.yaml");
+    let sidecar = model_harbor::credentials::sidecar_path(settings.to_str().unwrap());
+    std::fs::remove_file(&sidecar).ok();
+    let root = model_harbor::credentials::load_root(settings.to_str().unwrap())
+        .expect("缺文件是新建场景，不该报错");
+    assert_eq!(root["version"], 1);
+    assert!(root["refs"].is_object());
+}

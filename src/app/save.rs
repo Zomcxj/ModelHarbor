@@ -103,12 +103,6 @@ pub fn load_or_empty(path: &str) -> (Value, Vec<AgentRow>, Vec<ProviderRow>) {
         .unwrap_or_else(|_| (Value::Object(Map::new()), Vec::new(), Vec::new()))
 }
 
-/// 加载 pi 配置（支持本地与 WSL 路径）；读取/解析失败返回 Err。
-pub fn load_pi_result(path: &str) -> Result<(Value, Vec<ProviderRow>, Value), String> {
-    let load = crate::backends::load_backend(ConfigFormat::Pi, path)?;
-    Ok((load.root, load.providers, load.extras))
-}
-
 impl App {
     /// 当前 agent 文件是否使用某个 provider 级字段。
     /// 判断范围是整个文件，不是单个 provider；切换到尚未加载的目标页时
@@ -514,7 +508,11 @@ impl App {
         let target_root: Option<Value> = if is_current {
             None
         } else {
-            let mut target = backend.load_target_root(path);
+            // 目标文件存在但读不出 / 解析不了 → 取消保存。静默回落空对象会把
+            // 「先读后合并」变成「对空合并后整体覆写」，目标文件的顶层设置被清掉。
+            let mut target = backend
+                .load_target_root(path)
+                .map_err(|e| format!("目标文件无法读取，已取消保存（未动原文件）: {e}"))?;
             if cross_format {
                 strip_cross_format_containers(fmt, &mut target, !agents.is_empty());
             }
@@ -563,9 +561,12 @@ impl App {
                     let after = root.as_array().map(Vec::len).unwrap_or(0);
                     before > after
                 })
-                .unwrap_or(false);
+                // 读不出 / 解析不了旧文件时按「会收缩」处理：下面的备份分支会读原文件，
+                // 读失败即取消保存。绝不在不知道原文件内容的情况下收缩式覆写。
+                .unwrap_or(true);
         // 跨格式转换会整体接管目标文件的 provider/agent：先把原文件滚动备份为 .bak，
-        // 备份失败则取消保存（宁可不让存，也不能把旧配置静默抵掉）。
+        // 备份失败则取消保存（宁可不让存，也不能把旧配置静默抵掉）。原文件**读不出**
+        // 同样取消保存——备份的前提是知道原文件里有什么，读失败还继续写就是蒙眼覆写。
         let backup = if (cross_format && !is_current) || wb_shrinks {
             match util::read_config_content(path) {
                 Ok(old) if !old.is_empty() && old != content => {
@@ -575,7 +576,8 @@ impl App {
                     })?;
                     Some(backup_path)
                 }
-                _ => None,
+                Ok(_) => None,
+                Err(e) => return Err(format!("读取原文件失败（{path}），已取消保存: {e}")),
             }
         } else {
             None

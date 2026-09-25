@@ -28,7 +28,7 @@ use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::{parse_config_content, read_config_content, wsl_home, WslPathProbe};
+use crate::util::{parse_config_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -571,11 +571,8 @@ impl Backend for ZCodeBackend {
         Value::Object(root)
     }
 
-    fn load_target_root(&self, path: &str) -> Value {
-        match read_config_content(path) {
-            Ok(content) => parse_config_content(&content).unwrap_or(Value::Object(Map::new())),
-            Err(_) => Value::Object(Map::new()),
-        }
+    fn load_target_root(&self, path: &str) -> Result<Value, String> {
+        super::load_target_root_with(path, parse_config_content, || Value::Object(Map::new()))
     }
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {

@@ -16,9 +16,7 @@ use crate::convert::{
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
 use crate::util::WslPathProbe;
-use crate::util::{
-    parse_config_content, parse_yaml_content, read_config_content, to_yaml_string, wsl_home,
-};
+use crate::util::{parse_config_content, parse_yaml_content, to_yaml_string, wsl_home};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::path::Path;
@@ -311,12 +309,9 @@ impl Backend for OhMyPiBackend {
         Value::Object(root)
     }
 
-    fn load_target_root(&self, path: &str) -> Value {
+    fn load_target_root(&self, path: &str) -> Result<Value, String> {
         // 跨格式目标保存需要目标文件完整的 providers（保守合并用）。
-        match read_config_content(path) {
-            Ok(content) => parse_yaml_content(&content).unwrap_or(Value::Object(Map::new())),
-            Err(_) => Value::Object(Map::new()),
-        }
+        super::load_target_root_with(path, parse_yaml_content, || Value::Object(Map::new()))
     }
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {

@@ -188,11 +188,6 @@ impl StationTokens {
     pub fn len(&self) -> usize {
         self.tokens.len()
     }
-
-    /// 已设置令牌的站点（键序稳定）。
-    pub fn origins(&self) -> impl Iterator<Item = &String> {
-        self.tokens.keys()
-    }
 }
 
 #[cfg(test)]

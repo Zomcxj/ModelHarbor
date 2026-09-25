@@ -9,7 +9,7 @@ use crate::convert::order_fields;
 use crate::credentials;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::{parse_yaml_content, read_config_content, wsl_home, WslPathProbe};
+use crate::util::{parse_yaml_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -582,7 +582,9 @@ impl Backend for DeepSeekHarnessBackend {
         let creds = if path.is_empty() {
             Value::Object(Map::new())
         } else {
-            credentials::load_root(path)
+            // 仅供展示的读取：sidecar 读不出时密钥显示为空，不拦住整份配置加载。
+            // 写入走 `credentials::save`，那边会在坏文件上报错并取消保存，不会丢数据。
+            credentials::load_root(path).unwrap_or(Value::Null)
         };
         let providers = root
             .get("llm-pi-ai")
@@ -645,11 +647,8 @@ impl Backend for DeepSeekHarnessBackend {
         Value::Object(root)
     }
 
-    fn load_target_root(&self, path: &str) -> Value {
-        read_config_content(path)
-            .ok()
-            .and_then(|s| parse_yaml_content(&s).ok())
-            .unwrap_or_else(|| Value::Object(Map::new()))
+    fn load_target_root(&self, path: &str) -> Result<Value, String> {
+        super::load_target_root_with(path, parse_yaml_content, || Value::Object(Map::new()))
     }
     fn save_sidecars(&self, path: &str, providers: &[ProviderRow]) -> Result<(), String> {
         credentials::save(path, providers)

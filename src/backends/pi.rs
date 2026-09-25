@@ -6,7 +6,7 @@ use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
-use crate::util::{parse_config_content, read_config_content, wsl_home, WslPathProbe};
+use crate::util::{parse_config_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -85,13 +85,10 @@ impl Backend for PiBackend {
         convert::to_pi_root(providers, base)
     }
 
-    fn load_target_root(&self, path: &str) -> Value {
+    fn load_target_root(&self, path: &str) -> Result<Value, String> {
         // 跨格式目标保存需要目标文件完整的 providers（保守合并用），
         // 不能只取顶层 extras，否则目标独有 provider 会被整体替换删掉。
-        match read_config_content(path) {
-            Ok(content) => parse_config_content(&content).unwrap_or(Value::Object(Map::new())),
-            Err(_) => Value::Object(Map::new()),
-        }
+        super::load_target_root_with(path, parse_config_content, || Value::Object(Map::new()))
     }
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {

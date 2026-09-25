@@ -133,11 +133,6 @@ pub fn api_to_zcode_api(api: &str) -> String {
     }
 }
 
-/// ZCode 的 `api.type` 是否属于「Chat Completions 家族」。
-pub fn zcode_api_is_chat(zcode_api: &str) -> bool {
-    zcode_api.trim() == "openai-chat-completions"
-}
-
 /// 输入模态列表（`text, image` 形式）→ 一组能力布尔。
 ///
 /// WorkBuddy 用 `supportsImages` 这类布尔表达模态，ZCode 用

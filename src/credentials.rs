@@ -23,20 +23,32 @@ pub fn sidecar_path(config_path: &str) -> String {
     }
 }
 
-/// 读取凭据文件的完整 root；不存在/无法解析时返回空对象。
-pub fn load_root(config_path: &str) -> Value {
+/// 读取凭据文件的完整 root。
+///
+/// 文件不存在（新建场景）返回骨架；**文件存在但读不出 / 解析不了 / 根不是对象
+/// 返回 Err**——静默回落骨架会让下一次保存把原文件整个换掉：refs、records、
+/// 未知字段全部丢失且无备份。宁可让保存报错，让用户先修好或备份这个文件。
+pub fn load_root(config_path: &str) -> Result<Value, String> {
     let path = sidecar_path(config_path);
-    read_config_content(&path)
-        .ok()
-        .and_then(|s| parse_yaml_content(&s).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| {
-            let mut root = Map::new();
-            root.insert("version".into(), Value::Number(1.into()));
-            root.insert("refs".into(), Value::Object(Map::new()));
-            root.insert("records".into(), Value::Object(Map::new()));
-            Value::Object(root)
-        })
+    let content = read_config_content(&path).map_err(|e| format!("读取失败（{path}）: {e}"))?;
+    if content.trim().is_empty() {
+        return Ok(skeleton_root());
+    }
+    let root = parse_yaml_content(&content)
+        .map_err(|e| format!("凭据文件不是合法 YAML（{path}）: {e}"))?;
+    if !root.is_object() {
+        return Err(format!("凭据文件根节点必须是对象（{path}）"));
+    }
+    Ok(root)
+}
+
+/// 全新凭据文件的骨架。
+fn skeleton_root() -> Value {
+    let mut root = Map::new();
+    root.insert("version".into(), Value::Number(1.into()));
+    root.insert("refs".into(), Value::Object(Map::new()));
+    root.insert("records".into(), Value::Object(Map::new()));
+    Value::Object(root)
 }
 
 /// 从凭据 root 解析 refs 中的字符串密钥。
@@ -58,7 +70,7 @@ pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> 
         return Ok(());
     }
     let path = sidecar_path(config_path);
-    let mut root = load_root(config_path);
+    let mut root = load_root(config_path)?;
     let Some(object) = root.as_object_mut() else {
         return Err("凭据文件根节点必须是对象".into());
     };

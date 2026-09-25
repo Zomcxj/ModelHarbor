@@ -20,9 +20,7 @@ mod syntax;
 use fetch::{FreeModelsState, LatencyState, ModelFetchState, ProbeGate};
 use save::SaveTarget;
 
-pub use save::{
-    load_opencode_result, load_or_empty, load_pi_result, strip_cross_format_containers,
-};
+pub use save::{load_opencode_result, load_or_empty, strip_cross_format_containers};
 pub(crate) use serialize::{compact_json, pretty_json};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -95,12 +93,9 @@ pub struct App {
     free_models: HashMap<ConfigFormat, FreeModelsState>,
     /// 各 opencode 系页面**各自**的 agent model 视图（页面 → agent key → model）。
     ///
-    /// 三页共用同一份 `agents`，但每页网关不同，`model` 的前缀必须换成本页认的
-    /// （见 [`crate::app::agents`] 的切页归一）。没有这份记忆的话，切到 kilo 页再切回
-    /// opencode 页，原来配好的 `opencode/…` 已经被换掉了，**用户什么也没改却丢了配置**。
-    /// 所以离开一页时把该页的 model 视图记下来，回到该页时先还原、再对仍然无效的做替换。
-    ///
-    /// 只在**离开**页面时写入：当前页的权威值永远是 `agents` 本身（用户可能正在编辑）。
+    /// 为什么需要按页记忆、切页时怎么归一，见 [`crate::app::agents`] 的切页归一说明；
+    /// 这里只记字面语义：只在**离开**页面时写入，当前页的权威值永远是 `agents` 本身
+    /// （用户可能正在编辑）。
     agent_models_by_page: HashMap<ConfigFormat, HashMap<String, String>>,
     /// 首帧需要自动后台拉取的后端（缓存缺失 / 过期）；拉过即清空。
     free_models_auto: Vec<ConfigFormat>,
@@ -218,10 +213,8 @@ impl Default for App {
         let (format, path) = paths
             .detect_preferring_overrides(&prefs.config_paths)
             .unwrap_or((ConfigFormat::Opencode, String::new()));
-        // 启动探测只按「哪一页有覆盖路径」选后端，**不看文件内容**。若用户把
-        // A 格式的文件指定到了 B 页（例如 pi 页填了 opencode.json），用 B 的
-        // 方言去读会解析出 0 条，表现为「写了路径却不自动加载」。这里按实际
-        // 内容纠正方言——与手动加载（`reload_for_page`）走同一套判定。
+        // 启动探测只按「哪一页有覆盖路径」选后端；方言以文件内容为准
+        // （为什么见 `startup_format` 文档）。
         let format = startup_format(format, &path);
         // 各后端内置网关的免费模型：逐后端读一次落盘缓存，界面先用它渲染；
         // 缓存缺失或过期的后端由首帧自动在后台重取（不阻塞启动）。
@@ -705,9 +698,8 @@ impl App {
                 self.status = format!("加载失败: {}", e);
             }
         }
-        // WorkBuddy 页：同一 id 多条启用收敛成「只启用第一条」。文件里本来就可能有
-        // 这种状态（用户把重复项全勾过），WorkBuddy 按裸 id 全局去重、多开的都不生效，
-        // 界面显示成全部启用就是在骗人。加载后立刻收敛，显示的状态才与真实一致。
+        // WorkBuddy 页：同一 id 多条启用收敛成「只启用第一条」（为什么见
+        // `normalize_workbuddy_enable_flags`）；加载后立刻收敛，显示的状态才真实。
         if self.source_format == ConfigFormat::WorkBuddy {
             self.normalize_workbuddy_enable_flags();
         }

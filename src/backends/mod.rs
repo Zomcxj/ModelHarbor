@@ -18,7 +18,7 @@ pub mod zcode;
 
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
-use crate::util::{ensure_parent_dir, is_wsl_path, WslPathProbe};
+use crate::util::{is_wsl_path, WslPathProbe};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -100,8 +100,12 @@ pub trait Backend: Sync {
         target_root: Option<&Value>,
     ) -> Value;
 
-    /// 跨格式目标保存时读取目标现有 root（容错：读不到返回空对象）。
-    fn load_target_root(&self, path: &str) -> Value;
+    /// 保存目标（非当前文件）的现有 root，作为合并基底。
+    ///
+    /// 文件不存在返回空 root（新建场景）；**文件存在但读不出 / 解析不了返回 Err**，
+    /// 由调用方取消保存——静默回落空对象会让「先读后合并」变成「对空合并后整体覆写」，
+    /// 目标文件里 provider / agent 以外的顶层设置会被清掉。
+    fn load_target_root(&self, path: &str) -> Result<Value, String>;
 
     /// 保存与主配置同级的 sidecar 文件（默认无 sidecar）。
     /// 主配置写入前调用，sidecar 失败会取消本次保存。
@@ -246,12 +250,32 @@ pub fn target_path(id: ConfigFormat, local_path: &str) -> String {
     local
 }
 
-/// 统一写入：WSL 路径走 wsl 命令，本地路径自动创建父目录。
+/// 统一写入：WSL 路径走 wsl 命令，本地路径**原子写**（先写临时文件再替换）。
+///
+/// 不能用裸 `fs::write`：写一半时崩溃（release 是 `panic = abort`）或断电会把
+/// 文件截断——这些配置里是明文 API Key，损坏后重建只能靠用户记忆。
+/// prefs 与 tokens 一直用同一套原子写，主配置没有理由例外。
 pub fn write_config(path: &str, content: &str) -> Result<(), String> {
     if is_wsl_path(path) {
         crate::util::write_wsl_file(path, content)
     } else {
-        ensure_parent_dir(path)?;
-        std::fs::write(path, content).map_err(|e| e.to_string())
+        crate::util::atomic_write_text(std::path::Path::new(path), content)
     }
+}
+
+/// [`Backend::load_target_root`] 的共享实现：各家只提供解析函数与「文件不存在」时的空 root。
+///
+/// 文件存在但读不出 / 解析不了返回 Err，且错误带路径——io::Error 的 Display
+/// 不含文件名，不带路径用户无从得知是哪个文件坏了。
+pub(crate) fn load_target_root_with(
+    path: &str,
+    parse: impl Fn(&str) -> Result<Value, String>,
+    empty: impl FnOnce() -> Value,
+) -> Result<Value, String> {
+    let content =
+        crate::util::read_config_content(path).map_err(|e| format!("读取失败（{path}）: {e}"))?;
+    if content.trim().is_empty() {
+        return Ok(empty());
+    }
+    parse(&content).map_err(|e| format!("解析失败（{path}）: {e}"))
 }

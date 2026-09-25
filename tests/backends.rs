@@ -703,6 +703,61 @@ fn opencode_family_members_have_distinct_paths_and_icons() {
     }
 }
 
+/// 合并基底的读取口径：文件不存在 = 新建（空 root）；
+/// 存在但解析不了 = 报错，让保存取消——静默回落空对象会把「先读后合并」
+/// 变成「对空合并后整体覆写」，目标文件的顶层设置被清掉。
+#[test]
+fn load_target_root_reports_corrupt_target_instead_of_empty_root() {
+    let dir = std::env::temp_dir().join(format!("mh_load_target_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let broken = dir.join("broken.json");
+    std::fs::write(&broken, "{\"provider\": ").unwrap();
+    for fmt in [
+        ConfigFormat::Opencode,
+        ConfigFormat::ZCode,
+        ConfigFormat::OhMyPi,
+        ConfigFormat::DeepSeekHarness,
+    ] {
+        let err = backends::backend(fmt)
+            .load_target_root(broken.to_str().unwrap())
+            .expect_err(&format!("{fmt:?}: 坏文件必须报错"));
+        assert!(
+            err.contains("broken.json"),
+            "{fmt:?}: 错误信息必须带路径: {err}"
+        );
+    }
+
+    // WorkBuddy 顶层是数组，空 root 也是数组。
+    let broken_wb = dir.join("broken_models.json");
+    std::fs::write(&broken_wb, "[{").unwrap();
+    assert!(backends::backend(ConfigFormat::WorkBuddy)
+        .load_target_root(broken_wb.to_str().unwrap())
+        .is_err());
+
+    let missing = dir.join("missing.json");
+    for fmt in [ConfigFormat::Opencode, ConfigFormat::ZCode] {
+        let root = backends::backend(fmt)
+            .load_target_root(missing.to_str().unwrap())
+            .unwrap();
+        assert_eq!(root, json!({}), "{fmt:?}: 缺文件回落空对象（新建场景）");
+    }
+    let root = backends::backend(ConfigFormat::WorkBuddy)
+        .load_target_root(dir.join("missing_models.json").to_str().unwrap())
+        .unwrap();
+    assert_eq!(root, json!([]), "WorkBuddy 缺文件回落空数组");
+
+    // 完好文件读回来的必须是完整 root（顶层设置在合并时才不会被丢）。
+    let good = dir.join("good.json");
+    std::fs::write(&good, r#"{"theme":"dark","provider":{}}"#).unwrap();
+    let root = backends::backend(ConfigFormat::Opencode)
+        .load_target_root(good.to_str().unwrap())
+        .unwrap();
+    assert_eq!(root["theme"], json!("dark"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// 两个 32×32 RGBA 图标里「肉眼可辨不同」的像素占比。
 ///
 /// 单通道差之和超过 30 才算不同，以滤掉抗锯齿与缩放的细微偏差；完全一致返回 0.0。

@@ -345,9 +345,7 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
 
     if let Some(m) = model {
         // 只写能解析成整数的值；解析不了就不写这个键（`obj` 是新构造的，不写即缺席）。
-        // 与界面「无效数字：保存时该字段将被忽略」和保存状态栏的「已忽略 N 个无效
-        // 数字字段」同一口径——曾经写成 `unwrap_or(0)`，用户输错一个字就把
-        // `maxInputTokens: 0` 落盘，WorkBuddy 里那个模型的输入上限直接归零。
+        // 口径与后果同 zcode 的 contextWindow：写成 `unwrap_or(0)` 会把上限归零落盘。
         if let Ok(context) = m.context.trim().parse::<i64>() {
             obj.insert("maxInputTokens".into(), Value::Number(context.into()));
         }
@@ -376,8 +374,6 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
         }
         // 启用/停用**不在这里写**：生效清单（`serialize_root`）里全是启用的条目，
         // 勾选状态由全量副本 `models.full.json` 逐条显式记录（见 `all_entries`）。
-        // WorkBuddy 的选择器按裸 id 全局去重，同一 id 的其余条目写进生效清单也不会
-        // 生效，只会占地方、让人以为已经配上了。
     }
 
     Value::Object(obj)
@@ -406,14 +402,9 @@ fn existing_index(base: &Value) -> HashMap<(String, String), Value> {
 ///
 /// 这是两份配置共用的构造步骤：全量副本要全部条目，生效清单再从结果里筛。
 ///
-/// 勾选状态**每条都显式写**：勾选写 `disabled: false`、未勾选写 `true`。
-///
-/// 这跟「不凭空声明能力字段」不是一回事。`disabled` 是 ModelHarbor 自己用来记录
-/// 勾选的簿记，不是留给 WorkBuddy 去推断的能力位；WorkBuddy 对它的处理是
-/// `normalizeCustomModel = {disabled: false, ...model}`，缺席与 `false` 对它完全等价，
-/// 所以写 `false` 不会改变 WorkBuddy 的行为。反过来，省掉 `false` 会把「没有标记」
-/// 变成一个有歧义的状态：加载时无法区分「用户把重复项全勾上了」和「这份副本从来没
-/// 记录过勾选」，只能一律当成启用——用户报的「重复的模型名都启用了」正是这么来的。
+/// 勾选状态**每条都显式写**：勾选写 `disabled: false`、未勾选写 `true`。这个键是
+/// ModelHarbor 的勾选簿记，不是留给 WorkBuddy 推断的能力位；为什么 `false` 也必须
+/// 写、省掉会有什么歧义，见本文件模块说明的「两份配置」一节。
 fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
     let existing = existing_index(base);
     let mut out: Vec<Value> = Vec::new();
@@ -441,8 +432,7 @@ fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
                     entry.insert(k.clone(), v.clone());
                 }
             }
-            // 每条都显式写勾选状态（勾选 = false、未勾选 = true）。省掉 false 会让
-            // 「用户把重复项全勾上」与「这份副本没记录过勾选」在加载时无法区分。
+            // 勾选 = false、未勾选 = true；为什么必须显式写见模块说明。
             entry.insert(
                 "disabled".into(),
                 Value::Bool(model.map(|m| m.disabled).unwrap_or(false)),
@@ -459,10 +449,8 @@ fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
 /// 第二条起写进去也不会被采用，所以生效清单里不能有不生效的条目——留着只会让人以为配了。
 /// 被筛掉的条目**不会丢**：它们仍在全量副本里，界面上随时能勾回来。
 ///
-/// 留下的每条都显式写 `disabled: false`。这份文件是**用户自己的配置**，勾选状态应当在
-/// 它自己里面看得见，而不是只能去同目录的副本里找。写 `false` 对 WorkBuddy 是无操作：
-/// `normalizeCustomModel` 的基底就是 `disabled: false`（`{ disabled: false, ...model }`），
-/// 所以「写了 false」和「不写」在它眼里完全一样，不会改变任何行为。
+/// 留下的每条都显式写 `disabled: false`：勾选状态要在生效清单自己里面看得见
+/// （对 WorkBuddy 是无操作，见模块说明）。
 fn effective_entries(all: &[Value]) -> Vec<Value> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
@@ -480,9 +468,7 @@ fn effective_entries(all: &[Value]) -> Vec<Value> {
             continue;
         }
         let mut entry = entry.clone();
-        // 生效清单里的条目一律启用，所以这个键的值恒为 `false`；写出来是为了让文件
-        // 自解释——只有勾选的条目会进这份清单，缺键会让「没记录过」与「记了启用」
-        // 无法区分。
+        // 生效条目一律启用；显式写 `false` 让文件自解释（见模块说明）。
         if let Some(obj) = entry.as_object_mut() {
             obj.insert("disabled".into(), Value::Bool(false));
         }
@@ -512,14 +498,9 @@ fn effective_entries(all: &[Value]) -> Vec<Value> {
 /// 原样写回去，永远不会有勾选记录。逐条回退到按位置推导，首次打开即得到
 /// 「每个模型名只勾第一条」，下一次保存就把这份推导落成显式标记，之后不再推导。
 ///
-/// **最后还有一道去重兜底**（见第二遍循环），但它的判定是**谁更有发言权**，而不是
-/// 「谁是文件里的第一条」：同一个 id 有多条被判成启用时，保留**显式标记为启用**的那条；
-/// 只有当多条都是「没有标记、按位置推出来的」时才退回到第一条。理由就是用户的要求——
-/// 只有「重复 id 都被启用」才需要去重，用户自己设置过启用哪一条就不该再按读取顺序推导。
-/// 显式标记是用户的意图，位置推导只是旧文件的兜底，两者相遇时兜底必须让位。
-///
-/// 这条去重必须在这里做，而不是只在写 WorkBuddy 的生效清单时做：界面显示的状态本身
-/// 就得是真实的，而 WorkBuddy 的选择器按裸 id 全局去重，多开的那些根本不会生效。
+/// 第二遍循环还有一道**去重兜底**：判定取「谁更有发言权」（显式标记为启用的条目
+/// 胜过按位置推出来的），且在**加载时**就做——界面显示的状态必须真实。
+/// 完整论证见模块说明的「两份配置」一节。
 fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
     // 第一遍：按**文件顺序**逐条定勾选状态，并记下这条状态是「显式标记」还是「位置推导」。
     //
@@ -742,18 +723,21 @@ impl Backend for WorkBuddyBackend {
         //
         // 用副本当基底**不会让已删除的条目复活**：条目是从 `providers`（界面状态）
         // 生成的，删掉模型行就不再生成，基底里有没有它都一样。
-        let base = load_full_store(path)
-            .map(Value::Array)
-            .unwrap_or_else(|| self.load_target_root(path));
+        // 副本读不出（缺失或损坏）才退回主配置；主配置也读不出就取消保存——
+        // 静默用空基底会让未勾选条目的 tags / credits / 用户自己加的键全部丢失。
+        let base = match load_full_store(path).map(Value::Array) {
+            Some(base) => base,
+            None => self
+                .load_target_root(path)
+                .map_err(|e| format!("无法读取全量副本与主配置，已取消保存: {e}"))?,
+        };
         let all = all_entries(providers, &base);
         super::write_config(&full_store_path(path), &render_array(&all, false))
     }
 
-    fn load_target_root(&self, path: &str) -> Value {
-        match read_config_content(path) {
-            Ok(content) => parse_config_content(&content).unwrap_or(Value::Array(Vec::new())),
-            Err(_) => Value::Array(Vec::new()),
-        }
+    fn load_target_root(&self, path: &str) -> Result<Value, String> {
+        // WorkBuddy 的顶层是数组（provider 内联在每条模型里），空 root 也要是数组。
+        super::load_target_root_with(path, parse_config_content, || Value::Array(Vec::new()))
     }
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
