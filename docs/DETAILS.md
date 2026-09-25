@@ -40,7 +40,7 @@ cargo build --release
 
 ### opencode 系：opencode / kilocode / mimocode
 
-[Kilo Code](https://kilo.ai) 与 [MiMo Code](https://mimo.xiaomi.com/coder)（小米）都是 opencode 的 fork，配置 schema **逐字相同**——顶层 `provider` / `agent` 两个容器、`options.baseURL` / `options.apiKey` / `options.timeout`、`models.<id>.limit.context|output`、`tool_call`、`reasoning`、`modalities.input` 全部一致。因此这三页共用**同一套**解析、序列化、字段可见性与 Agents 支持实现，差别只有三项：
+[Kilo Code](https://kilo.ai) 与 [MiMo Code](https://mimo.xiaomi.com/coder)（小米）都是 opencode 的 fork，配置 schema 的**字段与结构一致**——顶层 `provider` / `agent` 两个容器、`options.baseURL` / `options.apiKey` / `options.timeout`、`models.<id>.limit.context|output`、`tool_call`、`reasoning`、`modalities.input` 全部一致。因此这三页共用**同一套**解析、序列化、字段可见性与 Agents 支持实现，差别只有三项：
 
 | | 配置目录 | 主配置文件名 | `$schema` |
 |---|---|---|---|
@@ -55,6 +55,22 @@ cargo build --release
 **首次运行生成的可能是 `.jsonc`，页面必须照样认。** 两个 CLI 第一次启动时写的是 `.jsonc` 变体（实测 `kilo.jsonc` / `mimocode.jsonc`），而默认路径指向 `.json`。若只认默认名，会同时错两处：页面判成「未安装」（页签变灰、一键保存跳过它），保存还会**另建**一个 `.json`，把用户真正的配置晾在一边。所以路径知识统一走「候选列表」：`Backend::path_candidates()` 给出 `[主名, .jsonc 变体]`，`resolve_local_path()` 取其中第一个真实存在的文件（都不存在才用主名，供新建）。`local_available()`、启动探测 `ConfigPaths::detect()`、WSL 批量探测、保存目标 `refresh_targets()` 全部走这条解析。两个细节：候选只替换**文件名**那一段（父目录里恰好出现同名字串时不能误替换），且解析结果再喂回去必须幂等（不能滚出 `.jsonc.jsonc`）；WSL 侧优先取「确实是文件」的候选，否则在「父目录存在即算安装」的宽松判定下会挑中并不存在的 `.json`。
 
 **`$schema` 会写进配置。** CLI 自己生成的配置就带这个字段（`kilo.json` 里只有一行 `$schema`），它让编辑器与 CLI 拿到字段补全。此前只在目标文件已有该字段时才会保留，新建 / 合并到不存在的目标写出的是一份裸的 `{"agent":{},"provider":{}}`，预览里看不到 `$schema`。现在序列化时统一补齐各家官方地址并排在**首位**；**已有值一律保留**——用户可能手动改成镜像地址，覆盖等于替用户改配置。
+
+**三家的 `required` 并不相同，写盘时按目标方言补齐。** 三个 CLI 都用 zod 校验配置，schema 里的 `required` 是**真会拒绝启动**的（实测 `mimo models` / `kilo models` / `opencode models` 对半截 `limit` 一律报 `Missing key … limit.output`）。而必需字段各家有别：
+
+| 字段 | opencode | kilo | mimocode |
+|---|---|---|---|
+| `limit.context` + `limit.output` | 必需 | 必需 | 必需 |
+| `modalities.input` + `modalities.output` | 可选 | 可选 | **必需** |
+
+于是同一份配置在三页之间**并不等价**：opencode 允许模型只写 `modalities.output`，原样写进 mimocode 就是一份**非法文件**——用户实测过这个（opencode 里那几个只写 `output` 的模型，切到 mimo 页保存后 `mimo` 拒绝加载，报 `expected array, received undefined … modalities.input`）。所以序列化后统一过一遍补齐，且**只按目标方言**补：给 opencode / kilo 补 `input` 会是凭空添加用户没写过的字段。
+
+补法按「缺的那一侧有没有安全的默认值」分两种，不搞一刀切：
+
+- **`modalities`**：缺的一侧补 `["text"]`。整块省略时 CLI 本来就是按「纯文本」理解的，补 `text` 是对源方言语义的忠实表达，同时保住用户明确写出的那一侧。两侧都没写（`{}`）则整块删掉——mimo 对空对象会同时报两个缺失，而**没有** `modalities` 键是合法的。
+- **`limit`**：半截 limit **无法**用合法值表达（schema 要数字，而「不限」没有对应值），凭空编一个上下文窗口比交给 CLI 自己的模型库更糟，所以整块删掉；`limit` 在模型级本就可选，省略后 CLI 用它自己的数据（实测三家都接受省略）。
+
+补齐覆盖**整个目标文件的模型**，不只是界面接管的那些：合并写入时目标文件里原有的条目会保留下来，它们同样要过校验，否则照样是「CLI 起不来」。
 
 **目录名优先于文件名**：Kilo 那份遗留的 `~/.config/kilo/opencode.json` 名字像 opencode，但目录已经把它判给了 kilocode，所以归 kilocode 页面（反过来 `~/.config/opencode/kilo.json` 归 opencode）。否则按注册顺序先到的 opencode 会抢走它，页面与保存路径都会指错目录。
 

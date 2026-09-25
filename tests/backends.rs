@@ -429,6 +429,135 @@ fn an_existing_schema_url_is_preserved() {
     }
 }
 
+/// 构造一个「已配置 provider 的模型」root，模型体由调用方给定。
+fn root_with_model(model: Value) -> Value {
+    json!({ "provider": { "p": { "models": { "m1": model } } } })
+}
+
+/// 从序列化结果里取 `provider.p.models.m1`。
+fn serialized_model(fmt: ConfigFormat, target: &Value, extras: &Value) -> Value {
+    let b = backends::backend(fmt);
+    let root = b.serialize_root(&[], &[], extras, Some(target));
+    root["provider"]["p"]["models"]["m1"].clone()
+}
+
+/// **核心回归**：mimocode 要求 `modalities` 的 `input` 与 `output` 成对，opencode 不要求。
+///
+/// 用户实测：opencode 里几个只写了 `modalities.output` 的模型，切到 mimo 页保存后
+/// `mimo` 直接拒绝加载（`expected array, received undefined … modalities.input`）。
+/// 补齐后同一份配置在三页都能被各自的 CLI 接受。
+#[test]
+fn mimocode_gets_the_missing_modality_side_filled_in() {
+    let target = root_with_model(json!({ "modalities": { "output": ["text"] } }));
+    let got = serialized_model(ConfigFormat::Mimocode, &target, &json!({}));
+    assert_eq!(
+        got["modalities"]["input"],
+        json!(["text"]),
+        "mimocode 缺的 input 必须补成 text（源方言的语义就是纯文本）"
+    );
+    assert_eq!(
+        got["modalities"]["output"],
+        json!(["text"]),
+        "用户明确写出的 output 不能被改动"
+    );
+    // 反向：只写 input 时补 output
+    let target = root_with_model(json!({ "modalities": { "input": ["text", "image"] } }));
+    let got = serialized_model(ConfigFormat::Mimocode, &target, &json!({}));
+    assert_eq!(got["modalities"]["output"], json!(["text"]));
+    assert_eq!(
+        got["modalities"]["input"],
+        json!(["text", "image"]),
+        "原有的多模态输入必须原样保留"
+    );
+}
+
+/// opencode / kilocode 不要求成对：**绝不能**凭空加字段，否则就是改用户的配置。
+///
+/// 这条测试防的是「为了修 mimo 而把三家一起改了」——那会把用户 opencode 配置里
+/// 本来合法的半截 modalities 补成他没写过的内容。
+#[test]
+fn the_other_flavors_are_not_touched() {
+    for fmt in [ConfigFormat::Opencode, ConfigFormat::Kilocode] {
+        let target = root_with_model(json!({ "modalities": { "output": ["text"] } }));
+        let got = serialized_model(fmt, &target, &json!({}));
+        assert_eq!(
+            got["modalities"],
+            json!({ "output": ["text"] }),
+            "{fmt:?} 不该补 modalities.input（它的 schema 不要求）"
+        );
+    }
+}
+
+/// 两侧都齐全时一个字节都不动（常规路径不能受影响）。
+#[test]
+fn complete_modalities_are_left_alone() {
+    let model = json!({ "modalities": { "input": ["text"], "output": ["text", "image"] } });
+    for fmt in [
+        ConfigFormat::Opencode,
+        ConfigFormat::Kilocode,
+        ConfigFormat::Mimocode,
+    ] {
+        let got = serialized_model(fmt, &root_with_model(model.clone()), &json!({}));
+        assert_eq!(
+            got["modalities"], model["modalities"],
+            "{fmt:?} 改动了完整模态"
+        );
+    }
+}
+
+/// 空的 `modalities` 对象整块删掉：mimo 对 `{}` 会同时报缺 input 与 output，
+/// 而「没有 modalities 键」是合法的（CLI 按纯文本处理）。
+#[test]
+fn an_empty_modalities_object_is_removed_for_mimocode() {
+    let target = root_with_model(json!({ "modalities": {} }));
+    let got = serialized_model(ConfigFormat::Mimocode, &target, &json!({}));
+    assert!(
+        got.get("modalities").is_none(),
+        "空 modalities 必须整块移除，否则 mimo 会同时报两个缺失: {got}"
+    );
+}
+
+/// `limit` 的 context / output 三家 CLI 都要求成对（实测半截会被拒），
+/// 而半截 limit **无法**用合法值表达（schema 要数字，「不限」没有对应值），
+/// 所以整块删掉，交给 CLI 用它自己的模型库。
+#[test]
+fn a_half_filled_limit_is_dropped_for_every_flavor() {
+    for fmt in [
+        ConfigFormat::Opencode,
+        ConfigFormat::Kilocode,
+        ConfigFormat::Mimocode,
+    ] {
+        let target = root_with_model(json!({ "limit": { "context": 128000 } }));
+        let got = serialized_model(fmt, &target, &json!({}));
+        assert!(
+            got.get("limit").is_none(),
+            "{fmt:?} 应整块删掉半截 limit（省略 limit 三家都合法），而不是编造一个数字: {got}"
+        );
+        // 成对的 limit 必须原样保留
+        let target = root_with_model(json!({ "limit": { "context": 128000, "output": 8192 } }));
+        let got = serialized_model(fmt, &target, &json!({}));
+        assert_eq!(
+            got["limit"],
+            json!({ "context": 128000, "output": 8192 }),
+            "{fmt:?} 改动了完整的 limit"
+        );
+    }
+}
+
+/// 目标文件里**界面没接管的**旧条目也要补齐：它们同样要过 CLI 的校验。
+#[test]
+fn untouched_models_in_the_target_file_are_completed_too() {
+    // 目标文件里已有一个 mimo 无法加载的模型（只写了 output）。
+    let target = root_with_model(json!({ "modalities": { "output": ["text"] } }));
+    let b = backends::backend(ConfigFormat::Mimocode);
+    let root = b.serialize_root(&[], &[], &json!({}), Some(&target));
+    assert_eq!(
+        root["provider"]["p"]["models"]["m1"]["modalities"]["input"],
+        json!(["text"]),
+        "合并写入时目标文件里保留下来的模型也必须补齐"
+    );
+}
+
 /// opencode 系（opencode / kilocode / mimocode）三者内容形状相同，判别只能靠路径。
 ///
 /// Kilo Code 与 MiMo Code 都是 opencode 的 fork，配置 schema 逐字相同，所以任何

@@ -211,7 +211,7 @@ impl Backend for OpenCodeFamilyBackend {
         target_root: Option<&Value>,
     ) -> Value {
         let schema = self.0.schema;
-        match target_root {
+        let mut root = match target_root {
             None => {
                 // 当前文件：以 UI 状态为准整体替换 agent / provider（删除即生效）；
                 // 列表为空时移除对应键，不写空对象
@@ -244,7 +244,12 @@ impl Backend for OpenCodeFamilyBackend {
                 with_schema(r, schema)
             }
             Some(target) => with_schema(merge_opencode_root(target, agents, providers), schema),
-        }
+        };
+        // 各家 required 不同：源方言允许的半截字段写进目标方言会变成非法文件
+        // （详见 `complete_required_model_fields`）。补齐放在最后，连目标文件里
+        // 保留下来的旧条目一起过一遍。
+        complete_required_fields_in(&mut root, self.0.id);
+        root
     }
 
     fn load_target_root(&self, path: &str) -> Value {
@@ -315,6 +320,98 @@ fn with_schema(root: Value, schema: &str) -> Value {
         o.insert("$schema".into(), Value::String(schema.to_string()));
     }
     Value::Object(convert::order_fields(o, &["$schema"]))
+}
+
+/// 按目标方言补齐模型级**必需成对字段**，让写出的配置一定通过 CLI 的 schema 校验。
+///
+/// ## 为什么必须做
+///
+/// 三个 CLI 都用 zod 校验配置，schema 里的 `required` 是真会拒绝启动的（实测
+/// `mimo models` / `kilo models` / `opencode models` 对半截 `limit` 一律报
+/// `Missing key … limit.output`）。而三家的 required **并不相同**：
+///
+/// | 字段 | opencode | kilo | mimocode |
+/// |---|---|---|---|
+/// | `limit.context` + `limit.output` | 必需 | 必需 | 必需 |
+/// | `modalities.input` + `modalities.output` | 可选 | 可选 | **必需** |
+///
+/// 于是同一份配置在三页之间并不等价：源方言（opencode）允许只写
+/// `modalities.output`，写进 mimocode 就变成**非法文件**——用户遇到的正是这个
+/// （opencode 里那几个只写了 output 的模型，切到 mimo 页保存后 `mimo` 拒绝加载）。
+///
+/// ## 补法
+///
+/// 按「缺的那一侧有没有安全的默认值」分两种，不搞一刀切：
+///
+/// - `modalities`：缺的一侧补 `["text"]`。整块省略时 CLI 就是按「纯文本」理解的，
+///   补 text 是对源方言语义的**忠实**表达，同时保住了用户明确写出的那一侧。
+/// - `limit`：半截 limit **无法表达**（schema 要数字，而「不限」没有对应值），凭空
+///   编一个上下文窗口比交给 CLI 自己的模型库更糟，所以整块删掉——`limit` 在模型级
+///   本来就是可选的，省略后 CLI 用它自己的数据。
+fn complete_required_model_fields(model: &mut Value, flavor: ConfigFormat) {
+    let Some(obj) = model.as_object_mut() else {
+        return;
+    };
+
+    // limit：三家都要求 context + output 成对（limit 整块可省略，但不能只给一半）。
+    let limit_sides = obj
+        .get("limit")
+        .and_then(Value::as_object)
+        .map(|l| (l.contains_key("context"), l.contains_key("output")));
+    if let Some((has_context, has_output)) = limit_sides {
+        if has_context != has_output {
+            obj.remove("limit");
+        }
+    }
+
+    // modalities：只有 mimocode 要求 input + output 成对。
+    if flavor != ConfigFormat::Mimocode {
+        return;
+    }
+    let modality_sides = obj
+        .get("modalities")
+        .and_then(Value::as_object)
+        .map(|m| (m.contains_key("input"), m.contains_key("output")));
+    let Some((has_input, has_output)) = modality_sides else {
+        return;
+    };
+    match (has_input, has_output) {
+        (true, true) => {}
+        // 两侧都没写等于没声明模态：整块删掉才是合法形状（`{}` 会被拒）。
+        (false, false) => {
+            obj.remove("modalities");
+        }
+        (true, false) => fill_text_modality(obj, "output"),
+        (false, true) => fill_text_modality(obj, "input"),
+    }
+}
+
+/// 把 `modalities.<side>` 补成 `["text"]`。
+fn fill_text_modality(obj: &mut Map<String, Value>, side: &str) {
+    if let Some(modalities) = obj.get_mut("modalities").and_then(Value::as_object_mut) {
+        modalities.insert(
+            side.into(),
+            Value::Array(vec![Value::String("text".into())]),
+        );
+    }
+}
+
+/// 对整个 root 的 `provider.*.models.*` 逐个补齐必需字段。
+///
+/// 覆盖**目标文件里原有的模型**，不只是界面接管的那些：合并写入时目标文件里的条目
+/// 会保留下来，它们同样要能通过校验，否则照样是「CLI 起不来」。
+fn complete_required_fields_in(root: &mut Value, flavor: ConfigFormat) {
+    let Some(providers) = root.get_mut("provider").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for provider in providers.values_mut() {
+        let Some(models) = provider.get_mut("models").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for model in models.values_mut() {
+            complete_required_model_fields(model, flavor);
+        }
+    }
 }
 
 /// 将 UI 状态合并进 opencode 系目标 root（跨格式保存用）：
