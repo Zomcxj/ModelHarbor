@@ -859,24 +859,6 @@ impl App {
     }
 
     /// 启动后台线程获取 provider 模型列表。
-    pub(super) fn start_model_fetch(&mut self, key: &str, base_url: &str, secret: &str, api: &str) {
-        let url = Self::models_url(base_url, api);
-        let secret = secret.trim().to_string();
-        let api = api.to_string();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = fetch_models_remote(&url, &secret, &api);
-            let _ = tx.send(result);
-        });
-        self.model_fetch.insert(
-            key.to_string(),
-            ModelFetchState {
-                rx: Some(rx),
-                result: None,
-            },
-        );
-    }
-
     /// 启动 provider 级延迟测试（后台线程，结果经通道回传）。
     /// 接收 `&mut HashMap` 而非 `&mut self`，以便与 `providers[idx]` 借用共存。
     pub(super) fn start_provider_latency(

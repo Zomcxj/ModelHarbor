@@ -1,8 +1,8 @@
 //! Provider 编辑 / 新增表单、模型获取弹层与表单字段控件。
 use super::App;
 use crate::app::fetch::{
-    fetch_models_remote, model_latency_label, model_probe_button, net_guard_gate, ModelFetchState,
-    NEW_PROVIDER_FETCH_KEY,
+    fetch_models_remote, model_latency_label, model_probe_button, net_guard_gate, LatencyState,
+    ModelFetchState, NEW_PROVIDER_FETCH_KEY,
 };
 use crate::app::providers::ProviderFormFlags;
 use crate::convert;
@@ -14,7 +14,7 @@ use crate::ui::{
     DragHandle,
 };
 use eframe::egui;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// npm 包下拉（opencode 专用）；`id_salt` 区分同一页面内的多个表单实例。
 pub(super) fn provider_npm_combo(
@@ -313,6 +313,340 @@ pub(super) fn model_fetch_popup<H: std::hash::Hash>(
     }
 }
 
+/// 编辑表单（`render_provider_form`）与新增表单（`ui_new_provider_form`）共用的
+/// provider 头部字段：key / 协议下拉 / timeout / compat / DSH 重试 / baseURL / 密钥。
+///
+/// 两份表单曾逐行抄写并各自漂移——新增表单漏了 DSH 的 timeoutMs 与 retryPolicy，
+/// baseURL 的显隐也和编辑表单不一致。统一走这里的同一套门控后，差异只剩三件事，
+/// 全由 [`ProviderHeaderCtx`] 表达：占位提示与 key 重复检查（新增表单在「确认」时才查）、
+/// npm 空选项的标签、以及 `relaxed` 门控。
+struct ProviderHeaderCtx<'a> {
+    page: ConfigFormat,
+    npm_salt: String,
+    api_salt: String,
+    /// 新增表单 = true：字段是给**全新** provider 填的，不受「已加载文件里有没有
+    /// 这个键」的影响（`show_provider_base_url` 这类内容型开关放宽为常显）。
+    relaxed: bool,
+    npm_empty_label: bool,
+    show_api_keys: bool,
+    /// key 重复检查用的「其他 provider key」集合；None = 不查（新增表单）。
+    other_keys: Option<&'a HashSet<String>>,
+}
+
+fn provider_header_fields(
+    ui: &mut egui::Ui,
+    p: &mut ProviderRow,
+    flags: &ProviderFormFlags,
+    ctx: &ProviderHeaderCtx<'_>,
+) {
+    let on = |flag: bool| ctx.relaxed || flag;
+    ui.horizontal_wrapped(|ui| {
+        field_label(ui, 120.0, "key");
+        let key_edit = egui::TextEdit::singleline(&mut p.key).desired_width(120.0);
+        let key_edit = if ctx.relaxed {
+            key_edit.hint_text("openai")
+        } else {
+            key_edit
+        };
+        let key_resp = ui.add(key_edit);
+        if let Some(other_keys) = ctx.other_keys {
+            if !p.key.trim().is_empty() && other_keys.contains(p.key.trim()) {
+                key_resp.on_hover_text("key 与其他 provider 重复，保存将被阻止");
+                ui.label(
+                    egui::RichText::new("⚠ 重复")
+                        .small()
+                        .color(crate::theme::semantics(ui).err),
+                );
+            }
+        }
+        if flags.show_oc {
+            provider_npm_combo(ui, p, &ctx.npm_salt, ctx.npm_empty_label);
+        }
+        if !flags.show_oc {
+            provider_api_combo(ui, p, ctx.page, &ctx.api_salt);
+        }
+        // timeout / timeoutMs 与 npm/api 同排（第一行）。
+        if flags.show_oc && flags.show_provider_timeout {
+            field_label(ui, 120.0, "options.timeout");
+            numeric_text_edit(ui, &mut p.timeout, 70.0, "180000");
+        }
+        if flags.show_dsh {
+            field_label(ui, 120.0, "timeoutMs");
+            numeric_text_edit(ui, &mut p.dsh_timeout_ms, 70.0, "180000");
+        }
+        // pi / omp 的 compat 与 api 同排显示（紧跟 api 之后）。
+        if !flags.show_oc && !flags.show_dsh && !flags.show_zcode && !flags.show_wb {
+            field_label(ui, 120.0, "compat");
+            ui.checkbox(&mut p.compat, "supportsDeveloperRole");
+            // pi / omp 相互映射字段：加载 opencode/dsh 时缺省不勾选。
+            let requires_label = if flags.show_omp {
+                "requiresReasoningContentForAllAssistantTurns"
+            } else {
+                "requiresReasoningContentOnAssistantMessages"
+            };
+            ui.checkbox(&mut p.requires_reasoning_content, requires_label);
+        }
+        if flags.show_dsh {
+            field_label(ui, 120.0, "retryPolicy.mode");
+            ui.add(egui::TextEdit::singleline(&mut p.dsh_retry_mode).desired_width(100.0));
+            field_label(ui, 120.0, "maxRetries");
+            numeric_text_edit(ui, &mut p.dsh_max_retries, 55.0, "3");
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        if on(flags.show_provider_base_url) {
+            field_label(ui, 120.0, flags.base_label);
+            let url_edit = egui::TextEdit::singleline(&mut p.base_url).desired_width(200.0);
+            let url_edit = if ctx.relaxed {
+                url_edit.hint_text("https://api.openai.com/v1")
+            } else {
+                url_edit
+            };
+            ui.add(url_edit);
+        }
+        // WorkBuddy 的协议由 URL 后缀表达（文件里没有协议字段），**不给手动开关**：
+        // 上面选的协议决定保存时补什么后缀，选非 chat/completions 就是自定义协议。
+        // 曾经有个「自定义协议」勾选框，但它与协议选择表达同一件事，两个控件可以
+        // 互相矛盾（勾了却选着 chat、或没勾却选了 messages），保存时还得强制对齐一次。
+        field_label(ui, 120.0, flags.api_key_label);
+        if flags.show_dsh {
+            let env_edit = egui::TextEdit::singleline(&mut p.api_key_env).desired_width(192.0);
+            let env_edit = if ctx.relaxed {
+                env_edit.hint_text("DEEPSEEK_API_KEY")
+            } else {
+                env_edit
+            };
+            ui.add(env_edit);
+            field_label(ui, 120.0, "API Key");
+            let hint = if ctx.relaxed { "实际密钥" } else { "" };
+            secret_text_edit(ui, &mut p.api_key_secret, ctx.show_api_keys, 408.0, hint);
+        } else {
+            let hint = if ctx.relaxed { "sk-xxx" } else { "" };
+            secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
+        }
+    });
+}
+
+/// 「获取模型」区块（两份表单共用）：按钮行、后台拉取与弹层。
+///
+/// 拆字段传参而不是拿 `&mut App`：编辑表单里 `p = &mut self.providers[idx]` 还借着一角，
+/// `model_fetch` 等字段必须拆开借才能与它共存（与 `start_provider_latency` 同理）。
+struct FetchSectionCtx<'a> {
+    model_fetch: &'a mut HashMap<String, ModelFetchState>,
+    model_fetch_open: &'a mut HashSet<String>,
+    latency: &'a HashMap<String, LatencyState>,
+    current_page: ConfigFormat,
+    fetch_key: &'a str,
+    popup_salt: &'a str,
+    scroll_salt: egui::Id,
+}
+
+fn models_fetch_section(
+    ui: &mut egui::Ui,
+    ctx: &mut FetchSectionCtx<'_>,
+    base_url: &str,
+    secret: &str,
+    api: &str,
+    models: &mut Vec<ModelRow>,
+) {
+    let mut fetch_request: Option<(String, String, String)> = None;
+    let mut close_fetch = false;
+    ui.horizontal(|ui| {
+        ui.strong("Models");
+        if ui.button("获取模型").clicked() {
+            fetch_request = Some((base_url.to_string(), secret.to_string(), api.to_string()));
+        }
+        if ctx.model_fetch_open.contains(ctx.fetch_key) && ui.button("关闭").clicked() {
+            close_fetch = true;
+        }
+        // 模型延迟已无批量入口：每个模型行右侧各有一个「测试」按钮，
+        // 一次只测一个（同模型 60s、同厂商 10s 节流，规避测活风控）。
+        if ctx
+            .latency
+            .get(ctx.fetch_key)
+            .is_some_and(|s| s.model_rx.is_some())
+        {
+            ui.label(egui::RichText::new("延迟测试中…").small());
+        }
+    });
+    if let Some((base, secret, api)) = fetch_request {
+        let url = App::models_url(&base, &api);
+        let secret = secret.trim().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = fetch_models_remote(&url, &secret, &api);
+            let _ = tx.send(result);
+        });
+        ctx.model_fetch.insert(
+            ctx.fetch_key.to_string(),
+            ModelFetchState {
+                rx: Some(rx),
+                result: None,
+            },
+        );
+        ctx.model_fetch_open.insert(ctx.fetch_key.to_string());
+    }
+    if close_fetch {
+        ctx.model_fetch_open.remove(ctx.fetch_key);
+    }
+    if ctx.model_fetch_open.contains(ctx.fetch_key) {
+        let fetch_key = ctx.fetch_key.to_string();
+        card_frame(
+            ui,
+            false,
+            0,
+            egui::Id::new((ctx.popup_salt, fetch_key.clone())),
+            |ui| {
+                model_fetch_popup(
+                    ui,
+                    ctx.model_fetch.get(&fetch_key),
+                    models,
+                    ctx.current_page,
+                    ctx.scroll_salt,
+                );
+            },
+        );
+    }
+}
+
+/// 档位（variants）下拉所需的成套参数：字段标签、词表、展开状态与展开键。
+struct VariantsCtx<'a> {
+    label: &'static str,
+    names: &'a [&'static str],
+    open_set: &'a mut HashSet<String>,
+    open_key: String,
+    /// 编辑表单的模型行会归一已存的档位串；「添加 Model」子表单只收集新输入。
+    normalize: bool,
+}
+
+/// 模型字段编辑行之一：id / name / reasoning / tool_call / store / context / output。
+///
+/// `relaxed` = 新增表单语境：`ProviderFormFlags` 里**内容型**开关（文件里出现过该键
+/// 才显示）放宽为常显——新模型是全新条目，不该受已加载文件内容影响；
+/// 方言门控（oc / dsh）照旧保留。
+///
+/// `dup` 给出模型 id 的重复判定集合（编辑表单）：命中时在 id 字段旁画 ⚠ 提示——
+/// 只有编辑表单有这步，新增表单传 None。
+fn model_core_fields_row(
+    ui: &mut egui::Ui,
+    m: &mut ModelRow,
+    flags: &ProviderFormFlags,
+    relaxed: bool,
+    dup: Option<(&HashSet<String>, &HashSet<String>)>,
+) {
+    let on = |flag: bool| relaxed || flag;
+    ui.horizontal_wrapped(|ui| {
+        field_label(ui, 120.0, "id:");
+        let id_resp = ui.add(egui::TextEdit::singleline(&mut m.id).desired_width(120.0));
+        if let Some((same_provider, global)) = dup {
+            if !m.id.trim().is_empty()
+                && (same_provider.contains(m.id.trim()) || global.contains(m.id.trim()))
+            {
+                // 保存**不会**因为模型 id 重复而失败（只有 provider key 重复才拦），
+                // 所以这里不能说「保存将被阻止」。WorkBuddy 是唯一按 id 全局去重的
+                // 后端：重复的 id 里只有第一条会在它的选择器里生效。
+                let hint = if flags.show_model_disabled {
+                    "这个模型名在**全局**出现多次（含其他厂商）。\n\
+                     WorkBuddy 的选择器按模型 id 全局去重，同名只会列出一行、\
+                     只有第一条生效。\n\
+                     要用哪一家，就在那一家的卡片上勾「启用」——勾上后同名的\
+                     其他条目会自动关闭，只有勾选的写进 models.json。\n\
+                     取消勾选不会丢配置：条目仍存在 models.full.json 里，勾回来即可。\n\
+                     不要改 id —— id 就是发给上游的模型名，改了会直接请求失败。"
+                } else {
+                    "id 与同 provider 内其他模型重复；保存仍会写入，\
+                     但同名模型在部分后端只会生效一次。"
+                };
+                id_resp.on_hover_text(hint);
+                ui.label(
+                    egui::RichText::new("⚠ 重复")
+                        .small()
+                        .color(crate::theme::semantics(ui).warn),
+                );
+            }
+        }
+        if on(flags.show_model_name) {
+            field_label(ui, 120.0, "name:");
+            ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(120.0));
+        }
+        if on(flags.show_model_reasoning) && (flags.show_oc || !flags.show_dsh) {
+            ui.checkbox(&mut m.reasoning, "reasoning");
+        }
+        if on(flags.show_model_tool_call) && flags.show_oc {
+            ui.checkbox(&mut m.tool_call, "tool_call");
+        }
+        if on(flags.show_model_store) && flags.show_oc {
+            ui.checkbox(&mut m.store, "store");
+        }
+        if on(flags.show_model_context) {
+            field_label(ui, 120.0, flags.context_label);
+            numeric_text_edit(ui, &mut m.context, 53.0, "");
+        }
+        if on(flags.show_model_output) {
+            field_label(ui, 120.0, flags.output_label);
+            numeric_text_edit(ui, &mut m.output, 53.0, "");
+        }
+    });
+}
+
+/// 模型字段编辑行之二：模态（input / output）与档位（variants）下拉。
+fn model_modalities_row(
+    ui: &mut egui::Ui,
+    m: &mut ModelRow,
+    flags: &ProviderFormFlags,
+    variants: &mut VariantsCtx<'_>,
+    relaxed: bool,
+) {
+    let on = |flag: bool| relaxed || flag;
+    ui.horizontal_wrapped(|ui| {
+        if on(flags.show_model_input) {
+            field_label(ui, 120.0, flags.input_label);
+            ui.add(
+                egui::TextEdit::singleline(&mut m.modalities_input).desired_width(80.0),
+            );
+        }
+        if flags.show_oc {
+            field_label(ui, 120.0, "modalities.output");
+            ui.add(
+                egui::TextEdit::singleline(&mut m.modalities_output).desired_width(80.0),
+            );
+        }
+        if on(flags.show_model_variants) {
+            field_label(ui, 120.0, variants.label);
+        }
+        variant_selector(
+            ui,
+            &mut m.variants,
+            variants.names,
+            variants.open_key.clone(),
+            variants.open_set,
+            variants.normalize,
+        );
+    });
+}
+
+/// 「添加 Model」子表单（两份表单共用）：字段行 + 添加按钮。
+///
+/// 添加后模型进入 `p.models`、子表单清空并收起（`show_key` 是展开状态的键）。
+fn new_model_subform(
+    ui: &mut egui::Ui,
+    p: &mut ProviderRow,
+    flags: &ProviderFormFlags,
+    variants: &mut VariantsCtx<'_>,
+    show_key: &str,
+) {
+    model_core_fields_row(ui, &mut p.new_model, flags, true, None);
+    model_modalities_row(ui, &mut p.new_model, flags, variants, true);
+    ui.horizontal(|ui| {
+        ui.add_space(crate::theme::SPACE_7);
+        if ui.button("添加").clicked() && !p.new_model.id.trim().is_empty() {
+            p.models.push(p.new_model.clone());
+            p.new_model = ModelRow::new();
+            variants.open_set.remove(show_key);
+        }
+    });
+}
+
 impl App {
     pub(super) fn render_provider_form(
         &mut self,
@@ -330,30 +664,8 @@ impl App {
             .map(|(_, p)| p.key.trim().to_string())
             .collect();
         let (variants_label, variant_names) = self.dialect_variants();
-        let ProviderFormFlags {
-            show_oc,
-            show_omp,
-            show_dsh,
-            show_zcode,
-            show_wb,
-            show_provider_base_url,
-            show_provider_timeout,
-            show_model_name,
-            show_model_context,
-            show_model_output,
-            show_model_input,
-            show_model_variants,
-            show_model_reasoning,
-            show_model_tool_call,
-            show_model_store,
-            show_model_disabled,
-            base_label,
-            api_key_label,
-            context_label,
-            output_label,
-            input_label,
-            ..
-        } = ProviderFormFlags::new(self);
+        let flags = ProviderFormFlags::new(self);
+        let show_model_disabled = flags.show_model_disabled;
         // WorkBuddy 的重复判定是**全局**的（按裸 id 去重，跨厂商也只生效一次），
         // 所以它的「重复」提示要看所有 provider，而不是只看同一张卡片。
         // 必须在 `p = &mut self.providers[idx]` **之前**算好：之后 self.providers
@@ -374,141 +686,40 @@ impl App {
             HashSet::new()
         };
         let p = &mut self.providers[idx];
-        ui.horizontal_wrapped(|ui| {
-            field_label(ui, 120.0, "key");
-            let key_resp = ui.add(egui::TextEdit::singleline(&mut p.key).desired_width(120.0));
-            if !p.key.trim().is_empty() && other_keys.contains(p.key.trim()) {
-                key_resp.on_hover_text("key 与其他 provider 重复，保存将被阻止");
-                ui.label(
-                    egui::RichText::new("⚠ 重复")
-                        .small()
-                        .color(crate::theme::semantics(ui).err),
-                );
-            }
-            if show_oc {
-                let salt = format!("provider_npm_{}", p.key);
-                provider_npm_combo(ui, p, &salt, true);
-            }
-            if !show_oc {
-                let salt = format!("provider_api_{}", p.key);
-                provider_api_combo(ui, p, self.current_page, &salt);
-            }
-            // timeout / timeoutMs 与 npm/api 同排（第一行）。
-            if show_oc && show_provider_timeout {
-                field_label(ui, 120.0, "options.timeout");
-                numeric_text_edit(ui, &mut p.timeout, 70.0, "180000");
-            }
-            if show_dsh {
-                field_label(ui, 120.0, "timeoutMs");
-                numeric_text_edit(ui, &mut p.dsh_timeout_ms, 70.0, "180000");
-            }
-            // pi / omp 的 compat 与 api 同排显示（紧跟 api 之后）。
-            if !show_oc && !show_dsh && !show_zcode && !show_wb {
-                field_label(ui, 120.0, "compat");
-                ui.checkbox(&mut p.compat, "supportsDeveloperRole");
-                // pi / omp 相互映射字段：加载 opencode/dsh 时缺省不勾选。
-                let requires_label = if show_omp {
-                    "requiresReasoningContentForAllAssistantTurns"
-                } else {
-                    "requiresReasoningContentOnAssistantMessages"
-                };
-                ui.checkbox(&mut p.requires_reasoning_content, requires_label);
-            }
-            if show_dsh {
-                field_label(ui, 120.0, "retryPolicy.mode");
-                ui.add(egui::TextEdit::singleline(&mut p.dsh_retry_mode).desired_width(100.0));
-                field_label(ui, 120.0, "maxRetries");
-                numeric_text_edit(ui, &mut p.dsh_max_retries, 55.0, "3");
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            if show_provider_base_url {
-                field_label(ui, 120.0, base_label);
-                ui.add(egui::TextEdit::singleline(&mut p.base_url).desired_width(200.0));
-            }
-            // WorkBuddy 的协议由 URL 后缀表达（文件里没有协议字段），**不给手动开关**：
-            // 上面选的协议决定保存时补什么后缀，选非 chat/completions 就是自定义协议。
-            // 曾经有个「自定义协议」勾选框，但它与协议选择表达同一件事，两个控件可以
-            // 互相矛盾（勾了却选着 chat、或没勾却选了 messages），保存时还得强制对齐一次。
-            field_label(ui, 120.0, api_key_label);
-            if show_dsh {
-                ui.add(egui::TextEdit::singleline(&mut p.api_key_env).desired_width(192.0));
-                field_label(ui, 120.0, "API Key");
-                secret_text_edit(ui, &mut p.api_key_secret, self.show_api_keys, 408.0, "");
-            } else {
-                secret_text_edit(ui, &mut p.api_key, self.show_api_keys, 408.0, "");
-            }
-        });
+        let header_ctx = ProviderHeaderCtx {
+            page: self.current_page,
+            npm_salt: format!("provider_npm_{}", p.key),
+            api_salt: format!("provider_api_{}", p.key),
+            relaxed: false,
+            npm_empty_label: true,
+            show_api_keys: self.show_api_keys,
+            other_keys: Some(&other_keys),
+        };
+        provider_header_fields(ui, p, &flags, &header_ctx);
 
         ui.add_space(crate::theme::SPACE_2);
         ui.add_space(crate::theme::SPACE_2);
-        let mut fetch_request: Option<(String, String, String, String)> = None;
-        let mut close_fetch = false;
         // 本帧用户点下的探测请求（provider key, model id），UI 循环外统一发起。
         let mut probe_request: Option<(String, String)> = None;
-        ui.horizontal(|ui| {
-            ui.strong("Models");
-            let fetch_api = p.effective_api();
-            let fetch_secret = credentials::effective_secret(p);
-            if ui.button("获取模型").clicked() {
-                fetch_request = Some((
-                    p.key.clone(),
-                    p.base_url.clone(),
-                    fetch_secret.clone(),
-                    fetch_api.clone(),
-                ));
-            }
-            if self.model_fetch_open.contains(&p.key) && ui.button("关闭").clicked() {
-                close_fetch = true;
-            }
-            // 模型延迟已无批量入口：每个模型行右侧各有一个「测试」按钮，
-            // 一次只测一个（同模型 60s、同厂商 10s 节流，规避测活风控）。
-            if self
-                .latency
-                .get(&p.key)
-                .is_some_and(|s| s.model_rx.is_some())
-            {
-                ui.label(egui::RichText::new("延迟测试中…").small());
-            }
-        });
-        if let Some((key, base, secret, api)) = fetch_request {
-            let url = Self::models_url(&base, &api);
-            let secret = secret.trim().to_string();
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let result = fetch_models_remote(&url, &secret, &api);
-                let _ = tx.send(result);
-            });
-            self.model_fetch.insert(
-                key.clone(),
-                ModelFetchState {
-                    rx: Some(rx),
-                    result: None,
-                },
-            );
-            self.model_fetch_open.insert(key);
-        }
-        if close_fetch {
-            self.model_fetch_open.remove(&p.key);
-        }
-        if self.model_fetch_open.contains(&p.key) {
-            let fetch_key = p.key.clone();
-            card_frame(
-                ui,
-                false,
-                0,
-                egui::Id::new(("model_fetch", fetch_key.clone())),
-                |ui| {
-                    model_fetch_popup(
-                        ui,
-                        self.model_fetch.get(&fetch_key),
-                        &mut p.models,
-                        self.current_page,
-                        ("model_fetch_scroll", fetch_key.as_str()),
-                    );
-                },
-            );
-        }
+        let fetch_api = p.effective_api();
+        let fetch_secret = credentials::effective_secret(p);
+        let mut fetch_ctx = FetchSectionCtx {
+            model_fetch: &mut self.model_fetch,
+            model_fetch_open: &mut self.model_fetch_open,
+            latency: &self.latency,
+            current_page: self.current_page,
+            fetch_key: &p.key,
+            popup_salt: "model_fetch",
+            scroll_salt: egui::Id::new(("model_fetch_scroll", p.key.clone())),
+        };
+        models_fetch_section(
+            ui,
+            &mut fetch_ctx,
+            &p.base_url,
+            &fetch_secret,
+            &fetch_api,
+            &mut p.models,
+        );
         let mut rm: Option<usize> = None;
         let mut model_hover_here: Option<String> = None;
         let mut model_drag_stopped = false;
@@ -615,90 +826,21 @@ impl App {
                             }
                         }
                     });
-                    ui.horizontal_wrapped(|ui| {
-                        field_label(ui, 120.0, "id:");
-                        let id_resp = ui.add(
-                            egui::TextEdit::singleline(&mut p.models[j].id).desired_width(120.0),
-                        );
-                        if !p.models[j].id.trim().is_empty()
-                            && (other_ids.contains(p.models[j].id.trim())
-                                || global_dup_ids.contains(p.models[j].id.trim()))
-                        {
-                            // 保存**不会**因为模型 id 重复而失败（只有 provider key 重复才拦），
-                            // 所以这里不能说「保存将被阻止」。WorkBuddy 是唯一按 id 全局去重的
-                            // 后端：重复的 id 里只有第一条会在它的选择器里生效。
-                            let hint = if show_model_disabled {
-                                "这个模型名在**全局**出现多次（含其他厂商）。\n\
-                                 WorkBuddy 的选择器按模型 id 全局去重，同名只会列出一行、\
-                                 只有第一条生效。\n\
-                                 要用哪一家，就在那一家的卡片上勾「启用」——勾上后同名的\
-                                 其他条目会自动关闭，只有勾选的写进 models.json。\n\
-                                 取消勾选不会丢配置：条目仍存在 models.full.json 里，勾回来即可。\n\
-                                 不要改 id —— id 就是发给上游的模型名，改了会直接请求失败。"
-                            } else {
-                                "id 与同 provider 内其他模型重复；保存仍会写入，\
-                                 但同名模型在部分后端只会生效一次。"
-                            };
-                            id_resp.on_hover_text(hint);
-                            ui.label(
-                                egui::RichText::new("⚠ 重复")
-                                    .small()
-                                    .color(crate::theme::semantics(ui).warn),
-                            );
-                        }
-                        if show_model_name {
-                            field_label(ui, 120.0, "name:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut p.models[j].name)
-                                    .desired_width(120.0),
-                            );
-                        }
-                        if show_model_reasoning && (show_oc || !show_dsh) {
-                            ui.checkbox(&mut p.models[j].reasoning, "reasoning");
-                        }
-                        if show_model_tool_call && show_oc {
-                            ui.checkbox(&mut p.models[j].tool_call, "tool_call");
-                        }
-                        if show_model_store && show_oc {
-                            ui.checkbox(&mut p.models[j].store, "store");
-                        }
-                        if show_model_context {
-                            field_label(ui, 120.0, context_label);
-                            numeric_text_edit(ui, &mut p.models[j].context, 53.0, "");
-                        }
-                        if show_model_output {
-                            field_label(ui, 120.0, output_label);
-                            numeric_text_edit(ui, &mut p.models[j].output, 53.0, "");
-                        }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        if show_model_input {
-                            field_label(ui, 120.0, input_label);
-                            ui.add(
-                                egui::TextEdit::singleline(&mut p.models[j].modalities_input)
-                                    .desired_width(80.0),
-                            );
-                        }
-                        if show_oc {
-                            field_label(ui, 120.0, "modalities.output");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut p.models[j].modalities_output)
-                                    .desired_width(80.0),
-                            );
-                        }
-                        if show_model_variants {
-                            field_label(ui, 120.0, variants_label);
-                        }
-                        let variant_key = format!("variant_open_{}_{}", p.key, j);
-                        variant_selector(
-                            ui,
-                            &mut p.models[j].variants,
-                            variant_names,
-                            variant_key,
-                            &mut self.variant_open,
-                            true,
-                        );
-                    });
+                    model_core_fields_row(
+                        ui,
+                        &mut p.models[j],
+                        &flags,
+                        false,
+                        Some((&other_ids, &global_dup_ids)),
+                    );
+                    let mut variants = VariantsCtx {
+                        label: variants_label,
+                        names: variant_names,
+                        open_set: &mut self.variant_open,
+                        open_key: format!("variant_open_{}_{}", p.key, j),
+                        normalize: true,
+                    };
+                    model_modalities_row(ui, &mut p.models[j], &flags, &mut variants, false);
                 },
             );
             if let Some(src) = &self.model_drag_src {
@@ -778,55 +920,14 @@ impl App {
             }
         }
         if show_new_model {
-            ui.horizontal_wrapped(|ui| {
-                field_label(ui, 120.0, "id:");
-                ui.add(egui::TextEdit::singleline(&mut p.new_model.id).desired_width(120.0));
-                field_label(ui, 120.0, "name:");
-                ui.add(egui::TextEdit::singleline(&mut p.new_model.name).desired_width(120.0));
-                if show_oc || !show_dsh {
-                    ui.checkbox(&mut p.new_model.reasoning, "reasoning");
-                }
-                if show_oc {
-                    ui.checkbox(&mut p.new_model.tool_call, "tool_call");
-                    ui.checkbox(&mut p.new_model.store, "store");
-                }
-                field_label(ui, 120.0, context_label);
-                numeric_text_edit(ui, &mut p.new_model.context, 53.0, "");
-                field_label(ui, 120.0, output_label);
-                numeric_text_edit(ui, &mut p.new_model.output, 53.0, "");
-            });
-            ui.horizontal_wrapped(|ui| {
-                field_label(ui, 120.0, input_label);
-                ui.add(
-                    egui::TextEdit::singleline(&mut p.new_model.modalities_input)
-                        .desired_width(80.0),
-                );
-                if show_oc {
-                    field_label(ui, 120.0, "modalities.output");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut p.new_model.modalities_output)
-                            .desired_width(80.0),
-                    );
-                }
-                field_label(ui, 120.0, variants_label);
-                let variant_key = format!("new_model_variant_{}", p.key);
-                variant_selector(
-                    ui,
-                    &mut p.new_model.variants,
-                    variant_names,
-                    variant_key,
-                    &mut self.variant_open,
-                    false,
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.add_space(crate::theme::SPACE_7);
-                if ui.button("添加").clicked() && !p.new_model.id.trim().is_empty() {
-                    p.models.push(p.new_model.clone());
-                    p.new_model = ModelRow::new();
-                    self.variant_open.remove(&show_new_model_key);
-                }
-            });
+            let mut variants = VariantsCtx {
+                label: variants_label,
+                names: variant_names,
+                open_set: &mut self.variant_open,
+                open_key: format!("new_model_variant_{}", p.key),
+                normalize: false,
+            };
+            new_model_subform(ui, p, &flags, &mut variants, &show_new_model_key);
         }
         // key 重命名后同步展开状态与弹窗键
         let new_key = self.providers[idx].key.clone();
@@ -837,150 +938,47 @@ impl App {
 
     pub(super) fn ui_new_provider_form(&mut self, ui: &mut egui::Ui) {
         let (variants_label, variant_names) = self.dialect_variants();
-        let ProviderFormFlags {
-            show_oc,
-            show_omp,
-            show_dsh,
-            show_zcode,
-            show_wb,
-            base_label,
-            api_key_label,
-            context_label,
-            output_label,
-            input_label,
-            ..
-        } = ProviderFormFlags::new(self);
+        let flags = ProviderFormFlags::new(self);
         ui.group(|ui| {
             // 官方预设（可选）：一键填 key / baseUrl / 协议；不套用则完全手填。
             ui.horizontal_wrapped(|ui| {
-                let dialect = if show_oc {
+                let dialect = if flags.show_oc {
                     crate::presets::PresetDialect::Opencode
                 } else {
                     crate::presets::PresetDialect::PiLike
                 };
                 provider_preset_combo(ui, &mut self.new_provider, dialect, "new_provider_preset");
             });
-            ui.horizontal_wrapped(|ui| {
-                field_label(ui, 120.0, "key");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_provider.key)
-                        .hint_text("openai")
-                        .desired_width(120.0),
-                );
-                if show_oc {
-                    let p = &mut self.new_provider;
-                    provider_npm_combo(ui, p, "new_provider_npm", false);
-                }
-                if !show_oc {
-                    let p = &mut self.new_provider;
-                    provider_api_combo(ui, p, self.current_page, "new_provider_api");
-                }
-                // timeout 与 npm/api 同排（第一行）。
-                if show_oc {
-                    field_label(ui, 120.0, "options.timeout");
-                    numeric_text_edit(ui, &mut self.new_provider.timeout, 70.0, "180000");
-                }
-                // pi / omp 的 compat 与 api 同排显示（紧跟 api 之后）。
-                if !show_oc && !show_dsh && !show_zcode && !show_wb {
-                    field_label(ui, 120.0, "compat");
-                    ui.checkbox(&mut self.new_provider.compat, "supportsDeveloperRole");
-                    let requires_label = if show_omp {
-                        "requiresReasoningContentForAllAssistantTurns"
-                    } else {
-                        "requiresReasoningContentOnAssistantMessages"
-                    };
-                    ui.checkbox(
-                        &mut self.new_provider.requires_reasoning_content,
-                        requires_label,
-                    );
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                field_label(ui, 120.0, base_label);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_provider.base_url)
-                        .hint_text("https://api.openai.com/v1")
-                        .desired_width(200.0),
-                );
-                // WorkBuddy：协议由上面的协议选择 + 保存时补后缀表达，没有手动开关。
-                field_label(ui, 120.0, api_key_label);
-                if show_dsh {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_provider.api_key_env)
-                            .hint_text("DEEPSEEK_API_KEY")
-                            .desired_width(192.0),
-                    );
-                    field_label(ui, 120.0, "API Key");
-                    secret_text_edit(
-                        ui,
-                        &mut self.new_provider.api_key_secret,
-                        self.show_api_keys,
-                        408.0,
-                        "实际密钥",
-                    );
-                } else {
-                    secret_text_edit(
-                        ui,
-                        &mut self.new_provider.api_key,
-                        self.show_api_keys,
-                        408.0,
-                        "sk-xxx",
-                    );
-                }
-            });
+            let header_ctx = ProviderHeaderCtx {
+                page: self.current_page,
+                npm_salt: "new_provider_npm".to_string(),
+                api_salt: "new_provider_api".to_string(),
+                relaxed: true,
+                npm_empty_label: false,
+                show_api_keys: self.show_api_keys,
+                other_keys: None,
+            };
+            provider_header_fields(ui, &mut self.new_provider, &flags, &header_ctx);
             ui.add_space(crate::theme::SPACE_2);
-            let mut fetch_request: Option<(String, String, String)> = None;
-            let mut close_fetch = false;
-            ui.horizontal(|ui| {
-                ui.strong("Models");
-                let fetch_api = self.new_provider.effective_api();
-                let fetch_secret = credentials::effective_secret(&self.new_provider);
-                if ui.button("获取模型").clicked() {
-                    fetch_request = Some((
-                        self.new_provider.base_url.clone(),
-                        fetch_secret.clone(),
-                        fetch_api.clone(),
-                    ));
-                }
-                if self.model_fetch_open.contains(NEW_PROVIDER_FETCH_KEY)
-                    && ui.button("关闭").clicked()
-                {
-                    close_fetch = true;
-                }
-                // 模型延迟已无批量入口：每个模型行右侧各有一个「测试」按钮。
-                if self
-                    .latency
-                    .get(NEW_PROVIDER_FETCH_KEY)
-                    .is_some_and(|s| s.model_rx.is_some())
-                {
-                    ui.label(egui::RichText::new("延迟测试中…").small());
-                }
-            });
-            if let Some((base, secret, api)) = fetch_request {
-                self.start_model_fetch(NEW_PROVIDER_FETCH_KEY, &base, &secret, &api);
-                self.model_fetch_open
-                    .insert(NEW_PROVIDER_FETCH_KEY.to_string());
-            }
-            if close_fetch {
-                self.model_fetch_open.remove(NEW_PROVIDER_FETCH_KEY);
-            }
-            if self.model_fetch_open.contains(NEW_PROVIDER_FETCH_KEY) {
-                card_frame(
-                    ui,
-                    false,
-                    0,
-                    egui::Id::new(("new_provider_fetch", NEW_PROVIDER_FETCH_KEY)),
-                    |ui| {
-                        model_fetch_popup(
-                            ui,
-                            self.model_fetch.get(NEW_PROVIDER_FETCH_KEY),
-                            &mut self.new_provider.models,
-                            self.current_page,
-                            "new_provider_fetch_scroll",
-                        );
-                    },
-                );
-            }
+            let mut fetch_ctx = FetchSectionCtx {
+                model_fetch: &mut self.model_fetch,
+                model_fetch_open: &mut self.model_fetch_open,
+                latency: &self.latency,
+                current_page: self.current_page,
+                fetch_key: NEW_PROVIDER_FETCH_KEY,
+                popup_salt: "new_provider_fetch",
+                scroll_salt: egui::Id::new("new_provider_fetch_scroll"),
+            };
+            let fetch_api = self.new_provider.effective_api();
+            let fetch_secret = credentials::effective_secret(&self.new_provider);
+            models_fetch_section(
+                ui,
+                &mut fetch_ctx,
+                &self.new_provider.base_url,
+                &fetch_secret,
+                &fetch_api,
+                &mut self.new_provider.models,
+            );
             let mut rm_new: Option<usize> = None;
             let mut move_new_request: Option<(usize, usize)> = None;
             // 本帧用户点下的探测请求（新 provider 固定用 NEW_PROVIDER_FETCH_KEY 做节流键）。
@@ -1025,45 +1023,13 @@ impl App {
                                 },
                             );
                         });
-                        ui.horizontal_wrapped(|ui| {
-                            field_label(ui, 120.0, "id:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.new_provider.models[j].id)
-                                    .desired_width(120.0),
-                            );
-                            field_label(ui, 120.0, "name:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.new_provider.models[j].name)
-                                    .desired_width(120.0),
-                            );
-                            if show_oc || !show_dsh {
-                                ui.checkbox(
-                                    &mut self.new_provider.models[j].reasoning,
-                                    "reasoning",
-                                );
-                            }
-                            if show_oc {
-                                ui.checkbox(
-                                    &mut self.new_provider.models[j].tool_call,
-                                    "tool_call",
-                                );
-                                ui.checkbox(&mut self.new_provider.models[j].store, "store");
-                            }
-                            field_label(ui, 120.0, context_label);
-                            numeric_text_edit(
-                                ui,
-                                &mut self.new_provider.models[j].context,
-                                53.0,
-                                "",
-                            );
-                            field_label(ui, 120.0, output_label);
-                            numeric_text_edit(
-                                ui,
-                                &mut self.new_provider.models[j].output,
-                                53.0,
-                                "",
-                            );
-                        });
+                        model_core_fields_row(
+                            ui,
+                            &mut self.new_provider.models[j],
+                            &flags,
+                            true,
+                            None,
+                        );
                     },
                 );
             }
@@ -1109,68 +1075,20 @@ impl App {
                 }
             }
             if show_new_model {
-                ui.horizontal_wrapped(|ui| {
-                    field_label(ui, 120.0, "id:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_provider.new_model.id)
-                            .desired_width(120.0),
-                    );
-                    field_label(ui, 120.0, "name:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_provider.new_model.name)
-                            .desired_width(120.0),
-                    );
-                    if show_oc || !show_dsh {
-                        ui.checkbox(&mut self.new_provider.new_model.reasoning, "reasoning");
-                    }
-                    if show_oc {
-                        ui.checkbox(&mut self.new_provider.new_model.tool_call, "tool_call");
-                        ui.checkbox(&mut self.new_provider.new_model.store, "store");
-                    }
-                    field_label(ui, 120.0, context_label);
-                    numeric_text_edit(ui, &mut self.new_provider.new_model.context, 53.0, "");
-                    field_label(ui, 120.0, output_label);
-                    numeric_text_edit(ui, &mut self.new_provider.new_model.output, 53.0, "");
-                });
-                ui.horizontal_wrapped(|ui| {
-                    field_label(ui, 120.0, input_label);
-                    ui.add(
-                        egui::TextEdit::singleline(
-                            &mut self.new_provider.new_model.modalities_input,
-                        )
-                        .desired_width(80.0),
-                    );
-                    if show_oc {
-                        field_label(ui, 120.0, "modalities.output");
-                        ui.add(
-                            egui::TextEdit::singleline(
-                                &mut self.new_provider.new_model.modalities_output,
-                            )
-                            .desired_width(80.0),
-                        );
-                    }
-                    field_label(ui, 120.0, variants_label);
-                    variant_selector(
-                        ui,
-                        &mut self.new_provider.new_model.variants,
-                        variant_names,
-                        "new_provider_new_model_variant".to_string(),
-                        &mut self.variant_open,
-                        false,
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.add_space(crate::theme::SPACE_7);
-                    if ui.button("添加").clicked()
-                        && !self.new_provider.new_model.id.trim().is_empty()
-                    {
-                        self.new_provider
-                            .models
-                            .push(self.new_provider.new_model.clone());
-                        self.new_provider.new_model = ModelRow::new();
-                        self.variant_open.remove(&show_new_model_key);
-                    }
-                });
+                let mut variants = VariantsCtx {
+                    label: variants_label,
+                    names: variant_names,
+                    open_set: &mut self.variant_open,
+                    open_key: "new_provider_new_model_variant".to_string(),
+                    normalize: false,
+                };
+                new_model_subform(
+                    ui,
+                    &mut self.new_provider,
+                    &flags,
+                    &mut variants,
+                    &show_new_model_key,
+                );
             }
             ui.horizontal(|ui| {
                 ui.add_space(crate::theme::SPACE_7);
