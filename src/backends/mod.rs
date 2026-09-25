@@ -68,12 +68,19 @@ pub trait Backend: Sync {
             .unwrap_or_else(|| local_path.to_string())
     }
 
-    /// 本地目标是否可用（一般：文件存在；宽松后端：文件或父目录存在）。
-    fn local_available(&self, local_path: &str) -> bool;
+    /// 本地目标是否可用。默认判定：文件或**父目录**存在（父目录存在 = 可新建）。
+    /// opencode 系覆写：候选文件名可能不同，只认文件本体（见 `path_candidates`）。
+    fn local_available(&self, local_path: &str) -> bool {
+        let path = Path::new(local_path);
+        path.exists() || path.parent().is_some_and(|dir| dir.exists())
+    }
 
     /// WSL 目标是否可用（已安装判定：配置文件或其目录存在）。
     /// 旗标由注册表批量探测（单次 `wsl` 调用）后传入，后端自身不拉起进程。
-    fn wsl_available(&self, probe: WslPathProbe) -> bool;
+    /// opencode 系覆写为只认文件本体：宽松判定会把并不存在的候选 `.json` 判成已安装。
+    fn wsl_available(&self, probe: WslPathProbe) -> bool {
+        probe.path_exists || probe.parent_dir_exists
+    }
 
     /// 内容判别：该内容是否属于本格式。`path` 提供扩展名上下文（可为空）。
     fn detect(&self, content: &str, path: &str) -> bool;
@@ -118,8 +125,15 @@ pub trait Backend: Sync {
         None
     }
 
-    /// root → 文件内容（opencode/pi 为 JSON 两种风格，omp 为 YAML；compact 对 YAML 无意义）。
-    fn render(&self, root: &Value, compact: bool) -> Result<String, String>;
+    /// root → 文件内容。JSON 后端（opencode 系 / pi / zcode）共用默认实现；
+    /// YAML 后端（omp / DSH）与数组根的 WorkBuddy 覆写（compact 对它们另有一套口径）。
+    fn render(&self, root: &Value, compact: bool) -> Result<String, String> {
+        Ok(if compact {
+            crate::app::compact_json(root)
+        } else {
+            crate::app::pretty_json(root)
+        })
+    }
 }
 
 /// 全部后端。**顺序即语义**：第 0 个是判别回落项，其余按“更具体优先”排列

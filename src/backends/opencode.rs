@@ -24,7 +24,7 @@ use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
-use crate::util::{parse_config_content, wsl_home, WslPathProbe};
+use crate::util::{home_dir_string, parse_config_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -90,15 +90,14 @@ pub static KILOCODE_BACKEND: OpenCodeFamilyBackend = OpenCodeFamilyBackend(&KILO
 /// MiMo Code 后端实例。
 pub static MIMOCODE_BACKEND: OpenCodeFamilyBackend = OpenCodeFamilyBackend(&MIMOCODE);
 
-fn home_dir() -> String {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default()
-}
-
 impl Flavor {
     fn default_local_path(&self) -> String {
-        format!("{}\\.config\\{}\\{}", home_dir(), self.dir, self.file)
+        format!(
+            "{}\\.config\\{}\\{}",
+            home_dir_string(),
+            self.dir,
+            self.file
+        )
     }
 
     fn default_wsl_path(&self) -> Option<String> {
@@ -262,14 +261,6 @@ impl Backend for OpenCodeFamilyBackend {
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
         Some((self.0.icon, 32, 32))
-    }
-
-    fn render(&self, root: &Value, compact: bool) -> Result<String, String> {
-        Ok(if compact {
-            crate::app::compact_json(root)
-        } else {
-            crate::app::pretty_json(root)
-        })
     }
 }
 

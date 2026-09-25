@@ -601,15 +601,11 @@ fn model_modalities_row(
     ui.horizontal_wrapped(|ui| {
         if on(flags.show_model_input) {
             field_label(ui, 120.0, flags.input_label);
-            ui.add(
-                egui::TextEdit::singleline(&mut m.modalities_input).desired_width(80.0),
-            );
+            ui.add(egui::TextEdit::singleline(&mut m.modalities_input).desired_width(80.0));
         }
         if flags.show_oc {
             field_label(ui, 120.0, "modalities.output");
-            ui.add(
-                egui::TextEdit::singleline(&mut m.modalities_output).desired_width(80.0),
-            );
+            ui.add(egui::TextEdit::singleline(&mut m.modalities_output).desired_width(80.0));
         }
         if on(flags.show_model_variants) {
             field_label(ui, 120.0, variants.label);

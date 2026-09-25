@@ -28,19 +28,15 @@ use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::{parse_config_content, wsl_home, WslPathProbe};
+use crate::util::{home_dir_string, parse_config_content, wsl_home};
 use serde_json::{Map, Value};
-use std::path::Path;
 
 pub struct ZCodeBackend;
 
 pub static BACKEND: ZCodeBackend = ZCodeBackend;
 
 fn default_local_path() -> String {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    format!("{}\\.zcode\\v2\\provider_config.json", home)
+    format!("{}\\.zcode\\v2\\provider_config.json", home_dir_string())
 }
 
 /// `config` 对象（顶层 `config` 键下的内容）。
@@ -374,18 +370,6 @@ impl Backend for ZCodeBackend {
         Some(format!("{}/.zcode/v2/provider_config.json", wsl_home()?))
     }
 
-    fn local_available(&self, local_path: &str) -> bool {
-        Path::new(local_path).exists()
-            || Path::new(local_path)
-                .parent()
-                .map(|p| p.exists())
-                .unwrap_or(false)
-    }
-
-    fn wsl_available(&self, probe: WslPathProbe) -> bool {
-        probe.path_exists || probe.parent_dir_exists
-    }
-
     fn detect(&self, content: &str, _path: &str) -> bool {
         // 两个独立标记：providerRules 或 providerOrder 任一为数组即认。
         parse_config_content(content)
@@ -577,13 +561,5 @@ impl Backend for ZCodeBackend {
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
         Some((include_bytes!("../../assets/agents/zcode_32.bin"), 32, 32))
-    }
-
-    fn render(&self, root: &Value, compact: bool) -> Result<String, String> {
-        Ok(if compact {
-            crate::app::compact_json(root)
-        } else {
-            crate::app::pretty_json(root)
-        })
     }
 }

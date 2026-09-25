@@ -478,6 +478,33 @@ pub fn config_exists(path: &str) -> bool {
     }
 }
 
+/// Windows 风格主目录字符串（`USERPROFILE` 优先，取不到为空串）。
+///
+/// 各后端拼默认配置路径都用它；路径里的分隔符保持反斜杠字面量（Windows 风格路径），
+/// 与「default_local_path 是 Windows 风格」的约定一致。
+pub fn home_dir_string() -> String {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default()
+}
+
+/// 配置文件同目录下的伴生文件路径（分隔符按主配置路径形态选：WSL 路径用 `/`）。
+///
+/// `credentials::sidecar_path` 与 workbuddy 的 `full_store_path` 同一套规则，这里只写一遍。
+pub fn sibling_path(config_path: &str, file_name: &str) -> String {
+    let separator = if is_wsl_path(config_path) || config_path.contains('/') {
+        '/'
+    } else {
+        '\\'
+    };
+    match config_path.rsplit_once(separator) {
+        Some((parent, _)) if !parent.is_empty() => {
+            format!("{}{}{}", parent, separator, file_name)
+        }
+        _ => file_name.to_string(),
+    }
+}
+
 /// 读取配置文件内容（支持本地与 WSL 路径）；不存在返回空串。
 pub fn read_config_content(path: &str) -> Result<String, String> {
     if path.is_empty() {

@@ -6,19 +6,15 @@ use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
-use crate::util::{parse_config_content, wsl_home, WslPathProbe};
+use crate::util::{home_dir_string, parse_config_content, wsl_home};
 use serde_json::{Map, Value};
-use std::path::Path;
 
 pub struct PiBackend;
 
 pub static BACKEND: PiBackend = PiBackend;
 
 fn default_local_path() -> String {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    format!("{}\\.pi\\agent\\models.json", home)
+    format!("{}\\.pi\\agent\\models.json", home_dir_string())
 }
 
 impl Backend for PiBackend {
@@ -32,20 +28,6 @@ impl Backend for PiBackend {
 
     fn default_wsl_path(&self) -> Option<String> {
         Some(format!("{}/.pi/agent/models.json", wsl_home()?))
-    }
-
-    fn local_available(&self, local_path: &str) -> bool {
-        // 宽松判定：文件或父目录存在即可（父目录存在 = 可新建）
-        Path::new(local_path).exists()
-            || Path::new(local_path)
-                .parent()
-                .map(|p| p.exists())
-                .unwrap_or(false)
-    }
-
-    fn wsl_available(&self, probe: WslPathProbe) -> bool {
-        // 已安装判定：配置文件或其目录存在
-        probe.path_exists || probe.parent_dir_exists
     }
 
     fn detect(&self, content: &str, _path: &str) -> bool {
@@ -93,13 +75,5 @@ impl Backend for PiBackend {
 
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
         Some((include_bytes!("../../assets/agents/pi_32.bin"), 32, 32))
-    }
-
-    fn render(&self, root: &Value, compact: bool) -> Result<String, String> {
-        Ok(if compact {
-            crate::app::compact_json(root)
-        } else {
-            crate::app::pretty_json(root)
-        })
     }
 }

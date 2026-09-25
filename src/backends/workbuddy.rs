@@ -67,10 +67,9 @@ use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::{is_wsl_path, parse_config_content, read_config_content, wsl_home, WslPathProbe};
+use crate::util::{home_dir_string, parse_config_content, read_config_content, wsl_home};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 pub struct WorkBuddyBackend;
 
@@ -87,27 +86,14 @@ const RESPONSES_SUFFIX: &str = "/v1/responses";
 const FULL_STORE_NAME: &str = "models.full.json";
 
 fn default_local_path() -> String {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    format!("{}\\.workbuddy\\models.json", home)
+    format!("{}\\.workbuddy\\models.json", home_dir_string())
 }
 
 /// 全量副本的路径：与主配置同目录、固定文件名。
 ///
 /// 分隔符按主配置路径的形态选（WSL 路径用 `/`），与 `credentials::sidecar_path` 同一套规则。
 pub fn full_store_path(config_path: &str) -> String {
-    let separator = if is_wsl_path(config_path) || config_path.contains('/') {
-        '/'
-    } else {
-        '\\'
-    };
-    match config_path.rsplit_once(separator) {
-        Some((parent, _)) if !parent.is_empty() => {
-            format!("{}{}{}", parent, separator, FULL_STORE_NAME)
-        }
-        _ => FULL_STORE_NAME.to_string(),
-    }
+    crate::util::sibling_path(config_path, FULL_STORE_NAME)
 }
 
 /// 读全量副本的条目；不存在 / 不是数组 / 解析失败都返回 `None`（调用方退回主配置）。
@@ -629,18 +615,6 @@ impl Backend for WorkBuddyBackend {
 
     fn default_wsl_path(&self) -> Option<String> {
         Some(format!("{}/.workbuddy/models.json", wsl_home()?))
-    }
-
-    fn local_available(&self, local_path: &str) -> bool {
-        Path::new(local_path).exists()
-            || Path::new(local_path)
-                .parent()
-                .map(|p| p.exists())
-                .unwrap_or(false)
-    }
-
-    fn wsl_available(&self, probe: WslPathProbe) -> bool {
-        probe.path_exists || probe.parent_dir_exists
     }
 
     fn detect(&self, content: &str, _path: &str) -> bool {

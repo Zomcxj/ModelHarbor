@@ -5,22 +5,12 @@
 //! 版本、记录和未知字段。
 
 use crate::model::ProviderRow;
-use crate::util::{is_wsl_path, parse_yaml_content, read_config_content, to_yaml_string};
+use crate::util::{parse_yaml_content, read_config_content, to_yaml_string};
 use serde_json::{Map, Value};
 
 /// 根据模型配置路径得到同级凭据路径。
 pub fn sidecar_path(config_path: &str) -> String {
-    let separator = if is_wsl_path(config_path) || config_path.contains('/') {
-        '/'
-    } else {
-        '\\'
-    };
-    match config_path.rsplit_once(separator) {
-        Some((parent, _)) if !parent.is_empty() => {
-            format!("{}{}{}", parent, separator, ".credentials.yaml")
-        }
-        _ => ".credentials.yaml".to_string(),
-    }
+    crate::util::sibling_path(config_path, ".credentials.yaml")
 }
 
 /// 读取凭据文件的完整 root。

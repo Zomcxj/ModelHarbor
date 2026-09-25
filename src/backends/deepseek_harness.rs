@@ -9,18 +9,14 @@ use crate::convert::order_fields;
 use crate::credentials;
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::{parse_yaml_content, wsl_home, WslPathProbe};
+use crate::util::{home_dir_string, parse_yaml_content, wsl_home};
 use serde_json::{Map, Value};
-use std::path::Path;
 
 pub struct DeepSeekHarnessBackend;
 pub static BACKEND: DeepSeekHarnessBackend = DeepSeekHarnessBackend;
 
 fn default_local_path() -> String {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    format!("{}\\.dsh\\settings.yaml", home)
+    format!("{}\\.dsh\\settings.yaml", home_dir_string())
 }
 
 fn is_dsh_root(v: &Value) -> bool {
@@ -555,16 +551,7 @@ impl Backend for DeepSeekHarnessBackend {
     fn default_wsl_path(&self) -> Option<String> {
         Some(format!("{}/.dsh/settings.yaml", wsl_home()?))
     }
-    fn local_available(&self, path: &str) -> bool {
-        Path::new(path).exists()
-            || Path::new(path)
-                .parent()
-                .map(|p| p.exists())
-                .unwrap_or(false)
-    }
-    fn wsl_available(&self, probe: WslPathProbe) -> bool {
-        probe.path_exists || probe.parent_dir_exists
-    }
+
     fn detect(&self, content: &str, path: &str) -> bool {
         let lower = path.to_lowercase();
         if lower.contains("/.dsh/") || lower.contains("\\.dsh\\") {

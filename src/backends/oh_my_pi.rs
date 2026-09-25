@@ -15,21 +15,18 @@ use crate::convert::{
 };
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::WslPathProbe;
-use crate::util::{parse_config_content, parse_yaml_content, to_yaml_string, wsl_home};
+use crate::util::{
+    home_dir_string, parse_config_content, parse_yaml_content, to_yaml_string, wsl_home,
+};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
-use std::path::Path;
 
 pub struct OhMyPiBackend;
 
 pub static BACKEND: OhMyPiBackend = OhMyPiBackend;
 
 fn default_local_path() -> String {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    format!("{}\\.omp\\agent\\models.yml", home)
+    format!("{}\\.omp\\agent\\models.yml", home_dir_string())
 }
 
 /// 判断 raw 是否为 opencode 方言的助手已迁至 convert 模块（pi 后端同样需要）。
@@ -223,20 +220,6 @@ impl Backend for OhMyPiBackend {
 
     fn default_wsl_path(&self) -> Option<String> {
         Some(format!("{}/.omp/agent/models.yml", wsl_home()?))
-    }
-
-    fn local_available(&self, local_path: &str) -> bool {
-        // 宽松判定：文件或父目录存在即可（父目录存在 = 可新建）
-        Path::new(local_path).exists()
-            || Path::new(local_path)
-                .parent()
-                .map(|p| p.exists())
-                .unwrap_or(false)
-    }
-
-    fn wsl_available(&self, probe: WslPathProbe) -> bool {
-        // 已安装判定：配置文件或其目录存在
-        probe.path_exists || probe.parent_dir_exists
     }
 
     fn detect(&self, content: &str, path: &str) -> bool {
