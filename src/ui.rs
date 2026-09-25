@@ -535,7 +535,10 @@ pub fn toggle_switch(ui: &mut egui::Ui, id: egui::Id, on: &mut bool) -> egui::Re
         ui.painter().circle_stroke(
             center,
             TOGGLE_KNOB / 2.0,
-            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            // 后缀 `_f32` 不能省：`Stroke::new` 的宽度是 `impl Into<f32>`，裸的
+            // `1.0` 会先当 `f64` 再回落，触发 `float_literal_f32_fallback`
+            // （CI 的 rustc 比本地新，本地 clippy 看不见这个 lint）。
+            egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
         );
     }
     resp

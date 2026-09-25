@@ -710,7 +710,9 @@ fn differing_pixel_fraction(a: &[u8], b: &[u8]) -> f32 {
     assert_eq!(a.len(), b.len());
     let mut differing = 0usize;
     let mut total = 0usize;
-    for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    // `as_chunks` 而非 `chunks_exact`：后者在 1.98 起被 clippy 判为
+    // `chunks_exact_to_as_chunks`。这里已断言两侧等长，尾部残块不可能出现。
+    for (pa, pb) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0.iter()) {
         total += 1;
         let delta: i32 = pa[..3]
             .iter()
