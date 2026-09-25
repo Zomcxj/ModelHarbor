@@ -1254,3 +1254,38 @@ fn an_explicit_choice_wins_over_position_derived_duplicates() {
     );
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
+
+/// 非法数字**不能**被写成 0：界面与保存状态栏都告诉用户「该字段将被忽略」，
+/// 写成 `maxInputTokens: 0` 是另一回事——WorkBuddy 会照单全收，输入上限直接归零。
+/// 曾经用的是 `unwrap_or(0)`。
+#[test]
+fn invalid_numbers_are_skipped_not_written_as_zero() {
+    let mut load = load_wb(&workbuddy_json());
+    // 第一条的上下文写成非数字，第二条保持正常值。
+    load.providers[0].models[0].context = "五十万".into();
+    load.providers[0].models[0].output = "".into();
+    let b = backends::backend(ConfigFormat::WorkBuddy);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let entries = root.as_array().expect("WorkBuddy 根应是数组");
+    let first = entries
+        .iter()
+        .find(|e| e["id"] == json!("chat-model"))
+        .expect("chat-model 条目应存在");
+    // 旧条目按 (name, id) 继承（`all_entries` 的既有行为），所以「跳过写入」在这里
+    // 表现为**原值保留**，与 ZCode 侧 `props` 由 raw 克隆而来完全同义。
+    assert_eq!(
+        first["maxInputTokens"],
+        json!(500000),
+        "解析不了应保持原值，不能写成 0"
+    );
+    assert_eq!(
+        first["maxOutputTokens"],
+        json!(65536),
+        "空值同样应保持原值，不能写成 0"
+    );
+    let second = entries
+        .iter()
+        .find(|e| e["id"] == json!("messages-model"))
+        .expect("messages-model 条目应存在");
+    assert_eq!(second["maxInputTokens"], json!(272000), "正常值照旧写入");
+}

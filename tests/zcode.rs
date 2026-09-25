@@ -636,3 +636,57 @@ fn a_model_disabled_in_zcode_stays_disabled() {
     assert_eq!(enabled_of("on"), Some(true), "ZCode 里开着的模型保持开着");
     assert_eq!(enabled_of("unset"), Some(true), "原文件没写该键时才补 true");
 }
+
+/// 非法数字**不能**被写成 0：界面与保存状态栏都告诉用户「该字段将被忽略」，
+/// 写成 `contextWindow: 0` / `maxOutputTokens.max: 0` 是另一回事——ZCode 会照单全收，
+/// 那个模型的上下文直接归零。曾经两处都用的 `unwrap_or(0)`。
+#[test]
+fn invalid_numbers_are_skipped_not_written_as_zero() {
+    let src = r#"{
+      "schemaVersion": 1,
+      "config": {
+        "providerOrder": ["p1"],
+        "providerConfigRules": { "providerRules": [ {
+            "providerId": "p1", "providerName": "p1",
+            "config": {
+              "group": "standard-personal",
+              "access": { "type": "api-key", "apiKey": "sk-test" },
+              "api": { "type": "openai-chat-completions", "baseUrl": "https://x.invalid" },
+              "personalModelIds": ["bad", "good"],
+              "modelOrder": ["bad", "good"] } } ]},
+        "modelConfigRules": {
+          "providerModelRules": [
+            { "modelId": "bad", "providerId": "p1",
+              "config": { "enabled": true, "properties": { "contextWindow": 1000 } } },
+            { "modelId": "good", "providerId": "p1",
+              "config": { "enabled": true, "properties": { "contextWindow": 2000 } } } ],
+          "manualProviderModelRules": [] } } }"#;
+    let mut load = load_zcode(src);
+    load.providers[0].models[0].context = "十二万".into();
+    load.providers[0].models[0].output = "abc".into();
+    load.providers[0].models[1].context = "3000".into();
+    load.providers[0].models[1].output = "4000".into();
+    let b = backends::backend(ConfigFormat::ZCode);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let rules = root["config"]["modelConfigRules"]["providerModelRules"]
+        .as_array()
+        .expect("providerModelRules 应为数组");
+    let find = |id: &str| rules.iter().find(|r| r["modelId"] == json!(id)).unwrap();
+    let bad = find("bad");
+    assert_eq!(
+        bad["config"]["properties"]["contextWindow"],
+        json!(1000),
+        "解析不了应保持原值，不能写成 0"
+    );
+    assert!(
+        bad["config"]["optionSpecs"]["maxOutputTokens"].is_null(),
+        "解析不了的 maxOutputTokens 不该凭空造出 max: 0，实际为 {}",
+        bad["config"]["optionSpecs"]
+    );
+    let good = find("good");
+    assert_eq!(good["config"]["properties"]["contextWindow"], json!(3000));
+    assert_eq!(
+        good["config"]["optionSpecs"]["maxOutputTokens"]["max"],
+        json!(4000)
+    );
+}

@@ -275,11 +275,12 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if !m.context.trim().is_empty() {
-        props.insert(
-            "contextWindow".into(),
-            Value::Number(m.context.trim().parse::<i64>().unwrap_or(0).into()),
-        );
+    // 只写能解析成整数的值。解析不了就**保持原样**（props 是 raw 的克隆），
+    // 与界面「无效数字：保存时该字段将被忽略」和保存状态栏的「已忽略 N 个无效
+    // 数字字段」同一口径——曾经写成 `unwrap_or(0)`，用户输错一个字就把
+    // `contextWindow: 0` 落盘，ZCode 里那个模型的上下文直接归零。
+    if let Ok(context) = m.context.trim().parse::<i64>() {
+        props.insert("contextWindow".into(), Value::Number(context.into()));
     }
     // 模态：界面给出列表时按它写；列表为空时不动原有键。
     // 落点是 `properties.inputFormat`（内置库如此嵌套），不是 properties 直接子键——
@@ -326,16 +327,13 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if !m.output.trim().is_empty() {
+    if let Ok(output) = m.output.trim().parse::<i64>() {
         let mut max = specs
             .get("maxOutputTokens")
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        max.insert(
-            "max".into(),
-            Value::Number(m.output.trim().parse::<i64>().unwrap_or(0).into()),
-        );
+        max.insert("max".into(), Value::Number(output.into()));
         specs.insert("maxOutputTokens".into(), Value::Object(max));
     }
     // 档位：只在 UI 里有值且原文件已有该块时改写 values，其余情况不动——

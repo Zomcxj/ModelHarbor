@@ -8,7 +8,7 @@ Rust + egui 构建，单文件可执行程序，无需安装运行时。
 
 - **多页面编辑**：顶栏图标切换页面；加载任意一份配置后各页共享同一份数据，修改即时同步（provider / model 顺序亦跨页同步）
 - **多格式互转**：任意加载、任意保存。跨格式写入只接管 provider 容器（条目与顺序以界面为准），目标文件其余配置保留，覆盖前自动备份为 `.bak`
-- **同源格式合并支持**：Kilo Code 与 MiMo Code 都是 opencode 的 fork，配置 schema 逐字相同（顶层 `provider` / `agent`、`options.baseURL`、`models.<id>.limit.context|output`），因此三者共用一套解析与序列化实现，差别只有配置目录名、主配置文件名与图标。三者内容形状一致，**判别按配置路径**（目录名 / 文件名）认领，无路径线索时回落 opencode
+- **同源格式合并支持**：Kilo Code 与 MiMo Code 都是 opencode 的 fork，配置 schema 的**字段与结构一致**（顶层 `provider` / `agent`、`options.baseURL`、`models.<id>.limit.context|output`），因此三者共用一套解析与序列化实现，差别只有配置目录名、主配置文件名与图标。三者内容形状一致，**判别按配置路径**（目录名 / 文件名）认领，无路径线索时回落 opencode。注意三家的 **required 并不相同**（mimocode 额外要求 `modalities` 成对），写盘时按目标方言补齐
 - **方言表单**：各页按自身格式显示字段与枚举，没有的字段不占位；协议（npm / api）在 opencode 系 / pi / omp / DSH 四类格式间共用一份数据，跨页同步
 - **卡片式管理**：Agents / Providers 增删改复制、拖拽排序、折叠展开（折叠状态会被记住）；模型参数与推理档位编辑
 - **获取模型**：一键从提供商的模型列表接口拉取模型，多列勾选，勾选未配置的模型即新增

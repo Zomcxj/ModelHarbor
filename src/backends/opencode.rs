@@ -1,16 +1,20 @@
 //! opencode 系后端：`opencode` / `kilocode` / `mimocode` 三个同源格式共用一套实现。
 //!
-//! 结构（三者逐字相同）：顶层 `agent`（subagent 定义 map）+ `provider`（map）+ 其他
-//! 顶层字段（如 `mcp`）原样保留。
+//! 结构（三者字段与结构一致）：顶层 `agent`（subagent 定义 map）+ `provider`（map）+
+//! 其他顶层字段（如 `mcp`）原样保留。
 //!
 //! **为什么合成一个模块**：Kilo Code 与 MiMo Code 都是 opencode 的 fork，配置 schema
-//! 一字不差——顶层 `provider` / `agent`，provider 的 `options.baseURL` / `options.apiKey`
-//! / `options.timeout`，模型的 `models.<id>.limit.context|output` / `tool_call` /
-//! `reasoning`。差别只有三处：**配置目录名、主配置文件名、图标**。复制三份解析器只会
-//! 让以后的格式修正要改三遍、且迟早改漏一处，所以这里把这三处做成 [`Flavor`] 参数，
-//! 其余全部共用。
+//! 的字段与结构一致——顶层 `provider` / `agent`，provider 的 `options.baseURL` /
+//! `options.apiKey` / `options.timeout`，模型的 `models.<id>.limit.context|output` /
+//! `tool_call` / `reasoning`。差别只有三处：**配置目录名、主配置文件名、图标**。复制三份
+//! 解析器只会让以后的格式修正要改三遍、且迟早改漏一处，所以这里把这三处做成 [`Flavor`]
+//! 参数，其余全部共用。
 //!
-//! **判别只能靠路径**：三者的内容形状完全一致，任何基于内容特征的判别都无法区分它们
+//! **但「字段相同」不等于「required 相同」**：mimocode 额外要求 `modalities` 的
+//! `input` / `output` 成对，opencode 与 kilo 都只把它当可选。写盘前必须按目标方言补齐
+//! （见 [`complete_required_model_fields`]），否则源方言允许的半截字段写过去就是非法文件。
+//!
+//! **判别只能靠路径**：三者的内容形状一致，任何基于内容特征的判别都无法区分它们
 //! （比如「顶层有 provider 对象」对三者同时为真）。所以 [`detect`] 按**目录名或文件名**
 //! 认领，内容特征只作为最后的兜底（归 opencode）。这也意味着用户把 `kilo.json` 的内容
 //! 拷到 `opencode.json` 里时，判出来的是 opencode——按路径认领的必然结果，且无害：

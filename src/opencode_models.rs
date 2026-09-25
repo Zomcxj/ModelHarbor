@@ -258,13 +258,43 @@ fn is_zero_cost(model: &Value) -> bool {
     zero("input") && zero("output")
 }
 
-/// 从 models.dev 的 `api.json` 全文里筛出指定厂商的免费模型。
-pub fn parse_models_dev_free(text: &str, provider: &str) -> Result<Vec<FreeModel>, String> {
-    let root: Value = serde_json::from_str(text).map_err(|err| {
-        // 只带错误与开头片段：正文 4.8 MB，不能整个塞进提示里。
+/// 解析响应 JSON，失败时给出**带开头片段**的错误。
+///
+/// 片段只取 120 个字符：models.dev 的正文约 4.8 MB，整个塞进提示里既没人看也拖慢界面。
+/// 三个解析器（models.dev / 网关 `/models` / Kilo 网关）共用这一段——错误文案必须一致，
+/// 否则同一个网络故障在不同后端下会显示成不同的话。
+fn parse_json(text: &str) -> Result<Value, String> {
+    serde_json::from_str(text).map_err(|err| {
         let snippet = text.chars().take(120).collect::<String>();
         format!("响应不是合法 JSON（{}）：{}", err, snippet)
-    })?;
+    })
+}
+
+/// 取响应里的 `data` 数组（OpenAI 风格的 `/models` 响应）。
+fn data_items(root: &Value) -> Result<&Vec<Value>, String> {
+    root.get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "响应里没有 data 数组".to_string())
+}
+
+/// 从 `data[].id` 收集模型 id，排序去重。
+fn ids_from_data(items: &[Value], keep: impl Fn(&Value) -> bool) -> Vec<String> {
+    let mut ids: Vec<String> = items
+        .iter()
+        .filter(|item| keep(item))
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// 从 models.dev 的 `api.json` 全文里筛出指定厂商的免费模型。
+pub fn parse_models_dev_free(text: &str, provider: &str) -> Result<Vec<FreeModel>, String> {
+    let root = parse_json(text)?;
     let provider = root
         .get(provider)
         .ok_or_else(|| format!("数据里没有 {} 厂商", provider))?;
@@ -287,24 +317,8 @@ pub fn parse_models_dev_free(text: &str, provider: &str) -> Result<Vec<FreeModel
 
 /// 解析 OpenAI 风格 `/models` 响应里的 id（`data[].id`）。
 pub fn parse_live_models(text: &str) -> Result<Vec<String>, String> {
-    let root: Value = serde_json::from_str(text).map_err(|err| {
-        let snippet = text.chars().take(120).collect::<String>();
-        format!("响应不是合法 JSON（{}）：{}", err, snippet)
-    })?;
-    let items = root
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "响应里没有 data 数组".to_string())?;
-    let mut ids: Vec<String> = items
-        .iter()
-        .filter_map(|item| item.get("id").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .collect();
-    ids.sort();
-    ids.dedup();
-    Ok(ids)
+    let root = parse_json(text)?;
+    Ok(ids_from_data(data_items(&root)?, |_| true))
 }
 
 /// 解析 Kilo 网关响应里 `isFree == true` 的模型 id。
@@ -313,25 +327,10 @@ pub fn parse_live_models(text: &str) -> Result<Vec<String>, String> {
 /// `kilo-auto/free` 与 `openrouter/free` 两个免费项并不带 `:free` 后缀，
 /// 按后缀筛会漏掉它们。
 pub fn parse_kilo_free(text: &str) -> Result<Vec<String>, String> {
-    let root: Value = serde_json::from_str(text).map_err(|err| {
-        let snippet = text.chars().take(120).collect::<String>();
-        format!("响应不是合法 JSON（{}）：{}", err, snippet)
-    })?;
-    let items = root
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "响应里没有 data 数组".to_string())?;
-    let mut ids: Vec<String> = items
-        .iter()
-        .filter(|item| item.get("isFree").and_then(Value::as_bool) == Some(true))
-        .filter_map(|item| item.get("id").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .collect();
-    ids.sort();
-    ids.dedup();
-    Ok(ids)
+    let root = parse_json(text)?;
+    Ok(ids_from_data(data_items(&root)?, |item| {
+        item.get("isFree").and_then(Value::as_bool) == Some(true)
+    }))
 }
 
 /// 合并两个数据源：`live` 为 `Some` 时取交集（免费且网关在供）；

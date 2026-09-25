@@ -508,7 +508,7 @@ impl App {
         }
     }
 
-    /// 当前配置文件身份。四个页面共享同一份加载数据，故只按路径分区，不按页面分区。
+    /// 当前配置文件身份。各页面共享同一份加载数据，故只按路径分区，不按页面分区。
     fn config_id(&self) -> String {
         let path = if self.loaded_path.trim().is_empty() {
             &self.config_path

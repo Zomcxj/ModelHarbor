@@ -344,17 +344,15 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
     }
 
     if let Some(m) = model {
-        if !m.context.trim().is_empty() {
-            obj.insert(
-                "maxInputTokens".into(),
-                Value::Number(m.context.trim().parse::<i64>().unwrap_or(0).into()),
-            );
+        // 只写能解析成整数的值；解析不了就不写这个键（`obj` 是新构造的，不写即缺席）。
+        // 与界面「无效数字：保存时该字段将被忽略」和保存状态栏的「已忽略 N 个无效
+        // 数字字段」同一口径——曾经写成 `unwrap_or(0)`，用户输错一个字就把
+        // `maxInputTokens: 0` 落盘，WorkBuddy 里那个模型的输入上限直接归零。
+        if let Ok(context) = m.context.trim().parse::<i64>() {
+            obj.insert("maxInputTokens".into(), Value::Number(context.into()));
         }
-        if !m.output.trim().is_empty() {
-            obj.insert(
-                "maxOutputTokens".into(),
-                Value::Number(m.output.trim().parse::<i64>().unwrap_or(0).into()),
-            );
+        if let Ok(output) = m.output.trim().parse::<i64>() {
+            obj.insert("maxOutputTokens".into(), Value::Number(output.into()));
         }
         // 模态 / 能力：只在原条目已写该键时同步，不凭空声明——
         // 补一个 `supportsReasoning: false` 会把「未声明」变成「明确不支持」。

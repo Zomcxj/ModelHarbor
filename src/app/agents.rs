@@ -144,6 +144,84 @@ fn current_free_status(
     }
 }
 
+/// agent 下拉所需的只读来源。
+///
+/// 打包成一个结构而不是逐个传参：`model` 下拉要同时用到页面、provider 列表与免费模型
+/// 状态，摊开就是 5 个以上参数。写成 `&self` 方法也不行——调用处 `self.agents[idx]`
+/// 已被可变借用，只能按字段拆分。
+struct AgentComboCtx<'a> {
+    page: ConfigFormat,
+    providers: &'a [ProviderRow],
+    free_models: &'a HashMap<ConfigFormat, FreeModelsState>,
+}
+
+impl AgentComboCtx<'_> {
+    /// `model` 下拉，附带免费模型的提示与「刷新」按钮。
+    ///
+    /// 返回 `(新的 model 值, 是否点了刷新)`。编辑表单与新增表单只有 id salt 不同，
+    /// 渲染逻辑完全一样，所以抽成一个函数而不是抄两遍——两处抄写已经开始漂移
+    /// （一处多了个用不上的绑定）。
+    fn model_combo(&self, ui: &mut egui::Ui, salt: String, current: &str) -> (String, bool) {
+        let (free_prefix, free_list) = current_free_models(self.page, self.free_models);
+        let gateway = current_gateway_options(self.page, self.free_models);
+        let options = model_options(self.providers, &gateway, current);
+        let mut selected = options.iter().position(|m| m == current);
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(if current.is_empty() {
+                "选择模型..."
+            } else {
+                current
+            })
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                for (i, model) in options.iter().enumerate() {
+                    if ui
+                        .selectable_label(selected == Some(i), model.as_str())
+                        .clicked()
+                    {
+                        selected = Some(i);
+                    }
+                }
+            });
+        // 只对确实有免费层的后端显示提示与刷新按钮（mimocode 没有，不占位置）。
+        let mut refresh = false;
+        if free_prefix.is_some() {
+            let (fetching, error) = current_free_status(self.page, self.free_models);
+            refresh = model_options_hint(ui, self.page.label(), free_list.len(), error, fetching);
+        }
+        let picked = selected
+            .map(|i| options[i].clone())
+            .unwrap_or_else(|| current.to_string());
+        (picked, refresh)
+    }
+}
+
+/// `variant` 下拉。空值在菜单里显示为「(空)」。
+///
+/// 与 [`AgentComboCtx::model_combo`] 同理：两个表单共用一套渲染，只差 id salt。
+fn agent_variant_combo(ui: &mut egui::Ui, salt: String, current: &str) -> String {
+    let options = ["", "low", "medium", "high", "xhigh", "max", "ultra"];
+    let mut selected = options.iter().position(|v| *v == current);
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(if current.is_empty() {
+            "选择..."
+        } else {
+            current
+        })
+        .width(100.0)
+        .show_ui(ui, |ui| {
+            for (i, v) in options.iter().enumerate() {
+                let label = if v.is_empty() { "(空)" } else { v };
+                if ui.selectable_label(selected == Some(i), label).clicked() {
+                    selected = Some(i);
+                }
+            }
+        });
+    selected
+        .map(|i| options[i].to_string())
+        .unwrap_or_else(|| current.to_string())
+}
+
 impl App {
     /// Agents 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
     pub(super) fn ui_agents_section(&mut self, ui: &mut egui::Ui) {
@@ -336,62 +414,18 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             field_label(ui, 120.0, "model");
             let current = a.model.clone();
-            let (free_prefix, free_list) =
-                current_free_models(self.current_page, &self.free_models);
-            let gateway = current_gateway_options(self.current_page, &self.free_models);
-            let options = model_options(&self.providers, &gateway, &current);
-            let mut selected_idx = options.iter().position(|m| m == &current);
-            egui::ComboBox::from_id_salt(format!("agent_model_{}", a.key))
-                .selected_text(if current.is_empty() {
-                    "选择模型..."
-                } else {
-                    &current
-                })
-                .width(180.0)
-                .show_ui(ui, |ui| {
-                    for (i, model) in options.iter().enumerate() {
-                        let is_selected = selected_idx == Some(i);
-                        if ui.selectable_label(is_selected, model.as_str()).clicked() {
-                            selected_idx = Some(i);
-                        }
-                    }
-                });
-            if let Some(idx) = selected_idx {
-                a.model = options[idx].clone();
-            }
-            // 只对确实有免费层的后端显示提示与刷新按钮（mimocode 没有，不占位置）。
-            if free_prefix.is_some() {
-                let (fetching, error) = current_free_status(self.current_page, &self.free_models);
-                let backend = self.current_page.label();
-                if model_options_hint(ui, backend, free_list.len(), error, fetching) {
-                    refresh_free = true;
-                }
-            }
+            let ctx = AgentComboCtx {
+                page: self.current_page,
+                providers: &self.providers,
+                free_models: &self.free_models,
+            };
+            let (model, refresh) = ctx.model_combo(ui, format!("agent_model_{}", a.key), &current);
+            a.model = model;
+            refresh_free |= refresh;
             field_label(ui, 120.0, "variant");
-            let variant_options = ["", "low", "medium", "high", "xhigh", "max", "ultra"];
             let current_variant = a.variant.clone();
-            let mut selected_variant = variant_options
-                .iter()
-                .position(|v| *v == current_variant.as_str());
-            egui::ComboBox::from_id_salt(format!("agent_variant_{}", a.key))
-                .selected_text(if current_variant.is_empty() {
-                    "选择..."
-                } else {
-                    &current_variant
-                })
-                .width(100.0)
-                .show_ui(ui, |ui| {
-                    for (i, v) in variant_options.iter().enumerate() {
-                        let label = if v.is_empty() { "(空)" } else { v };
-                        let is_selected = selected_variant == Some(i);
-                        if ui.selectable_label(is_selected, label).clicked() {
-                            selected_variant = Some(i);
-                        }
-                    }
-                });
-            if let Some(idx) = selected_variant {
-                a.variant = variant_options[idx].to_string();
-            }
+            a.variant =
+                agent_variant_combo(ui, format!("agent_variant_{}", a.key), &current_variant);
         });
         ui.horizontal_wrapped(|ui| {
             field_label(ui, 120.0, "temperature");
@@ -436,62 +470,19 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 field_label(ui, 120.0, "model");
                 let current = self.new_agent.model.clone();
-                let (free_prefix, free_list) =
-                    current_free_models(self.current_page, &self.free_models);
-                let gateway = current_gateway_options(self.current_page, &self.free_models);
-                let options = model_options(&self.providers, &gateway, &current);
-                let mut selected_idx = options.iter().position(|m| m == &current);
-                let _response = egui::ComboBox::from_id_salt("new_agent_model")
-                    .selected_text(if current.is_empty() {
-                        "选择模型..."
-                    } else {
-                        &current
-                    })
-                    .width(180.0)
-                    .show_ui(ui, |ui| {
-                        for (i, model) in options.iter().enumerate() {
-                            let is_selected = selected_idx == Some(i);
-                            if ui.selectable_label(is_selected, model.as_str()).clicked() {
-                                selected_idx = Some(i);
-                            }
-                        }
-                    });
-                if let Some(idx) = selected_idx {
-                    self.new_agent.model = options[idx].clone();
-                }
-                // 只对确实有免费层的后端显示提示与刷新按钮（mimocode 没有，不占位置）。
-                if free_prefix.is_some() {
-                    let (fetching, error) =
-                        current_free_status(self.current_page, &self.free_models);
-                    let backend = self.current_page.label();
-                    if model_options_hint(ui, backend, free_list.len(), error, fetching) {
-                        self.start_free_models_fetch(self.current_page);
-                    }
-                }
+                let ctx = AgentComboCtx {
+                    page: self.current_page,
+                    providers: &self.providers,
+                    free_models: &self.free_models,
+                };
+                let (model, refresh) = ctx.model_combo(ui, "new_agent_model".to_string(), &current);
+                self.new_agent.model = model;
                 field_label(ui, 120.0, "variant");
-                let variant_options = ["", "low", "medium", "high", "xhigh", "max", "ultra"];
                 let current_variant = self.new_agent.variant.clone();
-                let mut selected_variant = variant_options
-                    .iter()
-                    .position(|v| *v == current_variant.as_str());
-                egui::ComboBox::from_id_salt("new_agent_variant")
-                    .selected_text(if current_variant.is_empty() {
-                        "选择..."
-                    } else {
-                        &current_variant
-                    })
-                    .width(100.0)
-                    .show_ui(ui, |ui| {
-                        for (i, v) in variant_options.iter().enumerate() {
-                            let label = if v.is_empty() { "(空)" } else { v };
-                            let is_selected = selected_variant == Some(i);
-                            if ui.selectable_label(is_selected, label).clicked() {
-                                selected_variant = Some(i);
-                            }
-                        }
-                    });
-                if let Some(idx) = selected_variant {
-                    self.new_agent.variant = variant_options[idx].to_string();
+                self.new_agent.variant =
+                    agent_variant_combo(ui, "new_agent_variant".to_string(), &current_variant);
+                if refresh {
+                    self.start_free_models_fetch(self.current_page);
                 }
             });
             ui.horizontal_wrapped(|ui| {

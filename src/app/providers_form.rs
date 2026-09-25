@@ -117,8 +117,9 @@ pub(super) fn provider_api_combo(
             api.to_string()
         }
     };
-    // 「(空)」= 未指定协议。四页共用同一份数据，故以 npm / pi_api / raw.api
-    // 是否都为空判定，显示值统一走 effective_api()，与写盘、延迟测试同口径。
+    // 「(空)」= 未指定协议。协议在 opencode 系 / pi / omp / DSH 之间共用一份数据，
+    // 故以 npm / pi_api / raw.api 是否都为空判定，显示值统一走 effective_api()，
+    // 与写盘、延迟测试同口径。
     let explicit = p.has_explicit_api();
     let current = p.effective_api();
     field_label(ui, 120.0, "api");

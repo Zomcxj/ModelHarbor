@@ -187,7 +187,7 @@ pub struct Prefs {
     pub theme: String,
     /// 是否同步写入 WSL 侧路径。
     pub sync_wsl: bool,
-    /// 四个后端各自的配置路径覆盖（用户手动指定过才非空）。
+    /// 各后端自己的配置路径覆盖（用户手动指定过才非空）。
     pub config_paths: ConfigPathPrefs,
     /// 已折叠的卡片（`配置身份/类别/名字`；不在表里的即展开）。
     /// v2 的 `类别/名字` 旧键会在首次成功加载配置后迁入当前配置身份。

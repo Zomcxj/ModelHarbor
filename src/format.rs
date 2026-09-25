@@ -33,12 +33,15 @@ impl ConfigFormat {
     /// 是否属于 **opencode 系**：opencode / kilocode / mimocode。
     ///
     /// 三者是同一份代码的后代（Kilo Code 与 MiMo Code 都是 opencode 的 fork），配置
-    /// schema **逐字相同**：顶层 `provider` map + `agent` map，provider 用
+    /// schema 的**字段与结构一致**：顶层 `provider` map + `agent` map，provider 用
     /// `options.baseURL` / `options.apiKey`，模型用 `models.<id>.limit.context|output`
     /// / `tool_call` / `reasoning`。差别只有**配置目录名、主配置文件名、图标**。
     ///
+    /// 注意「字段相同」不等于「required 相同」：mimocode 额外要求 `modalities` 成对
+    /// （见 `backends::opencode::complete_required_model_fields`），写盘时要按目标方言补齐。
+    ///
     /// 所以解析、序列化、字段可见性、agents 支持全部共用一套实现；也正因为内容形状
-    /// 完全一致，**判别只能靠路径**（目录名或文件名），不能靠内容特征。
+    /// 一致，**判别只能靠路径**（目录名或文件名），不能靠内容特征。
     pub fn is_opencode_family(&self) -> bool {
         matches!(
             self,
