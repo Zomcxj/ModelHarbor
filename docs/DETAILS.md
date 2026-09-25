@@ -360,7 +360,9 @@ llm-pi-ai:
 
 ## 注意事项
 
+- **「启用」开关只属于 WorkBuddy 一页**，由 `ConfigFormat::has_model_enable()` 判定。不能改用 `page_has_model_field("disabled")`：那个函数在「已加载的文件格式 ≠ 当前页」时一律返回 true（为的是让切过去的新页面能填所有字段），会把开关漏到每一页——加载 `opencode.json` 时除了 opencode 自己那页全都长出了开关，就是这个原因。
 - WorkBuddy 的模型行有一个**启用开关**（滑动开关，写 `disabled` 字段）：WorkBuddy 的选择器按裸 model id **全局去重**，同一 id 只有第一条生效，所以界面上的开关是**全局互斥**的——打开一个，同名的其他条目自动关闭。只有开启的会写进 `models.json`；关闭**不删配置**，条目仍保存在同目录的 `models.full.json`，开回来即恢复。开关用滑动控件而不是勾选框：在密集的模型卡片里勾选框容易被当成装饰，轨道的填充色与滑块位置让状态一眼可辨。点击时滑块**滑动到位**（`motion::TOGGLE_TIME` = 0.14s，轨道填充色与滑块位置同步插值），比悬停过渡略长——滑块要看得见在移动，太快就退化成瞬切。动画状态挂在一个**调用方给出的稳定 id** 上（`("model_enable", model_key)`），不能用 egui 的自动 id：同一行里延迟标签是条件渲染的，自动 id 会随它出现而漂移，动画就串到别的行去了。egui 的 `animate_bool` 对未登记的 id 首帧直接返回终值，所以页面刚打开时开关不会从左边滑进来——只有点击造成的状态变化才走动画
+- ZCode 的模型级 `config.enabled`（与 `properties` 平级）是 **ZCode 自己的模型开关**，ModelHarbor 不接管：加载时忽略它、保存时**原值保留**，只在原文件没写该键时补 `true`。曾经无条件写 `true`，会把用户在 ZCode 里关掉的模型重新打开。
 - `baseURL` 末尾 `/v1` 的归一化按目标 agent 的客户端行为决定，**读入与写出都做**：pi / omp / DSH 的 `anthropic-messages` **去掉**末尾 `/v1`（这三家客户端自己拼 `/v1/messages`，base 里再带会请求成 `/v1/v1/messages`）；opencode 的 `@ai-sdk/anthropic` 相反，baseURL **必须带** `/v1`（客户端只追加 `/messages`）。其他 api 一律不动
 - provider / model 只保存各自支持的字段，方言字段不会互相泄漏
 - omp 的 `apiKey` 为「环境变量名或字面量」语义；推理档位保存为官方 `thinking` 块

@@ -2028,6 +2028,52 @@ mod real_file_grouping {
     }
 }
 
+/// 用真实配置文件确认「启用」开关只在 WorkBuddy 页出现。
+///
+/// 这是用户报的场景：加载 `opencode.json` 后，除 opencode 外的每一页都冒出了开关。
+#[cfg(test)]
+mod real_config_enable_visibility {
+    use crate::app::providers::ProviderFormFlags;
+    use crate::app::App;
+    use crate::format::ConfigFormat;
+    use std::path::PathBuf;
+
+    #[test]
+    fn only_the_workbuddy_page_offers_the_enable_toggle() {
+        let home = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default());
+        let opencode = home.join(".config/opencode/opencode.json");
+        if !opencode.exists() {
+            return; // 非用户机器（CI）跳过
+        }
+        // 先加载 opencode 的文件——正是触发旧 bug 的形态（source ≠ 当前页）。
+        let mut app = App {
+            config_path: opencode.display().to_string(),
+            ..App::default()
+        };
+        app.reload_for_page(ConfigFormat::Opencode, false);
+        assert_eq!(app.source_format, ConfigFormat::Opencode);
+
+        for page in [
+            ConfigFormat::Opencode,
+            ConfigFormat::Kilocode,
+            ConfigFormat::Mimocode,
+            ConfigFormat::Pi,
+            ConfigFormat::OhMyPi,
+            ConfigFormat::DeepSeekHarness,
+            ConfigFormat::ZCode,
+        ] {
+            app.current_page = page;
+            assert!(
+                !ProviderFormFlags::new(&app).show_model_disabled,
+                "{} 页不该有「启用」开关",
+                page.label()
+            );
+        }
+        app.current_page = ConfigFormat::WorkBuddy;
+        assert!(ProviderFormFlags::new(&app).show_model_disabled);
+    }
+}
+
 /// 拖动光标：任一拖动源（含页签/后端图标）都必须点亮自定义抓取光标。
 ///
 /// 背景：抓取态的判定此前漏了 `tab_drag_src`，于是拖卡片是抓取光标、拖后端图标
@@ -2614,5 +2660,94 @@ mod workbuddy_enable_normalization_tests {
         app.normalize_workbuddy_enable_flags();
         assert!(app.providers[0].models[0].disabled);
         assert!(!app.providers[1].models[0].disabled);
+    }
+}
+
+/// 「启用」开关只属于 WorkBuddy 一页。
+///
+/// 曾经的 bug：开关可见性取自 `page_has_model_field("disabled")`，而那个函数在
+/// 「已加载的文件格式 ≠ 当前页」时**一律返回 true**（为了让切到的新页面能填所有
+/// 字段）。用户加载的是 `opencode.json`，于是切到 pi / omp / DSH / ZCode 每一页都
+/// 冒出了「启用」开关——只有 opencode 自己那页（格式相同）没中招，正是用户报的
+/// 「除了 opencode 都加了」。
+#[cfg(test)]
+mod model_enable_visibility_tests {
+    use crate::app::providers::ProviderFormFlags;
+    use crate::app::App;
+    use crate::format::ConfigFormat;
+    use crate::model::{ModelRow, ProviderRow};
+
+    /// 造一个「文件来自 opencode、当前页是 `page`」的 App——正是会触发旧 bug 的形态。
+    fn app_loaded_from_opencode(page: ConfigFormat) -> App {
+        let mut model = ModelRow::new();
+        model.id = "m1".into();
+        model.source_format = Some(ConfigFormat::Opencode);
+        model.raw = serde_json::json!({ "name": "m1" });
+        let mut provider = ProviderRow::new();
+        provider.key = "p1".into();
+        provider.models = vec![model];
+        App {
+            providers: vec![provider],
+            source_format: ConfigFormat::Opencode,
+            current_page: page,
+            ..App::default()
+        }
+    }
+
+    #[test]
+    fn only_workbuddy_shows_the_enable_toggle() {
+        for page in [
+            ConfigFormat::Opencode,
+            ConfigFormat::Kilocode,
+            ConfigFormat::Mimocode,
+            ConfigFormat::Pi,
+            ConfigFormat::OhMyPi,
+            ConfigFormat::DeepSeekHarness,
+            ConfigFormat::ZCode,
+        ] {
+            let app = app_loaded_from_opencode(page);
+            assert!(
+                !ProviderFormFlags::new(&app).show_model_disabled,
+                "{} 页不该有「启用」开关",
+                page.label()
+            );
+        }
+        let app = app_loaded_from_opencode(ConfigFormat::WorkBuddy);
+        assert!(
+            ProviderFormFlags::new(&app).show_model_disabled,
+            "WorkBuddy 页必须有「启用」开关"
+        );
+    }
+
+    /// 即使加载的就是 WorkBuddy 自己的文件，其他页也不该跟着显示开关。
+    #[test]
+    fn a_workbuddy_file_does_not_leak_the_toggle_onto_other_pages() {
+        let mut app = app_loaded_from_opencode(ConfigFormat::ZCode);
+        app.source_format = ConfigFormat::WorkBuddy;
+        assert!(
+            !ProviderFormFlags::new(&app).show_model_disabled,
+            "文件来自 WorkBuddy，但当前页是 ZCode，不该显示开关"
+        );
+    }
+
+    /// 谓词本身：只有 WorkBuddy 为真。
+    #[test]
+    fn has_model_enable_is_workbuddy_only() {
+        for format in [
+            ConfigFormat::Opencode,
+            ConfigFormat::Kilocode,
+            ConfigFormat::Mimocode,
+            ConfigFormat::Pi,
+            ConfigFormat::OhMyPi,
+            ConfigFormat::DeepSeekHarness,
+            ConfigFormat::ZCode,
+        ] {
+            assert!(
+                !format.has_model_enable(),
+                "{} 不该有启用语义",
+                format.label()
+            );
+        }
+        assert!(ConfigFormat::WorkBuddy.has_model_enable());
     }
 }

@@ -588,3 +588,51 @@ fn nested_containers_keep_their_key_order() {
         .unwrap_or_default();
     assert_eq!(provider_keys, vec!["providerRules"]);
 }
+
+/// `config.enabled` 是 ZCode 自己的模型开关，ModelHarbor **不接管**它。
+///
+/// 曾经的 bug：序列化时无条件写 `enabled: true`，于是用户在 ZCode 界面里关掉的模型，
+/// 只要用 ModelHarbor 存一次就被重新打开。现在只补缺失的键，已有值原样保留。
+#[test]
+fn a_model_disabled_in_zcode_stays_disabled() {
+    let src = r#"{
+      "schemaVersion": 1,
+      "config": {
+        "providerOrder": ["p1"],
+        "providerConfigRules": { "providerRules": [ {
+            "providerId": "p1", "providerName": "p1",
+            "config": {
+              "group": "standard-personal",
+              "access": { "type": "api-key", "apiKey": "sk-test" },
+              "api": { "type": "openai-chat-completions", "baseUrl": "https://h/v1" },
+              "personalModelIds": ["off", "on", "unset"],
+              "modelOrder": ["off", "on", "unset"] } } ]},
+        "modelConfigRules": {
+          "providerModelRules": [
+            { "modelId": "off", "providerId": "p1",
+              "config": { "enabled": false, "properties": { "contextWindow": 1000 } } },
+            { "modelId": "on", "providerId": "p1",
+              "config": { "enabled": true, "properties": { "contextWindow": 2000 } } },
+            { "modelId": "unset", "providerId": "p1",
+              "config": { "properties": { "contextWindow": 3000 } } } ],
+          "manualProviderModelRules": [] } } }"#;
+    let load = load_zcode(src);
+    let b = backends::backend(ConfigFormat::ZCode);
+    let root = b.serialize_root(&[], &load.providers, &load.extras, None);
+    let rules = root["config"]["modelConfigRules"]["providerModelRules"]
+        .as_array()
+        .expect("providerModelRules 应为数组");
+    let enabled_of = |id: &str| -> Option<bool> {
+        rules
+            .iter()
+            .find(|r| r["modelId"] == json!(id))
+            .and_then(|r| r["config"]["enabled"].as_bool())
+    };
+    assert_eq!(
+        enabled_of("off"),
+        Some(false),
+        "ZCode 里关掉的模型不能被重新打开"
+    );
+    assert_eq!(enabled_of("on"), Some(true), "ZCode 里开着的模型保持开着");
+    assert_eq!(enabled_of("unset"), Some(true), "原文件没写该键时才补 true");
+}

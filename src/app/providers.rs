@@ -46,7 +46,8 @@ pub(super) struct ProviderFormFlags {
     pub(super) show_model_reasoning: bool,
     pub(super) show_model_tool_call: bool,
     pub(super) show_model_store: bool,
-    /// WorkBuddy 专属：每个模型行显示「启用/停用」开关（写 `disabled`）。
+    /// 每个模型行显示「启用/停用」开关。只有 WorkBuddy 一家（写 `disabled`），见
+    /// [`ConfigFormat::has_model_enable`]。
     pub(super) show_model_disabled: bool,
     pub(super) base_label: &'static str,
     pub(super) api_key_label: &'static str,
@@ -80,7 +81,10 @@ impl ProviderFormFlags {
             show_model_reasoning: app.page_has_model_field("reasoning"),
             show_model_tool_call: app.page_has_model_field("tool_call"),
             show_model_store: app.page_has_model_field("store"),
-            show_model_disabled: app.page_has_model_field("disabled"),
+            // 开关的存在性由**后端语义**决定，不看文件里有没有这个键——它的用途正是把
+            // 「没有」变成「有」。也不能用 `page_has_model_field`：那个函数在「已加载的
+            // 文件格式 ≠ 当前页」时一律返回 true，会把开关漏到每一页（曾经就是这样）。
+            show_model_disabled: app.current_page.has_model_enable(),
             base_label: if show_oc {
                 "options.baseURL"
             } else if show_dsh {

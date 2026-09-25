@@ -45,6 +45,19 @@ impl ConfigFormat {
             ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode
         )
     }
+
+    /// 该后端是否有**模型级启用开关**——目前只有 WorkBuddy 一家。
+    ///
+    /// WorkBuddy 的模型写 `disabled`，且它的选择器按裸 id **全局去重**：同一个模型名
+    /// 只能有一条生效，所以「关掉其余同名条目」是它独有的语义，界面必须能表达。
+    /// 其余七家的模型 schema 里没有这个字段（ZCode 的 `config.enabled` 由它自己的
+    /// 界面维护，ModelHarbor 只负责原样保留，不接管），凭空加一个只会被当成未知键。
+    ///
+    /// 不能改用 `page_has_model_field("disabled")` 判定：那个函数在「已加载的文件格式
+    /// 与当前页不同」时一律返回 true（为了让新页面能填所有字段），会把开关漏到每一页。
+    pub fn has_model_enable(&self) -> bool {
+        matches!(self, ConfigFormat::WorkBuddy)
+    }
 }
 
 /// 各后端的解析后路径容器（含用户可覆盖的本地路径）。

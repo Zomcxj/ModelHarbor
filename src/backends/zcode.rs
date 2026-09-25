@@ -263,8 +263,12 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         m.raw.as_object().cloned().unwrap_or_default()
     };
 
-    // enabled 与 properties 平级。
-    obj.insert("enabled".into(), Value::Bool(true));
+    // enabled 与 properties 平级。ModelHarbor 不接管这个开关（ZCode 自己的模型界面
+    // 维护它），所以**原值保留**：只在原文件没写该键时补 true。曾经无条件写 true，
+    // 会把用户在 ZCode 里关掉的模型重新打开。
+    if obj.get("enabled").and_then(Value::as_bool).is_none() {
+        obj.insert("enabled".into(), Value::Bool(true));
+    }
 
     let mut props = obj
         .get("properties")
