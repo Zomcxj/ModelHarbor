@@ -2349,11 +2349,40 @@ mod tab_highlight_tests {
         tab_shapes_at_with(app, Some(end), Some(start)).2
     }
 
+    /// 让全部后端都算「已安装」，页签顺序才与跑测试这台机器无关。
+    ///
+    /// 槽位由 `ConfigPaths::validate_target`（配置文件**是否真实存在**）决定：
+    /// 已安装的排在前面、顺序取 `tab_order`，未安装的按名字排在后面。在开发机上
+    /// 恰好装了那几个后端，写死的槽位下标（第 3 个是 ZCode）就对得上；CI 是干净机器、
+    /// 一个都没装，顺序退化成全字母序，下标全部错位，整批测试在 CI 上挂掉而本地一直绿。
+    /// 所以这里给每个后端在临时目录里造一份真实存在的配置文件，把顺序钉死：
+    /// 全部「已安装」后，顺序只由 `TAB_ORDER` 决定，未列进去的两家按字母序补在其后。
+    fn install_every_backend(app: &mut App) {
+        // 全进程共用一份：路径只要存在即可，各测试各建一份只会往临时目录里堆垃圾。
+        static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        let root = DIR.get_or_init(|| {
+            let root =
+                std::env::temp_dir().join(format!("model-harbor-tabs-{}", std::process::id()));
+            std::fs::create_dir_all(&root).expect("建临时配置目录");
+            root
+        });
+        for backend in crate::backends::BACKENDS {
+            let id = backend.id();
+            let file = root.join(format!("{}.json", id.label()));
+            if !file.exists() {
+                std::fs::write(&file, "{}").expect("写临时配置");
+            }
+            app.config_paths.set_local_path(id, &file.to_string_lossy());
+        }
+    }
+
     fn app_with_tabs() -> App {
-        App {
+        let mut app = App {
             tab_order: TAB_ORDER.iter().map(|s| (*s).to_string()).collect(),
             ..Default::default()
-        }
+        };
+        install_every_backend(&mut app);
+        app
     }
 
     /// 选中页签的底色 = 悬浮色（`widgets.hovered.bg_fill`），不是另起一套颜色。
