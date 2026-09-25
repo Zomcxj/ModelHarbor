@@ -2,6 +2,19 @@
 
 use serde_json::{Map, Value};
 
+/// 把攒下的合并组拼成一行：组内每项去掉子缩进，用「, 」连接。
+fn joined_group(current: &[String], child_indent: &str) -> String {
+    let first = &current[0];
+    let rest: Vec<&str> = current[1..]
+        .iter()
+        .map(|f| f.strip_prefix(child_indent).unwrap_or(f.as_str()))
+        .collect();
+    let mut parts: Vec<&str> = Vec::with_capacity(1 + rest.len());
+    parts.push(first);
+    parts.extend(rest.iter());
+    parts.join(", ")
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum CompactRole {
     Normal,
@@ -74,18 +87,7 @@ pub(super) fn serialize_pretty(
         }
 
         if !current.is_empty() {
-            let first = &current[0];
-            let rest: Vec<&str> = current[1..]
-                .iter()
-                .map(|f| f.strip_prefix(&child_indent).unwrap_or(f.as_str()))
-                .collect();
-            let mut parts: Vec<&str> = Vec::new();
-            parts.push(first);
-            for r in &rest {
-                parts.push(r);
-            }
-            let line = parts.join(", ");
-            lines.push(format!("{},", line));
+            lines.push(format!("{},", joined_group(&current, &child_indent)));
             current.clear();
         }
 
@@ -112,17 +114,7 @@ pub(super) fn serialize_pretty(
         }
     }
     if !current.is_empty() {
-        let first = &current[0];
-        let rest: Vec<&str> = current[1..]
-            .iter()
-            .map(|f| f.strip_prefix(&child_indent).unwrap_or(f.as_str()))
-            .collect();
-        let mut parts: Vec<&str> = Vec::new();
-        parts.push(first);
-        for r in &rest {
-            parts.push(r);
-        }
-        lines.push(parts.join(", "));
+        lines.push(joined_group(&current, &child_indent));
     }
     lines.push(format!("{}}}", indent));
     lines.join("\n")
