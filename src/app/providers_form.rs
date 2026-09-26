@@ -519,6 +519,83 @@ struct VariantsCtx<'a> {
     normalize: bool,
 }
 
+/// 上下文（输入）的常用预设值，单位为 **k（1000）**——与仓库里既有的写法一致
+/// （`ModelRow::new()` 的 `272000` 就是 272k）。
+///
+/// 取 `1000` 而不是 `1024`：厂商文档与网关界面普遍按 1000 报数（「上下文 128k」），
+/// 而这些字段是**发给上游的声明**，少声明一点是安全的，多声明会被上游直接拒绝。
+/// 所以 `1024k` 落到 `1024000` 而不是 `1048576`。
+const CONTEXT_PRESETS: [u32; 7] = [128, 200, 256, 272, 300, 500, 1024];
+
+/// 最大输出（output）的常用预设值，单位同上。
+const OUTPUT_PRESETS: [u32; 4] = [32, 64, 128, 256];
+
+/// 预设值的显示文本（`128k`）与实际写入配置的数字（`128000`）。
+///
+/// 两者**分开**给出：界面写「128k」是因为它一眼能读懂，而配置里必须是整数——
+/// 上游不认 `128k` 这种写法。
+fn preset_label(k: u32) -> String {
+    format!("{}k", k)
+}
+
+fn preset_value(k: u32) -> String {
+    (k as u64 * 1000).to_string()
+}
+
+/// 当前值在预设表里的下标；不在表里（手填的任意数字、空、非法）返回 `None`。
+///
+/// 抽成独立函数是为了能单测：它决定下拉收起时显示哪个标签，而「手填的值被误显示成
+/// 某个预设」会让用户以为自己选过——这种错只在界面上看得出来，测试里看不见。
+fn preset_index(value: &str, presets: &[u32]) -> Option<usize> {
+    presets
+        .iter()
+        .position(|k| preset_value(*k) == value.trim())
+}
+
+/// 数值字段右侧的预设下拉：选一项就把该值填进字段。
+///
+/// 用下拉而不是按钮组：上下文有 7 个预设，平铺会把整行挤爆（这一行本来就有
+/// id / name / 三个勾选框），而下拉在收起时只占一个控件的宽度。
+///
+/// 只**填值**、不锁定：填完仍可继续手动编辑。选中项按当前值反查，所以手填的
+/// 非预设值不会误显示成某个预设（下拉显示 `选择...`）。
+fn preset_combo(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    presets: &[u32],
+    id_salt: &str,
+    tooltip: &str,
+) {
+    // 当前值恰好等于某个预设时，把下拉显示成那一项；否则显示占位文案。
+    let selected = preset_index(value, presets);
+    let text = match selected {
+        Some(i) => preset_label(presets[i]),
+        None => "选择...".to_string(),
+    };
+    // 只有真正点了某一项才写回：初值是 `None` 而不是 `selected`，
+    // 否则「打开下拉又点空白处关掉」也会走一次赋值（虽然写的是同一个数，
+    // 但会把 `" 272000 "` 这类带空白的值静默改写，属于用户没要求的改动）。
+    let mut picked: Option<usize> = None;
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(text)
+        .width(72.0)
+        .show_ui(ui, |ui| {
+            for (i, k) in presets.iter().enumerate() {
+                if ui
+                    .selectable_label(selected == Some(i), preset_label(*k))
+                    .clicked()
+                {
+                    picked = Some(i);
+                }
+            }
+        })
+        .response
+        .on_hover_text(tooltip);
+    if let Some(i) = picked {
+        *value = preset_value(presets[i]);
+    }
+}
+
 /// 模型字段编辑行之一：id / name / reasoning / tool_call / store / context / output。
 ///
 /// `relaxed` = 新增表单语境：`ProviderFormFlags` 里**内容型**开关（文件里出现过该键
@@ -527,12 +604,16 @@ struct VariantsCtx<'a> {
 ///
 /// `dup` 给出模型 id 的重复判定集合（编辑表单）：命中时在 id 字段旁画 ⚠ 提示——
 /// 只有编辑表单有这步，新增表单传 None。
+///
+/// `salt` 区分同一页里的多个表单实例（编辑表单用 provider key，新增表单用固定串）：
+/// 下拉的展开状态按 `Id` 记在 egui 里，两处共用同一个 id 会互相串开合状态。
 fn model_core_fields_row(
     ui: &mut egui::Ui,
     m: &mut ModelRow,
     flags: &ProviderFormFlags,
     relaxed: bool,
     dup: Option<(&HashSet<String>, &HashSet<String>)>,
+    salt: &str,
 ) {
     let on = |flag: bool| relaxed || flag;
     ui.horizontal_wrapped(|ui| {
@@ -581,10 +662,24 @@ fn model_core_fields_row(
         if on(flags.show_model_context) {
             field_label(ui, 120.0, flags.context_label);
             numeric_text_edit(ui, &mut m.context, 53.0, "");
+            preset_combo(
+                ui,
+                &mut m.context,
+                &CONTEXT_PRESETS,
+                &format!("ctx_preset_{}", salt),
+                "常用上下文预设值；选择即填入，之后仍可手动改。",
+            );
         }
         if on(flags.show_model_output) {
             field_label(ui, 120.0, flags.output_label);
             numeric_text_edit(ui, &mut m.output, 53.0, "");
+            preset_combo(
+                ui,
+                &mut m.output,
+                &OUTPUT_PRESETS,
+                &format!("out_preset_{}", salt),
+                "常用最大输出预设值；选择即填入，之后仍可手动改。",
+            );
         }
     });
 }
@@ -631,7 +726,9 @@ fn new_model_subform(
     variants: &mut VariantsCtx<'_>,
     show_key: &str,
 ) {
-    model_core_fields_row(ui, &mut p.new_model, flags, true, None);
+    // `show_key` 按构造就逐表单唯一（编辑表单带 provider key），正好当预设下拉的
+    // id 盐用——不必再单传一个参数。
+    model_core_fields_row(ui, &mut p.new_model, flags, true, None, show_key);
     model_modalities_row(ui, &mut p.new_model, flags, variants, true);
     ui.horizontal(|ui| {
         ui.add_space(crate::theme::SPACE_7);
@@ -822,12 +919,16 @@ impl App {
                             }
                         }
                     });
+                    // 用 `(provider key, 模型下标)` 当下拉 id 盐，而不是模型 id：
+                    // id 允许为空或重复（保存不拦），拿它做盐会让两行的下拉共用同一个
+                    // Id，展开一个另一个跟着开。
                     model_core_fields_row(
                         ui,
                         &mut p.models[j],
                         &flags,
                         false,
                         Some((&other_ids, &global_dup_ids)),
+                        &format!("{}#{}", p.key, j),
                     );
                     let mut variants = VariantsCtx {
                         label: variants_label,
@@ -1025,6 +1126,7 @@ impl App {
                             &flags,
                             true,
                             None,
+                            &format!("new_provider#{}", j),
                         );
                     },
                 );
@@ -1119,5 +1221,93 @@ impl App {
         self.model_fetch_open.remove(NEW_PROVIDER_FETCH_KEY);
         // 表单关掉后探测结果无处显示：释放它的串行位。
         self.probe.release(Some(NEW_PROVIDER_FETCH_KEY));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{preset_index, preset_label, preset_value, CONTEXT_PRESETS, OUTPUT_PRESETS};
+
+    /// 写入配置的必须是**纯数字**：上游不认 `128k` 这种写法，而 `numeric_text_edit`
+    /// 也会把它标红（非法数字 → 保存时字段被忽略，等于白填）。
+    #[test]
+    fn every_preset_writes_a_plain_integer() {
+        for k in CONTEXT_PRESETS.iter().chain(OUTPUT_PRESETS.iter()) {
+            let value = preset_value(*k);
+            assert!(
+                value.chars().all(|c| c.is_ascii_digit()),
+                "{} 的写入值不是纯数字：{}",
+                k,
+                value
+            );
+            assert!(
+                crate::util::parse_number_text(&value).is_some(),
+                "{} 的写入值过不了表单的数字校验：{}",
+                k,
+                value
+            );
+        }
+    }
+
+    /// 标签与写入值必须成对：`128k` ↔ `128000`。两者分开算，写错了界面会显示一个
+    /// 数字、填进去另一个，而用户只会看到自己选的「128k」。
+    #[test]
+    fn the_label_and_the_written_value_agree() {
+        assert_eq!(preset_label(128), "128k");
+        assert_eq!(preset_value(128), "128000");
+        assert_eq!(preset_label(1024), "1024k");
+        // 1024k 取 1000 进制（1024000）而不是 1048576：这些字段是发给上游的声明，
+        // 少声明是安全的、多声明会被直接拒绝。
+        assert_eq!(preset_value(1024), "1024000");
+    }
+
+    /// 预设表要覆盖用户点名的那几个值，且从小到大排好（下拉里的顺序就是它）。
+    #[test]
+    fn the_tables_hold_the_requested_values_in_order() {
+        assert_eq!(CONTEXT_PRESETS, [128, 200, 256, 272, 300, 500, 1024]);
+        assert_eq!(OUTPUT_PRESETS, [32, 64, 128, 256]);
+        for table in [&CONTEXT_PRESETS[..], &OUTPUT_PRESETS[..]] {
+            assert!(
+                table.windows(2).all(|w| w[0] < w[1]),
+                "预设必须严格递增：{:?}",
+                table
+            );
+        }
+    }
+
+    /// 仓库里的占位值 `272000` 应当正好命中一个预设，否则新模型的下拉会显示
+    /// 「选择...」而看不出自己其实已经是 272k。
+    #[test]
+    fn the_built_in_placeholder_matches_a_preset() {
+        let placeholder = crate::model::ModelRow::new().context;
+        assert_eq!(placeholder, preset_value(272));
+    }
+
+    /// 手填的非预设值不能被误认成某个预设——否则下拉会显示一个用户没选过的标签，
+    /// 让人以为自己选过。
+    #[test]
+    fn a_hand_typed_value_is_not_mistaken_for_a_preset() {
+        for value in ["", "  ", "1000", "100000", "999999", "abc", "128000000"] {
+            assert_eq!(
+                preset_index(value, &CONTEXT_PRESETS),
+                None,
+                "{} 不该命中任何预设",
+                value
+            );
+        }
+    }
+
+    /// 反查要能对上：每个预设值本身，以及两侧带空白的写法，都要认出来。
+    #[test]
+    fn the_current_value_is_recognised_after_a_round_trip() {
+        for (i, k) in CONTEXT_PRESETS.iter().enumerate() {
+            let value = preset_value(*k);
+            assert_eq!(preset_index(&value, &CONTEXT_PRESETS), Some(i));
+            assert_eq!(
+                preset_index(&format!("  {}  ", value), &CONTEXT_PRESETS),
+                Some(i),
+                "两侧空白不该影响识别"
+            );
+        }
     }
 }
