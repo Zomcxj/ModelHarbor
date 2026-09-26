@@ -273,22 +273,6 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 - DSH 的 `retryPolicy.mode` 缺省显示 `normal`
 - pi 的 `compat.requiresReasoningContentOnAssistantMessages` 与 omp 的 `compat.requiresReasoningContentForAllAssistantTurns` 相互映射；加载 opencode / DSH 或新建时默认不勾选
 
-### 上下文与输出的「官方」推荐
-
-模型行里上下文字段右侧有个「官方」按钮，点了就把该模型的官方上下文与输出上限填进表单。**默认不动你填的值**，只有点击才覆盖，且悬停会先告诉你要改成什么、依据是什么。
-
-数据来自 [models.dev](https://models.dev)（各家自己声明的 `limit.context` / `limit.output`），启动时拉一次、按天缓存到 `.modelharbor/official-limits.json`。
-
-同一个模型名常被几十家 provider 同时收录，而各家声明的上限**并不一致**（同一个 id 能出现七组不同取值），所以按可信度分级取用：
-
-| 判定依据 | 说明 |
-|---|---|
-| baseURL 精确匹配 | 你配的就是某家官方端点，这一家的声明最可信 |
-| 模型原厂条目 | 中转站的 baseURL 认不出来时，按模型名前缀找原厂（`claude-*` → anthropic） |
-| 全库一致 | 所有收录来源给出同一组上限，说明没有分歧 |
-
-三级都判不出来时按钮变灰，悬停说明是哪种情况：「目录里没有这个模型名」「各家取值互相矛盾」「没有给出上下文上限」——这三者的处置不同（前者改对 id，后者按厂商文档手填），所以提示分开写。数据源没有收录输出上限时只填上下文，**不会**把输出字段清空。
-
 ## 配置文件格式参考
 
 字段细节由界面表单呈现，这里只说明各格式的**结构形状**（加新后端时按同一张表扩展）。

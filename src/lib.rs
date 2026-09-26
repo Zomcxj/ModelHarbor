@@ -10,7 +10,6 @@ pub mod http_status;
 pub mod model;
 pub mod motion;
 pub mod netguard;
-pub mod official_limits;
 pub mod opencode_models;
 pub mod prefs;
 pub mod presets;
