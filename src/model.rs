@@ -506,6 +506,10 @@ pub struct ProviderRow {
     pub api_key_env: String,
     /// 加载时的 apiKeyEnv，用于清理重命名后的旧 ref。
     pub original_api_key_env: String,
+    /// Kimi 页凭据框的模式：`true` = 框里是 `api_key_env`（环境变量名），
+    /// `false` = 框里是 `api_key`（内联密钥）。两个键互斥，界面收敛成一个框 +
+    /// 这个开关；仅界面状态，不落盘。
+    pub kimi_env_mode: bool,
     /// DSH 同级 `.credentials.yaml` 中 refs 下的实际密钥。
     pub api_key_secret: String,
     /// 加载时的密钥，用于区分“原本缺失”与“用户明确清空”。
@@ -617,6 +621,7 @@ impl ProviderRow {
             raw: v.clone(),
             pi_api: String::new(),
             qwen_pid: String::new(),
+            kimi_env_mode: false,
         };
         // opencode 的 anthropic-messages 必须带 /v1：读入即补齐，界面显示与落盘一致。
         let api = row.effective_api();
@@ -694,6 +699,7 @@ impl ProviderRow {
             raw: Value::Object(Map::new()),
             pi_api: String::new(),
             qwen_pid: String::new(),
+            kimi_env_mode: false,
         }
     }
 

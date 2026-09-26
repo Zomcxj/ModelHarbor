@@ -116,7 +116,8 @@ impl ProviderFormFlags {
             } else if show_qwen {
                 "envKey"
             } else if show_kimi {
-                "api_key / api_key_env"
+                // 不再绘制：凭据框收敛成一个框，标签由「环境变量名」勾选框承担。
+                "api_key"
             } else {
                 "apiKey"
             },

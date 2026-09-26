@@ -550,6 +550,7 @@ pub fn provider_from_pi(key: &str, v: &Value) -> ProviderRow {
         raw: v.clone(),
         pi_api: api.to_string(),
         qwen_pid: String::new(),
+        kimi_env_mode: false,
     };
     r
 }

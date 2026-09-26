@@ -223,6 +223,7 @@ fn provider_from_dsh(key: &str, v: &Value, credentials_root: &Value) -> Provider
         raw: v.clone(),
         pi_api: api.to_string(),
         qwen_pid: String::new(),
+        kimi_env_mode: false,
     }
 }
 

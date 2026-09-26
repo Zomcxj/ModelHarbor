@@ -423,7 +423,10 @@ fn provider_header_fields(
         // 上面选的协议决定保存时补什么后缀，选非 chat/completions 就是自定义协议。
         // 曾经有个「自定义协议」勾选框，但它与协议选择表达同一件事，两个控件可以
         // 互相矛盾（勾了却选着 chat、或没勾却选了 messages），保存时还得强制对齐一次。
-        field_label(ui, 120.0, flags.api_key_label);
+        // Kimi 的凭据框收敛成了一个框 + 「环境变量名」勾选，勾选框就是它的标签。
+        if !flags.show_kimi {
+            field_label(ui, 120.0, flags.api_key_label);
+        }
         if flags.show_dsh {
             let env_edit = egui::TextEdit::singleline(&mut p.api_key_env).desired_width(192.0);
             let env_edit = if ctx.relaxed {
@@ -437,15 +440,24 @@ fn provider_header_fields(
             secret_text_edit(ui, &mut p.api_key_secret, ctx.show_api_keys, 408.0, hint);
         } else if flags.show_qwen {
             // QwenCode 的密钥存在顶层 `env[<envKey>]` 里：条目上写的是**变量名**，
-            // 实际值由本工具同步到 `env`。所以这里要两个框，与 DSH 同形。
-            let env_edit = egui::TextEdit::singleline(&mut p.api_key_env).desired_width(192.0);
-            let env_edit = if ctx.relaxed {
-                env_edit.hint_text("DASHSCOPE_API_KEY")
+            // 实际值由本工具同步到 `env`。这两个框不是两把钥匙——一个是名字、一个是
+            // 值，缺一不可（Qwen 的 schema 不让密钥内联在条目上）。变量名留空时按
+            // provider key 自动推导，框里给灰字提示，通常只需要填右边那一个。
+            let env_edit = if p.api_key_env.trim().is_empty() {
+                let derived = crate::credentials::default_env_name(&p.key);
+                let hint = if derived.is_empty() {
+                    "DASHSCOPE_API_KEY".to_string()
+                } else {
+                    format!("{derived}（留空自动）")
+                };
+                egui::TextEdit::singleline(&mut p.api_key_env)
+                    .desired_width(192.0)
+                    .hint_text(hint)
             } else {
-                env_edit
+                egui::TextEdit::singleline(&mut p.api_key_env).desired_width(192.0)
             };
             let _env_resp = ui.add(env_edit);
-            field_label(ui, 120.0, "env[envKey]");
+            field_label(ui, 120.0, "API Key");
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
             let key_edit = secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
             // 只填密钥、不填变量名时，`sync_env` 会因为「没有变量名」跳过，密钥被
@@ -458,28 +470,38 @@ fn provider_header_fields(
                 p.api_key_env = crate::credentials::default_env_name(&p.key);
             }
         } else if flags.show_kimi {
-            // KimiCode 的 `api_key` 与 `api_key_env` **互斥**：同时写会让 Kimi Code
-            // **启动失败**（源码把这种情况判成配置冲突并拒绝）。所以两个框都显示，
-            // 但填了一个就当场清掉另一个——不能等到保存时才发现。
-            //
-            // 判据是「非空」，与后端 `non_empty_str` 一致：清空一个框不算填了它。
-            field_label(ui, 120.0, "api_key");
-            let hint = if ctx.relaxed { "sk-xxx" } else { "" };
-            let key_edit = secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 200.0, hint);
-            field_label(ui, 120.0, "api_key_env");
-            let env_edit = egui::TextEdit::singleline(&mut p.api_key_env).desired_width(200.0);
-            let env_edit = if ctx.relaxed {
-                env_edit.hint_text("MY_API_KEY")
-            } else {
-                env_edit
-            };
-            let env_resp = ui.add(env_edit);
-            // 谁刚被改动，谁说了算：改密钥清 env 名，改 env 名清密钥。
-            if key_edit.changed() && !p.api_key.trim().is_empty() {
-                p.api_key_env.clear();
+            // KimiCode 的 `api_key`（内联密钥）与 `api_key_env`（环境变量名）**互斥**：
+            // 同时写两个会让 Kimi Code **启动失败**。两个框摆在一起永远有一个是空的，
+            // 用户还得猜哪个生效——收敛成一个框：勾上「环境变量名」，框里填的就是
+            // 变量名（不掩码，它不是密钥）；不勾就是内联密钥。切换时已敲的文本跟着
+            // 搬走，互斥由「只有一个框」从结构上保证，不再依赖现场清空。
+            let mut env_mode = p.kimi_env_mode;
+            if ui.checkbox(&mut env_mode, "环境变量名").changed() {
+                let text = if env_mode {
+                    std::mem::take(&mut p.api_key)
+                } else {
+                    std::mem::take(&mut p.api_key_env)
+                };
+                if env_mode {
+                    p.api_key_env = text;
+                    p.api_key.clear();
+                } else {
+                    p.api_key = text;
+                    p.api_key_env.clear();
+                }
+                p.kimi_env_mode = env_mode;
             }
-            if env_resp.changed() && !p.api_key_env.trim().is_empty() {
-                p.api_key.clear();
+            if p.kimi_env_mode {
+                let edit = egui::TextEdit::singleline(&mut p.api_key_env).desired_width(200.0);
+                let edit = if ctx.relaxed {
+                    edit.hint_text("MY_API_KEY")
+                } else {
+                    edit
+                };
+                ui.add(edit);
+            } else {
+                let hint = if ctx.relaxed { "sk-xxx" } else { "" };
+                secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 200.0, hint);
             }
         } else {
             let hint = if ctx.relaxed { "sk-xxx" } else { "" };

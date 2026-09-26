@@ -485,6 +485,8 @@ fn provider_from_entry(name: &str, provider: &Value, models: &[(String, Value)])
         .unwrap_or("")
         .to_string();
     row.original_api_key_env = row.api_key_env.clone();
+    // 凭据框的模式跟着文件走：带环境变量名的条目打开就是 env 模式。
+    row.kimi_env_mode = !row.api_key_env.trim().is_empty();
     // `type` 逐字进 pi_api：它既是界面下拉的当前值，也是写回时的原值。
     // 空 type 留给 `effective_api()` 回落，不在这里编造一个。
     row.pi_api = provider_type(provider).to_string();
