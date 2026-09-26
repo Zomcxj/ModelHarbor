@@ -10,6 +10,7 @@
 //! - 跨格式保存的合并语义内置于各后端的 `serialize_root`。
 
 pub mod deepseek_harness;
+pub mod kimi_code;
 pub mod oh_my_pi;
 pub mod opencode;
 pub mod pi;
@@ -153,6 +154,9 @@ pub static BACKENDS: &[&dyn Backend] = &[
     &zcode::BACKEND,
     &qwen_code::BACKEND,
     &deepseek_harness::BACKEND,
+    // kimi-code 靠 `[providers.` + `[models.` 双表与 `max_context_size` 特征判别，
+    // 必须排在 pi 系之前：pi 系的 `providers` 判定会把这份 TOML 抢走。
+    &kimi_code::BACKEND,
     &oh_my_pi::BACKEND,
     &pi::BACKEND,
 ];

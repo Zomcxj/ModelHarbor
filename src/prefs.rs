@@ -144,6 +144,7 @@ pub struct ConfigPathPrefs {
     pub zcode: String,
     pub workbuddy: String,
     pub qwen_code: String,
+    pub kimi_code: String,
 }
 
 impl ConfigPathPrefs {
@@ -159,6 +160,7 @@ impl ConfigPathPrefs {
             crate::format::ConfigFormat::ZCode => &self.zcode,
             crate::format::ConfigFormat::WorkBuddy => &self.workbuddy,
             crate::format::ConfigFormat::QwenCode => &self.qwen_code,
+            crate::format::ConfigFormat::KimiCode => &self.kimi_code,
         }
     }
 
@@ -174,6 +176,7 @@ impl ConfigPathPrefs {
             crate::format::ConfigFormat::ZCode => &mut self.zcode,
             crate::format::ConfigFormat::WorkBuddy => &mut self.workbuddy,
             crate::format::ConfigFormat::QwenCode => &mut self.qwen_code,
+            crate::format::ConfigFormat::KimiCode => &mut self.kimi_code,
         };
         *slot = path.to_string();
     }
@@ -289,6 +292,7 @@ impl Prefs {
                 zcode: nested_str(&root, "config_paths", "zcode"),
                 workbuddy: nested_str(&root, "config_paths", "workbuddy"),
                 qwen_code: nested_str(&root, "config_paths", "qwen_code"),
+                kimi_code: nested_str(&root, "config_paths", "kimi_code"),
             },
             collapsed: get_list("collapsed"),
             // 只有真正的布尔 true 才放行：缺字段、字符串 "true" 都按拦截处理。
@@ -328,6 +332,7 @@ impl Prefs {
             ("zcode", &self.config_paths.zcode),
             ("workbuddy", &self.config_paths.workbuddy),
             ("qwen_code", &self.config_paths.qwen_code),
+            ("kimi_code", &self.config_paths.kimi_code),
         ] {
             paths.insert(key.to_string(), Value::String(value.clone()));
         }
@@ -429,6 +434,7 @@ mod tests {
                 zcode: String::new(),
                 workbuddy: String::new(),
                 qwen_code: String::new(),
+                kimi_code: String::new(),
             },
             // 按字母序给出：to_json 会排序写出，因此往返应完全相等
             collapsed: vec![

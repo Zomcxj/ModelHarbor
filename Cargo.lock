@@ -1751,6 +1751,7 @@ dependencies = [
  "rfd",
  "serde_json",
  "serde_yaml_ng",
+ "toml",
  "ureq",
  "windows-sys 0.61.2",
  "winresource",

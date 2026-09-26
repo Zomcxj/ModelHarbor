@@ -18,7 +18,7 @@ cargo build --release
 
 ## 页面与格式
 
-顶栏图标切换页面，共 9 个后端：
+顶栏图标切换页面，共 10 个后端：
 
 | 页面 | 配置路径 |
 |---|---|
@@ -31,6 +31,7 @@ cargo build --release
 | ZCode | `.zcode/v2/provider_config.json` |
 | WorkBuddy | `.workbuddy/models.json` |
 | Qwen Code | `.qwen/settings.json` |
+| Kimi Code | `.kimi-code/config.toml` |
 
 以上是各页默认探测的路径。**JSON 配置一律接受 `.jsonc`**（含注释的 JSON）；默认路径不存在时，opencode 系三页还会自动找同名的 `.jsonc`。
 
@@ -40,23 +41,31 @@ cargo build --release
 
 各页表单按自身方言显示字段与枚举，**没有的字段不占位**。各页的对应关系：
 
-| 概念 | opencode 系 | pi | oh-my-pi | DSH | ZCode | WorkBuddy | Qwen Code |
-|---|---|---|---|---|---|---|---|
-| 协议 | `npm` | `api`（10 值） | `api`（9 值） | `api` | `api.type`（3 值） | 由 URL 后缀表达（3 值） | 由 provider id + `wireApi` 表达（3 值） |
-| Base URL | `options.baseURL` | `baseUrl` | `baseUrl` | `baseURL` | `api.baseUrl` | `url` | `baseUrl` |
-| 密钥 | `options.apiKey` | `apiKey` | `apiKey`（环境变量名或字面量） | `apiKeyEnv` + `.credentials.yaml` | `access.apiKey` | `apiKey` | `envKey` + 顶层 `env` |
-| 超时 | `options.timeout` | — | — | `timeoutMs` | — | — | `generationConfig.timeout` |
-| 重试 | — | — | — | `retryPolicy.mode` / `maxRetries` | — | — | — |
-| 上下文 / 输出 | `limit.context` / `limit.output` | `contextWindow` / `maxTokens` | 同 pi | 同 pi | `properties.contextWindow` / `optionSpecs.maxOutputTokens.max` | `maxInputTokens` / `maxOutputTokens` | `generationConfig.contextWindowSize` / `generationConfig.samplingParams.max_tokens` |
-| 输入模态 | `modalities.input` | `input` | `input` | `input` | `properties.supports*` | `supportsImages` | `capabilities.vision` |
-| 推理档位 | `variants`（none…ultra） | `thinkingLevelMap`（off…ultra） | `thinking.efforts` | `reasoningEfforts` | `optionSpecs.reasoningLevel.values` | `supportsReasoning`（布尔，无档位） | `capabilities.reasoning.efforts` |
-| 模型启用 | — | — | — | — | `config.enabled`（ZCode 自管，本工具不接管） | `disabled` | 停用即不写入（见下） |
-| 模型存储 | Map（键 = model id） | Array（含 `id`） | 同 pi | 同 pi | 独立规则表 | Array（含 `id`） | Map（pid → Array，含 `id`） |
-| Agents 区块 | 支持 | — | — | — | — | — | — |
+| 概念 | opencode 系 | pi | oh-my-pi | DSH | ZCode | WorkBuddy | Qwen Code | Kimi Code |
+|---|---|---|---|---|---|---|---|---|
+| 协议 | `npm` | `api`（10 值） | `api`（9 值） | `api` | `api.type`（3 值） | 由 URL 后缀表达（3 值） | 由 provider id + `wireApi` 表达（3 值） | `type`（6 值，逐字） |
+| Base URL | `options.baseURL` | `baseUrl` | `baseUrl` | `baseURL` | `api.baseUrl` | `url` | `baseUrl` | `base_url` |
+| 密钥 | `options.apiKey` | `apiKey` | `apiKey`（环境变量名或字面量） | `apiKeyEnv` + `.credentials.yaml` | `access.apiKey` | `apiKey` | `envKey` + 顶层 `env` | `api_key` 或 `api_key_env`（互斥） |
+| 超时 | `options.timeout` | — | — | `timeoutMs` | — | — | `generationConfig.timeout` | — |
+| 重试 | — | — | — | `retryPolicy.mode` / `maxRetries` | — | — | — | — |
+| 上下文 / 输出 | `limit.context` / `limit.output` | `contextWindow` / `maxTokens` | 同 pi | 同 pi | `properties.contextWindow` / `optionSpecs.maxOutputTokens.max` | `maxInputTokens` / `maxOutputTokens` | `generationConfig.contextWindowSize` / `generationConfig.samplingParams.max_tokens` | `max_context_size`（必填）/ `max_output_size` |
+| 输入模态 | `modalities.input` | `input` | `input` | `input` | `properties.supports*` | `supportsImages` | `capabilities.vision` | `capabilities` 里的 `image_in` 等标签（界面不给控件，见下） |
+| 推理档位 | `variants`（none…ultra） | `thinkingLevelMap`（off…ultra） | `thinking.efforts` | `reasoningEfforts` | `optionSpecs.reasoningLevel.values` | `supportsReasoning`（布尔，无档位） | `capabilities.reasoning.efforts` | `support_efforts`（各模型自带词表） |
+| 模型启用 | — | — | — | — | `config.enabled`（ZCode 自管，本工具不接管） | `disabled` | 停用即不写入（见下） | 停用即不写入（见下） |
+| 模型存储 | Map（键 = model id） | Array（含 `id`） | 同 pi | 同 pi | 独立规则表 | Array（含 `id`） | Map（pid → Array，含 `id`） | 顶层全局表（键 = alias，靠 `provider` 字段关联） |
+| Agents 区块 | 支持 | — | — | — | — | — | — | — |
 
 协议（`npm` / `api`）在 opencode 系 / pi / omp / DSH 四类格式间共用同一份数据，判定顺序为：`npm` 非空按 npm 包推导 → `api` 非空直接用 → 原文件的 `api` → 都没有则按兼容层 `openai-completions`。下拉首项「(空)」表示不指定协议，与 opencode 页 `npm` 的空选项同义且跨页同步。
 
 Qwen Code 的协议落在 **provider id（`modelProviders` 的键）加条目自己的 `wireApi`** 上，不与上面那份数据共用：内置 id `openai` / `anthropic` / `gemini` / `vertex-ai` 直接就是协议，OpenAI 的两种 API 共用 `openai` 这个 id、靠 `wireApi`（`chat-completions` / `responses`）区分；自定义 id 必须在顶层 `providerProtocol` 里声明映射，否则 Qwen Code 会**把整条静默跳过**。`qwen-oauth` 这个 id 是硬编码的、不可覆盖，该 id 下的条目在界面上不显示、保存时整块原样保留。
+
+Kimi Code 的配置是 **TOML**，也是唯一一个模型**不在 provider 内部**的格式：模型放在顶层全局表 `[models."<别名>"]` 里，靠 `provider = "<providers 键>"` 关联到 `[providers.<名称>]`，所以界面加载时要 join、保存时要拆回两张表。表键是**别名**，表内的 `model` 才是发给上游的模型名，**两者可以不同**（本机就有 `[models."kimi-code/k3"]` 里写 `model = "k3"` 的情况）：界面显示与编辑的是后者，别名在保存时原样沿用，不会被改名——`model` 一旦被改就不是同一个模型了。协议字段 `type` 的 6 个取值（`kimi` / `openai` / `anthropic` / `openai_responses` / `google-genai` / `vertexai`）**逐字读、逐字写**，不做任何翻译：这些名字与本工具内部那份协议词表并不重合，硬套一张映射表会在保存时把用户写的 `type` 悄悄改掉。`managed:` 开头的 provider（如 `managed:kimi-code`）由 `/login` 的 OAuth 登录写入，界面上不显示、保存时整块原样保留——它和 `credentials/` 里的凭据是配对的，改写会破坏登录态。
+
+Kimi Code 的 **`api_key` 与 `api_key_env` 互斥**，同时写会让 Kimi Code **启动失败**（不是「配置不生效」，是直接起不来）。界面两个输入框都显示，但填了一个就当场清掉另一个；保存前还会再校验一次，有冲突就取消保存。判据是「非空字符串」——`api_key = ""` 视同未设置，所以 `api_key = ""` 与 `oauth` 并存是合法的（本机文件正是如此）。另外 `capabilities` 是**只增不减**的标签集（官方口径 "only ever added, never removed"）：保存时不会因为界面没勾就删掉已有标签，否则会静默降级模型能力。「支持思考」是唯一例外——它对应 `thinking` / `always_thinking` 两个标签，取消勾选会一并移除，否则那个开关就关不掉了。
+
+Kimi Code 的**桌面端与本文件共享**：本工具改这里会同时影响 CLI 和桌面端，反过来 Kimi Code 桌面端也可能在本工具运行期间改写这个文件。所以页面上的保存以磁盘当前内容为基底合并，不会用打开时的快照整体覆写。
+
+**TOML 不保留注释**：Kimi Code 的 `config.toml` 保存后会丢掉注释，这与 opencode 系保存后丢 JSONC 注释是同一性质的行为。另外 Kimi Code 没有项目级配置文件，只有 `~/.kimi-code/config.toml` 这一份。
 
 ## 获取模型
 
@@ -326,6 +335,22 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
   "providerProtocol": { "<自定义 id>": "openai" },
   "env": { "OPENAI_API_KEY": "…" }
 }
+
+# ~/.kimi-code/config.toml —— TOML；模型在顶层全局表里，靠 provider 字段关联
+default_model = "<别名>"
+
+[providers."<名称>"]                   # 名称含 . 或 : 时必须加引号
+base_url = "…"
+type = "openai"                        # 必填；6 值之一
+api_key = "…"                          # 与 api_key_env 互斥
+
+[models."<别名>"]                      # 表键是别名，可与 model 不同
+provider = "<providers 名称>"          # join key，必填
+model = "…"                            # 发给上游的模型名，必填
+max_context_size = 1048576             # 必填，≥1
+capabilities = [ "thinking", "tool_use" ]
+display_name = "…"
+support_efforts = [ "low", "high" ]
 ```
 
 **ZCode**（`~/.zcode/v2/provider_config.json`）的 provider 与模型级属性分两处存放：`providerConfigRules` 只列模型 id，每个模型的元数据在 `modelConfigRules.providerModelRules` 里。界面编辑时两边同步，不必手工对齐。
@@ -374,11 +399,12 @@ llm-pi-ai:
 
 ## 注意事项
 
-- **「启用」开关出现在 WorkBuddy 与 Qwen Code 两页**（其余七家的模型 schema 里没有模型级启用字段）。两家的共同点是：生效清单只含启用的条目，**关掉不删配置**。
+- **「启用」开关出现在 WorkBuddy、Qwen Code 与 Kimi Code 三页**（其余七家的模型 schema 里没有模型级启用字段）。三家的共同点是：生效清单只含启用的条目，**关掉不删配置**。
   - **WorkBuddy** 的选择器按模型 id **全局去重**，同一个模型名无论挂在哪个厂商下都只会列出一行、只有第一条生效，所以开关是**全局互斥**的——打开一个，同名的其他条目自动关闭。只有开启的会写进 `models.json`；关闭的条目仍保存在同目录的 `models.full.json`，开回来即恢复。
   - **Qwen Code** 的 schema 里没有 `disabled` 字段，**停用就是整条不写进 `settings.json`**；全部条目与勾选状态记在同目录的 `modelProviders.full.json`，开回来即恢复。
+  - **Kimi Code** 同理，**停用就是整条不写进 `config.toml` 的 `[models.*]`**（写进去等于让 Kimi Code 真的能用它）；全部条目与勾选状态记在同目录的 `models.full.toml`，开回来即恢复。`managed:` 开头的 provider 及其模型由 Kimi Code 的 `/login` 生成、与 `credentials/` 配套，本工具**只读保留、不进界面**，也不参与这套开关。
 - **WorkBuddy 的模型 `id` 就是发给上游的模型名**，不要为了区分同名模型去改它——改了会直接请求失败。要用哪一家，就在那一家的卡片上打开「启用」。
-- **两家各有一个伴生文件**（WorkBuddy 的 `models.full.json`、Qwen Code 的 `modelProviders.full.json`，都与主配置同目录），保存全部条目与勾选状态，含 API key。**不要手工删除它们**：删了之后未勾选的条目会从界面上消失。两家都只按精确文件名读自己的主配置，同目录其他文件不看。
+- **三家各有一个伴生文件**（WorkBuddy 的 `models.full.json`、Qwen Code 的 `modelProviders.full.json`、Kimi Code 的 `models.full.toml`，都与主配置同目录），保存全部条目与勾选状态，含 API key。**不要手工删除它们**：删了之后未勾选的条目会从界面上消失。三家都只按精确文件名读自己的主配置，同目录其他文件不看。
 - **Qwen Code 的密钥存在主配置顶层的 `env` 里**（条目上只写变量名 `envKey`），本工具**只增改、绝不删**：那个命名空间是跨 provider 共享的，Qwen Code 自己的 `/auth` 也往里写（例如 Coding Plan 的 `BAILIAN_CODING_PLAN_API_KEY`），按「有没有条目引用」去修剪会把刚配好的凭据静默删掉。
 - **Qwen Code 的 `providerProtocol` 改动需要重启 Qwen Code 才生效**（`modelProviders` 是热加载的，协议映射只在启动时读一次）。
 - **ZCode 的模型开关由 ZCode 自己维护**：你在 ZCode 界面里停用的模型，ModelHarbor 保存时不会把它重新打开。
@@ -393,7 +419,7 @@ llm-pi-ai:
 ## 平台与安全
 
 - 当前**仅支持 Windows**
-- 配置文件中的 `apiKey` 为**明文**（DSH 的 `.credentials.yaml`、WorkBuddy 的 `models.full.json`、Qwen Code 的 `env` 与 `modelProviders.full.json` 同样），请勿提交到公开仓库
+- 配置文件中的 `apiKey` 为**明文**（DSH 的 `.credentials.yaml`、WorkBuddy 的 `models.full.json`、Qwen Code 的 `env` 与 `modelProviders.full.json`、Kimi Code 的 `api_key` 与 `models.full.toml` 同样），请勿提交到公开仓库
 - 界面设置文件只保存界面选择、不含密钥，可以安全删除（会恢复默认界面设置）
 - 站点面板令牌存在 `%USERPROFILE%\.modelharbor\tokens.json`，**含凭证且为明文**（与 agent 配置文件同级风险），请勿提交或同步到共享目录。里面只有你主动填过的站点，在「令牌」面板点「删除」或直接删除该文件即可清空
 - 令牌与用户 ID **不会**写进 `settings.json`，也不会写进任何 agent 配置文件；接口请求只把它们放进请求头（不进 URL、不进日志与状态栏文本）

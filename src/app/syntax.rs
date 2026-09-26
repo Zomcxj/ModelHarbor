@@ -1,14 +1,16 @@
-//! 预览语法高亮：JSON(C) / YAML 的轻量 tokenizer（VSCode Dark+ 配色）。
+//! 预览语法高亮：JSON(C) / YAML / TOML 的轻量 tokenizer（VSCode Dark+ 配色）。
 
 use eframe::egui;
 
 // ---------- 预览语法高亮（VSCode Dark+ 配色） ----------
 
-/// 预览文本语法：opencode 页面为 JSON(C)，pi / omp / DSH 为 YAML。
+/// 预览文本语法：opencode 系 / pi / ZCode / WorkBuddy / QwenCode 为 JSON(C)，
+/// omp / DSH 为 YAML，kimi-code 为 TOML。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum PreviewSyntax {
     Json,
     Yaml,
+    Toml,
 }
 
 /// 一套语法配色。
@@ -84,6 +86,7 @@ pub(super) fn syntax_tokens_with(
     match syntax {
         PreviewSyntax::Json => json_tokens_with(text, pal),
         PreviewSyntax::Yaml => yaml_tokens_with(text, pal),
+        PreviewSyntax::Toml => toml_tokens_with(text, pal),
     }
 }
 
@@ -392,6 +395,288 @@ fn yaml_plain_scalar(
     }
     let color = match text[start..i].trim_end() {
         "true" | "false" | "null" | "~" | "yes" | "no" | "on" | "off" => pal.literal,
+        _ => pal.string,
+    };
+    out.push((start, i, color));
+    i
+}
+
+/// TOML：`[表头]`、`[[数组表头]]`、`key = value`、注释、引号字符串、数组、数字、布尔。
+///
+/// 与 YAML 的关键差别（不能共用一套）：
+/// - 注释符是 `#`，且**行内任意位置**都算（YAML 只在行首或空格后）；
+/// - 键值分隔符是 `=`（不是 `:`），键可以带引号、可以含点号（`a.b."c:d"`）；
+/// - 表头用方括号，`[[…]]` 是数组表头；
+/// - 没有裸标量：值要么是引号串、数字、布尔、日期，要么是 `[`/`{` 开头的集合。
+pub(super) fn toml_tokens_with(
+    text: &str,
+    pal: SyntaxPalette,
+) -> Vec<(usize, usize, egui::Color32)> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut line_start = 0;
+    while line_start <= b.len() {
+        let line_end = toml_line_end(b, line_start);
+        let i = toml_indent_end(b, line_start, line_end);
+        // 整行注释 / 空行
+        if i >= line_end || b[i] == b'#' {
+            if i < line_end {
+                out.push((i, line_end, pal.comment));
+            }
+        } else if b[i] == b'[' {
+            toml_table_header(b, i, line_end, pal, &mut out);
+            toml_value_tokens(
+                text,
+                b,
+                toml_after_header(b, i, line_end),
+                pal,
+                line_end,
+                &mut out,
+            );
+        } else {
+            let value_start = toml_key_and_eq(b, i, line_end, pal, &mut out);
+            toml_value_tokens(text, b, value_start, pal, line_end, &mut out);
+        }
+        if line_end >= b.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+    out
+}
+
+/// 当前行换行符位置（无换行则为文本末尾）。
+fn toml_line_end(b: &[u8], line_start: usize) -> usize {
+    b[line_start..]
+        .iter()
+        .position(|&c| c == b'\n')
+        .map(|p| line_start + p)
+        .unwrap_or(b.len())
+}
+
+/// 跳过行首空格 / 制表符后的位置。
+fn toml_indent_end(b: &[u8], line_start: usize, line_end: usize) -> usize {
+    let mut i = line_start;
+    while i < line_end && (b[i] == b' ' || b[i] == b'\t') {
+        i += 1;
+    }
+    i
+}
+
+/// 表头 `[…]` / `[[…]]`：括号着色为标点，表名着色为键。
+///
+/// 表名可能是裸键（`providers.sensenova`）或带引号的键（`providers."managed:kimi-code"`），
+/// 两种都要正确处理——引号内的 `]` 不结束表头，引号内的 `#` 也不是注释。
+fn toml_table_header(
+    b: &[u8],
+    start: usize,
+    line_end: usize,
+    pal: SyntaxPalette,
+    out: &mut Vec<(usize, usize, egui::Color32)>,
+) {
+    let mut i = start;
+    let double = b.get(i + 1) == Some(&b'[');
+    let brackets = if double { 2 } else { 1 };
+    out.push((i, i + brackets, pal.punct));
+    i += brackets;
+    let name_start = i;
+    let mut in_quote: Option<u8> = None;
+    while i < line_end {
+        let c = b[i];
+        match in_quote {
+            Some(q) => {
+                if c == b'\\' && q == b'"' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    in_quote = None;
+                }
+            }
+            None => {
+                if c == b'"' || c == b'\'' {
+                    in_quote = Some(c);
+                } else if c == b']' {
+                    break;
+                }
+            }
+        }
+        i += 1;
+    }
+    if i > name_start {
+        out.push((name_start, i, pal.key));
+    }
+    // 收尾的 `]` / `]]`
+    let close = i.min(line_end);
+    if close < line_end {
+        let n = if double && b.get(close + 1) == Some(&b']') {
+            2
+        } else {
+            1
+        };
+        out.push((close, (close + n).min(line_end), pal.punct));
+    }
+}
+
+/// 表头行里 `]` 之后的位置（理论上只剩空白与注释）。
+fn toml_after_header(b: &[u8], start: usize, line_end: usize) -> usize {
+    let mut i = start;
+    while i < line_end && b[i] == b'[' {
+        i += 1;
+    }
+    // 找第一个不在引号内的 `]`
+    let mut in_quote: Option<u8> = None;
+    while i < line_end {
+        let c = b[i];
+        match in_quote {
+            Some(q) => {
+                if c == b'\\' && q == b'"' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    in_quote = None;
+                }
+            }
+            None => {
+                if c == b'"' || c == b'\'' {
+                    in_quote = Some(c);
+                } else if c == b']' {
+                    break;
+                }
+            }
+        }
+        i += 1;
+    }
+    while i < line_end && b[i] == b']' {
+        i += 1;
+    }
+    i
+}
+
+/// 行首的键与 `=`：键着色为 key（含引号键与点号分隔的多段键），`=` 着色为标点。
+/// 返回值的扫描起点（`=` 之后）。
+fn toml_key_and_eq(
+    b: &[u8],
+    start: usize,
+    line_end: usize,
+    pal: SyntaxPalette,
+    out: &mut Vec<(usize, usize, egui::Color32)>,
+) -> usize {
+    let mut i = start;
+    while i < line_end && b[i] != b'=' {
+        i += 1;
+    }
+    if i >= line_end {
+        // 没有 `=` 的行（畸形输入）：整行按字符串着色，保证不越界。
+        out.push((start, line_end, pal.string));
+        return line_end;
+    }
+    // 键部分：去掉右侧空白再着色。
+    let mut key_end = i;
+    while key_end > start && (b[key_end - 1] == b' ' || b[key_end - 1] == b'\t') {
+        key_end -= 1;
+    }
+    if key_end > start {
+        out.push((start, key_end, pal.key));
+    }
+    out.push((i, i + 1, pal.punct));
+    i + 1
+}
+
+/// 行内值部分：空白、注释、引号串、数组 / 内联表、数字、布尔与日期。
+fn toml_value_tokens(
+    text: &str,
+    b: &[u8],
+    mut i: usize,
+    pal: SyntaxPalette,
+    line_end: usize,
+    out: &mut Vec<(usize, usize, egui::Color32)>,
+) {
+    while i < line_end {
+        i = match b[i] {
+            b' ' | b'\t' => i + 1,
+            b'#' => {
+                out.push((i, line_end, pal.comment));
+                line_end
+            }
+            q @ (b'"' | b'\'') => toml_quoted_at(b, i, line_end, q, pal, out),
+            b'[' | b']' | b'{' | b'}' | b',' => {
+                out.push((i, i + 1, pal.punct));
+                i + 1
+            }
+            c if c == b'-' || c == b'+' || c.is_ascii_digit() => {
+                toml_number_at(b, i, line_end, pal, out)
+            }
+            _ => toml_bare_at(text, b, i, line_end, pal, out),
+        };
+    }
+}
+
+/// 引号串：`"` 支持反斜杠转义，`'` 不支持；未闭合时着色到行尾。
+fn toml_quoted_at(
+    b: &[u8],
+    start: usize,
+    line_end: usize,
+    quote: u8,
+    pal: SyntaxPalette,
+    out: &mut Vec<(usize, usize, egui::Color32)>,
+) -> usize {
+    let mut i = start + 1;
+    while i < line_end {
+        if quote == b'"' && b[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if b[i] == quote {
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+    out.push((start, i.min(line_end), pal.string));
+    i
+}
+
+/// 数字（含前导符号、小数、指数、下划线分隔、日期里的 `-` / `:`）。
+fn toml_number_at(
+    b: &[u8],
+    start: usize,
+    line_end: usize,
+    pal: SyntaxPalette,
+    out: &mut Vec<(usize, usize, egui::Color32)>,
+) -> usize {
+    let mut i = start;
+    if matches!(b[i], b'-' | b'+') {
+        i += 1;
+    }
+    while i < line_end
+        && (b[i].is_ascii_alphanumeric() || matches!(b[i], b'.' | b'_' | b'-' | b'+' | b':'))
+    {
+        i += 1;
+    }
+    out.push((start, i, pal.number));
+    i
+}
+
+/// 裸值：`true` / `false` 着色为字面量，其余按字符串。
+fn toml_bare_at(
+    text: &str,
+    b: &[u8],
+    start: usize,
+    line_end: usize,
+    pal: SyntaxPalette,
+    out: &mut Vec<(usize, usize, egui::Color32)>,
+) -> usize {
+    let mut i = start;
+    while i < line_end {
+        if b[i] == b'#' {
+            break;
+        }
+        i += 1;
+    }
+    let color = match text[start..i].trim_end() {
+        "true" | "false" => pal.literal,
         _ => pal.string,
     };
     out.push((start, i, color));

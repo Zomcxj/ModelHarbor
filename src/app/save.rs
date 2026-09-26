@@ -92,7 +92,31 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
             obj.shift_remove("modelProviders");
             obj.shift_remove("providerProtocol");
         }
+        // KimiCode 的 `models` 是**全局表**（不只属于某一个 provider），跨格式写入时
+        // 若只剔「能映射到界面 provider 的条目」会留下半截表。两个容器整体剔掉，
+        // 与其它后端的「容器整体接管」口径一致。
+        ConfigFormat::KimiCode => {
+            obj.shift_remove("providers");
+            obj.shift_remove("models");
+        }
     }
+}
+
+/// 模型的 `capabilities` 标签集里是否有其中任意一个（KimiCode 用）。
+///
+/// 不区分大小写：Kimi 自己的读取逻辑会把标签 `trim().toLowerCase()` 再比对
+/// （见 `withAnthropicProfile`），手写的 `Tool_Use` 同样生效，界面就不该显示成没勾。
+fn caps_has(model: &crate::model::ModelRow, names: &[&str]) -> bool {
+    model
+        .raw
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|caps| {
+            caps.iter().filter_map(Value::as_str).any(|c| {
+                let c = c.trim();
+                names.iter().any(|n| c.eq_ignore_ascii_case(n))
+            })
+        })
 }
 
 /// 加载 opencode 配置；读取/解析失败返回 Err。
@@ -166,6 +190,12 @@ impl App {
                         .get("generationConfig")
                         .and_then(|g| g.get("timeout"))
                         .is_some(),
+                    _ => false,
+                },
+                // KimiCode 的 provider 表里只有 base_url / type / 凭据三类字段，
+                // **没有** provider 级超时。
+                ConfigFormat::KimiCode => match field {
+                    "base_url" => provider.raw.get("base_url").is_some(),
                     _ => false,
                 },
             })
@@ -312,6 +342,26 @@ impl App {
                         .and_then(|c| c.get("reasoning"))
                         .and_then(|r| r.get("efforts"))
                         .is_some(),
+                    _ => false,
+                },
+                // KimiCode 的模型属性是 `capabilities` 标签集 + 三个数值/字符串键。
+                ConfigFormat::KimiCode => match field {
+                    "name" => model.raw.get("display_name").is_some(),
+                    "context" => model.raw.get("max_context_size").is_some(),
+                    "output" => model.raw.get("max_output_size").is_some(),
+                    // 「支持思考」对应 thinking / always_thinking 两个标签。
+                    "reasoning" => caps_has(model, &["thinking", "always_thinking"]),
+                    // 「工具调用」对应 tool_use 标签。
+                    "tool_call" => caps_has(model, &["tool_use"]),
+                    "variants" => model.raw.get("support_efforts").is_some(),
+                    // 输入模态**不显示**：Kimi 用 image_in / video_in / audio_in 三个独立
+                    // 标签表达，而界面那一个「输入模态」框表达不了三者的差别——取消勾选
+                    // 时该删哪个标签无从判断，勾选时又会把「只有 video_in」的模型写成
+                    // 同时有 image_in。映射不可逆，给一个勾了也删不掉的框是骗人。
+                    // 这些标签仍由 [`merge_capabilities`] 原样保留，不会因为不显示而丢失。
+                    "input" => false,
+                    // Kimi 没有 `store` 字段。
+                    "store" => false,
                     _ => false,
                 },
             })
@@ -598,12 +648,13 @@ impl App {
         } else {
             None
         };
-        // WorkBuddy 与 QwenCode 的「停用」语义都是**整条不写**：停用的条目连所属厂商
-        // 一起从文件里消失（包括那些厂商的 API key）。这让一次普通保存删掉的东西可能比
+        // WorkBuddy、QwenCode 与 KimiCode 的「停用」语义都是**整条不写**：停用的条目连所属
+        // 厂商一起从文件里消失（包括那些厂商的 API key）。这让一次普通保存删掉的东西可能比
         // 跨格式转换还多，所以它们也必须先备份，不能沿用「同格式保存不备份」。
         //
-        // 两家的判据不同：WorkBuddy 是按裸 id 去重后条目变少（根是数组），QwenCode 是
-        // 停用条目不再写出（条目嵌在 `modelProviders` 里），各自问自己的后端。
+        // 三家判据不同：WorkBuddy 是按裸 id 去重后条目变少（根是数组），QwenCode 是停用条目
+        // 不再写出（条目嵌在 `modelProviders` 里），KimiCode 是模型表条目变少（两张表），
+        // 各自问自己的后端。
         let shrinks = is_current
             && match fmt {
                 ConfigFormat::WorkBuddy => util::read_config_content(path)
@@ -621,6 +672,11 @@ impl App {
                     .ok()
                     .and_then(|old| util::parse_config_content(&old).ok())
                     .map(|old_root| crate::backends::qwen_code::shrinks_on_save(&old_root, &root))
+                    .unwrap_or(true),
+                ConfigFormat::KimiCode => util::read_config_content(path)
+                    .ok()
+                    .and_then(|old| crate::backends::kimi_code::parse_root_for_shrink(&old))
+                    .map(|old_root| crate::backends::kimi_code::shrinks_on_save(&old_root, &root))
                     .unwrap_or(true),
                 _ => false,
             };
@@ -642,12 +698,16 @@ impl App {
         } else {
             None
         };
-        // sidecar 一律在主配置**之前**写：WorkBuddy / QwenCode 的全量副本要靠读主配置
-        // 继承未知字段，而主配置马上会被筛成「只剩勾选的条目」；副本先落盘才拿得到全量字段。
+        // sidecar 一律在主配置**之前**写：WorkBuddy / QwenCode / KimiCode 的全量副本要靠
+        // 读主配置继承未知字段，而主配置马上会被筛成「只剩勾选的条目」；副本先落盘才拿得到
+        // 全量字段。KimiCode 还在这里挡凭据 XOR 冲突（写错会让它启动失败）。
         // DSH 的凭据 sidecar 无此依赖，同一位置写即可。
         if matches!(
             fmt,
-            ConfigFormat::DeepSeekHarness | ConfigFormat::WorkBuddy | ConfigFormat::QwenCode
+            ConfigFormat::DeepSeekHarness
+                | ConfigFormat::WorkBuddy
+                | ConfigFormat::QwenCode
+                | ConfigFormat::KimiCode
         ) {
             backend.save_sidecars(path, &self.providers)?;
         }
@@ -686,12 +746,13 @@ impl App {
             ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => &self.root,
             // pi 系（pi / oh-my-pi）共用 extras 载体：providers 之外的顶层字段
             ConfigFormat::Pi | ConfigFormat::OhMyPi => &self.pi_extras,
-            // ZCode / WorkBuddy / QwenCode 与 opencode、DSH 一样，extras 就是完整 root
-            // （序列化时由各后端自行保留未接管的容器与顶层字段）。
+            // ZCode / WorkBuddy / QwenCode / KimiCode 与 opencode、DSH 一样，extras 就是
+            // 完整 root（序列化时由各后端自行保留未接管的容器与顶层字段）。
             ConfigFormat::DeepSeekHarness
             | ConfigFormat::ZCode
             | ConfigFormat::WorkBuddy
-            | ConfigFormat::QwenCode => &self.root,
+            | ConfigFormat::QwenCode
+            | ConfigFormat::KimiCode => &self.root,
         }
     }
 }

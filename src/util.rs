@@ -377,16 +377,18 @@ pub fn write_wsl_file(path: &str, content: &str) -> Result<(), String> {
 ///
 /// **首个滤镜就是 Windows 对话框的默认选中项**，而对话框会按选中滤镜过滤列表：
 /// 只写 json 会让 `.yml` / `.yaml`（oh-my-pi 的 `models.yml`、DSH 的 `settings.yaml`）
-/// 在「浏览」时直接不可见 —— 即使用户手动切到 YAML 滤镜也容易被误认为「不支持 yml」。
-/// 单测 `dialog_extensions_cover_backend_defaults` 会用各后端的默认路径反向守住这份清单。
-const CONFIG_FILE_EXTENSIONS: &[&str] = &["json", "jsonc", "yml", "yaml"];
+/// 与 `.toml`（Kimi Code 的 `config.toml`）在「浏览」时直接不可见 —— 即使用户手动切到
+/// 对应滤镜也容易被误认为「不支持」。单测 `dialog_extensions_cover_backend_defaults`
+/// 会用各后端的默认路径反向守住这份清单。
+const CONFIG_FILE_EXTENSIONS: &[&str] = &["json", "jsonc", "yml", "yaml", "toml"];
 
 pub fn show_file_dialog() -> Option<String> {
     rfd::FileDialog::new()
         .set_title("选择配置文件")
-        .add_filter("配置文件（JSON / YAML）", CONFIG_FILE_EXTENSIONS)
+        .add_filter("配置文件（JSON / YAML / TOML）", CONFIG_FILE_EXTENSIONS)
         .add_filter("JSON", &["json", "jsonc"])
         .add_filter("YAML", &["yml", "yaml"])
+        .add_filter("TOML", &["toml"])
         .add_filter("所有文件", &["*"])
         .pick_file()
         .map(|p| p.to_string_lossy().to_string())

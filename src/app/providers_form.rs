@@ -102,12 +102,14 @@ pub(super) fn provider_api_combo(
 ) {
     // 每个后端自己的协议词表：omp 9 值 / pi 10 值 / ZCode 3 值（多一个 chat）/
     // WorkBuddy 3 值（协议落到 URL 后缀，见 workbuddy 后端）/
-    // QwenCode 3 值（协议落到 pid + wireApi，见 qwen_code 后端）。
+    // QwenCode 3 值（协议落到 pid + wireApi，见 qwen_code 后端）/
+    // KimiCode 6 值（逐字就是 `type` 字段，见 kimi_code 后端）。
     let options: &[&str] = match page {
         ConfigFormat::OhMyPi => &convert::OMP_APIS,
         ConfigFormat::ZCode => &convert::ZCODE_APIS,
         ConfigFormat::WorkBuddy => &convert::WORKBUDDY_APIS,
         ConfigFormat::QwenCode => &convert::QWEN_APIS,
+        ConfigFormat::KimiCode => &convert::KIMI_APIS,
         _ => &convert::PI_APIS,
     };
     // ZCode 的 api.type 词表与内部表示差一个 `chat`，显示与写回都要转换。
@@ -387,6 +389,7 @@ fn provider_header_fields(
             && !flags.show_zcode
             && !flags.show_wb
             && !flags.show_qwen
+            && !flags.show_kimi
         {
             field_label(ui, 120.0, "compat");
             ui.checkbox(&mut p.compat, "supportsDeveloperRole");
@@ -445,6 +448,30 @@ fn provider_header_fields(
             field_label(ui, 120.0, "env[envKey]");
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
             secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
+        } else if flags.show_kimi {
+            // KimiCode 的 `api_key` 与 `api_key_env` **互斥**：同时写会让 Kimi Code
+            // **启动失败**（源码把这种情况判成配置冲突并拒绝）。所以两个框都显示，
+            // 但填了一个就当场清掉另一个——不能等到保存时才发现。
+            //
+            // 判据是「非空」，与后端 `non_empty_str` 一致：清空一个框不算填了它。
+            field_label(ui, 120.0, "api_key");
+            let hint = if ctx.relaxed { "sk-xxx" } else { "" };
+            let key_edit = secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 200.0, hint);
+            field_label(ui, 120.0, "api_key_env");
+            let env_edit = egui::TextEdit::singleline(&mut p.api_key_env).desired_width(200.0);
+            let env_edit = if ctx.relaxed {
+                env_edit.hint_text("MY_API_KEY")
+            } else {
+                env_edit
+            };
+            let env_resp = ui.add(env_edit);
+            // 谁刚被改动，谁说了算：改密钥清 env 名，改 env 名清密钥。
+            if key_edit.changed() && !p.api_key.trim().is_empty() {
+                p.api_key_env.clear();
+            }
+            if env_resp.changed() && !p.api_key_env.trim().is_empty() {
+                p.api_key.clear();
+            }
         } else {
             let hint = if ctx.relaxed { "sk-xxx" } else { "" };
             secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);

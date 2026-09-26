@@ -89,6 +89,7 @@ fn target_path_prefers_local_when_exists() {
         zcode: p.to_string_lossy().to_string(),
         workbuddy: p.to_string_lossy().to_string(),
         qwen_code: p.to_string_lossy().to_string(),
+        kimi_code: p.to_string_lossy().to_string(),
     };
     assert_eq!(
         paths.target_path(ConfigFormat::Opencode),

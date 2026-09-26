@@ -21,6 +21,7 @@ ureq = { version = "2", default-features = true }
 # App::update 改为 App::ui），迁移需要重写面板挂载与全部 `ui_*` 入口。
 # 默认特性已含 glow，不含 wgpu。
 eframe = { version = "0.33", features = ["default"] }
+toml = { version = "1.1.6", features = ["preserve_order"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = [

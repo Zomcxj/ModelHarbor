@@ -38,6 +38,9 @@ pub(super) struct ProviderFormFlags {
     pub(super) show_wb: bool,
     /// QwenCode 页：密钥在顶层 `env[<envKey>]`，条目上写的是变量名（与 DSH 同形）。
     pub(super) show_qwen: bool,
+    /// KimiCode 页：`api_key` 与 `api_key_env` **互斥**（同时写会让 Kimi Code 启动
+    /// 失败），界面两个框填一个就要清掉另一个。
+    pub(super) show_kimi: bool,
     pub(super) show_provider_base_url: bool,
     pub(super) show_provider_timeout: bool,
     pub(super) show_model_name: bool,
@@ -67,6 +70,7 @@ impl ProviderFormFlags {
         let show_zcode = app.current_page == ConfigFormat::ZCode;
         let show_wb = app.current_page == ConfigFormat::WorkBuddy;
         let show_qwen = app.current_page == ConfigFormat::QwenCode;
+        let show_kimi = app.current_page == ConfigFormat::KimiCode;
         Self {
             show_oc,
             show_omp: app.current_page == ConfigFormat::OhMyPi,
@@ -74,6 +78,7 @@ impl ProviderFormFlags {
             show_zcode,
             show_wb,
             show_qwen,
+            show_kimi,
             show_provider_base_url: app.page_has_provider_field("base_url"),
             // opencode 的 options.timeout 始终显示（文件未写该字段时默认 180000ms）
             show_provider_timeout: show_oc || app.page_has_provider_field("timeout"),
@@ -97,6 +102,8 @@ impl ProviderFormFlags {
                 "api.baseUrl"
             } else if show_wb {
                 "url"
+            } else if show_kimi {
+                "base_url"
             } else {
                 "baseUrl"
             },
@@ -108,6 +115,8 @@ impl ProviderFormFlags {
                 "access.apiKey"
             } else if show_qwen {
                 "envKey"
+            } else if show_kimi {
+                "api_key / api_key_env"
             } else {
                 "apiKey"
             },
@@ -119,6 +128,8 @@ impl ProviderFormFlags {
                 "maxInputTokens"
             } else if show_qwen {
                 "generationConfig.contextWindowSize"
+            } else if show_kimi {
+                "max_context_size"
             } else {
                 "contextWindow"
             },
@@ -130,6 +141,8 @@ impl ProviderFormFlags {
                 "maxOutputTokens"
             } else if show_qwen {
                 "generationConfig.samplingParams.max_tokens"
+            } else if show_kimi {
+                "max_output_size"
             } else {
                 "maxTokens"
             },
@@ -141,6 +154,8 @@ impl ProviderFormFlags {
                 "supportsImages"
             } else if show_qwen {
                 "capabilities.vision"
+            } else if show_kimi {
+                "capabilities"
             } else {
                 "input"
             },
@@ -185,6 +200,10 @@ impl App {
                 "capabilities.reasoning.efforts",
                 &["low", "medium", "high", "xhigh", "max"],
             ),
+            // KimiCode 的档位是 `support_efforts` 数组。官方没有固定词表（各模型自带，
+            // 本机文件里是 low/high/max），所以这里只给一组**常见值**供快速点选，
+            // 用户填任意字符串都会被原样写入——不能把词表当成校验。
+            ConfigFormat::KimiCode => ("support_efforts", &["low", "medium", "high", "max"]),
         }
     }
 

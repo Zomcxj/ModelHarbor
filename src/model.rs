@@ -183,6 +183,19 @@ pub struct ModelRow {
     /// raw 所属格式；None 表示在当前页面中新建的条目。
     pub source_format: Option<ConfigFormat>,
     pub raw: Value,
+    /// KimiCode 专属：模型在顶层 `[models."<alias>"]` 表里的**表键**。
+    ///
+    /// Kimi 把模型放在**全局表**里，键是 alias，表内的 `model` 才是发给上游的 wire id，
+    /// **两者可以不同**（用户本机的 `kimi-code/k3` 表里 `model = "k3"`）。而
+    /// [`ModelRow::id`] 只能装一个，且它必须是 **wire id**——`id` 会被发给上游，
+    /// 改名会让请求 model-not-found（与 WorkBuddy 的 id 教训同源）。
+    ///
+    /// 所以 alias 单独存这里：界面显示 `id`（wire id），写回时用它作表键。
+    /// 新建模型时 alias 缺省 = `id`（与 Kimi Code 自己的 `/provider` 行为一致）。
+    ///
+    /// **不能把 alias 塞进 `raw` 的一个内部键**：`raw` 会随跨格式复制流到别的后端，
+    /// 那个内部键就成了写进别人配置里的垃圾字段。独立字段没有这个泄漏面。
+    pub kimi_alias: String,
 }
 
 impl Default for ModelRow {
@@ -223,6 +236,7 @@ impl ModelRow {
             variants,
             source_format: Some(ConfigFormat::Opencode),
             raw: v.clone(),
+            kimi_alias: String::new(),
         }
     }
 
@@ -245,6 +259,7 @@ impl ModelRow {
             original_variants: String::new(),
             source_format: None,
             raw: Value::Object(Map::new()),
+            kimi_alias: String::new(),
         }
     }
 

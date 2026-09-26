@@ -115,7 +115,7 @@ impl App {
         }
     }
 
-    /// 预览文本语法：opencode / pi 为 JSON(C)，omp / DSH 为 YAML；
+    /// 预览文本语法：opencode / pi 为 JSON(C)，omp / DSH 为 YAML，kimi-code 为 TOML；
     /// 另按内容首字符兜底（`{` / `[` 视为 JSON），避免格式与页面不匹配时高亮错乱。
     pub(super) fn preview_syntax(&self, text: &str) -> PreviewSyntax {
         // 内容兜底：以 `{` / `[` 开头一律按 JSON 处理（例如误把 JSON 当 YAML 页面导入）。
@@ -130,6 +130,7 @@ impl App {
         // omp: models.yml / DSH: settings.yaml（YAML）
         // zcode: provider_config.json / workbuddy: models.json / qwen-code: settings.json
         // （均为 JSON；qwen-code 的 settings.json 是 JSONC，去掉注释后仍是 JSON）
+        // kimi-code: ~/.kimi-code/config.toml（TOML）
         match self.current_page {
             ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
                 PreviewSyntax::Json
@@ -139,6 +140,7 @@ impl App {
             | ConfigFormat::WorkBuddy
             | ConfigFormat::QwenCode => PreviewSyntax::Json,
             ConfigFormat::OhMyPi | ConfigFormat::DeepSeekHarness => PreviewSyntax::Yaml,
+            ConfigFormat::KimiCode => PreviewSyntax::Toml,
         }
     }
 

@@ -300,6 +300,23 @@ pub(crate) const QWEN_APIS: [&str; 3] = [
     "openai-responses",
 ];
 
+/// KimiCode 页面可选协议：`[providers.<name>].type` 的 6 个合法值
+/// （源码 `ProviderTypeSchema`，也是 `KNOWN_WIRE_TYPES`）。
+///
+/// 这 6 个值是**逐字**存进 `ProviderRow::pi_api` 的，不做任何翻译。Kimi 的 type 命名与
+/// 本项目的内部协议名**并不重合**（`openai` vs `openai-completions`、
+/// `openai_responses` vs `openai-responses`），硬套一张映射表会在保存时把用户的 `type`
+/// 悄悄改写——`kimi` 更是 Kimi 自己的 wire 类型，映射到 `openai` 会把走 OAuth 的
+/// `managed:kimi-code` 改成另一种协议。逐字存取则同格式往返**恒等无损**。
+pub(crate) const KIMI_APIS: [&str; 6] = [
+    "openai",
+    "kimi",
+    "anthropic",
+    "openai_responses",
+    "google-genai",
+    "vertexai",
+];
+
 /// pi / omp 的 api → opencode 的 npm 包：
 /// - `openai-completions` → `@ai-sdk/openai-compatible`（规范化写法；未写 npm 也是这个语义）；
 /// - `openai-responses` → `@ai-sdk/openai`；
@@ -379,6 +396,7 @@ pub fn model_from_pi(v: &Value) -> ModelRow {
             crate::format::ConfigFormat::Pi
         }),
         raw: v.clone(),
+        kimi_alias: String::new(),
     }
 }
 

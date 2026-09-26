@@ -507,6 +507,7 @@ impl App {
                 zcode: self.path_override(ConfigFormat::ZCode),
                 workbuddy: self.path_override(ConfigFormat::WorkBuddy),
                 qwen_code: self.path_override(ConfigFormat::QwenCode),
+                kimi_code: self.path_override(ConfigFormat::KimiCode),
             },
             collapsed,
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
