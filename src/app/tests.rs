@@ -2000,6 +2000,124 @@ mod cross_page_agent_model_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 端到端：从别的页存到 Kimi 文件，`managed:*` 登录态与它名下的官方模型必须活下来。
+    ///
+    /// 界面不显示 `managed:*`，也无从重建它（凭据在 `credentials/` 里与这份声明配对）。
+    /// 一旦跨格式保存把它剔掉，用户下次开 Kimi Code 就是没登录的状态。
+    #[test]
+    fn saving_to_the_kimi_page_keeps_the_managed_provider_and_its_models() {
+        let dir = temp_dir("kimi_managed");
+        let kimi_path = dir.join("config.toml");
+        let path = kimi_path.display().to_string();
+        std::fs::write(
+            &kimi_path,
+            "default_model = \"kimi-code/k3\"\n\n\
+             [providers.\"managed:kimi-code\"]\n\
+             base_url = \"https://api.kimi.com/coding/v1\"\n\
+             type = \"kimi\"\n\
+             api_key = \"\"\n\n\
+             [providers.\"managed:kimi-code\".oauth]\n\
+             storage = \"file\"\n\
+             key = \"oauth/kimi-code\"\n\n\
+             [providers.sensenova]\n\
+             type = \"openai\"\n\
+             base_url = \"https://token.sensenova.cn/v1\"\n\n\
+             [models.\"kimi-code/k3\"]\n\
+             provider = \"managed:kimi-code\"\n\
+             model = \"k3\"\n\
+             max_context_size = 1048576\n\
+             display_name = \"K3\"\n\n\
+             [models.\"sensenova/sensenova-6.8-flash-lite\"]\n\
+             provider = \"sensenova\"\n\
+             model = \"sensenova-6.8-flash-lite\"\n\
+             max_context_size = 65536\n",
+        )
+        .unwrap();
+
+        let mut app = App {
+            providers: vec![configured_provider("sensenova", "sensenova-6.8-flash-lite")],
+            source_format: ConfigFormat::Opencode,
+            current_page: ConfigFormat::Opencode,
+            config_path: path.clone(),
+            loaded_path: path.clone(),
+            ..App::default()
+        };
+        app.save_backend_to(ConfigFormat::KimiCode, &path)
+            .expect("保存应当成功");
+
+        let written: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&kimi_path).unwrap()).unwrap();
+        let providers = written["providers"].as_table().unwrap();
+        assert!(providers.contains_key("managed:kimi-code"), "登录态被删了");
+        assert_eq!(
+            providers["managed:kimi-code"]["oauth"]["key"].as_str(),
+            Some("oauth/kimi-code"),
+            "oauth 子表要逐字保留"
+        );
+        let models = written["models"].as_table().unwrap();
+        assert_eq!(
+            models["kimi-code/k3"]["model"].as_str(),
+            Some("k3"),
+            "官方模型被删了"
+        );
+        assert_eq!(models["kimi-code/k3"]["display_name"].as_str(), Some("K3"));
+        assert!(
+            models.contains_key("sensenova-6.8-flash-lite"),
+            "界面接管的模型仍要写进去（跨格式来的没有 alias，缺省用 wire id）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 端到端：从别的页存到 Qwen 文件，硬编码的 `qwen-oauth` 条目必须活下来。
+    #[test]
+    fn saving_to_the_qwen_page_keeps_the_oauth_entries() {
+        let dir = temp_dir("qwen_oauth");
+        let qwen_path = dir.join("settings.json");
+        let path = qwen_path.display().to_string();
+        std::fs::write(
+            &qwen_path,
+            r#"{
+              "$version": 4,
+              "modelProviders": {
+                "openai": [
+                  { "id": "gpt-4o", "name": "GPT-4o", "envKey": "OPENAI_API_KEY",
+                    "baseUrl": "https://api.openai.com/v1" }
+                ],
+                "qwen-oauth": [
+                  { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus",
+                    "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1" }
+                ]
+              },
+              "security": { "auth": { "selectedType": "openai" } }
+            }"#,
+        )
+        .unwrap();
+
+        let mut app = App {
+            providers: vec![configured_provider("sensenova", "sensenova-6.8-flash-lite")],
+            source_format: ConfigFormat::Opencode,
+            current_page: ConfigFormat::Opencode,
+            config_path: path.clone(),
+            loaded_path: path.clone(),
+            ..App::default()
+        };
+        app.save_backend_to(ConfigFormat::QwenCode, &path)
+            .expect("保存应当成功");
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&qwen_path).unwrap()).unwrap();
+        assert_eq!(
+            written["modelProviders"]["qwen-oauth"][0]["id"], "qwen3-coder-plus",
+            "硬编码的 OAuth 条目被删了"
+        );
+        assert!(
+            written["modelProviders"]["openai"][0]["id"] == "sensenova-6.8-flash-lite",
+            "界面接管的 pid 要整体换成界面的条目"
+        );
+        assert_eq!(written["security"]["auth"]["selectedType"], "openai");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 同一份 agents 分别写三页，各自拿到自己网关认的值（一键保存不会串台）。
     #[test]
     fn each_page_gets_its_own_gateway_reference() {

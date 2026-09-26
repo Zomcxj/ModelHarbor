@@ -124,7 +124,10 @@ pub fn full_store_path(config_path: &str) -> String {
 }
 
 /// 某个 provider 是否由 OAuth 登录维护（只读）。
-fn is_managed(name: &str) -> bool {
+///
+/// 公开是因为 `app::strip_cross_format_containers` 也要用：跨格式保存时界面接管
+/// `[providers.*]`，但 `managed:*` 不归界面管，必须原样留着。
+pub fn is_managed_provider(name: &str) -> bool {
     name.starts_with(MANAGED_PREFIX)
 }
 
@@ -495,17 +498,14 @@ fn entry_from_model(m: &ModelRow, alias: &str, old: Option<&Value>) -> Value {
     // alias 就是表键，不写进条目里（写了 Kimi 也不认，schema 无此字段）。
     let _ = alias;
 
-    // display_name 缺省不写：Kimi 会回落用 `model` 显示，写一个等于 wire id 的
-    // display_name 是冗余噪声（本机文件里 sensenova 的两条就没有它）。
-    set_or_remove(
-        &mut obj,
-        "display_name",
-        if m.name.trim() == m.id.trim() {
-            ""
-        } else {
-            m.name.trim()
-        },
-    );
+    // `display_name` **逐字写**：等于 wire id 也写。
+    //
+    // 曾经按「等于 `model` 就省掉」处理，理由是「冗余」——那是错的：官方写法（Kimi 自己的
+    // `/provider` 流程与文档示例）每条都带 `display_name`，本机 config.toml 的 7 条也全部
+    // 带着，包括与 `model` 同名的那些。冗余与否是 Kimi 的判断，不是本工具的；一次保存就
+    // 悄悄删掉用户文件里的一个字段，是实打实的数据丢失。
+    // 只有界面把名称清空时才删键（Kimi 会回落用 `model` 显示，空标题反而是它不认的写法）。
+    set_or_remove(&mut obj, "display_name", m.name.trim());
 
     // `max_context_size` 必填且 ≥1：解析不出正整数就**不写**这个键，让 Kimi 自己
     // 报错说缺少必填字段，而不是由本工具写一个 0 进去（那是非法值）。
@@ -705,7 +705,7 @@ fn all_providers(providers: &[ProviderRow], base: &Value) -> Map<String, Value> 
     for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
         let name = p.key.trim();
         // 只读 provider 不归界面管，原样保留（见 [`unmanaged_providers`]）。
-        if is_managed(name) {
+        if is_managed_provider(name) {
             continue;
         }
         out.insert(name.to_string(), provider_entry_from_row(p, old.get(name)));
@@ -727,7 +727,7 @@ fn unmanaged_providers(base: &Value) -> Vec<(String, Value)> {
     providers_map(base)
         .map(|m| {
             m.iter()
-                .filter(|(name, _)| is_managed(name))
+                .filter(|(name, _)| is_managed_provider(name))
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect()
         })
@@ -744,7 +744,7 @@ fn unmanaged_models(base: &Value, managed: &[ProviderRow]) -> Map<String, Value>
         let owner = model.get("provider").and_then(Value::as_str).unwrap_or("");
         // 界面认得的：provider 存在、不是 managed、且该 provider 有卡片。
         let known = !owner.is_empty()
-            && !is_managed(owner)
+            && !is_managed_provider(owner)
             && providers.contains_key(owner)
             && managed.iter().any(|p| p.key.trim() == owner);
         if !known {
@@ -763,7 +763,7 @@ fn build_load(joined: Vec<Joined>, orphans: Vec<(String, Value)>, trusted: bool)
     for j in &joined {
         // `managed:*` 不进界面：它由 OAuth 维护，界面无从编辑，显示出来只会让人
         // 以为能改。模型也一样（它们是登录时自动写入的）。
-        if is_managed(&j.name) {
+        if is_managed_provider(&j.name) {
             continue;
         }
         let mut row = provider_from_entry(&j.name, &j.provider, &j.models);

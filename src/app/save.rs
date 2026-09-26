@@ -33,6 +33,11 @@ pub(super) enum PageTarget {
 /// 同时目标文件的其他顶层字段（如 DSH 的 llm-pi-ai 下其他设置）原样保留。
 /// 同格式目标（WSL 同步等）不走这里，仍用保守合并。
 ///
+/// **只剔界面接管得了的部分。** 目标文件里那些界面不显示、也无从重建的只读内容
+/// （Kimi 的 `managed:*` OAuth provider 与它名下的模型、Qwen 的 `qwen-oauth`）必须留下：
+/// 下游的 `unmanaged_*` 正是从**剔完之后的 root** 里把它们捡回来的，剔干净就再也捡不回来，
+/// 一次跨页保存就成了静默删除。
+///
 /// **删除必须用 `shift_remove`，不能用 `remove`。** `serde_json` 开了 `preserve_order`
 /// （底层 `IndexMap`），它的 `remove` 是 `swap_remove`：删一个键会把**最后一个**键搬到
 /// 空出来的槽位，其余键的相对顺序随之打乱。跨格式保存 ZCode 时先删 `providerOrder`，
@@ -86,18 +91,88 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
         }
         // 已在上面提前返回，这里不会到达；列出以保持 match 穷尽。
         ConfigFormat::WorkBuddy => {}
-        // QwenCode 的两个容器都要剔：只剔 `modelProviders` 会在跨格式写入时留下
-        // 指向已删 provider 的孤儿协议声明。
+        // QwenCode：只剔界面接管的部分，**留下 `qwen-oauth`**。
+        //
+        // `qwen-oauth` 是官方硬编码的 OAuth 条目，界面不显示也无从重建。整个
+        // `modelProviders` 剔掉之后 `unmanaged_of` 在基底里找不到它（它读的就是这个被剔过的
+        // root），于是一次跨页保存就把用户登录好的 Qwen OAuth 模型删了。
         ConfigFormat::QwenCode => {
-            obj.shift_remove("modelProviders");
+            if let Some(providers) = obj.get_mut("modelProviders").and_then(Value::as_object_mut) {
+                let drop: Vec<String> = providers
+                    .keys()
+                    .filter(|pid| !crate::backends::qwen_code::is_readonly_provider(pid))
+                    .cloned()
+                    .collect();
+                for pid in drop {
+                    providers.shift_remove(&pid);
+                }
+            }
+            if obj
+                .get("modelProviders")
+                .and_then(Value::as_object)
+                .is_some_and(Map::is_empty)
+            {
+                obj.shift_remove("modelProviders");
+            }
+            // `providerProtocol` 里的映射都指向界面接管的**自定义** pid。自定义 pid 与它
+            // 名下的条目一起被剔掉了，留着就是指向不存在 provider 的孤儿声明；唯一留下的
+            // `qwen-oauth` 是内置 pid，本来就不需要映射。
             obj.shift_remove("providerProtocol");
         }
-        // KimiCode 的 `models` 是**全局表**（不只属于某一个 provider），跨格式写入时
-        // 若只剔「能映射到界面 provider 的条目」会留下半截表。两个容器整体剔掉，
-        // 与其它后端的「容器整体接管」口径一致。
+        // KimiCode：同样只剔界面接管的部分，**留下 `managed:*`**。
+        //
+        // `[providers."managed:*"]` 是 `/login` 的 OAuth 登录态（与敏感目录
+        // `credentials/` 配对），它名下的 `[models.*]` 条目是登录时写进去的官方模型。
+        // 两者都不进界面、界面也无从重建；整表剔掉之后 `unmanaged_providers` /
+        // `unmanaged_models` 在基底里什么也找不到，一次跨页保存就把登录态和官方模型一起删了。
         ConfigFormat::KimiCode => {
-            obj.shift_remove("providers");
-            obj.shift_remove("models");
+            // 「哪些模型归界面接管」要按**剔之前**的 provider 表判断：先剔 provider 再看
+            // 模型的话，owner 已经不在表里，界面接管的模型会被误认成孤儿而留下。
+            let owners: Vec<String> = obj
+                .get("providers")
+                .and_then(Value::as_object)
+                .map(|provs| provs.keys().cloned().collect())
+                .unwrap_or_default();
+            if let Some(providers) = obj.get_mut("providers").and_then(Value::as_object_mut) {
+                let drop: Vec<String> = providers
+                    .keys()
+                    .filter(|name| !crate::backends::kimi_code::is_managed_provider(name))
+                    .cloned()
+                    .collect();
+                for name in drop {
+                    providers.shift_remove(&name);
+                }
+            }
+            if let Some(models) = obj.get_mut("models").and_then(Value::as_object_mut) {
+                let drop: Vec<String> = models
+                    .iter()
+                    .filter(|(_, entry)| {
+                        let owner = entry.get("provider").and_then(Value::as_str).unwrap_or("");
+                        // `managed:*` 名下的留下。
+                        if crate::backends::kimi_code::is_managed_provider(owner) {
+                            return false;
+                        }
+                        // 孤儿（没写 `provider`，或指向表里本来就没有的键）也留下：那是本工具
+                        // 认不出的内容，去留不该由一次格式转换来决定。只有「指向本次要剔掉的
+                        // 那个 provider」的条目才是界面接管的。
+                        !owner.is_empty() && owners.iter().any(|o| o == owner)
+                    })
+                    .map(|(alias, _)| alias.clone())
+                    .collect();
+                for alias in drop {
+                    models.shift_remove(&alias);
+                }
+            }
+            // 表空了整个删掉（`[providers]` 空表合法但多余）。
+            for key in ["providers", "models"] {
+                if obj
+                    .get(key)
+                    .and_then(Value::as_object)
+                    .is_some_and(Map::is_empty)
+                {
+                    obj.shift_remove(key);
+                }
+            }
         }
     }
 }

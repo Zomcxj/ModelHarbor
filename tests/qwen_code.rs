@@ -615,7 +615,10 @@ fn legacy_wrapped_shape_is_preserved() {
 fn cross_format_strip_removes_both_containers() {
     let mut root: Value = serde_json::from_str(&settings_json()).unwrap();
     model_harbor::app::strip_cross_format_containers(ConfigFormat::QwenCode, &mut root, true);
-    assert!(root.get("modelProviders").is_none());
+    assert!(
+        root.get("modelProviders").is_none(),
+        "没有只读 pid 时整块删掉"
+    );
     assert!(
         root.get("providerProtocol").is_none(),
         "只剔 modelProviders 会留下指向已删 provider 的孤儿协议声明"
@@ -623,6 +626,24 @@ fn cross_format_strip_removes_both_containers() {
     // 其余顶层设置保留
     assert_eq!(root["security"]["auth"]["selectedType"], "openai");
     assert_eq!(root["general"]["vimMode"], true);
+}
+
+#[test]
+fn cross_format_strip_keeps_qwen_oauth() {
+    // `qwen-oauth` 是官方硬编码的 OAuth 条目，界面不显示也无从重建。整块剔掉就是
+    // 把用户已经登录好的 Qwen 模型删了。
+    let mut root: Value = serde_json::from_str(&settings_json()).unwrap();
+    root["modelProviders"]["qwen-oauth"] = json!([
+        { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus",
+          "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1" }
+    ]);
+    model_harbor::app::strip_cross_format_containers(ConfigFormat::QwenCode, &mut root, true);
+    let providers = root["modelProviders"].as_object().expect("该 pid 要留下");
+    assert_eq!(providers.len(), 1, "只该留下 qwen-oauth");
+    assert_eq!(
+        root["modelProviders"]["qwen-oauth"][0]["id"], "qwen3-coder-plus",
+        "条目逐字保留"
+    );
 }
 
 #[test]

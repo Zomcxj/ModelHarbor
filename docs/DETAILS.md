@@ -59,7 +59,7 @@ cargo build --release
 
 Qwen Code 的协议落在 **provider id（`modelProviders` 的键）加条目自己的 `wireApi`** 上，不与上面那份数据共用：内置 id `openai` / `anthropic` / `gemini` / `vertex-ai` 直接就是协议，OpenAI 的两种 API 共用 `openai` 这个 id、靠 `wireApi`（`chat-completions` / `responses`）区分；自定义 id 必须在顶层 `providerProtocol` 里声明映射，否则 Qwen Code 会**把整条静默跳过**。`qwen-oauth` 这个 id 是硬编码的、不可覆盖，该 id 下的条目在界面上不显示、保存时整块原样保留。
 
-Kimi Code 的配置是 **TOML**，也是唯一一个模型**不在 provider 内部**的格式：模型放在顶层全局表 `[models."<别名>"]` 里，靠 `provider = "<providers 键>"` 关联到 `[providers.<名称>]`，所以界面加载时要 join、保存时要拆回两张表。表键是**别名**，表内的 `model` 才是发给上游的模型名，**两者可以不同**（本机就有 `[models."kimi-code/k3"]` 里写 `model = "k3"` 的情况）：界面显示与编辑的是后者，别名在保存时原样沿用，不会被改名——`model` 一旦被改就不是同一个模型了。协议字段 `type` 的 6 个取值（`kimi` / `openai` / `anthropic` / `openai_responses` / `google-genai` / `vertexai`）**逐字读、逐字写**，不做任何翻译：这些名字与本工具内部那份协议词表并不重合，硬套一张映射表会在保存时把用户写的 `type` 悄悄改掉。`managed:` 开头的 provider（如 `managed:kimi-code`）由 `/login` 的 OAuth 登录写入，界面上不显示、保存时整块原样保留——它和 `credentials/` 里的凭据是配对的，改写会破坏登录态。
+Kimi Code 的配置是 **TOML**，也是唯一一个模型**不在 provider 内部**的格式：模型放在顶层全局表 `[models."<别名>"]` 里，靠 `provider = "<providers 键>"` 关联到 `[providers.<名称>]`，所以界面加载时要 join、保存时要拆回两张表。表键是**别名**，表内的 `model` 才是发给上游的模型名，**两者可以不同**（本机就有 `[models."kimi-code/k3"]` 里写 `model = "k3"` 的情况）：界面显示与编辑的是后者，别名在保存时原样沿用，不会被改名——`model` 一旦被改就不是同一个模型了。协议字段 `type` 的 6 个取值（`kimi` / `openai` / `anthropic` / `openai_responses` / `google-genai` / `vertexai`）**逐字读、逐字写**，不做任何翻译：这些名字与本工具内部那份协议词表并不重合，硬套一张映射表会在保存时把用户写的 `type` 悄悄改掉。`managed:` 开头的 provider（如 `managed:kimi-code`）由 `/login` 的 OAuth 登录写入，界面上不显示、保存时整块原样保留——它和 `credentials/` 里的凭据是配对的，改写会破坏登录态。界面上的「名称」写的就是 `display_name`，**逐字写、等于 `model` 也写**（官方写法每条都带着它），只有把名称清空才删掉这个键。
 
 Kimi Code 的 **`api_key` 与 `api_key_env` 互斥**，同时写会让 Kimi Code **启动失败**（不是「配置不生效」，是直接起不来）。界面两个输入框都显示，但填了一个就当场清掉另一个；保存前还会再校验一次，有冲突就取消保存。判据是「非空字符串」——`api_key = ""` 视同未设置，所以 `api_key = ""` 与 `oauth` 并存是合法的（本机文件正是如此）。另外 `capabilities` 是**只增不减**的标签集（官方口径 "only ever added, never removed"）：保存时不会因为界面没勾就删掉已有标签，否则会静默降级模型能力。「支持思考」是唯一例外——它对应 `thinking` / `always_thinking` 两个标签，取消勾选会一并移除，否则那个开关就关不掉了。
 
@@ -220,6 +220,7 @@ Providers 标题行的「查询用户数据」按钮会对当前页面的 provid
 - 手动指定过的路径按页面记住（写进设置文件）：启动时优先打开「覆盖过且文件确实存在」的页面；把路径输入框清空后回车即清除该页覆盖，回到自动探测的默认路径
 - **启动时按文件内容判定方言**，而不是只按「哪一页填了路径」：把 opencode 的配置文件填到 pi 页时，用 pi 方言去读会解析出 0 条 provider（表现为「写了路径却不自动加载」）。现在启动探测与手动加载走同一套内容判定，页面会跟随实际格式切换
 - 跨格式写入由界面接管的容器：`provider`（opencode 系）/ `providers`（pi / omp / DSH）——容器内的条目与顺序完全来自界面，目标文件里多出来的旧条目不残留；目标文件其余顶层配置（如 `mcp`、`instructions`）原样保留
+- 同一个容器里**界面不显示、也无从重建**的只读内容不在接管范围内，跨格式写入照样保留：Kimi Code 的 `managed:` provider 及其名下模型（`/login` 的登录态，与 `credentials/` 配套）、Qwen Code 的 `qwen-oauth` 条目（官方硬编码）。这些内容一旦被剔掉就再也回不来——界面里根本没有能把它写回去的地方
 - opencode 的 `agent` 容器只在界面确实持有 agents 数据时才接管；来源为其他格式时界面无从表达 agents，**目标文件已有的 agents 原样保留**，不会被清空
 - 跨格式写入覆盖已存在的文件前，先把原内容备份为 `<文件>.bak`（内容相同或文件为空时跳过）；备份失败则取消保存，不会静默替换旧配置
 - 勾选「WSL同步」后同时写入 WSL 侧对应路径；未在 WSL 中安装对应 agent 时禁用勾选

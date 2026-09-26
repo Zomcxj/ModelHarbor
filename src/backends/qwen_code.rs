@@ -152,7 +152,11 @@ fn is_builtin_pid(pid: &str) -> bool {
     BUILTIN_PIDS.contains(&pid)
 }
 
-fn is_readonly_pid(pid: &str) -> bool {
+/// 是否是那个只读的内置 pid（`qwen-oauth`）。
+///
+/// 公开是因为 `app::strip_cross_format_containers` 也要用：跨格式保存时界面接管
+/// `modelProviders`，但 `qwen-oauth` 不归界面管，必须原样留着。
+pub fn is_readonly_provider(pid: &str) -> bool {
     pid == READONLY_PID
 }
 
@@ -215,7 +219,7 @@ fn entries_from(root: &Value) -> Vec<(String, Value)> {
         return out;
     };
     for (pid, value) in m {
-        if is_readonly_pid(pid) {
+        if is_readonly_provider(pid) {
             continue;
         }
         for entry in value.as_array().map(Vec::as_slice).unwrap_or_default() {
@@ -378,7 +382,7 @@ fn route(
 ) -> (String, Option<String>, &'static str) {
     let (builtin_pid, wire) = pid_for_api(api);
     let custom = p.qwen_pid.trim();
-    if !custom.is_empty() && !is_builtin_pid(custom) && !is_readonly_pid(custom) {
+    if !custom.is_empty() && !is_builtin_pid(custom) && !is_readonly_provider(custom) {
         let known = protocols
             .and_then(|m| m.get(custom))
             .and_then(Value::as_str)
@@ -409,7 +413,7 @@ fn place(providers: &[ProviderRow], base: &Value) -> Vec<Placed> {
     for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
         let api = p.effective_api();
         let (pid, mapping, wire) = route(p, &api, protocols);
-        if is_readonly_pid(&pid) {
+        if is_readonly_provider(&pid) {
             // 理论到不了：`route` 不会产出只读 pid。留一道闸门，别让只读条目被重建。
             continue;
         }
@@ -647,7 +651,7 @@ fn unmanaged_of(base: &Value, placed: &[Placed]) -> Vec<(String, Value)> {
     };
     for (pid, value) in m {
         // `qwen-oauth` 整块原样保留：官方硬编码、不可覆盖，界面也不显示它。
-        if is_readonly_pid(pid) {
+        if is_readonly_provider(pid) {
             out.push((pid.clone(), value.clone()));
             continue;
         }

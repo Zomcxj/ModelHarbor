@@ -80,15 +80,21 @@ default_effort = "high"
 provider = "sensenova"
 model = "sensenova-6.8-flash-lite"
 max_context_size = 65536
-capabilities = [ "tool_use", "thinking" ]
+capabilities = [ "tool_use", "thinking", "dynamically_loaded_tools"  ]
 adaptive_thinking = true
+display_name = "sensenova-6.8-flash-lite"
+support_efforts = [ "high", "max" ]
+default_effort = "high"
 
 [models."sensenova/deepseek-v4-flash"]
 provider = "sensenova"
 model = "deepseek-v4-flash"
 max_context_size = 262000
-capabilities = [ "tool_use", "thinking" ]
+capabilities = [ "tool_use", "thinking", "dynamically_loaded_tools"  ]
 adaptive_thinking = true
+display_name = "deepseek-v4-flash"
+support_efforts = [ "high", "max" ]
+default_effort = "high"
 
 [thinking]
 enabled = true
@@ -229,7 +235,7 @@ fn parse_maps_model_attributes() {
     assert_eq!(m.id, "sensenova-6.8-flash-lite", "id 是 wire id");
     assert_eq!(
         m.name, "sensenova-6.8-flash-lite",
-        "没有 display_name 就回落 wire id"
+        "display_name 与 wire id 同名时照样读进来（本机文件就是如此）"
     );
     assert_eq!(m.context, "65536");
     assert_eq!(m.output, "", "没写 max_output_size 就留空");
@@ -239,7 +245,26 @@ fn parse_maps_model_attributes() {
         m.modalities_input, "text",
         "只有 tool_use/thinking，没有 image_in"
     );
+    assert_eq!(m.variants, "high, max");
+}
+
+#[test]
+fn parse_falls_back_when_optional_keys_are_absent() {
+    // 可选项缺失时的缺省：名称回落 wire id，档位与输出上限留空。
+    let content = r#"
+[providers.p]
+type = "openai"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 1000
+"#;
+    let load2 = load(content);
+    let m = &provider(&load2, "p").models[0];
+    assert_eq!(m.name, "m", "没有 display_name 就回落 wire id");
     assert_eq!(m.variants, "", "没写 support_efforts 就留空");
+    assert_eq!(m.output, "", "没写 max_output_size 就留空");
 }
 
 #[test]
@@ -380,6 +405,23 @@ fn serialize_preserves_managed_entries_verbatim() {
     assert_eq!(
         out["models"]["kimi-code/kimi-for-coding"]["display_name"],
         "K2.8 Preview"
+    );
+}
+
+#[test]
+fn serialize_writes_display_name_even_when_it_equals_the_wire_id() {
+    // 官方写法每条模型都带 `display_name`（等于 `model` 也带，本机 7 条全带）。
+    // 早先按「等于 model 就省掉」处理，一次保存就把这个键从用户文件里删了。
+    let content = "[providers.p]\ntype = \"openai\"\n\n\
+         [models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1000\n\
+         display_name = \"m\"\n";
+    let root = toml_value(content);
+    let load = load(content);
+    assert_eq!(provider(&load, "p").models[0].name, "m");
+    let out = kimi_backend().serialize_root(&[], &load.providers, &root, None);
+    assert_eq!(
+        out["models"]["p/m"]["display_name"], "m",
+        "名称与 wire id 相同也要逐字写回去"
     );
 }
 
@@ -803,15 +845,61 @@ fn full_store_aborts_when_the_config_is_unreadable() {
 // ---------------------------------------------------------------- 跨格式
 
 #[test]
-fn cross_format_strip_removes_both_tables() {
+fn cross_format_strip_keeps_managed_and_drops_ui_owned() {
     let mut root = toml_value(&config_toml());
     model_harbor::app::strip_cross_format_containers(ConfigFormat::KimiCode, &mut root, false);
     let obj = root.as_object().unwrap();
-    assert!(obj.get("providers").is_none(), "providers 表要整体剔掉");
-    assert!(obj.get("models").is_none(), "models 是全局表，也要整体剔掉");
+
+    // `managed:*` 是 `/login` 的登录态（与 credentials/ 配对），界面不显示也无从重建：
+    // 剔干净就等于把用户已登录的官方模型删了。
+    let providers = obj["providers"].as_object().expect("providers 表要留下");
+    assert_eq!(providers.len(), 1, "只该留下 managed provider");
+    let managed = &providers["managed:kimi-code"];
+    assert_eq!(
+        managed["oauth"]["key"], "oauth/kimi-code",
+        "oauth 子表逐字保留"
+    );
+    assert_eq!(managed["type"], "kimi");
+    assert_eq!(managed["api_key"], "");
+
+    // 界面接管的 provider 及其名下模型才剔（干净转换）。
+    let models = obj["models"].as_object().expect("models 表要留下");
+    let aliases: Vec<&str> = models.keys().map(String::as_str).collect();
+    assert_eq!(
+        aliases,
+        ["kimi-code/kimi-for-coding", "kimi-code/k3"],
+        "只该留下 managed 名下的模型，且顺序不变"
+    );
+
     // 顶层设置保留
     assert_eq!(obj["default_model"], "sensenova/sensenova-6.8-flash-lite");
     assert_eq!(obj["thinking"]["enabled"], true);
+}
+
+#[test]
+fn cross_format_strip_drops_the_tables_when_nothing_is_managed() {
+    // 没有只读内容时仍是「整体接管」：表要整个删掉，不留空壳。
+    let mut root = toml_value(
+        "[providers.sensenova]\ntype = \"openai\"\n\n\
+         [models.\"sensenova/x\"]\nprovider = \"sensenova\"\nmodel = \"x\"\nmax_context_size = 1000\n",
+    );
+    model_harbor::app::strip_cross_format_containers(ConfigFormat::KimiCode, &mut root, false);
+    let obj = root.as_object().unwrap();
+    assert!(obj.get("providers").is_none());
+    assert!(obj.get("models").is_none());
+}
+
+#[test]
+fn cross_format_strip_keeps_orphan_models() {
+    // `provider` 指向表里根本没有的键：本工具认不出的内容，格式转换不该替它决定去留。
+    let mut root = toml_value(
+        "[providers.sensenova]\ntype = \"openai\"\n\n\
+         [models.\"ghost/x\"]\nprovider = \"ghost\"\nmodel = \"x\"\nmax_context_size = 1000\n",
+    );
+    model_harbor::app::strip_cross_format_containers(ConfigFormat::KimiCode, &mut root, false);
+    let obj = root.as_object().unwrap();
+    assert!(obj.get("providers").is_none(), "界面接管的 provider 仍要剔");
+    assert_eq!(obj["models"]["ghost/x"]["provider"], "ghost");
 }
 
 #[test]
