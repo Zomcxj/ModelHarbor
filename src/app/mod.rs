@@ -9,7 +9,9 @@ use std::collections::{HashMap, HashSet};
 mod agents;
 mod balance;
 pub(crate) mod bars;
+mod diff;
 mod fetch;
+mod health;
 mod preview;
 mod providers;
 mod providers_form;
@@ -131,6 +133,8 @@ pub struct App {
     allow_model_test_with_proxy: bool,
     /// 首次使用引导条是否已被关掉（来自 settings.json）。
     guide_dismissed: bool,
+    /// 配置体检悬浮窗是否打开（见 [`crate::app::health`]）。
+    show_health: bool,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
     ui_style: crate::theme::UiStyle,
     /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
@@ -177,6 +181,18 @@ pub struct App {
     preview_find_focus: bool,
     /// 待跳转的命中字节偏移（Enter/按钮跳转后用光标滚动到该处）。
     preview_find_jump: Option<usize>,
+    /// 对比视图显示「磁盘上的目标文件 → 待保存文档」的逐行改动。
+    ///
+    /// 只读视图：对比模式下不渲染文本框，因此不存在「手改被对比覆盖」的问题，
+    /// 切回编辑模式时草稿仍是原样。
+    preview_diff_mode: bool,
+    /// 对比结果缓存（签名 → 显示行与统计），避免每帧重算 LCS。
+    preview_diff_cache: Option<(u64, Vec<diff::DiffLine>, diff::DiffSummary)>,
+    /// 待重算的对比签名与它首次出现的时刻（见 `ui_preview_diff` 的防抖说明）。
+    preview_diff_pending: Option<(u64, f64)>,
+    /// 成功写盘的次数。对比视图把它并进缓存签名：写盘后磁盘内容变了，
+    /// 缓存必须作废，否则会继续显示一份已经落盘的「改动」。
+    save_serial: u64,
     /// 光标所在行（1-based；失焦时保留最后位置）。
     preview_cursor_line: usize,
     load_error: Option<String>,
@@ -294,6 +310,7 @@ impl Default for App {
             net_guard: crate::netguard::detect(),
             allow_model_test_with_proxy: prefs.allow_model_test_with_proxy,
             guide_dismissed: prefs.guide_dismissed,
+            show_health: false,
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
             tab_order: prefs.tab_order.clone(),
             net_guard_at: 0.0,
@@ -323,6 +340,10 @@ impl Default for App {
             preview_find_index: 0,
             preview_find_focus: false,
             preview_find_jump: None,
+            preview_diff_mode: false,
+            preview_diff_cache: None,
+            preview_diff_pending: None,
+            save_serial: 0,
             preview_cursor_line: 1,
             load_error: None,
             pi_extras: Value::Object(Map::new()),
@@ -408,6 +429,8 @@ impl eframe::App for App {
         });
         // 令牌管理：独立悬浮窗（可拖动 / 可关闭），不占正文布局。
         self.ui_tokens_window(ctx);
+        // 配置体检：同样是独立悬浮窗，保存前想核对一遍时打开。
+        self.ui_health_window(ctx);
         self.paint_drag_ghost(ctx);
         // 抓取光标：控件在各自绘制时只「提出请求」（悬停=手掌、按住=拳头），
         // 这里帧末统一提交，同一帧只碰一次系统光标。
@@ -682,6 +705,9 @@ impl App {
     fn apply_load(&mut self) {
         let path = self.config_path.clone();
         self.loaded_path = path.clone();
+        // 文件内容变了，对比视图的缓存作废。
+        self.preview_diff_cache = None;
+        self.preview_diff_pending = None;
         let result = backends::load_backend(self.source_format, &path);
         match result {
             Ok(load) => {
@@ -835,15 +861,7 @@ impl App {
             // 不允许拖到主窗口外：拖出去后标题栏可能落到屏幕外，窗口就找不回来了。
             .constrain_to(area)
             .current_pos(centered)
-            .frame({
-                // 悬浮窗用比卡片更大的圆角与内边距，与主界面分层；
-                // 圆角在形状预设基础上加一档（上限 20）。
-                let mut frame = egui::Frame::window(&ctx.style());
-                let extra = crate::theme::RADIUS_LG - crate::theme::RADIUS_MD;
-                frame.corner_radius = self.ui_style.radius().saturating_add(extra).min(20).into();
-                frame.inner_margin = egui::Margin::same(crate::theme::SPACE_4 as i8);
-                frame
-            })
+            .frame(self.floating_window_frame(ctx))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     // 撑满固定高度（不随内容缩），滚动条才是“内容超出才出现”。
@@ -854,6 +872,112 @@ impl App {
             });
         if !open {
             self.show_tokens = false;
+        }
+    }
+
+    /// 配置体检悬浮窗：把各类检查汇总成一张清单（内容见 [`crate::app::health`]）。
+    ///
+    /// 只读清单，**不提供一键修复**：这些问题的正确修法取决于用户意图
+    /// （重复的 model id 该留哪条、可疑的 baseUrl 该不该改），自动改就是替用户做决定。
+    fn ui_health_window(&mut self, ctx: &egui::Context) {
+        if !self.show_health {
+            return;
+        }
+        let area = ctx.content_rect();
+        let height = (area.height() - 140.0).clamp(240.0, 560.0);
+        let mut open = true;
+        let size = egui::vec2(680.0, height);
+        let centered = area.center() - size / 2.0;
+        egui::Window::new("配置体检")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .order(Self::TOKENS_WINDOW_ORDER)
+            .fixed_size(size)
+            .constrain_to(area)
+            .current_pos(centered)
+            .frame(self.floating_window_frame(ctx))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        self.ui_health_panel(ui);
+                    });
+            });
+        if !open {
+            self.show_health = false;
+        }
+    }
+
+    /// 悬浮窗统一的边框样式：比卡片更大的圆角与内边距，与主界面分层。
+    /// 圆角在形状预设基础上加一档（上限 20）。
+    fn floating_window_frame(&self, ctx: &egui::Context) -> egui::Frame {
+        let mut frame = egui::Frame::window(&ctx.style());
+        let extra = crate::theme::RADIUS_LG - crate::theme::RADIUS_MD;
+        frame.corner_radius = self.ui_style.radius().saturating_add(extra).min(20).into();
+        frame.inner_margin = egui::Margin::same(crate::theme::SPACE_4 as i8);
+        frame
+    }
+
+    /// 体检清单的内容。每帧重算：它只遍历内存里的 providers / agents，
+    /// 不读文件、不发请求，比维护一份失效逻辑更省心。
+    fn ui_health_panel(&mut self, ui: &mut egui::Ui) {
+        let input = health::HealthInput {
+            page: self.current_page,
+            providers: &self.providers,
+            agents: &self.agents,
+            source_is_opencode: self.source_format.is_opencode_family(),
+        };
+        let issues = health::collect(&input);
+        let semantics = crate::theme::semantics(ui);
+        if issues.is_empty() {
+            ui.colored_label(semantics.ok, "没有发现需要处理的问题。");
+            ui.add_space(crate::theme::SPACE_2);
+            ui.label(
+                egui::RichText::new(
+                    "体检只检查结构与字段写法（重名、非法数字、可疑 URL、跨网关引用等），\
+                     不代表配置一定能在上游跑通。",
+                )
+                .small()
+                .weak(),
+            );
+            return;
+        }
+        let (blockers, warnings) = health::count_by_severity(&issues);
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(format!("{} 项", issues.len()));
+            if blockers > 0 {
+                ui.colored_label(semantics.err, format!("{} 项会阻止保存", blockers));
+            }
+            if warnings > 0 {
+                ui.colored_label(semantics.warn, format!("{} 项需要注意", warnings));
+            }
+        });
+        ui.add_space(crate::theme::SPACE_2);
+        for issue in &issues {
+            let color = match issue.severity {
+                health::Severity::Blocker => semantics.err,
+                health::Severity::Warn => semantics.warn,
+                health::Severity::Info => semantics.info,
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(color, egui::RichText::new("●").small());
+                ui.strong(&issue.title);
+                if !issue.where_.is_empty() {
+                    ui.label(egui::RichText::new(&issue.where_).monospace().weak());
+                }
+                ui.label(
+                    egui::RichText::new(issue.severity.label())
+                        .small()
+                        .color(color),
+                );
+            });
+            // 详情缩进一行，与标题分开，长文本自动换行。
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(crate::theme::SPACE_4);
+                ui.add(egui::Label::new(egui::RichText::new(&issue.detail).small().weak()).wrap());
+            });
+            ui.add_space(crate::theme::SPACE_2);
         }
     }
 

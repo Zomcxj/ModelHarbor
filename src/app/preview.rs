@@ -1,5 +1,6 @@
 //! 右侧配置预览 / 编辑面板：草稿生成、语法高亮、查找与实时保存。
 use super::{App, SaveFormat};
+use crate::app::diff;
 use crate::app::save::{strip_cross_format_containers, PageTarget};
 use crate::app::syntax::{apply_find_background, syntax_tokens_with, PreviewSyntax, SyntaxPalette};
 use crate::backends;
@@ -173,13 +174,36 @@ impl App {
         let total_lines = self.preview_draft.chars().filter(|c| *c == '\n').count() + 1;
         let mut regenerate = false;
         ui.horizontal(|ui| {
-            ui.strong("预览编辑");
-            ui.label(
-                egui::RichText::new(format!("{} / {} 行", self.preview_cursor_line, total_lines))
+            ui.strong(if self.preview_diff_mode {
+                "预览对比"
+            } else {
+                "预览编辑"
+            });
+            // 「对比」切换：显示自加载以来「磁盘原文件 → 待保存文档」的改动。
+            // 保存会把 provider / agent 容器整体接管，跨格式还会整段重建，
+            // 下手前先看清楚改了什么比对着两份 JSON 肉眼比对靠谱。
+            if ui
+                .selectable_label(self.preview_diff_mode, "对比")
+                .on_hover_text(
+                    "显示自加载以来「原文件 → 待保存文档」的逐行改动。\n\
+                     基线是**加载时**的文件内容，不是磁盘当前内容——预览有自动保存，\
+                     拿磁盘当前内容比会永远显示无改动。",
+                )
+                .clicked()
+            {
+                self.preview_diff_mode = !self.preview_diff_mode;
+            }
+            if !self.preview_diff_mode {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} / {} 行",
+                        self.preview_cursor_line, total_lines
+                    ))
                     .small()
                     .weak(),
-            )
-            .on_hover_text("光标所在行 / 待保存文档总行数");
+                )
+                .on_hover_text("光标所在行 / 待保存文档总行数");
+            }
             if let Some(e) = &self.preview_parse_error {
                 let palette = SyntaxPalette::for_dark(ui.visuals().dark_mode);
                 ui.colored_label(palette.error, "⚠ 格式错误");
@@ -197,6 +221,11 @@ impl App {
             self.reset_preview_draft();
         }
         ui.separator();
+        // 对比模式是只读视图：不渲染文本框，因此也没有查找栏与自动保存的交互。
+        if self.preview_diff_mode {
+            self.ui_preview_diff(ui);
+            return;
+        }
         // Ctrl+F：激活查找（读原始按键事件，避免被文本框消耗）。
         let ctrl_f = ui.input(|i| {
             i.events.iter().any(|e| {
@@ -522,4 +551,150 @@ impl App {
             Err(e) => self.status = format!("{}: 实时保存失败({})", fmt.label(), e),
         }
     }
+
+    /// 对比视图：逐行显示「目标文件当前内容 → 待保存文档」的改动。
+    ///
+    /// 基线是**此刻磁盘上该目标文件的内容**，所以语义很干脆：这里显示的就是
+    /// 「按一下保存会改掉什么」。保存之后（或预览手改触发自动保存后）磁盘内容
+    /// 追上待保存文档，对比自然变空——那不是缺陷，而是「没有待保存的改动」。
+    ///
+    /// 结果按 `(路径, 草稿, 写盘次数)` 签名缓存。签名里必须有写盘次数：保存后
+    /// 磁盘内容变了，而路径与草稿都没变，只看这两者会把一份已经落盘的改动
+    /// 一直显示下去。
+    ///
+    /// 重算还要**防抖**：LCS 是 O(n·m)，预览框每敲一个字符草稿都变，逐键重算
+    /// 会在长文件上卡住输入。签名变化后先记下时刻，静置 [`DIFF_DEBOUNCE_SECS`]
+    /// 才真算；期间沿用旧结果，所以画面不会闪空。
+    pub(super) fn ui_preview_diff(&mut self, ui: &mut egui::Ui) {
+        let now = ui.ctx().input(|i| i.time);
+        let doc = self.preview_document();
+        let path = match &doc {
+            Ok((path, _)) => path.clone(),
+            Err(e) => {
+                ui.colored_label(crate::theme::semantics(ui).err, "生成失败")
+                    .on_hover_text(e);
+                return;
+            }
+        };
+        let signature = diff_signature(&path, &self.preview_draft, self.save_serial);
+        let cached = self.preview_diff_cache.as_ref().map(|(s, _, _)| *s);
+        let (due, pending) = diff_step(cached, self.preview_diff_pending, signature, now);
+        self.preview_diff_pending = pending;
+        if due {
+            // 读不出目标文件（还不存在 / 无权限）按空内容比：整份文档显示为新增，
+            // 正是「这个文件还没有，保存会创建它」的真实含义。
+            let baseline = crate::util::read_config_content(&path).unwrap_or_default();
+            let (lines, summary) =
+                diff::diff_hunks(&baseline, &self.preview_draft, diff::CONTEXT_LINES);
+            self.preview_diff_cache = Some((signature, lines, summary));
+        } else if cached != Some(signature) {
+            // egui 默认只在有输入时重绘；用户停手后不会再有帧，防抖就永远等不到
+            // 那一刻。这里显式要求到点重绘一次。
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(DIFF_DEBOUNCE_SECS));
+        }
+        let Some((_, lines, summary)) = &self.preview_diff_cache else {
+            // 还没算出结果（刚打开对比）：给一行提示，避免看着像坏了。
+            ui.label(egui::RichText::new("正在计算差异…").small().weak());
+            return;
+        };
+        let semantics = crate::theme::semantics(ui);
+        ui.horizontal(|ui| {
+            if summary.is_empty() {
+                ui.colored_label(semantics.ok, "与磁盘上的文件一致，保存不会改动内容");
+            } else {
+                ui.colored_label(
+                    semantics.ok,
+                    egui::RichText::new(format!("+{}", summary.added)).monospace(),
+                )
+                .on_hover_text("本次保存会新增的行数");
+                ui.colored_label(
+                    semantics.err,
+                    egui::RichText::new(format!("-{}", summary.removed)).monospace(),
+                )
+                .on_hover_text("本次保存会删除的行数");
+                if lines.iter().all(|l| l.kind != diff::LineKind::Context) {
+                    // 全是改动、没有上下文：通常是新建文件或整份替换。
+                    ui.label(egui::RichText::new("（整份变更）").small().weak())
+                        .on_hover_text("两侧没有公共行，说明是新建文件或整体重写");
+                }
+            }
+        });
+        if summary.is_empty() {
+            return;
+        }
+        let weak = ui.visuals().weak_text_color();
+        egui::ScrollArea::vertical()
+            .id_salt("preview_diff_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                for line in lines {
+                    let (color, text) = match line.kind {
+                        diff::LineKind::Added => (semantics.ok, format!("+{}", line.text)),
+                        diff::LineKind::Removed => (semantics.err, format!("-{}", line.text)),
+                        diff::LineKind::Hunk => (semantics.info, line.text.clone()),
+                        diff::LineKind::Context => (weak, format!(" {}", line.text)),
+                    };
+                    ui.label(egui::RichText::new(text).monospace().color(color));
+                }
+            });
+    }
+}
+
+/// 对比重算的防抖时长（秒）。与预览自动保存的 0.8s 同量级：用户停手后
+/// 两者几乎同时落定，不会出现「已经保存了、对比还停在旧结果上」的错觉。
+const DIFF_DEBOUNCE_SECS: f64 = 0.5;
+
+/// 对比重算是否到点。
+///
+/// 抽成纯函数是为了能直接测「同一个签名等够时间才算、换了签名就重新计时」，
+/// 不必驱动 egui。`pending` 是上一帧记下的 `(签名, 首次见到它的时刻)`。
+pub(super) fn diff_recompute_due(pending: Option<(u64, f64)>, signature: u64, now: f64) -> bool {
+    match pending {
+        Some((p, at)) if p == signature => now - at >= DIFF_DEBOUNCE_SECS,
+        _ => false,
+    }
+}
+
+/// 防抖的一步状态转移：返回 `(本帧是否重算, 下一步的 pending)`。
+///
+/// 把「何时记时刻」与「何时算」放在一起，是因为它们必须配套：曾经把
+/// `pending = Some((signature, now))` 写在 `else` 里每帧无条件执行，于是
+/// `now - at` 永远是 0，防抖永远不到点，界面一直停在「正在计算差异…」。
+/// 只测 [`diff_recompute_due`] 看不出这个问题——错在调用方的状态更新。
+///
+/// `cached` 是当前缓存里那份结果的签名（`None` = 还没有任何结果）：没有结果可
+/// 显示时立刻算，不让刚打开对比的人先等半秒。
+pub(super) fn diff_step(
+    cached: Option<u64>,
+    pending: Option<(u64, f64)>,
+    signature: u64,
+    now: f64,
+) -> (bool, Option<(u64, f64)>) {
+    if cached == Some(signature) {
+        // 缓存已是最新：清掉计时状态，免得残留的旧签名挡住下一次判定。
+        return (false, None);
+    }
+    if cached.is_none() || diff_recompute_due(pending, signature, now) {
+        return (true, None);
+    }
+    // 只在该签名**首次出现**时记时刻，后续帧沿用，否则永远等不到点。
+    match pending {
+        Some((p, at)) if p == signature => (false, Some((p, at))),
+        _ => (false, Some((signature, now))),
+    }
+}
+
+/// 对比缓存的签名：目标路径 + 待保存文档 + 写盘次数。
+///
+/// 用标准库默认哈希即可——它只用于判断「要不要重算」，不参与任何安全判定，
+/// 碰撞的后果仅仅是少算一次差异（下一帧签名变化仍会重算）。
+pub(super) fn diff_signature(path: &str, draft: &str, save_serial: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    draft.hash(&mut hasher);
+    save_serial.hash(&mut hasher);
+    hasher.finish()
 }

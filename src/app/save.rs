@@ -609,6 +609,10 @@ impl App {
         if is_current && fmt.is_opencode_family() {
             self.root = root;
         }
+        // 磁盘内容变了：对比视图的缓存必须作废，否则「已与磁盘一致」会被继续显示成
+        // 「还有 N 处改动」。签名里带上这个计数即可，不必每帧重读文件（目标在 WSL
+        // 时读一次要起进程）。计数只增不减，回绕的后果仅是偶尔多算一次差异。
+        self.save_serial = self.save_serial.wrapping_add(1);
         Ok(backup)
     }
 

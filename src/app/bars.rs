@@ -1,5 +1,6 @@
 //! 顶栏 / 状态栏 / 页头等外围栏位，以及吸顶标题与错误文本处理小工具。
 use super::App;
+use crate::app::health;
 use crate::app::preview::PREVIEW_EDITOR_ID;
 use crate::app::save::PageTarget;
 use crate::backends;
@@ -691,6 +692,34 @@ impl App {
                         self.token_draft.clear();
                         self.token_uid_draft.clear();
                     }
+                }
+                // 体检：把重名 / 非法数字 / 可疑 URL / 跨网关引用等检查汇总成一张清单。
+                // 按钮上带问题数量——需要先处理的问题不该等点开才发现。
+                let (blockers, warnings) =
+                    health::count_by_severity(&health::collect(&health::HealthInput {
+                        page: fmt,
+                        providers: &self.providers,
+                        agents: &self.agents,
+                        source_is_opencode: self.source_format.is_opencode_family(),
+                    }));
+                let semantics = crate::theme::semantics(ui);
+                let (label, color) = if blockers > 0 {
+                    (format!("体检 ({})", blockers), semantics.err)
+                } else if warnings > 0 {
+                    (format!("体检 ({})", warnings), semantics.warn)
+                } else {
+                    ("体检".to_string(), ui.visuals().text_color())
+                };
+                if ui
+                    .button(egui::RichText::new(label).color(color))
+                    .on_hover_text(
+                        "检查当前页配置：重名、非法数字、可疑 baseUrl、\
+                         agent 的 model 指向别家网关、未填密钥等。\n\
+                         只列出问题，不自动修改。",
+                    )
+                    .clicked()
+                {
+                    self.show_health = !self.show_health;
                 }
             });
         });
