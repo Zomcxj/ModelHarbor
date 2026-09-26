@@ -217,7 +217,7 @@ pub struct Cache {
 }
 
 /// 当前时间（秒级 Unix 时间戳）。
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
@@ -263,7 +263,7 @@ fn is_zero_cost(model: &Value) -> bool {
 /// 片段只取 120 个字符：models.dev 的正文约 4.8 MB，整个塞进提示里既没人看也拖慢界面。
 /// 三个解析器（models.dev / 网关 `/models` / Kilo 网关）共用这一段——错误文案必须一致，
 /// 否则同一个网络故障在不同后端下会显示成不同的话。
-fn parse_json(text: &str) -> Result<Value, String> {
+pub(crate) fn parse_json(text: &str) -> Result<Value, String> {
     serde_json::from_str(text).map_err(|err| {
         let snippet = text.chars().take(120).collect::<String>();
         format!("响应不是合法 JSON（{}）：{}", err, snippet)
@@ -362,7 +362,7 @@ fn agent(read_secs: u64) -> ureq::Agent {
 }
 
 /// 发起一次 GET 并取回正文，错误文本统一走人话映射。
-fn get_text(url: &str, read_secs: u64) -> Result<String, String> {
+pub(crate) fn get_text(url: &str, read_secs: u64) -> Result<String, String> {
     let response = agent(read_secs)
         .get(url)
         .set("Accept", "application/json")

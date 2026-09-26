@@ -1079,4 +1079,47 @@ impl App {
             }
         }
     }
+
+    /// 后台拉取 models.dev 官方目录（裁剪版）；已有请求在飞时不重复发起。
+    ///
+    /// 与免费模型列表同形状，但**与后端无关**：上下文上限是模型自身的属性，
+    /// 八页共用同一份目录，所以这里没有 `format` 参数。
+    pub(super) fn start_official_fetch(&mut self) {
+        if self.official.fetching() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::official_limits::fetch_remote());
+        });
+        self.official.rx = Some(rx);
+    }
+
+    /// 每帧轮询官方目录的拉取结果：成功则换上新目录并落盘缓存。
+    ///
+    /// 与免费模型列表不同，**失败不留旧目录以外的残留**：旧目录继续用（总比全灰好），
+    /// 只把失败原因记下来，等下次启动或用户操作再重试。
+    pub(super) fn poll_official_catalog(&mut self) {
+        let Some(rx) = &self.official.rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(catalog)) => {
+                self.official.rx = None;
+                self.official.error = None;
+                // 缓存写失败不影响本次使用（下次启动重取即可）。
+                let _ = crate::official_limits::save_cache(&catalog);
+                self.official.catalog = Some(std::sync::Arc::new(catalog));
+            }
+            Ok(Err(err)) => {
+                self.official.rx = None;
+                self.official.error = Some(err);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            // 线程异常退出：终止等待，否则会一直以为「正在刷新」。
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.official.rx = None;
+            }
+        }
+    }
 }

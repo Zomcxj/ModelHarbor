@@ -15,6 +15,7 @@ use crate::ui::{
 };
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// npm 包下拉（opencode 专用）；`id_salt` 区分同一页面内的多个表单实例。
 pub(super) fn provider_npm_combo(
@@ -519,6 +520,117 @@ struct VariantsCtx<'a> {
     normalize: bool,
 }
 
+/// 「官方」按钮所需的上下文。
+///
+/// 目录为 `None`（首次启动、还没拉到 models.dev 目录）时按钮一律变灰：
+/// 点了没反应比按钮不存在更让人困惑，所以宁可灰着并说明原因。
+///
+/// 目录用 `Arc` 共享（目录约 0.3 MB，每帧深拷贝不可接受）；这里只借引用，
+/// 且调用方在借用 `self.providers` 之前就把 `Arc` 克隆到局部变量，
+/// 避免与模型行的可变借用冲突。
+pub(super) struct OfficialCtx<'a> {
+    pub(super) catalog: Option<&'a Arc<crate::official_limits::Catalog>>,
+    pub(super) base_url: &'a str,
+}
+
+/// 「官方」按钮的外观与行为。抽成纯数据是为了能单测「哪种判定下按钮可点」——
+/// 直接测 egui 控件要先起一套界面环境，成本远高于收益。
+struct OfficialAction {
+    /// 是否可点。判定不出官方值时禁用，但按钮**仍然显示**（见 [`official_action`]）。
+    enabled: bool,
+    /// 悬停提示：可点时说明将写入什么、依据是什么；禁用时说明为什么禁用。
+    tip: String,
+    /// 点击后要写入的值：`(context, output)`；`output` 为 `None` 时不动输出字段。
+    apply: Option<(String, Option<String>)>,
+}
+
+/// 由判定结果得出按钮该长什么样。
+///
+/// 禁用而不是隐藏：用户看不到按钮就会以为「这个后端不支持」，而实际上是
+/// 「这个模型名在官方目录里查不到」，两者的处置完全不同（后者改对 id 即可）。
+fn official_action(verdict: Option<&crate::official_limits::Verdict>) -> OfficialAction {
+    use crate::official_limits::Verdict;
+    let Some(verdict) = verdict else {
+        return OfficialAction {
+            enabled: false,
+            tip: "官方目录还没就绪。\n首次启动需要联网拉取一次 models.dev 模型库（约 0.3 MB），\
+                  稍后重开本表单即可使用；拉取失败时重启程序会重试。"
+                .to_string(),
+            apply: None,
+        };
+    };
+    match verdict {
+        Verdict::Found(official) => {
+            let output_note = match official.output {
+                Some(output) => format!("、输出 {}", output),
+                None => "（数据源没有收录输出上限，只填上下文）".to_string(),
+            };
+            OfficialAction {
+                enabled: true,
+                tip: format!(
+                    "使用 models.dev 收录的官方推荐值：\n上下文 {}{}\n依据：{}",
+                    official.context, output_note, official.source
+                ),
+                apply: Some((
+                    official.context.to_string(),
+                    official.output.map(|output| output.to_string()),
+                )),
+            }
+        }
+        Verdict::UnknownModel => OfficialAction {
+            enabled: false,
+            tip: "models.dev 目录里没有这个模型名，取不到官方推荐值。\n\
+                  先确认 id 与上游实际模型名一致（id 就是发给上游的模型名），\
+                  再回来看这里；也可以按厂商文档手填。"
+                .to_string(),
+            apply: None,
+        },
+        Verdict::Ambiguous(groups) => OfficialAction {
+            enabled: false,
+            tip: format!(
+                "models.dev 上有 {} 组不同的上下文上限，无法确定该用哪一个。\n\
+                 常见原因是同一个模型名被多家 provider 收录且各自声明不同。\n\
+                 填对 baseURL 后可以精确定位到你自己那一家；否则请按厂商文档手填。",
+                groups
+            ),
+            apply: None,
+        },
+        Verdict::NoContext => OfficialAction {
+            enabled: false,
+            tip: "models.dev 收录了这个模型，但没有给出上下文上限，无法推荐。".to_string(),
+            apply: None,
+        },
+    }
+}
+
+/// 上下文字段右侧的「官方」按钮：一键套用 models.dev 收录的官方上限。
+///
+/// **默认不动用户填的值**：只有点击才覆盖，且覆盖前把将写入的数字与依据写在悬停
+/// 提示里——用户是先看到要改成什么，再决定点不点。
+///
+/// 输出字段与上下文同源且相邻，所以一并填入；但数据源没收录输出时**不碰**输出字段
+/// （不能把「没有数据」变成「清空」）。
+fn official_button(ui: &mut egui::Ui, m: &mut ModelRow, ctx: &OfficialCtx<'_>) {
+    let verdict = ctx
+        .catalog
+        .map(|catalog| catalog.verdict(ctx.base_url, &m.id));
+    let action = official_action(verdict.as_ref());
+    let button = ui.add_enabled(action.enabled, egui::Button::new("官方"));
+    let button = if action.enabled {
+        button.on_hover_text(action.tip)
+    } else {
+        button.on_disabled_hover_text(action.tip)
+    };
+    if button.clicked() {
+        if let Some((context, output)) = action.apply {
+            m.context = context;
+            if let Some(output) = output {
+                m.output = output;
+            }
+        }
+    }
+}
+
 /// 模型字段编辑行之一：id / name / reasoning / tool_call / store / context / output。
 ///
 /// `relaxed` = 新增表单语境：`ProviderFormFlags` 里**内容型**开关（文件里出现过该键
@@ -533,6 +645,7 @@ fn model_core_fields_row(
     flags: &ProviderFormFlags,
     relaxed: bool,
     dup: Option<(&HashSet<String>, &HashSet<String>)>,
+    official: &OfficialCtx<'_>,
 ) {
     let on = |flag: bool| relaxed || flag;
     ui.horizontal_wrapped(|ui| {
@@ -581,6 +694,8 @@ fn model_core_fields_row(
         if on(flags.show_model_context) {
             field_label(ui, 120.0, flags.context_label);
             numeric_text_edit(ui, &mut m.context, 53.0, "");
+            // 紧贴上下文字段右侧：官方推荐值是针对这个字段的，放远了就看不出关联。
+            official_button(ui, m, official);
         }
         if on(flags.show_model_output) {
             field_label(ui, 120.0, flags.output_label);
@@ -630,8 +745,9 @@ fn new_model_subform(
     flags: &ProviderFormFlags,
     variants: &mut VariantsCtx<'_>,
     show_key: &str,
+    official: &OfficialCtx<'_>,
 ) {
-    model_core_fields_row(ui, &mut p.new_model, flags, true, None);
+    model_core_fields_row(ui, &mut p.new_model, flags, true, None, official);
     model_modalities_row(ui, &mut p.new_model, flags, variants, true);
     ui.horizontal(|ui| {
         ui.add_space(crate::theme::SPACE_7);
@@ -681,6 +797,9 @@ impl App {
         } else {
             HashSet::new()
         };
+        // 官方目录用 `Arc` 克隆到局部变量：下面的卡片闭包要独占 `*self`，
+        // 在闭包里再读 `self.official` 会与它冲突（与 `net_guard_gate` 同一处境）。
+        let official_catalog = self.official.catalog.clone();
         let p = &mut self.providers[idx];
         let header_ctx = ProviderHeaderCtx {
             page: self.current_page,
@@ -692,6 +811,13 @@ impl App {
             other_keys: Some(&other_keys),
         };
         provider_header_fields(ui, p, &flags, &header_ctx);
+        // baseURL 在表单里可编辑，所以要在表头渲染**之后**取：用户这一帧刚改完
+        // 地址就点「官方」，用的应该是改后的值。
+        let base_url = p.base_url.clone();
+        let official = OfficialCtx {
+            catalog: official_catalog.as_ref(),
+            base_url: &base_url,
+        };
 
         ui.add_space(crate::theme::SPACE_2);
         ui.add_space(crate::theme::SPACE_2);
@@ -828,6 +954,7 @@ impl App {
                         &flags,
                         false,
                         Some((&other_ids, &global_dup_ids)),
+                        &official,
                     );
                     let mut variants = VariantsCtx {
                         label: variants_label,
@@ -923,7 +1050,7 @@ impl App {
                 open_key: format!("new_model_variant_{}", p.key),
                 normalize: false,
             };
-            new_model_subform(ui, p, &flags, &mut variants, &show_new_model_key);
+            new_model_subform(ui, p, &flags, &mut variants, &show_new_model_key, &official);
         }
         // key 重命名后同步展开状态与弹窗键
         let new_key = self.providers[idx].key.clone();
@@ -955,6 +1082,14 @@ impl App {
                 other_keys: None,
             };
             provider_header_fields(ui, &mut self.new_provider, &flags, &header_ctx);
+            // 与编辑表单同理：`Arc` 克隆成局部变量，避免与 `self.new_provider` 的
+            // 可变借用冲突；baseURL 在表头渲染后取，用的是用户这一帧改完的值。
+            let official_catalog = self.official.catalog.clone();
+            let base_url = self.new_provider.base_url.clone();
+            let official = OfficialCtx {
+                catalog: official_catalog.as_ref(),
+                base_url: &base_url,
+            };
             ui.add_space(crate::theme::SPACE_2);
             let mut fetch_ctx = FetchSectionCtx {
                 model_fetch: &mut self.model_fetch,
@@ -1025,6 +1160,7 @@ impl App {
                             &flags,
                             true,
                             None,
+                            &official,
                         );
                     },
                 );
@@ -1084,6 +1220,7 @@ impl App {
                     &flags,
                     &mut variants,
                     &show_new_model_key,
+                    &official,
                 );
             }
             ui.horizontal(|ui| {
@@ -1119,5 +1256,110 @@ impl App {
         self.model_fetch_open.remove(NEW_PROVIDER_FETCH_KEY);
         // 表单关掉后探测结果无处显示：释放它的串行位。
         self.probe.release(Some(NEW_PROVIDER_FETCH_KEY));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::official_action;
+    use crate::official_limits::{Catalog, Official, Verdict};
+
+    /// 造一份目录，覆盖「能判定」与三种「判定不出」。
+    fn catalog() -> Catalog {
+        Catalog::parse(
+            &serde_json::json!({
+                "openai": {
+                    "api": "https://api.openai.com/v1",
+                    "models": { "gpt-5": { "limit": { "context": 400000, "output": 128000 } } }
+                },
+                "conflict-a": { "models": { "dup": { "limit": { "context": 100 } } } },
+                "conflict-b": { "models": { "dup": { "limit": { "context": 200 } } } },
+                "out-only": { "models": { "no-ctx": { "limit": { "output": 999 } } } }
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    /// 目录还没就绪（首次启动、拉取未回）：按钮必须禁用并说明原因。
+    ///
+    /// 这条最容易退化——若把 `None` 当成「随便填个值」，用户会在目录未加载时
+    /// 点出一个凭空来的数字。
+    #[test]
+    fn without_a_catalog_the_button_is_disabled_and_explains_why() {
+        let action = official_action(None);
+        assert!(!action.enabled);
+        assert!(action.apply.is_none(), "禁用时不能带可写入的值");
+        assert!(
+            action.tip.contains("还没就绪") && action.tip.contains("models.dev"),
+            "提示要说明是目录未就绪：{}",
+            action.tip
+        );
+    }
+
+    /// 判定成功：可点，且点击写入的就是官方值（context 与 output 都要）。
+    #[test]
+    fn a_resolved_model_offers_both_values() {
+        let verdict = catalog().verdict("https://api.openai.com/v1", "gpt-5");
+        let action = official_action(Some(&verdict));
+        assert!(action.enabled);
+        let (context, output) = action.apply.expect("判定成功就该能写入");
+        assert_eq!(context, "400000");
+        assert_eq!(output.as_deref(), Some("128000"));
+        // 提示里要出现将写入的数字：用户先看到改成什么，再决定点不点。
+        assert!(action.tip.contains("400000"), "提示：{}", action.tip);
+        assert!(action.tip.contains("128000"), "提示：{}", action.tip);
+    }
+
+    /// 数据源没收录 output 时只填上下文，不能把输出字段清空。
+    #[test]
+    fn a_missing_output_limit_leaves_the_output_field_alone() {
+        let verdict = Verdict::Found(Official {
+            context: 1000,
+            output: None,
+            source: "测试".to_string(),
+        });
+        let action = official_action(Some(&verdict));
+        let (context, output) = action.apply.unwrap();
+        assert_eq!(context, "1000");
+        assert_eq!(output, None, "没有官方输出值时不该动用户的输出字段");
+        assert!(action.tip.contains("只填上下文"), "提示：{}", action.tip);
+    }
+
+    /// 三种「判定不出」都要禁用，且提示要区分原因——用户能做的处置不同。
+    #[test]
+    fn each_failure_mode_is_disabled_with_its_own_reason() {
+        let cases = [
+            (
+                catalog().verdict("", "没这个模型"),
+                "没有这个模型名",
+                "UnknownModel",
+            ),
+            (catalog().verdict("", "dup"), "无法确定", "Ambiguous"),
+            (
+                catalog().verdict("", "no-ctx"),
+                "没有给出上下文上限",
+                "NoContext",
+            ),
+        ];
+        for (verdict, expected, name) in cases {
+            let action = official_action(Some(&verdict));
+            assert!(!action.enabled, "{} 应禁用", name);
+            assert!(action.apply.is_none(), "{} 不该带可写入的值", name);
+            assert!(
+                action.tip.contains(expected),
+                "{} 的提示要含「{}」，实际：{}",
+                name,
+                expected,
+                action.tip
+            );
+        }
+    }
+
+    /// 歧义提示要报出「有几组不同取值」，这是用户判断问题严重程度的唯一线索。
+    #[test]
+    fn the_ambiguous_tip_reports_how_many_values_disagree() {
+        let action = official_action(Some(&catalog().verdict("", "dup")));
+        assert!(action.tip.contains('2'), "提示：{}", action.tip);
     }
 }

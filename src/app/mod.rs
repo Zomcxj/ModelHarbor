@@ -101,6 +101,12 @@ pub struct App {
     /// 网关与列表，mimocode 没有免费层（不进这张表）。启动先用落盘缓存填充，
     /// 缓存缺失或过期才在后台重新拉取。
     free_models: HashMap<ConfigFormat, FreeModelsState>,
+    /// models.dev 官方模型目录（上下文 / 输出上限），供「官方」按钮取推荐值。
+    ///
+    /// 与免费模型列表同为「按需拉取 + 落盘缓存」的公共数据，但用途不同：那份只回答
+    /// 「哪些模型免费」，这份回答「某个模型的官方上限是多少」（见
+    /// [`crate::official_limits`]）。`None` = 还没拿到，此时按钮一律变灰。
+    official: crate::official_limits::CatalogState,
     /// 各 opencode 系页面**各自**的 agent model 视图（页面 → agent key → model）。
     ///
     /// 为什么需要按页记忆、切页时怎么归一，见 [`crate::app::agents`] 的切页归一说明；
@@ -297,6 +303,8 @@ impl Default for App {
             // 免费模型：先用落盘缓存，缺失 / 过期由第一帧的后台刷新补上。
             free_models,
             free_models_auto,
+            // 官方目录同理：先用落盘缓存（过期也照用），首帧再后台重取。
+            official: crate::official_limits::CatalogState::load_from_disk(),
             agent_models_by_page: HashMap::new(),
             latency: HashMap::new(),
             balance: HashMap::new(),
@@ -386,6 +394,12 @@ impl eframe::App for App {
         // 用户可在 Agents 的模型下拉旁点「刷新」手动重取）。
         for format in std::mem::take(&mut self.free_models_auto) {
             self.start_free_models_fetch(format);
+        }
+        // 官方目录同理：缺失 / 过期只自动拉一次，失败也不反复重试（按钮变灰即可，
+        // 用户可在模型行上重开界面等下次启动重取）。
+        self.poll_official_catalog();
+        if std::mem::take(&mut self.official.auto) {
+            self.start_official_fetch();
         }
         self.persist_prefs_if_changed();
         self.ui_top_bar(ctx);
