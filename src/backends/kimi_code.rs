@@ -112,6 +112,17 @@ fn alias_key(provider: &str, model: &str) -> String {
     format!("{short}/{model}")
 }
 
+/// 这条模型写出去时真正的表键：界面记过的别名优先，没有才按约定生成
+/// （`<provider>/<model>`，Kimi 自己的约定，见 [`alias_key`]）。
+fn effective_alias(provider: &str, m: &ModelRow) -> String {
+    let saved = m.kimi_alias.trim();
+    if saved.is_empty() {
+        alias_key(provider, m.id.trim())
+    } else {
+        saved.to_string()
+    }
+}
+
 /// 本工具的内部协议名 → Kimi `type` 词表（6 值，见 [`provider_entry_from_row`]）。
 ///
 /// 只映射跨格式复制可能带进来的内部名；不在表里的返回 `None`，由调用方保留旧值或
@@ -271,6 +282,42 @@ fn credential_conflict(name: &str, entry: &Value) -> Option<String> {
 /// 为什么要挡：同时写 `api_key` 与 `api_key_env` 会让 Kimi Code **启动失败**
 /// （源码把这种情况判成 `kind: "conflict"` 并拒绝）。那比「配置不生效」严重得多——
 /// 用户会以为是自己把 Kimi Code 弄坏了。宁可不让保存，也不能写出一个启动不了的文件。
+/// 写盘前的结构冲突体检：保留前缀与别名撞名。
+///
+/// 两者都不会让 Kimi Code 报错——文件合法、模型也在——但界面**读不回来**：
+/// `managed:*` 在 [`build_load`] 里被跳过，撞名的别名在模型表里后写覆盖先写。
+/// 静默消失比保存失败糟糕，所以这里宁可不让存。
+fn first_structural_conflict(providers: &[ProviderRow]) -> Option<String> {
+    // `managed:` 是 `/login` 的保留前缀：这类 provider 本就不进界面，用户手起这个名字
+    // 的话，它名下的模型下次加载就凭空消失。
+    if let Some(p) = providers.iter().find(|p| is_managed_provider(p.key.trim())) {
+        return Some(format!(
+            "provider \"{}\" 占用了保留前缀 managed:（那是 Kimi 登录态的命名空间），请改名",
+            p.key.trim()
+        ));
+    }
+    // 别名就是 TOML 表键，撞名 = 有一条被静默覆盖。同一 provider 内 model id 重复已被
+    // 保存入口的查重拦下，这里拦的是跨 provider 的组合撞名
+    // （如 provider "a" + model "b/c" 与 provider "a/b" + model "c"）。
+    let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+    for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
+        for m in &p.models {
+            if m.id.trim().is_empty() {
+                continue;
+            }
+            let alias = effective_alias(p.key.trim(), m);
+            if let Some(prev) = seen.get(alias.as_str()) {
+                return Some(format!(
+                    "模型别名 \"{alias}\" 被 provider \"{prev}\" 与 \"{}\" 同时占用（表键撞名会静默丢条目），请改名",
+                    p.key.trim()
+                ));
+            }
+            seen.insert(alias, p.key.trim());
+        }
+    }
+    None
+}
+
 fn first_credential_conflict(providers: &[ProviderRow]) -> Option<String> {
     providers
         .iter()
@@ -513,16 +560,15 @@ fn model_from_entry(alias: &str, entry: &Value) -> ModelRow {
 ///
 /// 界面清空的字段要**删掉**对应键而不是写空值：`display_name = ""` 是个真的空标题，
 /// `max_context_size` 写成 0 更是非法（schema 要求 ≥1）。
-fn entry_from_model(m: &ModelRow, alias: &str, provider: &str, old: Option<&Value>) -> Value {
+fn entry_from_model(m: &ModelRow, provider: &str, old: Option<&Value>) -> Value {
     let mut obj = old.and_then(Value::as_object).cloned().unwrap_or_default();
     // `provider` 写在 `model` **之前**：Kimi 自己写条目就是这个顺序
     // （`applyOpenPlatformConfig`：provider, model, maxContextSize, …）。对已存在的键
     // `insert` 只更新值、保持原位，所以旧条目维持文件里原有的顺序不受影响；新条目
     // （跨格式复制来的）曾把 `provider` 追到整条末尾，读起来像两段拼的。
+    // 表键（别名）不写进条目里：写了 Kimi 也不认，schema 无此字段。
     obj.insert("provider".into(), Value::String(provider.to_string()));
     obj.insert("model".into(), Value::String(m.id.trim().to_string()));
-    // alias 就是表键，不写进条目里（写了 Kimi 也不认，schema 无此字段）。
-    let _ = alias;
 
     // `display_name` **逐字写**：等于 wire id 也写，界面名称为空时回落 wire id。
     //
@@ -666,14 +712,8 @@ fn all_models(providers: &[ProviderRow], base: &Value) -> Vec<(String, String, V
                 // 界面允许这种中间态（刚点「新增模型」），保存时跳过它。
                 continue;
             }
-            // alias 缺省 = `<provider>/<model>`（Kimi 自己的约定，见 [`alias_key`]）。
-            // 界面新增与跨格式复制来的模型没有 `kimi_alias`，就按这个约定生成。
-            let alias = if m.kimi_alias.trim().is_empty() {
-                alias_key(&provider, wire)
-            } else {
-                m.kimi_alias.trim().to_string()
-            };
-            let entry = entry_from_model(m, &alias, &provider, old.get(&alias));
+            let alias = effective_alias(&provider, m);
+            let entry = entry_from_model(m, &provider, old.get(&alias));
             out.push((provider.clone(), alias, entry));
         }
     }
@@ -875,12 +915,18 @@ impl Backend for KimiCodeBackend {
         Value::Object(root)
     }
 
-    /// 没有全量副本可写（见模块说明「没有『停用』这回事」），但仍挂在保存序列里：
-    /// 凭据 XOR 要在主配置落盘**之前**挡住——同时写 `api_key` 与 `api_key_env` 会让
-    /// Kimi Code 启动失败（见模块说明第 2 点），这是本后端最严重的一条约束。
+    /// 没有全量副本可写（见模块说明「没有『停用』这回事」），但仍挂在保存序列里，
+    /// 作为**写盘前的总闸**：
+    /// - 凭据 XOR（同时写 `api_key` 与 `api_key_env` 会让 Kimi Code **启动失败**，
+    ///   见模块说明第 2 点，本后端最严重的一条约束）；
+    /// - `managed:` 保留前缀与别名撞名（[`first_structural_conflict`]）——写出去
+    ///   界面就再也读不回来。
     fn save_sidecars(&self, _path: &str, providers: &[ProviderRow]) -> Result<(), String> {
         if let Some(conflict) = first_credential_conflict(providers) {
             return Err(format!("凭据冲突，已取消保存: {conflict}"));
+        }
+        if let Some(conflict) = first_structural_conflict(providers) {
+            return Err(format!("配置冲突，已取消保存: {conflict}"));
         }
         Ok(())
     }
@@ -1065,7 +1111,7 @@ max_context_size = 1000
         let mut m = model_from_entry("a", &entry);
         m.tool_call = true; // 界面勾上工具调用
         m.reasoning = true;
-        let out = entry_from_model(&m, "a", "p", Some(&entry));
+        let out = entry_from_model(&m, "p", Some(&entry));
         let caps: Vec<&str> = out["capabilities"]
             .as_array()
             .unwrap()
@@ -1089,7 +1135,7 @@ max_context_size = 1000
         .unwrap();
         let mut m = model_from_entry("a", &entry);
         m.reasoning = false;
-        let out = entry_from_model(&m, "a", "p", Some(&entry));
+        let out = entry_from_model(&m, "p", Some(&entry));
         let caps: Vec<&str> = out["capabilities"]
             .as_array()
             .unwrap()
@@ -1195,7 +1241,7 @@ max_context_size = 1000
         .unwrap();
         let mut m = model_from_entry("a", &entry);
         m.variants = "low, max".into(); // 用户改了档位，high 不在了
-        let out = entry_from_model(&m, "a", "p", Some(&entry));
+        let out = entry_from_model(&m, "p", Some(&entry));
         assert!(
             out.get("default_effort").is_none(),
             "不在清单里的 default_effort 必须删掉"
@@ -1203,7 +1249,7 @@ max_context_size = 1000
         // 仍在清单里时保留用户选的默认档
         let mut m2 = model_from_entry("a", &entry);
         m2.variants = "low, high, max".into();
-        let out2 = entry_from_model(&m2, "a", "p", Some(&entry));
+        let out2 = entry_from_model(&m2, "p", Some(&entry));
         assert_eq!(out2["default_effort"], "high");
     }
 
@@ -1326,7 +1372,7 @@ max_context_size = 1
         )
         .unwrap();
         let m = model_from_entry("a", &entry);
-        let out = entry_from_model(&m, "a", "openai_247kan", None);
+        let out = entry_from_model(&m, "openai_247kan", None);
         let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
         assert_eq!(keys[0], "provider");
         assert_eq!(keys[1], "model");
@@ -1344,7 +1390,7 @@ display_name = \"M\"
         )
         .unwrap();
         let m = model_from_entry("a", &entry);
-        let out = entry_from_model(&m, "a", "p", Some(&entry));
+        let out = entry_from_model(&m, "p", Some(&entry));
         let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
         assert_eq!(
             keys,
@@ -1369,7 +1415,7 @@ max_output_size = 500
         )
         .unwrap();
         let m = model_from_entry("a", &entry);
-        let out = entry_from_model(&m, "a", "p", Some(&entry));
+        let out = entry_from_model(&m, "p", Some(&entry));
         assert_eq!(out["reasoning_key"], "reasoning_content");
         assert_eq!(out["beta_api"], true);
         assert_eq!(out["base_url"], "https://override/v1");

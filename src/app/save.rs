@@ -774,12 +774,16 @@ impl App {
         };
         // sidecar 一律在主配置**之前**写：WorkBuddy 的全量副本要靠读主配置继承未知
         // 字段，而主配置马上会被筛成「只剩勾选的条目」；副本先落盘才拿得到全量字段。
-        // KimiCode 的保存序列也在这里过一道：它的 `save_sidecars` 只挡凭据 XOR 冲突
-        // （同时写 api_key 与 api_key_env 会让它启动失败），不再写任何文件。
-        // QwenCode 没有停用概念，没有副本要写。DSH 的凭据 sidecar 无此依赖，同一位置写。
+        // KimiCode 与 QwenCode 没有副本要写，但它们的保存序列仍在这里过一道**写盘前的
+        // 总闸**：Kimi 挡凭据 XOR（同时写 api_key 与 api_key_env 会让它启动失败）与
+        // managed: 保留前缀 / 别名撞名，Qwen 挡 envKey 变量名撞名——这些文件都写得
+        // 出去，但写出去就是静默丢数据或拿错密钥。DSH 的凭据 sidecar 无此依赖。
         if matches!(
             fmt,
-            ConfigFormat::DeepSeekHarness | ConfigFormat::WorkBuddy | ConfigFormat::KimiCode
+            ConfigFormat::DeepSeekHarness
+                | ConfigFormat::WorkBuddy
+                | ConfigFormat::KimiCode
+                | ConfigFormat::QwenCode
         ) {
             backend.save_sidecars(path, &self.providers)?;
         }

@@ -381,11 +381,7 @@ struct Placed {
     entry: Value,
 }
 
-/// 界面状态 → 全部条目（含停用条目、含 `disabled` 标记）。
-///
-/// 这是主配置与全量副本共用的构造步骤。`disabled` 每条必写（含 `false`）的理由与
-/// WorkBuddy 完全相同：省掉 `false` 会让「用户全勾上」与「这份副本从没记录过勾选」
-/// 变成同一状态，加载时只能一律当启用，而且会自我延续。
+/// 界面状态 → 全部条目（`serialize_root` 唯一的条目来源）。
 fn place(providers: &[ProviderRow], base: &Value) -> Vec<Placed> {
     let protocols = provider_protocols(base);
     let mut out: Vec<Placed> = Vec::new();
@@ -665,6 +661,35 @@ fn sync_env(root: &mut Map<String, Value>, providers: &[ProviderRow]) {
     }
 }
 
+/// 写盘前的总闸：两个 provider 的凭据若落到**同一个** `envKey` 变量名上，
+/// [`sync_env`] 后写的会覆盖先写的——两个条目都指向它，其中一个必然拿错密钥，
+/// 且无任何报错。这种冲突宁可不让存，请给卡片手填不同的变量名。
+fn first_env_name_conflict(providers: &[ProviderRow]) -> Option<String> {
+    // name -> (先到的 provider key, 它的密钥值)
+    let mut seen: std::collections::HashMap<String, (&str, &str)> =
+        std::collections::HashMap::new();
+    for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
+        let name = env_key_name(p);
+        if name.is_empty() {
+            continue;
+        }
+        if let Some((prev_key, prev_value)) = seen.get(name.as_str()) {
+            // 同一个变量名 + 同一个密钥值（比如同一站点复制出两条）：共享无妨。
+            if *prev_value == p.api_key.trim() {
+                continue;
+            }
+            return Some(format!(
+                "envKey \"{}\" 被 provider \"{}\" 与 \"{}\" 同时占用，密钥却不同",
+                name,
+                prev_key,
+                p.key.trim()
+            ));
+        }
+        seen.insert(name, (p.key.trim(), p.api_key.trim()));
+    }
+    None
+}
+
 /// 条目要用的 `envKey` 变量名：界面填了就用界面值；只填了密钥没填变量名时，按
 /// provider key 推一个（与 DSH 的 [`crate::credentials::default_env_name`] 同一约定）。
 ///
@@ -798,6 +823,16 @@ impl Backend for QwenCodeBackend {
             root.insert("providerProtocol".into(), Value::Object(protocols));
         }
         Value::Object(root)
+    }
+
+    /// 没有全量副本要写（见模块说明「没有『停用』这回事」），但仍挂在保存序列里：
+    /// [`first_env_name_conflict`] 要在主配置落盘**之前**挡住 envKey 撞名——那种文件
+    /// 写得出去，Qwen Code 也读得进去，但其中一条 provider 会静默拿到别人的密钥。
+    fn save_sidecars(&self, _path: &str, providers: &[ProviderRow]) -> Result<(), String> {
+        if let Some(conflict) = first_env_name_conflict(providers) {
+            return Err(format!("凭据变量名冲突，已取消保存: {conflict}"));
+        }
+        Ok(())
     }
 
     fn load_target_root(&self, path: &str) -> Result<Value, String> {

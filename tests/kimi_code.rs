@@ -591,6 +591,56 @@ fn api_key_and_api_key_env_are_mutually_exclusive_on_save() {
 }
 
 #[test]
+fn a_reserved_managed_name_is_refused() {
+    // `managed:` 是 /login 的保留前缀：这类 provider 不进界面，用户手起这个名字的话，
+    // 它名下的模型下次加载就凭空消失——写盘前必须挡住。
+    let dir = temp_dir("managed_reserved");
+    let path = dir.join("config.toml");
+    std::fs::write(&path, config_toml()).unwrap();
+
+    let load = load(&config_toml());
+    let mut providers = load.providers.clone();
+    providers[0].key = "managed:fake".into();
+
+    let err = kimi_backend()
+        .save_sidecars(&path.to_string_lossy(), &providers)
+        .expect_err("保留前缀必须让保存失败");
+    assert!(err.contains("managed:"), "错误要说清原因：{err}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_alias_collision_across_providers_is_refused() {
+    // 别名就是 TOML 表键：provider "a" + model "b/c" 与 provider "a/b" + model "c"
+    // 会生成同一个键，后写覆盖先写，有一条静默消失。同 provider 内 model id 重复
+    // 由保存入口查重拦下，这里拦的是跨 provider 的组合撞名。
+    let dir = temp_dir("alias_clash");
+    let path = dir.join("config.toml");
+    std::fs::write(&path, config_toml()).unwrap();
+
+    let mut p1 = ProviderRow::new();
+    p1.key = "a".into();
+    p1.pi_api = "openai".into();
+    let mut m1 = model_harbor::model::ModelRow::new();
+    m1.id = "b/c".into();
+    p1.models.push(m1);
+    let mut p2 = ProviderRow::new();
+    p2.key = "a/b".into();
+    p2.pi_api = "openai".into();
+    let mut m2 = model_harbor::model::ModelRow::new();
+    m2.id = "c".into();
+    p2.models.push(m2);
+
+    let err = kimi_backend()
+        .save_sidecars(&path.to_string_lossy(), &[p1, p2])
+        .expect_err("别名撞名必须让保存失败");
+    assert!(err.contains("a/b/c"), "错误要给出撞名的键：{err}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn an_empty_api_key_does_not_conflict_with_oauth() {
     // 本机真实文件里 `managed:kimi-code` 就是 `api_key = ""` + `oauth`：
     // 判据是「非空字符串」，空串视同未设置。

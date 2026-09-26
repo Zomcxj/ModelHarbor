@@ -589,6 +589,43 @@ fn entries_added_by_hand_to_settings_stay_visible() {
 // ---------------------------------------------------------------- env
 
 #[test]
+fn an_env_name_collision_is_refused() {
+    // 推导/手填的变量名撞在一起且密钥不同：sync_env 后写覆盖先写，其中一条 provider
+    // 会静默拿到别人的密钥。宁可不让存。
+    let dir = temp_dir("env_clash");
+    let path = dir.join("settings.json");
+    std::fs::write(&path, settings_json()).unwrap();
+
+    let mut p1 = ProviderRow::new();
+    p1.key = "openai-247kan".into();
+    p1.pi_api = "openai-completions".into();
+    p1.api_key = "sk-one".into();
+    let mut p2 = ProviderRow::new();
+    p2.key = "openai_247kan".into();
+    p2.pi_api = "openai-completions".into();
+    p2.api_key = "sk-two".into();
+
+    let err = qwen_backend()
+        .save_sidecars(&path.to_string_lossy(), &[p1, p2.clone()])
+        .expect_err("envKey 撞名必须让保存失败");
+    assert!(
+        err.contains("OPENAI_247KAN_API_KEY"),
+        "错误要给出撞名的键：{err}"
+    );
+
+    // 同名同值（同一站点复制出的两条）不算冲突
+    let mut p3 = ProviderRow::new();
+    p3.key = "openai_247kan".into();
+    p3.pi_api = "openai-completions".into();
+    p3.api_key = "sk-two".into();
+    qwen_backend()
+        .save_sidecars(&path.to_string_lossy(), &[p2.clone(), p3])
+        .expect("同名同密钥应当放行");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn env_is_never_pruned() {
     // `env` 是共享命名空间，而且 Qwen Code 的 /auth 也往里写
     // （例如 BAILIAN_CODING_PLAN_API_KEY）。按「有没有条目引用」修剪会把用户
