@@ -160,6 +160,64 @@ fn one_entry_is_one_card() {
     );
 }
 
+/// 本机实际文件的形状（Requesty 网关，三条条目共用一个 pid 与一个 `envKey`）。
+///
+/// 这不是从文档推的样本，是按用户 `~/.qwen/settings.json` 的结构复刻的：三条条目
+/// 全在 `openai` 这一个 pid 下、共用一个 `REQUESTY_API_KEY`、都带
+/// `generationConfig.customHeaders`，**都没有 `wireApi`**。Qwen Code 0.24.6 自己的
+/// `/model` 实现（`ModelDialog` → `getAllConfiguredModels`）对这份形状解析出的正是
+/// 下面这三条；本工具也必须一致，否则「打开没有模型」就真成了本工具的问题。
+#[test]
+fn the_live_requesty_shape_parses_into_three_cards() {
+    let content = r#"{
+      "$version": 4,
+      "ui": { "autoModeAcknowledged": true },
+      "env": { "REQUESTY_API_KEY": "sk-requesty" },
+      "modelProviders": {
+        "openai": [
+          { "id": "openai/gpt-4o-mini", "name": "openai/gpt-4o-mini",
+            "baseUrl": "https://router.requesty.ai/v1", "envKey": "REQUESTY_API_KEY",
+            "generationConfig": { "customHeaders": { "HTTP-Referer": "https://qwen.ai", "X-Title": "Qwen Code" } } },
+          { "id": "openai/gpt-4o", "name": "openai/gpt-4o",
+            "baseUrl": "https://router.requesty.ai/v1", "envKey": "REQUESTY_API_KEY",
+            "generationConfig": { "customHeaders": { "HTTP-Referer": "https://qwen.ai", "X-Title": "Qwen Code" } } },
+          { "id": "deepseek-v4-flash", "name": "deepseek-v4-flash",
+            "baseUrl": "https://router.requesty.ai/v1", "envKey": "REQUESTY_API_KEY",
+            "generationConfig": { "customHeaders": { "HTTP-Referer": "https://qwen.ai", "X-Title": "Qwen Code" } } }
+        ]
+      },
+      "security": { "auth": { "selectedType": "openai" } },
+      "model": { "name": "openai/gpt-4o-mini", "baseUrl": "" },
+      "providerMetadata": { "requesty": { "version": "855b9068", "ignoredVersion": "693d9264" } }
+    }"#;
+
+    assert!(qwen_backend().detect(content, ""), "本机形状必须命中判别");
+    let load = load(content);
+    let keys: Vec<&str> = load.providers.iter().map(|p| p.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["openai/gpt-4o-mini", "openai/gpt-4o", "deepseek-v4-flash"],
+        "三条条目三张卡片，顺序按文件里的先后"
+    );
+    for p in &load.providers {
+        assert_eq!(p.models.len(), 1, "{} 该有且只有一条模型", p.key);
+        assert_eq!(p.api_key, "sk-requesty", "密钥从顶层 env 按 envKey join");
+        assert_eq!(p.base_url, "https://router.requesty.ai/v1");
+        assert!(
+            !p.models[0].disabled,
+            "没有 disabled 概念的格式一律读成启用"
+        );
+    }
+    // 顶层不认识的键原样留着（`providerMetadata` 本工具不建模）
+    let out = qwen_backend().serialize_root(&[], &load.providers, &load.extras, None);
+    assert_eq!(
+        out["providerMetadata"]["requesty"]["ignoredVersion"],
+        "693d9264"
+    );
+    assert_eq!(out["ui"]["autoModeAcknowledged"], true);
+    assert_eq!(out["$version"], 4, "已存在的文件不该被改写版本号");
+}
+
 #[test]
 fn parse_maps_model_attributes() {
     let load = load(&settings_json());
