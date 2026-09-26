@@ -423,8 +423,9 @@ fn provider_header_fields(
         // 上面选的协议决定保存时补什么后缀，选非 chat/completions 就是自定义协议。
         // 曾经有个「自定义协议」勾选框，但它与协议选择表达同一件事，两个控件可以
         // 互相矛盾（勾了却选着 chat、或没勾却选了 messages），保存时还得强制对齐一次。
-        // Kimi 的凭据框收敛成了一个框 + 「环境变量名」勾选，勾选框就是它的标签。
-        if !flags.show_kimi {
+        // Kimi 与 Qwen 的凭据框各自画标签：Kimi 的标签是「环境变量名」勾选框本身，
+        // Qwen 只剩一个密钥框。
+        if !flags.show_kimi && !flags.show_qwen {
             field_label(ui, 120.0, flags.api_key_label);
         }
         if flags.show_dsh {
@@ -439,44 +440,20 @@ fn provider_header_fields(
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
             secret_text_edit(ui, &mut p.api_key_secret, ctx.show_api_keys, 408.0, hint);
         } else if flags.show_qwen {
-            // QwenCode 的密钥存在顶层 `env[<envKey>]` 里：条目上写的是**变量名**，
-            // 实际值由本工具同步到 `env`。这两个框不是两把钥匙——一个是名字、一个是
-            // 值，缺一不可（Qwen 的 schema 不让密钥内联在条目上）。变量名留空时按
-            // provider key 自动推导，框里给灰字提示，通常只需要填右边那一个。
-            let env_edit = if p.api_key_env.trim().is_empty() {
-                let derived = crate::credentials::default_env_name(&p.key);
-                let hint = if derived.is_empty() {
-                    "DASHSCOPE_API_KEY".to_string()
-                } else {
-                    format!("{derived}（留空自动）")
-                };
-                egui::TextEdit::singleline(&mut p.api_key_env)
-                    .desired_width(192.0)
-                    .hint_text(hint)
-            } else {
-                egui::TextEdit::singleline(&mut p.api_key_env).desired_width(192.0)
-            };
-            let _env_resp = ui.add(env_edit);
+            // QwenCode 的密钥存在顶层 `env[<envKey>]` 里：条目上写变量名、`env` 里写
+            // 值。变量名**不单独给框**——留空就按 provider key 自动推导（见后端
+            // `env_key_name`），文件里已有的变量名原样沿用；界面上只填密钥值本身。
             field_label(ui, 120.0, "API Key");
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
-            let key_edit = secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
-            // 只填密钥、不填变量名时，`sync_env` 会因为「没有变量名」跳过，密钥被
-            // **静默丢掉**：写出的条目既没有 `envKey` 也没有 `env`，Qwen Code 拿不到
-            // 凭据——表现正是「接入了第三方却跑不通」。所以在用户敲下密钥的现场按
-            // provider key 推一个变量名补上（`requesty` → `REQUESTY_API_KEY`），看得见、
-            // 可改；之后手动清空则尊重清空（changed 只在真正敲键的帧为真）。
-            if key_edit.changed() && !p.api_key.trim().is_empty() && p.api_key_env.trim().is_empty()
-            {
-                p.api_key_env = crate::credentials::default_env_name(&p.key);
-            }
+            secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
         } else if flags.show_kimi {
             // KimiCode 的 `api_key`（内联密钥）与 `api_key_env`（环境变量名）**互斥**：
             // 同时写两个会让 Kimi Code **启动失败**。两个框摆在一起永远有一个是空的，
-            // 用户还得猜哪个生效——收敛成一个框：勾上「环境变量名」，框里填的就是
-            // 变量名（不掩码，它不是密钥）；不勾就是内联密钥。切换时已敲的文本跟着
-            // 搬走，互斥由「只有一个框」从结构上保证，不再依赖现场清空。
+            // 用户还得猜哪个生效——收敛成一个框：勾上 `api_key_env`，框里填的就是
+            // 变量名（不掩码，它不是密钥）；不勾就是内联密钥 `api_key`。切换时已敲的
+            // 文本跟着搬走，互斥由「只有一个框」从结构上保证，不再依赖现场清空。
             let mut env_mode = p.kimi_env_mode;
-            if ui.checkbox(&mut env_mode, "环境变量名").changed() {
+            if ui.checkbox(&mut env_mode, "api_key_env").changed() {
                 let text = if env_mode {
                     std::mem::take(&mut p.api_key)
                 } else {

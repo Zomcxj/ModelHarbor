@@ -114,6 +114,7 @@ impl ProviderFormFlags {
             } else if show_zcode {
                 "access.apiKey"
             } else if show_qwen {
+                // 不再绘制：变量名自动推导，凭据框只剩一个，标签在分支里画「API Key」。
                 "envKey"
             } else if show_kimi {
                 // 不再绘制：凭据框收敛成一个框，标签由「环境变量名」勾选框承担。
