@@ -2068,6 +2068,49 @@ mod cross_page_agent_model_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 端到端：opencode 页的 provider（密钥内联、没有 env 变量名概念）跨格式存到
+    /// Qwen 文件，凭据必须完整落盘——`envKey` 与 `env` 缺一不可。
+    ///
+    /// 真实报错（用户遇到）："Missing credentials for modelProviders model
+    /// 'sensenova-6.8-flash-lite'. Configure modelProviders.openai[].envKey and set
+    /// that environment variable."
+    #[test]
+    fn cross_format_save_writes_the_credential_for_an_env_less_provider() {
+        let dir = temp_dir("qwen_env");
+        let qwen_path = dir.join("settings.json");
+        let path = qwen_path.display().to_string();
+
+        let mut app = App {
+            providers: Vec::new(),
+            source_format: ConfigFormat::Opencode,
+            current_page: ConfigFormat::Opencode,
+            config_path: path.clone(),
+            loaded_path: path.clone(),
+            ..App::default()
+        };
+        let mut p = ProviderRow::new();
+        p.key = "sensenova".into();
+        p.base_url = "https://token.sensenova.cn/v1".into();
+        p.pi_api = "openai-completions".into();
+        p.api_key = "sk-sensenova".into(); // opencode 的密钥是内联的，没有变量名
+        let mut m = crate::model::ModelRow::new();
+        m.id = "sensenova-6.8-flash-lite".into();
+        m.name = "sensenova-6.8-flash-lite".into();
+        p.models.push(m);
+        app.providers = vec![p];
+
+        app.save_backend_to(ConfigFormat::QwenCode, &path)
+            .expect("保存应当成功");
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&qwen_path).unwrap()).unwrap();
+        let entry = &written["modelProviders"]["openai"][0];
+        assert_eq!(entry["id"], "sensenova-6.8-flash-lite");
+        assert_eq!(entry["envKey"], "SENSENOVA_API_KEY");
+        assert_eq!(written["env"]["SENSENOVA_API_KEY"], "sk-sensenova");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 端到端：从别的页存到 Qwen 文件，硬编码的 `qwen-oauth` 条目必须活下来。
     #[test]
     fn saving_to_the_qwen_page_keeps_the_oauth_entries() {

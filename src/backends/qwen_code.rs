@@ -479,7 +479,7 @@ fn entry_from_provider(
     );
     set_or_remove(&mut obj, "description", p.description.trim());
     set_or_remove(&mut obj, "baseUrl", p.base_url.trim());
-    set_or_remove(&mut obj, "envKey", p.api_key_env.trim());
+    set_or_remove(&mut obj, "envKey", &env_key_name(p));
     // `wireApi` 只对 OpenAI 系协议有意义，其它协议写了是配置错误。
     set_or_remove(&mut obj, "wireApi", wire);
 
@@ -697,15 +697,36 @@ fn sync_env(root: &mut Map<String, Value>, providers: &[ProviderRow]) {
         .cloned()
         .unwrap_or_default();
     for p in providers {
-        let key = p.api_key_env.trim();
+        let key = env_key_name(p);
         if key.is_empty() || p.api_key.trim().is_empty() {
             continue;
         }
-        env.insert(key.to_string(), Value::String(p.api_key.clone()));
+        env.insert(key, Value::String(p.api_key.clone()));
     }
     if !env.is_empty() {
         root.insert("env".into(), Value::Object(env));
     }
+}
+
+/// 条目要用的 `envKey` 变量名：界面填了就用界面值；只填了密钥没填变量名时，按
+/// provider key 推一个（与 DSH 的 [`crate::credentials::default_env_name`] 同一约定）。
+///
+/// 后一种情况就是**跨格式复制**：opencode 系的密钥内联在条目里，复制到 Qwen 页时
+/// `api_key` 有值而 `api_key_env` 为空——不推一个名字，`sync_env` 会跳过、条目上也不写
+/// `envKey`，密钥被静默丢掉，CLI 报 "Missing credentials for modelProviders model …"。
+///
+/// 「界面明确清空过」要跟「从来没填过」区分开（与 `sync_provider_secrets` 对 DSH
+/// 密钥的判据同形）：原来有变量名、现在空 = 用户清掉的，尊重清空，不推新名；
+/// 本来就空（跨格式来的行、新建的行）才推导。变量名与密钥都空也返回空串。
+fn env_key_name(p: &ProviderRow) -> String {
+    let named = p.api_key_env.trim();
+    if !named.is_empty() {
+        return named.to_string();
+    }
+    if !p.original_api_key_env.trim().is_empty() || p.api_key.trim().is_empty() {
+        return String::new();
+    }
+    crate::credentials::default_env_name(&p.key)
 }
 
 /// 条目列表 → [`BackendLoad`]（主配置与全量副本共用）。

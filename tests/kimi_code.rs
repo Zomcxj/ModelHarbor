@@ -513,6 +513,57 @@ fn type_is_written_verbatim_and_never_rewritten() {
     }
 }
 
+#[test]
+fn cross_format_providers_get_a_kimi_vocabulary_type() {
+    // 跨格式复制来的 provider 带的是本工具的内部协议名。曾把它逐字写进 `type`，
+    // Kimi 的 `resolveModelProtocol` 认不得（既不在 protocol 枚举里、也查不到
+    // provider definition），切模型就报 "must declare a wire protocol"。
+    for (api, expected) in [
+        ("openai-completions", "openai"),
+        ("openai-responses", "openai_responses"),
+        ("anthropic-messages", "anthropic"),
+        ("google-generative-ai", "google-genai"),
+        ("google-vertex", "google-genai"),
+        ("google-gemini-cli", "google-genai"),
+    ] {
+        let mut p = ProviderRow::new();
+        p.key = "openai_apizh".into();
+        p.base_url = "https://gw.example.com/v1".into();
+        p.pi_api = api.into();
+        let out = kimi_backend().serialize_root(&[], &[p], &Value::Null, None);
+        assert_eq!(
+            out["providers"]["openai_apizh"]["type"], expected,
+            "{api} 必须翻译成 Kimi 的词表"
+        );
+    }
+}
+
+#[test]
+fn an_invalid_type_in_the_file_is_healed_on_the_next_save() {
+    // 上一版已经把内部协议名写进了用户文件。重新加载时它逐字进 pi_api，
+    // 保存时按词表翻译——文件自愈。
+    let content = "[providers.openai_apizh]
+type = \"openai-completions\"
+base_url = \"https://gw.example.com/v1\"
+api_key = \"k\"
+
+[models.\"openai_apizh/gpt-6-luna\"]
+provider = \"openai_apizh\"
+model = \"gpt-6-luna\"
+max_context_size = 262000
+";
+    let root = toml_value(content);
+    let load = load(content);
+    assert_eq!(load.providers[0].pi_api, "openai-completions");
+    let out = kimi_backend().serialize_root(&[], &load.providers, &root, None);
+    assert_eq!(
+        out["providers"]["openai_apizh"]["type"], "openai",
+        "文件里的非法 type 要在下次保存时翻译成词表内的值"
+    );
+    // 别名仍按 Kimi 的约定保留
+    assert!(out["models"].get("openai_apizh/gpt-6-luna").is_some());
+}
+
 // ---------------------------------------------------------------- 凭据 XOR
 
 #[test]

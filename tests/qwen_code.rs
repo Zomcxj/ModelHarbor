@@ -146,6 +146,43 @@ fn parse_joins_the_key_from_env() {
 }
 
 #[test]
+fn a_key_without_an_env_name_gets_a_derived_env_key() {
+    // 跨格式复制来的 provider：密钥内联在 api_key 里，api_key_env 为空。
+    // 曾因此两个地方都跳过——条目上不写 envKey、env 里不写值——密钥被静默丢掉，
+    // CLI 报 "Missing credentials for modelProviders model '…'"。
+    let mut p = ProviderRow::new();
+    p.key = "sensenova".into();
+    p.base_url = "https://token.sensenova.cn/v1".into();
+    p.pi_api = "openai-completions".into();
+    p.api_key = "sk-sensenova".into();
+    let out = qwen_backend().serialize_root(&[], &[p], &Value::Null, None);
+    let entry = &out["modelProviders"]["openai"][0];
+    assert_eq!(
+        entry["envKey"], "SENSENOVA_API_KEY",
+        "变量名按 provider key 推导"
+    );
+    assert_eq!(
+        out["env"]["SENSENOVA_API_KEY"], "sk-sensenova",
+        "密钥必须真的写进 env"
+    );
+    // 显式填了变量名的仍以界面值为准
+    let mut p2 = ProviderRow::new();
+    p2.key = "sensenova".into();
+    p2.pi_api = "openai-completions".into();
+    p2.api_key_env = "MY_KEY".into();
+    p2.api_key = "sk-x".into();
+    let out2 = qwen_backend().serialize_root(&[], &[p2], &Value::Null, None);
+    assert_eq!(out2["modelProviders"]["openai"][0]["envKey"], "MY_KEY");
+    // 变量名与密钥都空：不写 envKey，也不编 env 条目
+    let mut p3 = ProviderRow::new();
+    p3.key = "sensenova".into();
+    p3.pi_api = "openai-completions".into();
+    let out3 = qwen_backend().serialize_root(&[], &[p3], &Value::Null, None);
+    assert!(out3["modelProviders"]["openai"][0].get("envKey").is_none());
+    assert!(out3.get("env").is_none());
+}
+
+#[test]
 fn one_entry_is_one_card() {
     let load = load(&settings_json());
     // `openai` 这个 pid 下两条不同端点的条目 = 两张卡片，不能合并成一张

@@ -112,6 +112,22 @@ fn alias_key(provider: &str, model: &str) -> String {
     format!("{short}/{model}")
 }
 
+/// 本工具的内部协议名 → Kimi `type` 词表（6 值，见 [`provider_entry_from_row`]）。
+///
+/// 只映射跨格式复制可能带进来的内部名；不在表里的返回 `None`，由调用方保留旧值或
+/// 回落 `openai`。Google 的三个内部协议（generative-ai / vertex / gemini-cli）都落
+/// `google-genai`——Kimi 只注册了这一个 Google 型，vertex 与 gemini 都是它的 endpoint
+/// （源码 `registerProviderDefinition({ id: "google-genai", endpoints: [vertex, gemini] })`）。
+fn kimi_type_for_api(api: &str) -> Option<&'static str> {
+    match api {
+        "openai-completions" => Some("openai"),
+        "openai-responses" => Some("openai_responses"),
+        "anthropic-messages" => Some("anthropic"),
+        "google-generative-ai" | "google-vertex" | "google-gemini-cli" => Some("google-genai"),
+        _ => None,
+    }
+}
+
 /// 本工具认得的全部 capability 标签（源码 `UNKNOWN_CAPABILITY_MARKER` 的键集，
 /// 外加 `always_thinking`——它由 `withAnthropicProfile` 加入，本机文件里就有）。
 ///
@@ -584,21 +600,29 @@ fn set_num_min1(obj: &mut Map<String, Value>, key: &str, text: &str) {
 fn provider_entry_from_row(p: &ProviderRow, old: Option<&Value>) -> Value {
     let mut obj = old.and_then(Value::as_object).cloned().unwrap_or_default();
     set_or_remove(&mut obj, "base_url", p.base_url.trim());
-    // `type` 必填：界面选空时保留旧值，旧值也没有才写一个安全的默认。
+    // `type` 必填，且必须在 **Kimi 自己的 6 值词表**里（源码 `ProviderTypeSchema`：
+    // anthropic / openai / kimi / google-genai / openai_responses / vertexai）。
+    //
+    // 三种来源，三种处理：
+    // - 界面值本来就在词表里（本格式读来的 `type` 逐字进了 `pi_api`；界面下拉
+    //   `KIMI_APIS` 给的也是这 6 个值）→ **逐字写**，不做任何翻译；
+    // - 界面值是本工具的**内部协议名**（跨格式复制来的 provider：opencode 的
+    //   `openai-completions` 等）→ 翻译成 Kimi 的词表。曾把内部名逐字写出去，Kimi 的
+    //   `resolveModelProtocol` 既不在 protocol 枚举里、也查不到 provider definition，
+    //   切模型就报 "must declare a wire protocol (config: models.<id>.protocol)"；
+    // - 都不是（手写的陌生值且界面没选协议）→ 保留旧值；再没有才回落 `openai`。
     let api = p.effective_api();
-    let ty = if api.trim().is_empty() {
-        provider_type(old.unwrap_or(&Value::Null)).to_string()
-    } else {
+    let old_type = provider_type(old.unwrap_or(&Value::Null)).to_string();
+    let ty = if crate::convert::KIMI_APIS.contains(&api.as_str()) {
         api
+    } else if let Some(mapped) = kimi_type_for_api(&api) {
+        mapped.to_string()
+    } else if !old_type.is_empty() {
+        old_type
+    } else {
+        "openai".to_string()
     };
-    obj.insert(
-        "type".into(),
-        Value::String(if ty.is_empty() {
-            "openai".to_string()
-        } else {
-            ty
-        }),
-    );
+    obj.insert("type".into(), Value::String(ty));
     // 凭据三选一：界面只有 `api_key` / `api_key_env` 两个框，`oauth` 不建模。
     //
     // 用户填了密钥就**清掉** `api_key_env`，反之亦然——这正是 XOR 的落地点。
