@@ -444,10 +444,19 @@ fn provider_header_fields(
             } else {
                 env_edit
             };
-            ui.add(env_edit);
+            let _env_resp = ui.add(env_edit);
             field_label(ui, 120.0, "env[envKey]");
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
-            secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
+            let key_edit = secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
+            // 只填密钥、不填变量名时，`sync_env` 会因为「没有变量名」跳过，密钥被
+            // **静默丢掉**：写出的条目既没有 `envKey` 也没有 `env`，Qwen Code 拿不到
+            // 凭据——表现正是「接入了第三方却跑不通」。所以在用户敲下密钥的现场按
+            // provider key 推一个变量名补上（`requesty` → `REQUESTY_API_KEY`），看得见、
+            // 可改；之后手动清空则尊重清空（changed 只在真正敲键的帧为真）。
+            if key_edit.changed() && !p.api_key.trim().is_empty() && p.api_key_env.trim().is_empty()
+            {
+                p.api_key_env = qwen_env_name_hint(&p.key);
+            }
         } else if flags.show_kimi {
             // KimiCode 的 `api_key` 与 `api_key_env` **互斥**：同时写会让 Kimi Code
             // **启动失败**（源码把这种情况判成配置冲突并拒绝）。所以两个框都显示，
@@ -1279,9 +1288,54 @@ impl App {
     }
 }
 
+/// 从 provider key 推一个 QwenCode 的 `envKey` 缺省值：`requesty` → `REQUESTY_API_KEY`。
+///
+/// 只在「用户填了密钥但没写变量名」的现场用作补值（见 QwenCode 分支的说明——那种
+/// 状态落盘会把密钥静默丢掉）。规则要一眼可预测：非 ASCII 字母数字折叠成 `_`，
+/// 结尾没有 `API_KEY` 就补上；推不出来（key 折叠后为空）就返回空串，不硬造。
+fn qwen_env_name_hint(key: &str) -> String {
+    let cleaned: String = key
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches('_');
+    if cleaned.is_empty() {
+        return String::new();
+    }
+    if cleaned.ends_with("API_KEY") {
+        cleaned.to_string()
+    } else {
+        format!("{cleaned}_API_KEY")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{preset_index, preset_label, preset_value, CONTEXT_PRESETS, OUTPUT_PRESETS};
+    use super::{
+        preset_index, preset_label, preset_value, qwen_env_name_hint, CONTEXT_PRESETS,
+        OUTPUT_PRESETS,
+    };
+
+    /// 缺省变量名要一眼可预测，且与真实世界的命名习惯一致。
+    #[test]
+    fn the_env_name_hint_follows_the_common_convention() {
+        assert_eq!(qwen_env_name_hint("requesty"), "REQUESTY_API_KEY");
+        assert_eq!(qwen_env_name_hint("openrouter"), "OPENROUTER_API_KEY");
+        // 已经以 API_KEY 结尾的不重复补
+        assert_eq!(qwen_env_name_hint("my_api_key"), "MY_API_KEY");
+        // 非字母数字折叠成下划线
+        assert_eq!(qwen_env_name_hint("my-gateway.cn"), "MY_GATEWAY_CN_API_KEY");
+        // 推不出来就返回空，不硬造
+        assert_eq!(qwen_env_name_hint("  --  "), "");
+        assert_eq!(qwen_env_name_hint(""), "");
+    }
 
     /// 写入配置的必须是**纯数字**：上游不认 `128k` 这种写法，而 `numeric_text_edit`
     /// 也会把它标红（非法数字 → 保存时字段被忽略，等于白填）。

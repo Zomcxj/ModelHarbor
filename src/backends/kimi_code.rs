@@ -57,17 +57,20 @@
 //!
 //! ## 启用/停用（照搬 WorkBuddy 的两份配置）
 //!
-//! Kimi 的模型表里**没有** `disabled` 字段：停用的语义就是**整条不写进 `config.toml`**。
-//! 界面要显示全部配置，这两件事不可能由同一个文件承担，于是拆成两份：
+//! Kimi 的模型 schema（源码 `ModelAliasBaseSchema`）里**没有** `disabled`/`enabled`
+//! 字段，模型表又是按别名一一索引的 `record`——每条别名都是独立生效的一行，
+//! 既不去重、也没有开关。曾经照 WorkBuddy/Qwen 的样子给这里加过停用开关与全量副本
+//! `models.full.toml`，按用户指正移除：那是本工具发明的状态，Kimi 自己的三条写入路径
+//! （`managedModelKey`、`applyOpenPlatformConfig`、自定义注册表 provider）全都不产生
+//! 这样的概念。删卡片就是真删（`.bak` 备份仍然兜底）。
 //!
-//! - `~/.kimi-code/config.toml` —— Kimi Code 真正读的生效清单：`[models.*]` 只含启用条目。
-//! - 同目录 `models.full.toml` —— 本工具维护的全量副本：所有条目 + 每条自己的勾选标记
-//!   （`disabled`，**每条必写**，含 `false`）。为什么 `false` 也必须写，见
-//!   `backends::workbuddy` 的模块说明——同一条教训。
+//! ## 别名的缺省值
 //!
-//! 副本名不能叫 `models.json`：Kimi 的伴生文件里有 `mcp.json`，且 `credentials/` 是敏感
-//! 目录。`models.full.toml` 放在 `~/.kimi-code/` 根下与 `config.toml` 同级，Kimi Code
-//! 只按精确文件名读自己的文件，不会误读它。
+//! Kimi 自己写模型条目时，表键一律是 **`<provider>/<model>`**：managed 走
+//! `managedModelKey` = `` `${KIMI_CODE_PLATFORM_ID}/${modelId}` ``（平台名 `kimi-code`，
+//! 即去掉 provider 键的 `managed:` 前缀），open 平台与自定义注册表走
+//! `` `${providerKey}/${model.id}` ``。所以界面新增（或从别的格式复制来的）模型
+//! 缺省别名也按这个约定生成，而不是裸的 wire id。
 //!
 //! ## 两条「认不出来就原样保留」的规则
 //!
@@ -89,18 +92,25 @@
 use super::{Backend, BackendLoad};
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::{home_dir_string, read_config_content, wsl_home};
+use crate::util::{home_dir_string, wsl_home};
 use serde_json::{Map, Value};
 
 pub struct KimiCodeBackend;
 
 pub static BACKEND: KimiCodeBackend = KimiCodeBackend;
 
-/// 全量副本的文件名（与 `config.toml` 同目录）。
-const FULL_STORE_NAME: &str = "models.full.toml";
-
 /// OAuth 登录写入的 provider 前缀（源码 `KIMI_CODE_PROVIDER_NAME = "managed:kimi-code"`）。
 const MANAGED_PREFIX: &str = "managed:";
+
+/// 模型条目的缺省表键：`<provider>/<model>`（Kimi 自己的约定，见模块说明）。
+///
+/// managed provider 的表键带 `managed:` 前缀，但它的别名用的是平台名
+/// （源码 `managedModelKey` = `` `${KIMI_CODE_PLATFORM_ID}/${modelId}` ``，
+/// `KIMI_CODE_PLATFORM_ID = "kimi-code"`），所以这里要把前缀去掉。
+fn alias_key(provider: &str, model: &str) -> String {
+    let short = provider.strip_prefix(MANAGED_PREFIX).unwrap_or(provider);
+    format!("{short}/{model}")
+}
 
 /// 本工具认得的全部 capability 标签（源码 `UNKNOWN_CAPABILITY_MARKER` 的键集，
 /// 外加 `always_thinking`——它由 `withAnthropicProfile` 加入，本机文件里就有）。
@@ -116,11 +126,6 @@ const CAP_AUDIO_IN: &str = "audio_in";
 
 fn default_local_path() -> String {
     format!("{}\\.kimi-code\\config.toml", home_dir_string())
-}
-
-/// 全量副本的路径：与主配置同目录、固定文件名。
-pub fn full_store_path(config_path: &str) -> String {
-    crate::util::sibling_path(config_path, FULL_STORE_NAME)
 }
 
 /// 某个 provider 是否由 OAuth 登录维护（只读）。
@@ -498,14 +503,18 @@ fn entry_from_model(m: &ModelRow, alias: &str, old: Option<&Value>) -> Value {
     // alias 就是表键，不写进条目里（写了 Kimi 也不认，schema 无此字段）。
     let _ = alias;
 
-    // `display_name` **逐字写**：等于 wire id 也写。
+    // `display_name` **逐字写**：等于 wire id 也写，界面名称为空时回落 wire id。
     //
-    // 曾经按「等于 `model` 就省掉」处理，理由是「冗余」——那是错的：官方写法（Kimi 自己的
-    // `/provider` 流程与文档示例）每条都带 `display_name`，本机 config.toml 的 7 条也全部
-    // 带着，包括与 `model` 同名的那些。冗余与否是 Kimi 的判断，不是本工具的；一次保存就
-    // 悄悄删掉用户文件里的一个字段，是实打实的数据丢失。
-    // 只有界面把名称清空时才删键（Kimi 会回落用 `model` 显示，空标题反而是它不认的写法）。
-    set_or_remove(&mut obj, "display_name", m.name.trim());
+    // 曾经按「等于 `model` 就省掉」处理，理由是「冗余」——那是错的：本机 config.toml
+    // 的 7 条全部带着它，包括与 `model` 同名的那些；写一个回落值与「不写、Kimi 自己
+    // 回落」语义相同，但文件形态与官方一致。只有「名称为空且 wire id 也为空」才会
+    // 删键——那种条目在 `all_models` 里已被跳过，到不了这里。
+    let display = if m.name.trim().is_empty() {
+        m.id.trim()
+    } else {
+        m.name.trim()
+    };
+    set_or_remove(&mut obj, "display_name", display);
 
     // `max_context_size` 必填且 ≥1：解析不出正整数就**不写**这个键，让 Kimi 自己
     // 报错说缺少必填字段，而不是由本工具写一个 0 进去（那是非法值）。
@@ -631,16 +640,16 @@ fn all_models(providers: &[ProviderRow], base: &Value) -> Vec<(String, String, V
                 // 界面允许这种中间态（刚点「新增模型」），保存时跳过它。
                 continue;
             }
-            // alias 缺省 = wire id（与 Kimi 自己的 /provider 行为一致）。
+            // alias 缺省 = `<provider>/<model>`（Kimi 自己的约定，见 [`alias_key`]）。
+            // 界面新增与跨格式复制来的模型没有 `kimi_alias`，就按这个约定生成。
             let alias = if m.kimi_alias.trim().is_empty() {
-                wire.to_string()
+                alias_key(&provider, wire)
             } else {
                 m.kimi_alias.trim().to_string()
             };
             let mut entry = entry_from_model(m, &alias, old.get(&alias));
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert("provider".into(), Value::String(provider.clone()));
-                obj.insert("disabled".into(), Value::Bool(m.disabled));
             }
             out.push((provider.clone(), alias, entry));
         }
@@ -648,27 +657,13 @@ fn all_models(providers: &[ProviderRow], base: &Value) -> Vec<(String, String, V
     out
 }
 
-/// 全量副本的 `[models.*]`：所有条目 + 每条自己的 `disabled`。
-fn full_models(providers: &[ProviderRow], base: &Value) -> Map<String, Value> {
+/// `[models.*]`：全部条目。
+///
+/// Kimi 没有「停用」概念（schema 无 `disabled`，见模块说明），所以只有这一张表，
+/// 没有「生效清单 / 全量副本」之分。
+fn model_table(providers: &[ProviderRow], base: &Value) -> Map<String, Value> {
     let mut out: Map<String, Value> = Map::new();
     for (_, alias, entry) in all_models(providers, base) {
-        out.insert(alias, entry);
-    }
-    out
-}
-
-/// 生效清单的 `[models.*]`：只含启用条目，且**不带** `disabled` 键
-/// （Kimi 的 schema 里没有这个字段，写了是未知键）。
-fn effective_models(providers: &[ProviderRow], base: &Value) -> Map<String, Value> {
-    let mut out: Map<String, Value> = Map::new();
-    for (_, alias, entry) in all_models(providers, base) {
-        if entry.get("disabled").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-        let mut entry = entry;
-        if let Some(obj) = entry.as_object_mut() {
-            obj.shift_remove("disabled");
-        }
         out.insert(alias, entry);
     }
     out
@@ -756,9 +751,8 @@ fn unmanaged_models(base: &Value, managed: &[ProviderRow]) -> Map<String, Value>
 
 /// 按 alias 逐条判断勾选状态。
 ///
-/// `trusted` = 这批条目的 `disabled` 键可以信任（读的是全量副本时为 `true`）。
-/// 主配置里没有这个键（Kimi 不认），所以从主配置读时一律当启用。
-fn build_load(joined: Vec<Joined>, orphans: Vec<(String, Value)>, trusted: bool) -> BackendLoad {
+/// Kimi 没有「停用」概念，模型的 `disabled` 一律为 `false`（界面也不会显示开关）。
+fn build_load(joined: Vec<Joined>, orphans: Vec<(String, Value)>) -> BackendLoad {
     let mut providers: Vec<ProviderRow> = Vec::new();
     for j in &joined {
         // `managed:*` 不进界面：它由 OAuth 维护，界面无从编辑，显示出来只会让人
@@ -766,13 +760,7 @@ fn build_load(joined: Vec<Joined>, orphans: Vec<(String, Value)>, trusted: bool)
         if is_managed_provider(&j.name) {
             continue;
         }
-        let mut row = provider_from_entry(&j.name, &j.provider, &j.models);
-        if !trusted {
-            for m in &mut row.models {
-                m.disabled = false;
-            }
-        }
-        providers.push(row);
+        providers.push(provider_from_entry(&j.name, &j.provider, &j.models));
     }
     let _ = orphans;
     BackendLoad {
@@ -781,35 +769,6 @@ fn build_load(joined: Vec<Joined>, orphans: Vec<(String, Value)>, trusted: bool)
         providers,
         extras: Value::Object(Map::new()),
     }
-}
-
-/// 全量副本的完整 root；读不出 / 没有 `providers` 表都返回 `None`（调用方退回主配置）。
-fn load_full_store_root(config_path: &str) -> Option<Value> {
-    if config_path.trim().is_empty() {
-        return None;
-    }
-    let text = read_config_content(&full_store_path(config_path)).ok()?;
-    if text.trim().is_empty() {
-        return None;
-    }
-    let root = parse_toml(&text).ok()?;
-    models_map(&root)?;
-    Some(root)
-}
-
-/// 把主配置里「副本还没有」的模型条目并进来（按 alias 判重）。
-///
-/// 用户可能手改了 `config.toml`（Kimi Code 自己也会写它——`/login`、`/model` 都会），
-/// 手加/自动加的条目不在副本里；不补的话它在界面上根本看不见。
-fn merge_full_and_effective(
-    full: &Map<String, Value>,
-    effective: &Map<String, Value>,
-) -> Map<String, Value> {
-    let mut out = full.clone();
-    for (alias, model) in effective {
-        out.entry(alias.clone()).or_insert_with(|| model.clone());
-    }
-    out
 }
 
 impl Backend for KimiCodeBackend {
@@ -865,40 +824,14 @@ impl Backend for KimiCodeBackend {
     fn parse(&self, content: &str) -> Result<BackendLoad, String> {
         let root = parse_toml(content)?;
         let (joined, orphans) = join(&root);
-        let mut load = build_load(joined, orphans, false);
+        let mut load = build_load(joined, orphans);
         load.root = root.clone();
         load.extras = root;
         Ok(load)
     }
 
-    /// 带路径解析：优先读全量副本（含停用条目与逐条的勾选标记）。
-    ///
-    /// 副本里也有完整的 provider 表（含 `managed:*`），所以 extras 仍取**主配置**——
-    /// 那才是 Kimi Code 实际生效的那份，`[thinking]` 之类的顶层设置以它为准。
-    fn parse_at(&self, content: &str, path: &str) -> Result<BackendLoad, String> {
-        let root = parse_toml(content)?;
-        let mut trusted = false;
-        let models = match load_full_store_root(path) {
-            Some(full) => {
-                trusted = true;
-                merge_full_and_effective(
-                    &models_map(&full).cloned().unwrap_or_default(),
-                    &models_map(&root).cloned().unwrap_or_default(),
-                )
-            }
-            None => models_map(&root).cloned().unwrap_or_default(),
-        };
-        // join 用的是「模型表」+「provider 表」，两侧合并后的模型表要重新挂一次。
-        let mut merged = root.clone();
-        if let Some(obj) = merged.as_object_mut() {
-            obj.insert("models".into(), Value::Object(models));
-        }
-        let (joined, orphans) = join(&merged);
-        let mut load = build_load(joined, orphans, trusted);
-        load.root = root.clone();
-        load.extras = root;
-        Ok(load)
-    }
+    // `parse_at` 用 trait 缺省实现（直接 `parse`）：没有全量副本可读，
+    // 主配置就是全部状态。
 
     fn serialize_root(
         &self,
@@ -907,46 +840,26 @@ impl Backend for KimiCodeBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
-        // 产物是 **Kimi Code 的生效清单**：只含启用的模型条目。全量副本由
-        // `save_sidecars` 另写一份，两者共用 `all_models` 构造，字段口径必然一致。
+        // 产物就是 **Kimi Code 的全部生效状态**：没有停用概念，`config.toml` 一份
+        // 文件承担所有条目。
         let base = target_root.unwrap_or(extras);
         let mut root = base.as_object().cloned().unwrap_or_default();
         set_or_drop_table(&mut root, "providers", all_providers(providers, base));
-        let mut models = effective_models(providers, base);
+        let mut models = model_table(providers, base);
         // 认不出来的条目原样补回（孤儿模型 / managed 名下的模型）。
         merge_unmanaged_models(&mut models, base, providers);
         set_or_drop_table(&mut root, "models", models);
         Value::Object(root)
     }
 
-    /// 全量副本（`models.full.toml`）：所有模型条目 + 每条自己的 `disabled` + provider 表。
-    ///
-    /// 继承未知字段的基底取**副本本身**（上次的完整状态，字段最全），没有才退回主配置。
-    /// 只用主配置当基底会让停用条目的未知字段在每次保存时被抹掉——那正是这份副本要
-    /// 解决的问题。副本读不出、主配置也读不出就取消保存。
-    fn save_sidecars(&self, path: &str, providers: &[ProviderRow]) -> Result<(), String> {
-        // 凭据 XOR 在写盘**之前**挡住：同时写 api_key 与 api_key_env 会让 Kimi Code
-        // 启动失败（见模块说明第 2 点）。这是本后端最严重的一条约束。
+    /// 没有全量副本可写（见模块说明「没有『停用』这回事」），但仍挂在保存序列里：
+    /// 凭据 XOR 要在主配置落盘**之前**挡住——同时写 `api_key` 与 `api_key_env` 会让
+    /// Kimi Code 启动失败（见模块说明第 2 点），这是本后端最严重的一条约束。
+    fn save_sidecars(&self, _path: &str, providers: &[ProviderRow]) -> Result<(), String> {
         if let Some(conflict) = first_credential_conflict(providers) {
             return Err(format!("凭据冲突，已取消保存: {conflict}"));
         }
-        let base = match load_full_store_root(path) {
-            Some(root) => root,
-            None => self
-                .load_target_root(path)
-                .map_err(|e| format!("无法读取全量副本与主配置，已取消保存: {e}"))?,
-        };
-        let mut root = Map::new();
-        set_or_drop_table(&mut root, "providers", all_providers(providers, &base));
-        let mut models = full_models(providers, &base);
-        // 副本是「全部配置」的落盘形态：认不出来的条目也要在里面，否则它们只剩主配置
-        // 一处记录——而主配置会被筛成「只剩启用条目」，下一轮就没有全量基底可继承了。
-        merge_unmanaged_models(&mut models, &base, providers);
-        set_or_drop_table(&mut root, "models", models);
-        super::write_config(
-            &full_store_path(path),
-            &to_toml_string(&Value::Object(root))?,
-        )
+        Ok(())
     }
 
     fn load_target_root(&self, path: &str) -> Result<Value, String> {
@@ -1049,7 +962,7 @@ max_context_size = 1
     fn managed_providers_are_not_listed() {
         let root = root_of(SAMPLE);
         let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans, false);
+        let load = build_load(joined, orphans);
         assert_eq!(load.providers.len(), 1, "只列出 sensenova");
         assert_eq!(load.providers[0].key, "sensenova");
     }
@@ -1059,7 +972,7 @@ max_context_size = 1
     fn managed_entries_survive_a_save() {
         let root = root_of(SAMPLE);
         let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans, false);
+        let load = build_load(joined, orphans);
         let out = KimiCodeBackend.serialize_root(&[], &load.providers, &root, None);
         let managed = &out["providers"]["managed:kimi-code"];
         assert_eq!(managed["type"], "kimi");
@@ -1095,7 +1008,7 @@ max_context_size = 1000
 "#,
         );
         let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans, false);
+        let load = build_load(joined, orphans);
         assert_eq!(
             load.providers[0].models[0].id, "real-wire-id",
             "id 是 wire id"
@@ -1165,48 +1078,15 @@ max_context_size = 1000
         assert!(caps.contains(&"tool_use"), "只动思考相关标签");
     }
 
-    /// 停用条目：不进生效清单，但进全量副本且带 `disabled`。
+    /// 写出的模型条目**永远不带** `disabled`（Kimi 的 schema 没这个键，
+    /// 也没有停用概念——`ModelRow.disabled` 是界面共享结构上的字段，与本后端无关）。
     #[test]
-    fn disabled_entries_leave_the_effective_file() {
+    fn written_entries_carry_no_disabled_key() {
         let root = root_of(SAMPLE);
         let (joined, orphans) = join(&root);
-        let mut load = build_load(joined, orphans, false);
-        load.providers[0].models[0].disabled = true;
-        let effective = KimiCodeBackend.serialize_root(&[], &load.providers, &root, None);
-        assert!(
-            effective["models"]
-                .get("sensenova/deepseek-v4-flash")
-                .is_none(),
-            "停用条目不得进生效清单"
-        );
-        let full = full_models(&load.providers, &root);
-        let entry = &full["sensenova/deepseek-v4-flash"];
-        assert_eq!(entry["disabled"], true, "全量副本必须记录停用");
-    }
-
-    /// 全量副本里 `disabled` 每条必写，含 `false`。
-    #[test]
-    fn full_store_records_every_flag_including_false() {
-        let root = root_of(SAMPLE);
-        let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans, false);
-        let full = full_models(&load.providers, &root);
-        for (alias, entry) in &full {
-            assert!(
-                entry.get("disabled").and_then(Value::as_bool).is_some(),
-                "{alias} 缺 disabled 标记"
-            );
-        }
-    }
-
-    /// 生效清单里**不写** `disabled`（Kimi 的 schema 没这个键）。
-    #[test]
-    fn effective_file_has_no_disabled_key() {
-        let root = root_of(SAMPLE);
-        let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans, false);
-        let effective = KimiCodeBackend.serialize_root(&[], &load.providers, &root, None);
-        for (alias, entry) in effective["models"].as_object().unwrap() {
+        let load = build_load(joined, orphans);
+        let out = KimiCodeBackend.serialize_root(&[], &load.providers, &root, None);
+        for (alias, entry) in out["models"].as_object().unwrap() {
             assert!(entry.get("disabled").is_none(), "{alias} 不该带 disabled");
         }
     }
@@ -1362,61 +1242,42 @@ base_url = "https://api.openai.com/v1"
         assert!(load.providers.is_empty());
     }
 
-    /// 全量副本路径与主配置同级。
+    /// 别名缺省值：`<provider>/<model>`，managed 用去掉前缀的平台名。
     #[test]
-    fn full_store_path_sits_beside_the_config() {
+    fn alias_key_follows_kimis_own_convention() {
         assert_eq!(
-            full_store_path(r"C:\Users\x\.kimi-code\config.toml"),
-            r"C:\Users\x\.kimi-code\models.full.toml"
+            alias_key("sensenova", "deepseek-v4-flash"),
+            "sensenova/deepseek-v4-flash"
+        );
+        assert_eq!(alias_key("managed:kimi-code", "k3"), "kimi-code/k3");
+        assert_eq!(
+            alias_key("workbuddy", "deepseek-v4.1-flash"),
+            "workbuddy/deepseek-v4.1-flash"
         );
     }
 
-    /// 全量副本优先：停用条目仍可见，且勾选状态被信任。
+    /// 新增（或跨格式复制来的）模型没有 `kimi_alias`：写出时按 Kimi 的约定
+    /// 生成 `<provider>/<model>`，且 `display_name` 回落到 wire id。
     #[test]
-    fn full_store_keeps_disabled_entries_visible() {
-        let root = root_of(SAMPLE);
-        let (joined, orphans) = join(&root);
-        let mut load = build_load(joined, orphans, false);
-        load.providers[0].models[0].disabled = true;
-        let full = full_models(&load.providers, &root);
-        let mut merged = root.clone();
-        merged
-            .as_object_mut()
-            .unwrap()
-            .insert("models".into(), Value::Object(full));
-        let (j2, o2) = join(&merged);
-        let reloaded = build_load(j2, o2, true);
-        assert!(
-            reloaded.providers[0].models[0].disabled,
-            "副本里的停用状态要还原"
+    fn a_new_model_gets_a_vendor_prefixed_alias_and_display_name() {
+        let root = root_of("[providers.p]\ntype = \"openai\"\n");
+        let mut p = ProviderRow::new();
+        p.key = "sensenova".into();
+        p.pi_api = "openai-completions".into();
+        let mut m = ModelRow::new();
+        m.id = "deepseek-v4-flash".into(); // name 留空（界面中间态）
+        p.models.push(m);
+        let out = KimiCodeBackend.serialize_root(&[], &[p], &root, None);
+        let entry = &out["models"]["sensenova/deepseek-v4-flash"];
+        assert_eq!(
+            entry["model"], "deepseek-v4-flash",
+            "alias = provider/model"
         );
-    }
-
-    /// 手加进主配置的条目（副本里没有）要能看见。
-    #[test]
-    fn entries_added_by_hand_are_merged_in() {
-        let full: Map<String, Value> = toml::from_str(
-            "[a]\nprovider = \"p\"\nmodel = \"a\"\nmax_context_size = 1\ndisabled = false\n",
-        )
-        .unwrap();
-        let effective: Map<String, Value> = toml::from_str(
-            "[a]\nprovider = \"p\"\nmodel = \"a\"\nmax_context_size = 1\n\n[b]\nprovider = \"p\"\nmodel = \"b\"\nmax_context_size = 1\n",
-        )
-        .unwrap();
-        let merged = merge_full_and_effective(&full, &effective);
-        assert_eq!(merged.len(), 2);
-        assert!(merged.contains_key("b"));
-    }
-
-    /// 同一 alias 不重复写（副本与主配置合并后仍是一条）。
-    #[test]
-    fn merged_models_do_not_duplicate_aliases() {
-        let root = root_of(SAMPLE);
-        let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans, false);
-        let full = full_models(&load.providers, &root);
-        let merged = merge_full_and_effective(&full, &full);
-        assert_eq!(merged.len(), full.len());
+        assert_eq!(entry["provider"], "sensenova");
+        assert_eq!(
+            entry["display_name"], "deepseek-v4-flash",
+            "名称为空时回落 wire id，不省略这个键"
+        );
     }
 
     /// 没有 wire id 的模型行（界面中间态）不写进文件。
@@ -1424,7 +1285,7 @@ base_url = "https://api.openai.com/v1"
     fn models_without_a_wire_id_are_skipped() {
         let root = root_of(SAMPLE);
         let (joined, orphans) = join(&root);
-        let mut load = build_load(joined, orphans, false);
+        let mut load = build_load(joined, orphans);
         load.providers[0].models.push(ModelRow::new()); // id 为空
         let out = KimiCodeBackend.serialize_root(&[], &load.providers, &root, None);
         for (_, entry) in out["models"].as_object().unwrap() {

@@ -53,14 +53,16 @@ impl ConfigFormat {
         )
     }
 
-    /// 该后端是否有**模型级启用开关**——目前是 WorkBuddy、QwenCode 与 KimiCode 三家。
+    /// 该后端是否有**模型级启用开关**——目前是 WorkBuddy 与 QwenCode 两家。
     ///
-    /// 三家的共同点是：模型清单里**没有原生的 `disabled` 字段**，而「生效清单只含启用
+    /// 两家的共同点是：模型清单里**没有原生的 `disabled` 字段**，而「生效清单只含启用
     /// 条目」是它们各自的真实语义。WorkBuddy 的模型写 `disabled`（选择器按裸 id
     /// **全局去重**，同名只能有一条生效）；QwenCode 则是**停用条目干脆不写进
-    /// `settings.json`**，全量状态记在同目录的 sidecar 里（见 `backends::qwen_code`）；
-    /// KimiCode 同理——停用条目不进 `config.toml` 的 `[models.*]`，全量状态记在
-    /// `models.full.toml`（见 `backends::kimi_code`）。
+    /// `settings.json`**，全量状态记在同目录的 sidecar 里（见 `backends::qwen_code`）。
+    ///
+    /// KimiCode **不在其中**：它的模型 schema 没有 disabled/enabled 字段，模型表又按
+    /// 别名一一索引——既不去重也没有开关，启用开关是本工具发明的状态，已按用户指正
+    /// 移除（见 `backends::kimi_code` 的模块说明）。
     ///
     /// 其余后端没有这个语义（ZCode 的 `config.enabled` 由它自己的界面维护，
     /// ModelHarbor 只负责原样保留，不接管），凭空加一个只会被当成未知键。
@@ -68,10 +70,7 @@ impl ConfigFormat {
     /// 不能改用 `page_has_model_field("disabled")` 判定：那个函数在「已加载的文件格式
     /// 与当前页不同」时一律返回 true（为了让新页面能填所有字段），会把开关漏到每一页。
     pub fn has_model_enable(&self) -> bool {
-        matches!(
-            self,
-            ConfigFormat::WorkBuddy | ConfigFormat::QwenCode | ConfigFormat::KimiCode
-        )
+        matches!(self, ConfigFormat::WorkBuddy | ConfigFormat::QwenCode)
     }
 }
 

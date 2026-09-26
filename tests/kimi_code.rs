@@ -4,7 +4,8 @@
 //! 1. 模型在**顶层全局表** `[models."<alias>"]` 里，靠 `provider` 字段 join 到
 //!    `[providers.<name>]`——模型不嵌在 provider 下，这是本项目唯一这样的格式；
 //! 2. 表键是 alias，`model` 是发给上游的 wire id，**两者可以不同**；
-//! 3. 没有 `disabled` 字段，停用 = 整条不写 → 拆成生效清单 + 全量副本两份文件。
+//! 3. 没有 `disabled` 字段，也没有去重——每条别名都是独立生效的一行；界面没有
+//!    启用开关，也不会写出伴生的全量副本（曾经的开关已按用户指正移除）。
 //!
 //! 另外两条硬约束：`api_key` / `api_key_env` / `oauth` 三者互斥（同时写会让 Kimi Code
 //! **启动失败**），`managed:*` provider 来自 OAuth 登录、只读。
@@ -656,132 +657,49 @@ fn default_effort_must_stay_inside_support_efforts() {
     assert_eq!(out2["models"]["p/m"]["default_effort"], "high");
 }
 
-// ---------------------------------------------------------------- 启用/停用
+// ---------------------------------------------------------------- 启用/停用（没有）
 
 #[test]
-fn disabled_entries_leave_the_effective_file() {
+fn there_is_no_disabled_concept_on_the_kimi_page() {
+    // Kimi 的模型 schema（`ModelAliasBaseSchema`）没有 disabled/enabled 字段，模型表
+    // 又按别名一一索引——没有去重，也没有开关。曾经的启用开关是本工具发明的状态，
+    // 已按用户指正移除；写出的条目永远不带 `disabled`，全部条目一律进 `config.toml`。
+    assert!(!ConfigFormat::KimiCode.has_model_enable());
+
     let root = toml_value(&config_toml());
     let load = load(&config_toml());
-    let mut providers = load.providers.clone();
-    providers[0].models[0].disabled = true;
-    let out = kimi_backend().serialize_root(&[], &providers, &root, None);
-    assert!(
-        out["models"]
-            .get("sensenova/sensenova-6.8-flash-lite")
-            .is_none(),
-        "停用条目不得进生效清单"
-    );
-    assert!(
-        out["models"].get("sensenova/deepseek-v4-flash").is_some(),
-        "其余条目照常"
-    );
-    // Kimi 的 schema 里没有 disabled 这个键
+    let out = kimi_backend().serialize_root(&[], &load.providers, &root, None);
     for (alias, entry) in out["models"].as_object().unwrap() {
         assert!(entry.get("disabled").is_none(), "{alias} 不该带 disabled");
     }
+    // 4 条全在（界面接管的 2 条 + managed 名下的 2 条），没有筛选。
+    assert_eq!(out["models"].as_object().unwrap().len(), 4);
 }
 
 #[test]
-fn full_store_records_every_flag_including_false() {
-    let dir = temp_dir("full_store");
+fn no_sidecar_is_written_any_more() {
+    // 副本随停用开关一起移除：保存后同目录不得多出 models.full.toml。
+    let dir = temp_dir("no_sidecar");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
 
     let load = load(&config_toml());
-    let mut providers = load.providers.clone();
-    providers[0].models[0].disabled = true;
     kimi_backend()
-        .save_sidecars(&path.to_string_lossy(), &providers)
-        .expect("写全量副本");
-
-    let text = std::fs::read_to_string(dir.join("models.full.toml")).expect("副本应存在");
-    let full = toml_value(&text);
-    let entries = full["models"].as_object().unwrap();
-    // 副本里**所有**条目都在（含停用的与 managed 的）
-    assert!(entries.contains_key("sensenova/sensenova-6.8-flash-lite"));
-    assert!(entries.contains_key("sensenova/deepseek-v4-flash"));
-    assert!(
-        entries.contains_key("kimi-code/k3"),
-        "managed 模型也在副本里"
-    );
-    // **界面接管**的条目每条都写 disabled（含 false）：省掉 false 会让「全勾上」与
-    // 「从没记录过勾选」变成同一状态，而且会自我延续。
-    for alias in [
-        "sensenova/sensenova-6.8-flash-lite",
-        "sensenova/deepseek-v4-flash",
-    ] {
-        assert!(
-            entries[alias]
-                .get("disabled")
-                .and_then(Value::as_bool)
-                .is_some(),
-            "{alias} 缺 disabled 标记"
-        );
-    }
-    // 界面**不接管**的条目（managed / 孤儿）原样带过来，不带这个键——它们没有勾选状态，
-    // 凭空加一个只会让「原样保留」变成「改写过」。
-    assert!(
-        entries["kimi-code/k3"].get("disabled").is_none(),
-        "managed 条目必须原样保留"
-    );
-    assert_eq!(
-        entries["sensenova/sensenova-6.8-flash-lite"]["disabled"],
-        true
-    );
-    assert_eq!(entries["sensenova/deepseek-v4-flash"]["disabled"], false);
+        .save_sidecars(&path.to_string_lossy(), &load.providers)
+        .expect("凭据不冲突时必须成功");
+    assert!(!dir.join("models.full.toml").exists(), "不该再写全量副本");
 
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
-fn loading_prefers_the_full_store_so_disabled_entries_stay_visible() {
-    let dir = temp_dir("prefer_full");
-    let path = dir.join("config.toml");
-    std::fs::write(&path, config_toml()).unwrap();
-    let config_path = path.to_string_lossy().to_string();
-
-    let first = load(&config_toml());
-    let mut providers = first.providers.clone();
-    providers[0].models[0].disabled = true;
-    let effective = kimi_backend().serialize_root(&[], &providers, &first.extras, None);
-    let text = kimi_backend().render(&effective, false).unwrap();
-    std::fs::write(&path, text).unwrap();
-    kimi_backend()
-        .save_sidecars(&config_path, &providers)
-        .unwrap();
-
-    let content = std::fs::read_to_string(&path).unwrap();
-    let reloaded = kimi_backend().parse_at(&content, &config_path).unwrap();
-    let p = reloaded
-        .providers
-        .iter()
-        .find(|p| p.key == "sensenova")
-        .expect("provider 必须还在");
-    let m = p
-        .models
-        .iter()
-        .find(|m| m.id == "sensenova-6.8-flash-lite")
-        .expect("停用条目必须仍在界面上，否则用户勾不回来");
-    assert!(m.disabled, "勾选状态要还原");
-
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn entries_added_by_hand_to_the_config_are_merged_in() {
-    // Kimi Code 自己也会写 config.toml（/login、/model）：副本里没有的条目要并进来，
-    // 否则用户新配的模型在界面上看不见。
+fn hand_added_entries_are_visible_without_a_sidecar() {
+    // Kimi Code 自己也会写 config.toml（/login、/model）。没有副本之后主配置就是
+    // 全部状态，手加的条目自然能看见。
     let dir = temp_dir("hand_added");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
-    let config_path = path.to_string_lossy().to_string();
 
-    let first = load(&config_toml());
-    kimi_backend()
-        .save_sidecars(&config_path, &first.providers)
-        .unwrap();
-
-    // 手加一条模型 + 一个 provider
     let mut text = config_toml();
     text.push_str(
         "\n[providers.hand]\ntype = \"openai\"\napi_key = \"k\"\n\n[models.\"hand/added\"]\nprovider = \"hand\"\nmodel = \"added\"\nmax_context_size = 1\n",
@@ -789,7 +707,9 @@ fn entries_added_by_hand_to_the_config_are_merged_in() {
     std::fs::write(&path, text).unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
-    let reloaded = kimi_backend().parse_at(&content, &config_path).unwrap();
+    let reloaded = kimi_backend()
+        .parse_at(&content, &path.to_string_lossy())
+        .unwrap();
     assert!(
         reloaded.providers.iter().any(|p| p.key == "hand"),
         "手加的 provider 要能看见"
@@ -799,7 +719,8 @@ fn entries_added_by_hand_to_the_config_are_merged_in() {
 }
 
 #[test]
-fn shrinks_on_save_detects_disabling() {
+fn shrinks_on_save_detects_deletions() {
+    // 停用没了，但删卡片仍会让条目变少——`.bak` 备份的触发条件依然需要它。
     use model_harbor::backends::kimi_code::shrinks_on_save;
     let before = toml_value(&config_toml());
     let after = toml_value(
@@ -808,38 +729,6 @@ fn shrinks_on_save_detects_disabling() {
     assert!(shrinks_on_save(&before, &after), "条目变少要触发备份");
     assert!(!shrinks_on_save(&after, &before), "条目变多不用备份");
     assert!(!shrinks_on_save(&before, &before), "没变不用备份");
-}
-
-#[test]
-fn full_store_path_sits_beside_the_config() {
-    use model_harbor::backends::kimi_code::full_store_path;
-    assert_eq!(
-        full_store_path(r"C:\Users\me\.kimi-code\config.toml"),
-        r"C:\Users\me\.kimi-code\models.full.toml"
-    );
-    assert_eq!(
-        full_store_path("/home/me/.kimi-code/config.toml"),
-        "/home/me/.kimi-code/models.full.toml"
-    );
-    // 名字必须与主配置不同，否则会把生效清单覆盖成副本
-    assert!(!full_store_path("config.toml").ends_with("config.toml"));
-}
-
-#[test]
-fn full_store_aborts_when_the_config_is_unreadable() {
-    // 副本与主配置都读不出时必须**报错**（由调用方取消保存），不能静默用空基底：
-    // 空基底会让停用条目的未知字段（adaptive_thinking / overrides）在这一次保存里被抹掉。
-    let dir = temp_dir("sidecar_corrupt");
-    let path = dir.join("config.toml");
-    std::fs::write(&path, "[providers.p\ntype = ").unwrap();
-
-    let err = kimi_backend()
-        .save_sidecars(&path.to_string_lossy(), &[])
-        .expect_err("损坏的配置必须让保存失败");
-    assert!(err.contains("无法读取"), "应给出可读的错误：{err}");
-    assert!(!dir.join("models.full.toml").exists(), "副本不该被写出来");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------- 跨格式

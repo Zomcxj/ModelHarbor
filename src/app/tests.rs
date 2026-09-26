@@ -2062,8 +2062,8 @@ mod cross_page_agent_model_tests {
         );
         assert_eq!(models["kimi-code/k3"]["display_name"].as_str(), Some("K3"));
         assert!(
-            models.contains_key("sensenova-6.8-flash-lite"),
-            "界面接管的模型仍要写进去（跨格式来的没有 alias，缺省用 wire id）"
+            models.contains_key("sensenova/sensenova-6.8-flash-lite"),
+            "界面接管的模型仍要写进去（缺省别名 = provider/model，Kimi 自己的约定）"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

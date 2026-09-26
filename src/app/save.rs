@@ -728,8 +728,8 @@ impl App {
         // 跨格式转换还多，所以它们也必须先备份，不能沿用「同格式保存不备份」。
         //
         // 三家判据不同：WorkBuddy 是按裸 id 去重后条目变少（根是数组），QwenCode 是停用条目
-        // 不再写出（条目嵌在 `modelProviders` 里），KimiCode 是模型表条目变少（两张表），
-        // 各自问自己的后端。
+        // 不再写出（条目嵌在 `modelProviders` 里），KimiCode 是删了卡片让模型表条目变少
+        // （它没有停用概念，`.bak` 的兜底对象是「删除」）。各自问自己的后端。
         let shrinks = is_current
             && match fmt {
                 ConfigFormat::WorkBuddy => util::read_config_content(path)
@@ -773,10 +773,11 @@ impl App {
         } else {
             None
         };
-        // sidecar 一律在主配置**之前**写：WorkBuddy / QwenCode / KimiCode 的全量副本要靠
-        // 读主配置继承未知字段，而主配置马上会被筛成「只剩勾选的条目」；副本先落盘才拿得到
-        // 全量字段。KimiCode 还在这里挡凭据 XOR 冲突（写错会让它启动失败）。
-        // DSH 的凭据 sidecar 无此依赖，同一位置写即可。
+        // sidecar 一律在主配置**之前**写：WorkBuddy / QwenCode 的全量副本要靠
+        // 读主配置继承未知字段，而主配置马上会被筛成「只剩勾选的条目」；副本先落盘才
+        // 拿得到全量字段。KimiCode 的保存序列也在这里过一道：它的 `save_sidecars`
+        // 只挡凭据 XOR 冲突（同时写 api_key 与 api_key_env 会让它启动失败），不再写
+        // 任何文件。DSH 的凭据 sidecar 无此依赖，同一位置写即可。
         if matches!(
             fmt,
             ConfigFormat::DeepSeekHarness
