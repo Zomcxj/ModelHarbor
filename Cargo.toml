@@ -1,6 +1,6 @@
 [package]
 name = "model-harbor"
-version = "0.0.9"
+version = "0.0.10"
 edition = "2021"
 # 解析图中依赖声明的最高 MSRV：image 0.25.10 / eframe 0.33.3 / egui 0.33.3
 rust-version = "1.88"
