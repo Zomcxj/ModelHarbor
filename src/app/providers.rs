@@ -198,10 +198,7 @@ impl App {
             // QwenCode 的档位是 capabilities.reasoning.efforts；官方词表就是
             // low/medium/high/xhigh/max（"replaces the supported subset of
             // low/medium/high/xhigh/max"），没有 opencode 那些 none/ultra。
-            ConfigFormat::QwenCode => (
-                "capabilities.reasoning.efforts",
-                &["low", "medium", "high", "xhigh", "max"],
-            ),
+            ConfigFormat::QwenCode => ("efforts", &["low", "medium", "high", "xhigh", "max"]),
             // KimiCode 的档位是 `support_efforts` 数组。官方没有固定词表（各模型自带，
             // 本机文件里是 low/high/max），所以这里只给一组**常见值**供快速点选，
             // 用户填任意字符串都会被原样写入——不能把词表当成校验。

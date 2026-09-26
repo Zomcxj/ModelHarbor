@@ -380,7 +380,7 @@ fn provider_header_fields(
         }
         // QwenCode 的 timeout 落在条目的 generationConfig 里。
         if flags.show_qwen {
-            field_label(ui, 120.0, "generationConfig.timeout");
+            field_label(ui, 120.0, "timeout");
             numeric_text_edit(ui, &mut p.timeout, 70.0, "180000");
         }
         // pi / omp 的 compat 与 api 同排显示（紧跟 api 之后）。
