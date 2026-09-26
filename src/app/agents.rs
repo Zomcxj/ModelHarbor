@@ -42,13 +42,15 @@ fn model_options(providers: &[ProviderRow], gateway: &[String], current: &str) -
     options
 }
 
-/// 模型下拉右侧的免费模型状态提示与「刷新」按钮。
+/// Agents 标题行里（「展开全部卡片」右侧）的免费模型状态提示与「刷新」按钮。
 ///
-/// 返回 `true` 表示用户点了刷新；调用方在表单渲染结束后再发起后台拉取
-/// （这里不能直接调 `&mut self` 方法：此时 `self.agents[idx]` 正被可变借用）。
+/// 刷新的是**本页后端的内置免费模型清单**，与具体哪个 agent 无关，所以整页只有
+/// 这一份，不随每个 model 下拉重复。
 ///
-/// 写成自由函数还有一个好处：拉取中 / 失败 / 空列表三种状态各有文案，
-/// 集中在视觉上贴着下拉的位置，用户不必去状态栏找原因。
+/// 返回 `true` 表示用户点了刷新；调用方随即发起后台拉取（标题行是 `&mut self`
+/// 上下文，可以直接调 `start_free_models_fetch`）。
+///
+/// 拉取中 / 失败 / 空列表三种状态各有文案，就地可见，用户不必去状态栏找原因。
 fn model_options_hint(
     ui: &mut egui::Ui,
     backend: &str,
@@ -156,13 +158,11 @@ struct AgentComboCtx<'a> {
 }
 
 impl AgentComboCtx<'_> {
-    /// `model` 下拉，附带免费模型的提示与「刷新」按钮。
+    /// `model` 下拉：自家网关模型排最前，免费模型一并入选。
     ///
-    /// 返回 `(新的 model 值, 是否点了刷新)`。编辑表单与新增表单只有 id salt 不同，
-    /// 渲染逻辑完全一样，所以抽成一个函数而不是抄两遍——两处抄写已经开始漂移
-    /// （一处多了个用不上的绑定）。
-    fn model_combo(&self, ui: &mut egui::Ui, salt: String, current: &str) -> (String, bool) {
-        let (free_prefix, free_list) = current_free_models(self.page, self.free_models);
+    /// 免费模型的**状态提示与「刷新」按钮不在这里**——每个下拉旁各放一份是重复，
+    /// 统一放在 Agents 标题行（「展开全部卡片」右侧），见 `ui_agents_section`。
+    fn model_combo(&self, ui: &mut egui::Ui, salt: String, current: &str) -> String {
         let gateway = current_gateway_options(self.page, self.free_models);
         let options = model_options(self.providers, &gateway, current);
         let mut selected = options.iter().position(|m| m == current);
@@ -183,16 +183,9 @@ impl AgentComboCtx<'_> {
                     }
                 }
             });
-        // 只对确实有免费层的后端显示提示与刷新按钮（mimocode 没有，不占位置）。
-        let mut refresh = false;
-        if free_prefix.is_some() {
-            let (fetching, error) = current_free_status(self.page, self.free_models);
-            refresh = model_options_hint(ui, self.page.label(), free_list.len(), error, fetching);
-        }
-        let picked = selected
+        selected
             .map(|i| options[i].clone())
-            .unwrap_or_else(|| current.to_string());
-        (picked, refresh)
+            .unwrap_or_else(|| current.to_string())
     }
 }
 
@@ -308,6 +301,25 @@ impl App {
                         }
                     }
                 }
+                // 免费模型的状态与「刷新」**统一放在标题行**（展开按钮右侧），
+                // 不再每个 agent 的 model 下拉旁各放一份：刷新的是本页后端的内置
+                // 免费模型清单，与具体哪个 agent 无关。只对有免费层的后端显示
+                // （mimocode 没有，不占位置）。
+                let (free_prefix, free_list) =
+                    current_free_models(self.current_page, &self.free_models);
+                if free_prefix.is_some() {
+                    let (fetching, error) =
+                        current_free_status(self.current_page, &self.free_models);
+                    if model_options_hint(
+                        ui,
+                        self.current_page.label(),
+                        free_list.len(),
+                        error,
+                        fetching,
+                    ) {
+                        self.start_free_models_fetch(self.current_page);
+                    }
+                }
             });
         });
     }
@@ -385,8 +397,6 @@ impl App {
 
     pub(super) fn render_agent_form(&mut self, ui: &mut egui::Ui, idx: usize) {
         let prev_key = self.agents[idx].key.clone();
-        // 表单里点了「刷新免费模型」：记下来，等 `a` 的可变借用结束后再发起后台拉取。
-        let mut refresh_free = false;
         let other_keys: HashSet<String> = self
             .agents
             .iter()
@@ -419,9 +429,7 @@ impl App {
                 providers: &self.providers,
                 free_models: &self.free_models,
             };
-            let (model, refresh) = ctx.model_combo(ui, format!("agent_model_{}", a.key), &current);
-            a.model = model;
-            refresh_free |= refresh;
+            a.model = ctx.model_combo(ui, format!("agent_model_{}", a.key), &current);
             field_label(ui, 120.0, "variant");
             let current_variant = a.variant.clone();
             a.variant =
@@ -439,9 +447,6 @@ impl App {
         let new_key = self.agents[idx].key.clone();
         if new_key != prev_key {
             self.sync_agent_rename(&prev_key, &new_key);
-        }
-        if refresh_free {
-            self.start_free_models_fetch(self.current_page);
         }
     }
 
@@ -475,15 +480,11 @@ impl App {
                     providers: &self.providers,
                     free_models: &self.free_models,
                 };
-                let (model, refresh) = ctx.model_combo(ui, "new_agent_model".to_string(), &current);
-                self.new_agent.model = model;
+                self.new_agent.model = ctx.model_combo(ui, "new_agent_model".to_string(), &current);
                 field_label(ui, 120.0, "variant");
                 let current_variant = self.new_agent.variant.clone();
                 self.new_agent.variant =
                     agent_variant_combo(ui, "new_agent_variant".to_string(), &current_variant);
-                if refresh {
-                    self.start_free_models_fetch(self.current_page);
-                }
             });
             ui.horizontal_wrapped(|ui| {
                 field_label(ui, 120.0, "temperature");
