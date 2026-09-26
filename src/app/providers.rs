@@ -117,7 +117,6 @@ impl ProviderFormFlags {
                 // 不再绘制：变量名自动推导，凭据框只剩一个，标签在分支里画「API Key」。
                 "envKey"
             } else if show_kimi {
-                // 不再绘制：凭据框收敛成一个框，标签由「环境变量名」勾选框承担。
                 "api_key"
             } else {
                 "apiKey"
@@ -129,7 +128,8 @@ impl ProviderFormFlags {
             } else if show_wb {
                 "maxInputTokens"
             } else if show_qwen {
-                "generationConfig.contextWindowSize"
+                // 只留最后一段：整条路径太长，把模型行的标签挤变形。
+                "contextWindowSize"
             } else if show_kimi {
                 "max_context_size"
             } else {
@@ -142,7 +142,7 @@ impl ProviderFormFlags {
             } else if show_wb {
                 "maxOutputTokens"
             } else if show_qwen {
-                "generationConfig.samplingParams.max_tokens"
+                "max_tokens"
             } else if show_kimi {
                 "max_output_size"
             } else {
@@ -155,7 +155,7 @@ impl ProviderFormFlags {
             } else if show_wb {
                 "supportsImages"
             } else if show_qwen {
-                "capabilities.vision"
+                "vision"
             } else if show_kimi {
                 "capabilities"
             } else {

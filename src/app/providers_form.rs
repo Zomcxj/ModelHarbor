@@ -423,9 +423,8 @@ fn provider_header_fields(
         // 上面选的协议决定保存时补什么后缀，选非 chat/completions 就是自定义协议。
         // 曾经有个「自定义协议」勾选框，但它与协议选择表达同一件事，两个控件可以
         // 互相矛盾（勾了却选着 chat、或没勾却选了 messages），保存时还得强制对齐一次。
-        // Kimi 与 Qwen 的凭据框各自画标签：Kimi 的标签是「环境变量名」勾选框本身，
-        // Qwen 只剩一个密钥框。
-        if !flags.show_kimi && !flags.show_qwen {
+        // Qwen 的凭据框自己画标签（它只剩一个密钥框，变量名自动推导）。
+        if !flags.show_qwen {
             field_label(ui, 120.0, flags.api_key_label);
         }
         if flags.show_dsh {
@@ -448,38 +447,22 @@ fn provider_header_fields(
             secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
         } else if flags.show_kimi {
             // KimiCode 的 `api_key`（内联密钥）与 `api_key_env`（环境变量名）**互斥**：
-            // 同时写两个会让 Kimi Code **启动失败**。两个框摆在一起永远有一个是空的，
-            // 用户还得猜哪个生效——收敛成一个框：勾上 `api_key_env`，框里填的就是
-            // 变量名（不掩码，它不是密钥）；不勾就是内联密钥 `api_key`。切换时已敲的
-            // 文本跟着搬走，互斥由「只有一个框」从结构上保证，不再依赖现场清空。
-            let mut env_mode = p.kimi_env_mode;
-            if ui.checkbox(&mut env_mode, "api_key_env").changed() {
-                let text = if env_mode {
-                    std::mem::take(&mut p.api_key)
-                } else {
-                    std::mem::take(&mut p.api_key_env)
-                };
-                if env_mode {
-                    p.api_key_env = text;
-                    p.api_key.clear();
-                } else {
-                    p.api_key = text;
-                    p.api_key_env.clear();
-                }
-                p.kimi_env_mode = env_mode;
-            }
-            if p.kimi_env_mode {
-                let edit = egui::TextEdit::singleline(&mut p.api_key_env).desired_width(200.0);
-                let edit = if ctx.relaxed {
-                    edit.hint_text("MY_API_KEY")
-                } else {
-                    edit
-                };
-                ui.add(edit);
+            // 同时写两个会让 Kimi Code **启动失败**。曾经在这里摆一个 `api_key_env`
+            // 勾选框切换两种模式，但那个勾选框读起来像一个「是否启用 api_key_env」的
+            // 开关、右边的框又没有标签，用户看不出它在干什么；而且它占掉一整格，
+            // 密钥框只能缩到 200（其它后端都是 408）。改成与其它后端完全同形的一个框：
+            // 文件里已有的 `api_key_env` 原样沿用（`api_key` 留空就照写它，见后端
+            // `provider_entry_from_row`），填了密钥就写 `api_key` 并清掉变量名。
+            let hint = if ctx.relaxed {
+                "sk-xxx"
+            } else if !p.api_key_env.trim().is_empty() {
+                // 密钥在环境变量里，框里没有值可显示：把变量名当占位符写出来，
+                // 免得看起来像「这里漏填了密钥」。
+                p.api_key_env.trim()
             } else {
-                let hint = if ctx.relaxed { "sk-xxx" } else { "" };
-                secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 200.0, hint);
-            }
+                ""
+            };
+            secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
         } else {
             let hint = if ctx.relaxed { "sk-xxx" } else { "" };
             secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
