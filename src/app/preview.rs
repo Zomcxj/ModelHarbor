@@ -128,12 +128,16 @@ impl App {
         // opencode 系: opencode.json / kilo.json / mimocode.json（均 JSONC）
         // pi: ~/.pi/agent/models.json（JSONC）
         // omp: models.yml / DSH: settings.yaml（YAML）
-        // zcode: provider_config.json / workbuddy: models.json（均为 JSON）
+        // zcode: provider_config.json / workbuddy: models.json / qwen-code: settings.json
+        // （均为 JSON；qwen-code 的 settings.json 是 JSONC，去掉注释后仍是 JSON）
         match self.current_page {
             ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
                 PreviewSyntax::Json
             }
-            ConfigFormat::Pi | ConfigFormat::ZCode | ConfigFormat::WorkBuddy => PreviewSyntax::Json,
+            ConfigFormat::Pi
+            | ConfigFormat::ZCode
+            | ConfigFormat::WorkBuddy
+            | ConfigFormat::QwenCode => PreviewSyntax::Json,
             ConfigFormat::OhMyPi | ConfigFormat::DeepSeekHarness => PreviewSyntax::Yaml,
         }
     }

@@ -101,11 +101,13 @@ pub(super) fn provider_api_combo(
     id_salt: &str,
 ) {
     // 每个后端自己的协议词表：omp 9 值 / pi 10 值 / ZCode 3 值（多一个 chat）/
-    // WorkBuddy 3 值（协议落到 URL 后缀，见 workbuddy 后端）。
+    // WorkBuddy 3 值（协议落到 URL 后缀，见 workbuddy 后端）/
+    // QwenCode 3 值（协议落到 pid + wireApi，见 qwen_code 后端）。
     let options: &[&str] = match page {
         ConfigFormat::OhMyPi => &convert::OMP_APIS,
         ConfigFormat::ZCode => &convert::ZCODE_APIS,
         ConfigFormat::WorkBuddy => &convert::WORKBUDDY_APIS,
+        ConfigFormat::QwenCode => &convert::QWEN_APIS,
         _ => &convert::PI_APIS,
     };
     // ZCode 的 api.type 词表与内部表示差一个 `chat`，显示与写回都要转换。
@@ -374,8 +376,18 @@ fn provider_header_fields(
             field_label(ui, 120.0, "timeoutMs");
             numeric_text_edit(ui, &mut p.dsh_timeout_ms, 70.0, "180000");
         }
+        // QwenCode 的 timeout 落在条目的 generationConfig 里。
+        if flags.show_qwen {
+            field_label(ui, 120.0, "generationConfig.timeout");
+            numeric_text_edit(ui, &mut p.timeout, 70.0, "180000");
+        }
         // pi / omp 的 compat 与 api 同排显示（紧跟 api 之后）。
-        if !flags.show_oc && !flags.show_dsh && !flags.show_zcode && !flags.show_wb {
+        if !flags.show_oc
+            && !flags.show_dsh
+            && !flags.show_zcode
+            && !flags.show_wb
+            && !flags.show_qwen
+        {
             field_label(ui, 120.0, "compat");
             ui.checkbox(&mut p.compat, "supportsDeveloperRole");
             // pi / omp 相互映射字段：加载 opencode/dsh 时缺省不勾选。
@@ -420,6 +432,19 @@ fn provider_header_fields(
             field_label(ui, 120.0, "API Key");
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
             secret_text_edit(ui, &mut p.api_key_secret, ctx.show_api_keys, 408.0, hint);
+        } else if flags.show_qwen {
+            // QwenCode 的密钥存在顶层 `env[<envKey>]` 里：条目上写的是**变量名**，
+            // 实际值由本工具同步到 `env`。所以这里要两个框，与 DSH 同形。
+            let env_edit = egui::TextEdit::singleline(&mut p.api_key_env).desired_width(192.0);
+            let env_edit = if ctx.relaxed {
+                env_edit.hint_text("DASHSCOPE_API_KEY")
+            } else {
+                env_edit
+            };
+            ui.add(env_edit);
+            field_label(ui, 120.0, "env[envKey]");
+            let hint = if ctx.relaxed { "实际密钥" } else { "" };
+            secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
         } else {
             let hint = if ctx.relaxed { "sk-xxx" } else { "" };
             secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);

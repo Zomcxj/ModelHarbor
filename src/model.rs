@@ -521,6 +521,17 @@ pub struct ProviderRow {
     pub source_format: Option<ConfigFormat>,
     pub raw: Value,
     pub pi_api: String,
+    /// QwenCode 专属：该条目在 `modelProviders` 里的 **provider id**（map 键）。
+    ///
+    /// QwenCode 的结构是 `modelProviders[<pid>] = [<模型条目>, ...]`——一个 pid 下
+    /// 可以挂多条条目，且**每条条目自带 `baseUrl` / `envKey`**（官方示例里 `openai`
+    /// 这个 pid 下就混着 api.openai.com、openrouter.ai、requesty.ai 三家）。所以界面
+    /// 按「一条 = 一张卡片」建模，`key` 只存条目自己的 `id`，而**写回时得知道它属于
+    /// 哪个 pid**——就是这个字段。
+    ///
+    /// 不用 `key` 存 `"<pid>/<id>"`：那会让界面显示的 provider 名与用户文件里的
+    /// `id` 不一致，且用户手改 `key` 时前缀会被改坏。
+    pub qwen_pid: String,
 }
 
 impl Default for ProviderRow {
@@ -590,6 +601,7 @@ impl ProviderRow {
             source_format: Some(ConfigFormat::Opencode),
             raw: v.clone(),
             pi_api: String::new(),
+            qwen_pid: String::new(),
         };
         // opencode 的 anthropic-messages 必须带 /v1：读入即补齐，界面显示与落盘一致。
         let api = row.effective_api();
@@ -666,6 +678,7 @@ impl ProviderRow {
             source_format: None,
             raw: Value::Object(Map::new()),
             pi_api: String::new(),
+            qwen_pid: String::new(),
         }
     }
 

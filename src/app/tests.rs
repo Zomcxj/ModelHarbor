@@ -2490,8 +2490,12 @@ mod tab_highlight_tests {
         for cs in &out.shapes {
             collect(&cs.shape, &mut rects);
         }
+        // 页签条的横向范围必须**按页签数量算**，不能写死。每个页签占 48px
+        // （44 宽 + 4 间距），写死 `left < 400` 时第 9 个页签（left=392，图标在 406）
+        // 会被整条滤掉，表现为「少了一个图标 tint」。
+        let strip_right = 48.0 * crate::backends::BACKENDS.len() as f32 + 8.0;
         let in_strip = |r: &egui::Rect| {
-            r.top() < 40.0 && r.left() < 400.0 && r.width() < 60.0 && r.height() < 40.0
+            r.top() < 40.0 && r.left() < strip_right && r.width() < 60.0 && r.height() < 40.0
         };
         // 悬停时同一个页签会画出**两个**矩形：egui 的 hover 框（外扩 1px、底色
         // `#383838`、描边强调色）与我们补画的落点绿环（无填充）。非悬停时只有一个本体。
@@ -2596,7 +2600,7 @@ mod tab_highlight_tests {
     /// 恰好装了那几个后端，写死的槽位下标（第 3 个是 ZCode）就对得上；CI 是干净机器、
     /// 一个都没装，顺序退化成全字母序，下标全部错位，整批测试在 CI 上挂掉而本地一直绿。
     /// 所以这里给每个后端在临时目录里造一份真实存在的配置文件，把顺序钉死：
-    /// 全部「已安装」后，顺序只由 `TAB_ORDER` 决定，未列进去的两家按字母序补在其后。
+    /// 全部「已安装」后，顺序只由 `TAB_ORDER` 决定，未列进去的几家按字母序补在其后。
     fn install_every_backend(app: &mut App) {
         // 全进程共用一份：路径只要存在即可，各测试各建一份只会往临时目录里堆垃圾。
         static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();

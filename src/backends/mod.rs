@@ -13,6 +13,7 @@ pub mod deepseek_harness;
 pub mod oh_my_pi;
 pub mod opencode;
 pub mod pi;
+pub mod qwen_code;
 pub mod workbuddy;
 pub mod zcode;
 
@@ -150,6 +151,7 @@ pub static BACKENDS: &[&dyn Backend] = &[
     &opencode::MIMOCODE_BACKEND,
     &workbuddy::BACKEND,
     &zcode::BACKEND,
+    &qwen_code::BACKEND,
     &deepseek_harness::BACKEND,
     &oh_my_pi::BACKEND,
     &pi::BACKEND,

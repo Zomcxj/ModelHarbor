@@ -14,6 +14,7 @@ pub enum ConfigFormat {
     DeepSeekHarness,
     ZCode,
     WorkBuddy,
+    QwenCode,
 }
 
 impl ConfigFormat {
@@ -27,6 +28,7 @@ impl ConfigFormat {
             ConfigFormat::DeepSeekHarness => "deepseek-harness",
             ConfigFormat::ZCode => "zcode",
             ConfigFormat::WorkBuddy => "workbuddy",
+            ConfigFormat::QwenCode => "qwen-code",
         }
     }
 
@@ -49,17 +51,20 @@ impl ConfigFormat {
         )
     }
 
-    /// 该后端是否有**模型级启用开关**——目前只有 WorkBuddy 一家。
+    /// 该后端是否有**模型级启用开关**——目前是 WorkBuddy 与 QwenCode 两家。
     ///
-    /// WorkBuddy 的模型写 `disabled`，且它的选择器按裸 id **全局去重**：同一个模型名
-    /// 只能有一条生效，所以「关掉其余同名条目」是它独有的语义，界面必须能表达。
-    /// 其余七家的模型 schema 里没有这个字段（ZCode 的 `config.enabled` 由它自己的
-    /// 界面维护，ModelHarbor 只负责原样保留，不接管），凭空加一个只会被当成未知键。
+    /// 两家的共同点是：模型清单里**没有原生的 `disabled` 字段**，而「生效清单只含启用
+    /// 条目」是它们各自的真实语义。WorkBuddy 的模型写 `disabled`（选择器按裸 id
+    /// **全局去重**，同名只能有一条生效）；QwenCode 则是**停用条目干脆不写进
+    /// `settings.json`**，全量状态记在同目录的 sidecar 里（见 `backends::qwen_code`）。
+    ///
+    /// 其余后端没有这个语义（ZCode 的 `config.enabled` 由它自己的界面维护，
+    /// ModelHarbor 只负责原样保留，不接管），凭空加一个只会被当成未知键。
     ///
     /// 不能改用 `page_has_model_field("disabled")` 判定：那个函数在「已加载的文件格式
     /// 与当前页不同」时一律返回 true（为了让新页面能填所有字段），会把开关漏到每一页。
     pub fn has_model_enable(&self) -> bool {
-        matches!(self, ConfigFormat::WorkBuddy)
+        matches!(self, ConfigFormat::WorkBuddy | ConfigFormat::QwenCode)
     }
 }
 
@@ -73,6 +78,7 @@ pub struct ConfigPaths {
     pub deepseek_harness: String,
     pub zcode: String,
     pub workbuddy: String,
+    pub qwen_code: String,
 }
 
 impl Default for ConfigPaths {
@@ -86,6 +92,7 @@ impl Default for ConfigPaths {
             deepseek_harness: backends::backend(ConfigFormat::DeepSeekHarness).default_local_path(),
             zcode: backends::backend(ConfigFormat::ZCode).default_local_path(),
             workbuddy: backends::backend(ConfigFormat::WorkBuddy).default_local_path(),
+            qwen_code: backends::backend(ConfigFormat::QwenCode).default_local_path(),
         }
     }
 }
@@ -102,6 +109,7 @@ impl ConfigPaths {
             ConfigFormat::DeepSeekHarness => self.deepseek_harness.clone(),
             ConfigFormat::ZCode => self.zcode.clone(),
             ConfigFormat::WorkBuddy => self.workbuddy.clone(),
+            ConfigFormat::QwenCode => self.qwen_code.clone(),
         }
     }
 
@@ -116,6 +124,7 @@ impl ConfigPaths {
             ConfigFormat::DeepSeekHarness => self.deepseek_harness = path.to_string(),
             ConfigFormat::ZCode => self.zcode = path.to_string(),
             ConfigFormat::WorkBuddy => self.workbuddy = path.to_string(),
+            ConfigFormat::QwenCode => self.qwen_code = path.to_string(),
         }
     }
 
@@ -262,7 +271,8 @@ mod tests {
                 "kilocode",
                 "mimocode",
                 "oh-my-pi",
-                "opencode"
+                "opencode",
+                "qwen-code"
             ],
             "已安装的按字母在前，未安装的按字母在后"
         );
@@ -288,6 +298,7 @@ mod tests {
                 "mimocode",
                 "oh-my-pi",
                 "opencode",
+                "qwen-code",
                 "workbuddy"
             ],
         );
@@ -338,6 +349,7 @@ mod tests {
                 "oh-my-pi",
                 "opencode",
                 "pi",
+                "qwen-code",
                 "workbuddy",
                 "zcode"
             ],

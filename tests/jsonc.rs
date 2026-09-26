@@ -88,6 +88,7 @@ fn target_path_prefers_local_when_exists() {
         deepseek_harness: p.to_string_lossy().to_string(),
         zcode: p.to_string_lossy().to_string(),
         workbuddy: p.to_string_lossy().to_string(),
+        qwen_code: p.to_string_lossy().to_string(),
     };
     assert_eq!(
         paths.target_path(ConfigFormat::Opencode),

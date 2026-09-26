@@ -86,6 +86,12 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
         }
         // 已在上面提前返回，这里不会到达；列出以保持 match 穷尽。
         ConfigFormat::WorkBuddy => {}
+        // QwenCode 的两个容器都要剔：只剔 `modelProviders` 会在跨格式写入时留下
+        // 指向已删 provider 的孤儿协议声明。
+        ConfigFormat::QwenCode => {
+            obj.shift_remove("modelProviders");
+            obj.shift_remove("providerProtocol");
+        }
     }
 }
 
@@ -150,6 +156,16 @@ impl App {
                 // WorkBuddy 每条模型自带 url / apiKey。
                 ConfigFormat::WorkBuddy => match field {
                     "base_url" => provider.raw.get("url").is_some(),
+                    _ => false,
+                },
+                // QwenCode 每条条目自带 baseUrl / envKey；timeout 落在 generationConfig。
+                ConfigFormat::QwenCode => match field {
+                    "base_url" => provider.raw.get("baseUrl").is_some(),
+                    "timeout" => provider
+                        .raw
+                        .get("generationConfig")
+                        .and_then(|g| g.get("timeout"))
+                        .is_some(),
                     _ => false,
                 },
             })
@@ -262,6 +278,40 @@ impl App {
                     "input" => model.raw.get("supportsImages").is_some(),
                     "tool_call" => model.raw.get("supportsToolCall").is_some(),
                     "reasoning" => model.raw.get("supportsReasoning").is_some(),
+                    _ => false,
+                },
+                // QwenCode 的模型属性落在 generationConfig / capabilities。
+                ConfigFormat::QwenCode => match field {
+                    "name" => model.raw.get("name").is_some(),
+                    "context" => model
+                        .raw
+                        .get("generationConfig")
+                        .and_then(|g| g.get("contextWindowSize"))
+                        .is_some(),
+                    "output" => model
+                        .raw
+                        .get("generationConfig")
+                        .and_then(|g| g.get("samplingParams"))
+                        .and_then(|s| s.get("max_tokens"))
+                        .is_some(),
+                    "input" => model
+                        .raw
+                        .get("capabilities")
+                        .and_then(|c| c.get("vision"))
+                        .is_some(),
+                    // QwenCode 没有「工具调用」与 `store` 字段，不给控件。
+                    "tool_call" | "store" => false,
+                    "reasoning" => model
+                        .raw
+                        .get("capabilities")
+                        .and_then(|c| c.get("reasoning"))
+                        .is_some(),
+                    "variants" => model
+                        .raw
+                        .get("capabilities")
+                        .and_then(|c| c.get("reasoning"))
+                        .and_then(|r| r.get("efforts"))
+                        .is_some(),
                     _ => false,
                 },
             })
@@ -548,26 +598,36 @@ impl App {
         } else {
             None
         };
-        // WorkBuddy 的「停用」语义是**整条不写**：同一个模型 id 只保留第一条，其余连
-        // 所属厂商一起从文件里消失（包括那些厂商的 API key）。这让一次普通保存删掉的
-        // 东西可能比跨格式转换还多，所以它也必须先备份，不能沿用「同格式保存不备份」。
-        let wb_shrinks = fmt == ConfigFormat::WorkBuddy
-            && is_current
-            && util::read_config_content(path)
-                .ok()
-                .and_then(|old| util::parse_config_content(&old).ok())
-                .map(|old_root| {
-                    let before = old_root.as_array().map(Vec::len).unwrap_or(0);
-                    let after = root.as_array().map(Vec::len).unwrap_or(0);
-                    before > after
-                })
-                // 读不出 / 解析不了旧文件时按「会收缩」处理：下面的备份分支会读原文件，
-                // 读失败即取消保存。绝不在不知道原文件内容的情况下收缩式覆写。
-                .unwrap_or(true);
+        // WorkBuddy 与 QwenCode 的「停用」语义都是**整条不写**：停用的条目连所属厂商
+        // 一起从文件里消失（包括那些厂商的 API key）。这让一次普通保存删掉的东西可能比
+        // 跨格式转换还多，所以它们也必须先备份，不能沿用「同格式保存不备份」。
+        //
+        // 两家的判据不同：WorkBuddy 是按裸 id 去重后条目变少（根是数组），QwenCode 是
+        // 停用条目不再写出（条目嵌在 `modelProviders` 里），各自问自己的后端。
+        let shrinks = is_current
+            && match fmt {
+                ConfigFormat::WorkBuddy => util::read_config_content(path)
+                    .ok()
+                    .and_then(|old| util::parse_config_content(&old).ok())
+                    .map(|old_root| {
+                        let before = old_root.as_array().map(Vec::len).unwrap_or(0);
+                        let after = root.as_array().map(Vec::len).unwrap_or(0);
+                        before > after
+                    })
+                    // 读不出 / 解析不了旧文件时按「会收缩」处理：下面的备份分支会读原文件，
+                    // 读失败即取消保存。绝不在不知道原文件内容的情况下收缩式覆写。
+                    .unwrap_or(true),
+                ConfigFormat::QwenCode => util::read_config_content(path)
+                    .ok()
+                    .and_then(|old| util::parse_config_content(&old).ok())
+                    .map(|old_root| crate::backends::qwen_code::shrinks_on_save(&old_root, &root))
+                    .unwrap_or(true),
+                _ => false,
+            };
         // 跨格式转换会整体接管目标文件的 provider/agent：先把原文件滚动备份为 .bak，
         // 备份失败则取消保存（宁可不让存，也不能把旧配置静默抵掉）。原文件**读不出**
         // 同样取消保存——备份的前提是知道原文件里有什么，读失败还继续写就是蒙眼覆写。
-        let backup = if (cross_format && !is_current) || wb_shrinks {
+        let backup = if (cross_format && !is_current) || shrinks {
             match util::read_config_content(path) {
                 Ok(old) if !old.is_empty() && old != content => {
                     let backup_path = format!("{}.bak", path);
@@ -582,10 +642,13 @@ impl App {
         } else {
             None
         };
-        // sidecar 一律在主配置**之前**写：WorkBuddy 的全量副本要靠读主配置继承
-        // 未知字段，而主配置马上会被筛成「只剩勾选的条目」；副本先落盘才拿得到全量字段。
+        // sidecar 一律在主配置**之前**写：WorkBuddy / QwenCode 的全量副本要靠读主配置
+        // 继承未知字段，而主配置马上会被筛成「只剩勾选的条目」；副本先落盘才拿得到全量字段。
         // DSH 的凭据 sidecar 无此依赖，同一位置写即可。
-        if matches!(fmt, ConfigFormat::DeepSeekHarness | ConfigFormat::WorkBuddy) {
+        if matches!(
+            fmt,
+            ConfigFormat::DeepSeekHarness | ConfigFormat::WorkBuddy | ConfigFormat::QwenCode
+        ) {
             backend.save_sidecars(path, &self.providers)?;
         }
         if let Err(error) = backends::write_config(path, &content) {
@@ -623,11 +686,12 @@ impl App {
             ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => &self.root,
             // pi 系（pi / oh-my-pi）共用 extras 载体：providers 之外的顶层字段
             ConfigFormat::Pi | ConfigFormat::OhMyPi => &self.pi_extras,
-            // ZCode / WorkBuddy 与 opencode、DSH 一样，extras 就是完整 root
+            // ZCode / WorkBuddy / QwenCode 与 opencode、DSH 一样，extras 就是完整 root
             // （序列化时由各后端自行保留未接管的容器与顶层字段）。
-            ConfigFormat::DeepSeekHarness | ConfigFormat::ZCode | ConfigFormat::WorkBuddy => {
-                &self.root
-            }
+            ConfigFormat::DeepSeekHarness
+            | ConfigFormat::ZCode
+            | ConfigFormat::WorkBuddy
+            | ConfigFormat::QwenCode => &self.root,
         }
     }
 }

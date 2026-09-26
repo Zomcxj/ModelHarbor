@@ -291,6 +291,15 @@ pub(crate) const WORKBUDDY_APIS: [&str; 3] = [
     "openai-responses",
 ];
 
+/// QwenCode 页面可选协议：官方只有三个协议桶（`openai` / `anthropic` / `gemini`），
+/// OpenAI 的两种 API 共用 `openai` 桶、靠条目自己的 `wireApi` 区分。
+/// 保存时落到 pid + `wireApi`（见 `backends::qwen_code`）。
+pub(crate) const QWEN_APIS: [&str; 3] = [
+    "openai-completions",
+    "anthropic-messages",
+    "openai-responses",
+];
+
 /// pi / omp 的 api → opencode 的 npm 包：
 /// - `openai-completions` → `@ai-sdk/openai-compatible`（规范化写法；未写 npm 也是这个语义）；
 /// - `openai-responses` → `@ai-sdk/openai`；
@@ -522,6 +531,7 @@ pub fn provider_from_pi(key: &str, v: &Value) -> ProviderRow {
         source_format: Some(crate::format::ConfigFormat::Pi),
         raw: v.clone(),
         pi_api: api.to_string(),
+        qwen_pid: String::new(),
     };
     r
 }

@@ -1,6 +1,6 @@
 # ModelHarbor
 
-可视化编辑 opencode、Kilo Code（kilocode）、MiMo Code（mimocode，小米）、pi、oh-my-pi（omp）、DeepSeek Harness（DSH）、ZCode 与 WorkBuddy 配置文件的桌面 GUI 工具。
+可视化编辑 opencode、Kilo Code（kilocode）、MiMo Code（mimocode，小米）、pi、oh-my-pi（omp）、DeepSeek Harness（DSH）、ZCode、WorkBuddy 与 Qwen Code 配置文件的桌面 GUI 工具。
 
 Rust + egui 构建，单文件可执行程序，无需安装运行时。
 

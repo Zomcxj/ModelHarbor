@@ -36,6 +36,8 @@ pub(super) struct ProviderFormFlags {
     pub(super) show_dsh: bool,
     pub(super) show_zcode: bool,
     pub(super) show_wb: bool,
+    /// QwenCode 页：密钥在顶层 `env[<envKey>]`，条目上写的是变量名（与 DSH 同形）。
+    pub(super) show_qwen: bool,
     pub(super) show_provider_base_url: bool,
     pub(super) show_provider_timeout: bool,
     pub(super) show_model_name: bool,
@@ -64,12 +66,14 @@ impl ProviderFormFlags {
         let show_dsh = app.current_page == ConfigFormat::DeepSeekHarness;
         let show_zcode = app.current_page == ConfigFormat::ZCode;
         let show_wb = app.current_page == ConfigFormat::WorkBuddy;
+        let show_qwen = app.current_page == ConfigFormat::QwenCode;
         Self {
             show_oc,
             show_omp: app.current_page == ConfigFormat::OhMyPi,
             show_dsh,
             show_zcode,
             show_wb,
+            show_qwen,
             show_provider_base_url: app.page_has_provider_field("base_url"),
             // opencode 的 options.timeout 始终显示（文件未写该字段时默认 180000ms）
             show_provider_timeout: show_oc || app.page_has_provider_field("timeout"),
@@ -102,6 +106,8 @@ impl ProviderFormFlags {
                 "apiKeyEnv"
             } else if show_zcode {
                 "access.apiKey"
+            } else if show_qwen {
+                "envKey"
             } else {
                 "apiKey"
             },
@@ -111,6 +117,8 @@ impl ProviderFormFlags {
                 "properties.contextWindow"
             } else if show_wb {
                 "maxInputTokens"
+            } else if show_qwen {
+                "generationConfig.contextWindowSize"
             } else {
                 "contextWindow"
             },
@@ -120,6 +128,8 @@ impl ProviderFormFlags {
                 "optionSpecs.maxOutputTokens.max"
             } else if show_wb {
                 "maxOutputTokens"
+            } else if show_qwen {
+                "generationConfig.samplingParams.max_tokens"
             } else {
                 "maxTokens"
             },
@@ -129,6 +139,8 @@ impl ProviderFormFlags {
                 "properties.supports*"
             } else if show_wb {
                 "supportsImages"
+            } else if show_qwen {
+                "capabilities.vision"
             } else {
                 "input"
             },
@@ -166,6 +178,13 @@ impl App {
             ),
             // WorkBuddy 没有档位清单，只有 supportsReasoning 布尔。
             ConfigFormat::WorkBuddy => ("supportsReasoning", &[]),
+            // QwenCode 的档位是 capabilities.reasoning.efforts；官方词表就是
+            // low/medium/high/xhigh/max（"replaces the supported subset of
+            // low/medium/high/xhigh/max"），没有 opencode 那些 none/ultra。
+            ConfigFormat::QwenCode => (
+                "capabilities.reasoning.efforts",
+                &["low", "medium", "high", "xhigh", "max"],
+            ),
         }
     }
 
