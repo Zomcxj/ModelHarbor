@@ -91,20 +91,27 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
         }
         // 已在上面提前返回，这里不会到达；列出以保持 match 穷尽。
         ConfigFormat::WorkBuddy => {}
-        // QwenCode：只剔界面接管的部分，**留下 `qwen-oauth`**。
+        // QwenCode：只剔**界面接管的那部分**，`qwen-oauth` 与认不出来的内容都要留下。
         //
-        // `qwen-oauth` 是官方硬编码的 OAuth 条目，界面不显示也无从重建。整个
-        // `modelProviders` 剔掉之后 `unmanaged_of` 在基底里找不到它（它读的就是这个被剔过的
-        // root），于是一次跨页保存就把用户登录好的 Qwen OAuth 模型删了。
+        // 不能整表剔掉：`unmanaged_of` 读的就是这个被剔过的 root，它在里面找不到的东西
+        // 就带不过去。而除 `qwen-oauth`（官方硬编码、界面不显示）之外，还有两类内容界面
+        // 也认不出来——没有 `id` 的条目、值不是数组的旧包装形状——整表剔掉，一次跨页保存
+        // 就把它们一起删了。（同格式保存不会：那条路上基底是没剔过的原文件。）
         ConfigFormat::QwenCode => {
             if let Some(providers) = obj.get_mut("modelProviders").and_then(Value::as_object_mut) {
-                let drop: Vec<String> = providers
-                    .keys()
-                    .filter(|pid| !crate::backends::qwen_code::is_readonly_provider(pid))
-                    .cloned()
-                    .collect();
-                for pid in drop {
-                    providers.shift_remove(&pid);
+                let pids: Vec<String> = providers.keys().cloned().collect();
+                for pid in pids {
+                    if crate::backends::qwen_code::is_readonly_provider(&pid) {
+                        continue;
+                    }
+                    // 值不是数组（旧包装形状）：整块不归界面管，原样留着。
+                    let Some(items) = providers.get_mut(&pid).and_then(Value::as_array_mut) else {
+                        continue;
+                    };
+                    items.retain(|e| !crate::backends::qwen_code::is_ui_managed_entry(e));
+                    if items.is_empty() {
+                        providers.shift_remove(&pid);
+                    }
                 }
             }
             if obj
@@ -114,10 +121,30 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
             {
                 obj.shift_remove("modelProviders");
             }
-            // `providerProtocol` 里的映射都指向界面接管的**自定义** pid。自定义 pid 与它
-            // 名下的条目一起被剔掉了，留着就是指向不存在 provider 的孤儿声明；唯一留下的
-            // `qwen-oauth` 是内置 pid，本来就不需要映射。
-            obj.shift_remove("providerProtocol");
+            // `providerProtocol` 只留**还存在的 pid** 的映射：界面接管的自定义 pid 与它的
+            // 条目一起被剔掉了，映射留着就是指向不存在 provider 的孤儿声明；`qwen-oauth`
+            // 是内置 pid、本来就不需要映射，而旧包装形状的 pid 整块留着，它的映射也得留。
+            let kept: Vec<String> = obj
+                .get("modelProviders")
+                .and_then(Value::as_object)
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default();
+            if let Some(protocols) = obj
+                .get_mut("providerProtocol")
+                .and_then(Value::as_object_mut)
+            {
+                let drop: Vec<String> = protocols
+                    .keys()
+                    .filter(|pid| !kept.iter().any(|k| k == *pid))
+                    .cloned()
+                    .collect();
+                for pid in drop {
+                    protocols.shift_remove(&pid);
+                }
+                if protocols.is_empty() {
+                    obj.shift_remove("providerProtocol");
+                }
+            }
         }
         // KimiCode：同样只剔界面接管的部分，**留下 `managed:*`**。
         //

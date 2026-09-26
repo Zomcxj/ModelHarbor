@@ -29,11 +29,6 @@ fn default_local_path() -> String {
     format!("{}\\.omp\\agent\\models.yml", home_dir_string())
 }
 
-/// 判断 raw 是否为 opencode 方言的助手已迁至 convert 模块（pi 后端同样需要）。
-fn string_set(items: impl Iterator<Item = String>) -> HashSet<String> {
-    items.collect()
-}
-
 /// 模型 → omp 方言对象（保留 raw 中的未知字段，思考档位输出 thinking 块）。
 pub fn model_to_omp(m: &ModelRow) -> Value {
     // opencode 来源全新构造；pi/omp 来源以 raw 为基底保留扩展字段
@@ -107,7 +102,11 @@ fn omp_thinking(m: &ModelRow) -> Option<Value> {
             .unwrap_or_else(|| {
                 t.get("efforts")
                     .and_then(|v| v.as_array())
-                    .map(|ef| string_set(ef.iter().filter_map(|v| v.as_str().map(String::from))))
+                    .map(|ef| {
+                        ef.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<HashSet<String>>()
+                    })
                     .unwrap_or_default()
             });
         if raw_vals == cur {

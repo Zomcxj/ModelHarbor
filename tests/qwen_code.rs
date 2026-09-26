@@ -7,6 +7,7 @@
 //! 3. 没有 `disabled` 字段，也没有需要开关裁决的去重——`settings.json` 一份文件
 //!    承担全部条目；曾经的启用开关与 `modelProviders.full.json` 副本已移除。
 
+use model_harbor::app::strip_cross_format_containers;
 use model_harbor::backends;
 use model_harbor::format::ConfigFormat;
 use model_harbor::model::ProviderRow;
@@ -758,4 +759,48 @@ fn shrinks_on_save_detects_deletions() {
     assert!(shrinks_on_save(&before, &after), "条目变少要触发备份");
     assert!(!shrinks_on_save(&after, &before), "条目变多不用备份");
     assert!(!shrinks_on_save(&before, &before), "没变不用备份");
+}
+
+// ------------------------------------------------------- 跨格式保存的剔除规则
+
+#[test]
+fn cross_format_strip_keeps_what_the_ui_cannot_rebuild() {
+    // 跨页保存时界面接管 `modelProviders`，但只能剔**自己认得的**条目：`unmanaged_of`
+    // 读的就是这个被剔过的 root，整表剔掉的话，下面这三类内容一次跨页保存就没了。
+    let mut root: Value = serde_json::from_str(
+        r#"{
+            "modelProviders": {
+                "openai": [ { "id": "gpt-4o" }, { "name": "无 id 的条目" } ],
+                "legacy": { "protocol": "openai", "models": [] },
+                "qwen-oauth": [ { "id": "qwen3-coder-plus" } ]
+            },
+            "providerProtocol": { "legacy": "openai", "stale": "anthropic" }
+        }"#,
+    )
+    .unwrap();
+    strip_cross_format_containers(ConfigFormat::QwenCode, &mut root, false);
+
+    let pids = root["modelProviders"].as_object().unwrap();
+    assert!(
+        pids["openai"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e.get("id").is_none()),
+        "有 id 的条目归界面管，要剔掉"
+    );
+    assert_eq!(
+        pids["openai"][0]["name"], "无 id 的条目",
+        "没有 id 的条目认不出来，要留下"
+    );
+    assert_eq!(pids["legacy"]["protocol"], "openai", "旧包装形状整块留下");
+    assert_eq!(pids["qwen-oauth"][0]["id"], "qwen3-coder-plus");
+    assert_eq!(
+        root["providerProtocol"]["legacy"], "openai",
+        "留下的 pid 的映射也要跟着留"
+    );
+    assert!(
+        root["providerProtocol"].get("stale").is_none(),
+        "孤儿映射（pid 已不存在）要剔掉"
+    );
 }

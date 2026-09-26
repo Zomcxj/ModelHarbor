@@ -99,6 +99,18 @@ pub fn set_str(m: &mut Map<String, Value>, k: &str, v: &str) {
     }
 }
 
+/// 逗号串 → 列表（去空白、去空项）。
+///
+/// 界面上「档位」「输入模态」这类多值字段都是一个逗号串，Kimi Code 与 Qwen Code 两个
+/// 后端都按它拆成数组写盘——放在这里共用，别各留一份。
+pub fn split_csv(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn set_num_opt(m: &mut Map<String, Value>, k: &str, v: &str) {
     let t = v.trim();
     if t.is_empty() {

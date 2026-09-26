@@ -92,7 +92,7 @@
 use super::{Backend, BackendLoad};
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::{home_dir_string, wsl_home};
+use crate::util::{home_dir_string, set_str, split_csv, wsl_home};
 use serde_json::{Map, Value};
 
 pub struct KimiCodeBackend;
@@ -420,15 +420,6 @@ fn merge_capabilities(old: &[String], m: &ModelRow) -> Vec<String> {
     out
 }
 
-/// 逗号串 → 列表（去空白、去空项）。
-fn split_list(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 // ---------- 解析：两张表 join ----------
 
 /// 一个 provider 条目 + 挂在它名下的模型条目（含 alias）。
@@ -440,9 +431,11 @@ struct Joined {
 
 /// 按 `provider` 字段把顶层 `[models.*]` 挂到 `[providers.*]` 上。
 ///
-/// 孤儿模型（`provider` 缺失、指向不存在的键、或指向 `managed:*`）单独返回，由调用方
-/// 决定是保留还是显示。**不 panic、不丢弃**——丢掉就是静默删用户配置。
-fn join(root: &Value) -> (Vec<Joined>, Vec<(String, Value)>) {
+/// 挂不上的（`provider` 缺失、指向不存在的键、或指向 `managed:*`）不进任何 provider，
+/// 也就不进界面——但**不丢弃**：保存时由 [`unmanaged_models`] 原样带过去。
+/// 曾经把这份孤儿清单从 `join` 一路传到 `build_load`，可没人用它（保存时的保留是
+/// `unmanaged_models` 独立算的），于是留了个永远为空的形参，已删。
+fn join(root: &Value) -> Vec<Joined> {
     let mut joined: Vec<Joined> = Vec::new();
     let empty = Map::new();
     let providers = providers_map(root).unwrap_or(&empty);
@@ -453,16 +446,13 @@ fn join(root: &Value) -> (Vec<Joined>, Vec<(String, Value)>) {
             models: Vec::new(),
         });
     }
-    let mut orphans: Vec<(String, Value)> = Vec::new();
     for (alias, model) in models_map(root).unwrap_or(&empty) {
         let owner = model.get("provider").and_then(Value::as_str).unwrap_or("");
-        match joined.iter_mut().find(|j| j.name == owner) {
-            Some(entry) => entry.models.push((alias.clone(), model.clone())),
-            // `managed:` 的模型属于只读 provider，整块保留；其余孤儿也保留。
-            None => orphans.push((alias.clone(), model.clone())),
+        if let Some(entry) = joined.iter_mut().find(|j| j.name == owner) {
+            entry.models.push((alias.clone(), model.clone()));
         }
     }
-    (joined, orphans)
+    joined
 }
 
 /// provider 条目 → [`ProviderRow`]（一个 provider 一张卡片，模型挂其下）。
@@ -581,7 +571,7 @@ fn entry_from_model(m: &ModelRow, provider: &str, old: Option<&Value>) -> Value 
     } else {
         m.name.trim()
     };
-    set_or_remove(&mut obj, "display_name", display);
+    set_str(&mut obj, "display_name", display);
 
     // `max_context_size` 必填且 ≥1：解析不出正整数就**不写**这个键，让 Kimi 自己
     // 报错说缺少必填字段，而不是由本工具写一个 0 进去（那是非法值）。
@@ -601,7 +591,7 @@ fn entry_from_model(m: &ModelRow, provider: &str, old: Option<&Value>) -> Value 
 
     // 档位：`support_efforts` 是数组；`default_effort` 必须落在其中，否则 Kimi 读时会
     // 静默丢弃（源码 `effectiveModelAlias`：defaultEffort 不在 supportEfforts 里就删）。
-    let efforts = split_list(&m.variants);
+    let efforts = split_csv(&m.variants);
     if efforts.is_empty() {
         obj.shift_remove("support_efforts");
         obj.shift_remove("default_effort");
@@ -626,15 +616,6 @@ fn entry_from_model(m: &ModelRow, provider: &str, old: Option<&Value>) -> Value 
     Value::Object(obj)
 }
 
-/// 非空则写字符串，空白则删键。
-fn set_or_remove(obj: &mut Map<String, Value>, key: &str, value: &str) {
-    if value.is_empty() {
-        obj.shift_remove(key);
-    } else {
-        obj.insert(key.to_string(), Value::String(value.to_string()));
-    }
-}
-
 /// 能解析成**≥1 的整数**才写入；否则删键（`max_context_size` 要求 ≥1）。
 fn set_num_min1(obj: &mut Map<String, Value>, key: &str, text: &str) {
     match text.parse::<i64>() {
@@ -650,7 +631,7 @@ fn set_num_min1(obj: &mut Map<String, Value>, key: &str, text: &str) {
 /// provider 条目里**由界面接管**的字段（以旧条目为基底）。
 fn provider_entry_from_row(p: &ProviderRow, old: Option<&Value>) -> Value {
     let mut obj = old.and_then(Value::as_object).cloned().unwrap_or_default();
-    set_or_remove(&mut obj, "base_url", p.base_url.trim());
+    set_str(&mut obj, "base_url", p.base_url.trim());
     // `type` 必填，且必须在 **Kimi 自己的 6 值词表**里（源码 `ProviderTypeSchema`：
     // anthropic / openai / kimi / google-genai / openai_responses / vertexai）。
     //
@@ -736,9 +717,9 @@ fn model_table(providers: &[ProviderRow], base: &Value) -> Map<String, Value> {
 fn merge_unmanaged_models(
     models: &mut Map<String, Value>,
     base: &Value,
-    providers: &[ProviderRow],
+    ui_providers: &[ProviderRow],
 ) {
-    for (alias, model) in unmanaged_models(base, providers) {
+    for (alias, model) in unmanaged_models(base, ui_providers) {
         models.entry(alias).or_insert(model);
     }
 }
@@ -774,13 +755,14 @@ fn all_providers(providers: &[ProviderRow], base: &Value) -> Map<String, Value> 
     out
 }
 
-/// 基座里**不归界面管**的 provider：`managed:*`（OAuth 登录态）与「界面卡片没覆盖到、
-/// 但确实存在于基座里的」条目。
+/// 基座里**不归界面管**的 provider：只有 `managed:*`（OAuth 登录态）。
 ///
 /// `managed:*` 必须原样带过去：它的 `oauth` 子表与 `credentials/` 里的凭据配对，
-/// 改写会破坏登录态。其余基座里有、界面没有的 provider 也要保留——界面只重建自己
-/// 认得的卡片，删掉一个卡片是「删了」，而基座里多出来的 provider 说明它从未进过界面
-/// （例如用户手编的、或 `type` 非法被跳过的），静默删掉就是丢配置。
+/// 改写会破坏登录态。
+///
+/// 除此之外**不能**再保留基座里的条目：[`join`] 把 `[providers.*]` 全量建成卡片，
+/// 所以「基座里有、界面里没有」只可能是用户把卡片删了或改了名——那正是「删除」的意思，
+/// 再补回去就等于删不掉。
 fn unmanaged_providers(base: &Value) -> Vec<(String, Value)> {
     providers_map(base)
         .map(|m| {
@@ -795,7 +777,7 @@ fn unmanaged_providers(base: &Value) -> Vec<(String, Value)> {
 /// 基座里**认不出来**的模型条目：孤儿（`provider` 指向不存在的键）与 `managed:*` 名下的。
 ///
 /// 返回 `alias → 条目`。它们不进界面，但必须原样写回（见模块说明末节）。
-fn unmanaged_models(base: &Value, managed: &[ProviderRow]) -> Map<String, Value> {
+fn unmanaged_models(base: &Value, ui_providers: &[ProviderRow]) -> Map<String, Value> {
     let providers = providers_map(base).cloned().unwrap_or_default();
     let mut out: Map<String, Value> = Map::new();
     for (alias, model) in models_map(base).unwrap_or(&Map::new()) {
@@ -804,7 +786,7 @@ fn unmanaged_models(base: &Value, managed: &[ProviderRow]) -> Map<String, Value>
         let known = !owner.is_empty()
             && !is_managed_provider(owner)
             && providers.contains_key(owner)
-            && managed.iter().any(|p| p.key.trim() == owner);
+            && ui_providers.iter().any(|p| p.key.trim() == owner);
         if !known {
             out.insert(alias.clone(), model.clone());
         }
@@ -815,7 +797,7 @@ fn unmanaged_models(base: &Value, managed: &[ProviderRow]) -> Map<String, Value>
 /// 按 alias 逐条判断勾选状态。
 ///
 /// Kimi 没有「停用」概念，模型的 `disabled` 一律为 `false`（界面也不会显示开关）。
-fn build_load(joined: Vec<Joined>, orphans: Vec<(String, Value)>) -> BackendLoad {
+fn build_load(joined: Vec<Joined>) -> BackendLoad {
     let mut providers: Vec<ProviderRow> = Vec::new();
     for j in &joined {
         // `managed:*` 不进界面：它由 OAuth 维护，界面无从编辑，显示出来只会让人
@@ -825,7 +807,6 @@ fn build_load(joined: Vec<Joined>, orphans: Vec<(String, Value)>) -> BackendLoad
         }
         providers.push(provider_from_entry(&j.name, &j.provider, &j.models));
     }
-    let _ = orphans;
     BackendLoad {
         root: Value::Object(Map::new()),
         agents: Vec::new(),
@@ -886,8 +867,7 @@ impl Backend for KimiCodeBackend {
 
     fn parse(&self, content: &str) -> Result<BackendLoad, String> {
         let root = parse_toml(content)?;
-        let (joined, orphans) = join(&root);
-        let mut load = build_load(joined, orphans);
+        let mut load = build_load(join(&root));
         load.root = root.clone();
         load.extras = root;
         Ok(load)
@@ -997,11 +977,12 @@ enabled = true
     #[test]
     fn models_join_to_their_provider() {
         let root = root_of(SAMPLE);
-        let (joined, orphans) = join(&root);
+        let joined = join(&root);
         let sensenova = joined.iter().find(|j| j.name == "sensenova").unwrap();
         assert_eq!(sensenova.models.len(), 1);
         assert_eq!(sensenova.models[0].0, "sensenova/deepseek-v4-flash");
-        assert!(orphans.is_empty());
+        // 两条模型都挂到了 provider 上（没有孤儿）
+        assert_eq!(joined.iter().map(|j| j.models.len()).sum::<usize>(), 2);
     }
 
     /// 孤儿模型（provider 不存在）不 panic、不被丢弃。
@@ -1018,9 +999,9 @@ model = "x"
 max_context_size = 1
 "#,
         );
-        let (joined, orphans) = join(&root);
+        let joined = join(&root);
         assert_eq!(joined.len(), 1);
-        assert_eq!(orphans.len(), 1);
+        assert_eq!(joined[0].models.len(), 0, "孤儿模型不挂到任何 provider 上");
         // 保存后仍在（原样带过去）
         let out = KimiCodeBackend.serialize_root(&[], &[], &root, None);
         assert_eq!(out["models"]["gone/x"]["model"], "x");
@@ -1030,8 +1011,8 @@ max_context_size = 1
     #[test]
     fn managed_providers_are_not_listed() {
         let root = root_of(SAMPLE);
-        let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans);
+        let joined = join(&root);
+        let load = build_load(joined);
         assert_eq!(load.providers.len(), 1, "只列出 sensenova");
         assert_eq!(load.providers[0].key, "sensenova");
     }
@@ -1040,8 +1021,8 @@ max_context_size = 1
     #[test]
     fn managed_entries_survive_a_save() {
         let root = root_of(SAMPLE);
-        let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans);
+        let joined = join(&root);
+        let load = build_load(joined);
         let out = KimiCodeBackend.serialize_root(&[], &load.providers, &root, None);
         let managed = &out["providers"]["managed:kimi-code"];
         assert_eq!(managed["type"], "kimi");
@@ -1076,8 +1057,8 @@ model = "real-wire-id"
 max_context_size = 1000
 "#,
         );
-        let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans);
+        let joined = join(&root);
+        let load = build_load(joined);
         assert_eq!(
             load.providers[0].models[0].id, "real-wire-id",
             "id 是 wire id"
@@ -1152,8 +1133,8 @@ max_context_size = 1000
     #[test]
     fn written_entries_carry_no_disabled_key() {
         let root = root_of(SAMPLE);
-        let (joined, orphans) = join(&root);
-        let load = build_load(joined, orphans);
+        let joined = join(&root);
+        let load = build_load(joined);
         let out = KimiCodeBackend.serialize_root(&[], &load.providers, &root, None);
         for (alias, entry) in out["models"].as_object().unwrap() {
             assert!(entry.get("disabled").is_none(), "{alias} 不该带 disabled");
@@ -1353,8 +1334,8 @@ base_url = "https://api.openai.com/v1"
     #[test]
     fn models_without_a_wire_id_are_skipped() {
         let root = root_of(SAMPLE);
-        let (joined, orphans) = join(&root);
-        let mut load = build_load(joined, orphans);
+        let joined = join(&root);
+        let mut load = build_load(joined);
         load.providers[0].models.push(ModelRow::new()); // id 为空
         let out = KimiCodeBackend.serialize_root(&[], &load.providers, &root, None);
         for (_, entry) in out["models"].as_object().unwrap() {

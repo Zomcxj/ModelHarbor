@@ -63,7 +63,7 @@
 use super::{Backend, BackendLoad};
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ModelRow, ProviderRow};
-use crate::util::{home_dir_string, parse_config_content, wsl_home};
+use crate::util::{home_dir_string, parse_config_content, set_str, split_csv, wsl_home};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -120,6 +120,14 @@ fn entry_id(entry: &Value) -> Option<&str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
+}
+
+/// 这条条目归界面管吗（有可用的 `id`）？
+///
+/// 公开是因为 `app::strip_cross_format_containers` 也要用：跨格式保存时它只剔界面接管的
+/// 条目，没有 `id` 的那种（界面认不出来）必须留在基底里，[`unmanaged_of`] 才能原样带过去。
+pub fn is_ui_managed_entry(entry: &Value) -> bool {
+    entry_id(entry).is_some()
 }
 
 /// 某个 pid 的条目数组；值不是数组时返回空。
@@ -338,15 +346,6 @@ fn efforts_from_entry(entry: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 逗号串 → 列表（去空白、去空项）。
-fn split_list(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 /// 一张卡片该落到哪个 pid、要不要写 `providerProtocol`、条目要写什么 `wireApi`。
 ///
 /// 优先沿用卡片上原有的**自定义** pid（保留用户自己的命名），只把映射刷新成当前协议；
@@ -441,16 +440,16 @@ fn entry_from_provider(
 ) -> Value {
     let mut obj = old.and_then(Value::as_object).cloned().unwrap_or_default();
     obj.insert("id".into(), Value::String(id.to_string()));
-    set_or_remove(
+    set_str(
         &mut obj,
         "name",
         m.map(|m| m.name.trim()).unwrap_or_default(),
     );
-    set_or_remove(&mut obj, "description", p.description.trim());
-    set_or_remove(&mut obj, "baseUrl", p.base_url.trim());
-    set_or_remove(&mut obj, "envKey", &env_key_name(p));
+    set_str(&mut obj, "description", p.description.trim());
+    set_str(&mut obj, "baseUrl", p.base_url.trim());
+    set_str(&mut obj, "envKey", &env_key_name(p));
     // `wireApi` 只对 OpenAI 系协议有意义，其它协议写了是配置错误。
-    set_or_remove(&mut obj, "wireApi", wire);
+    set_str(&mut obj, "wireApi", wire);
 
     if let Some(m) = m {
         // capabilities：只在界面能表达的两个子键上动手，其余（`agent` /
@@ -460,7 +459,7 @@ fn entry_from_provider(
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let mods = split_list(&m.modalities_input);
+        let mods = split_csv(&m.modalities_input);
         if mods.is_empty() {
             caps.shift_remove("vision");
         } else {
@@ -477,7 +476,7 @@ fn entry_from_provider(
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            let efforts = split_list(&m.variants);
+            let efforts = split_csv(&m.variants);
             if efforts.is_empty() {
                 r.shift_remove("efforts");
             } else {
@@ -524,15 +523,6 @@ fn entry_from_provider(
     }
 
     Value::Object(obj)
-}
-
-/// 非空则写入字符串，空白则删除该键。
-fn set_or_remove(obj: &mut Map<String, Value>, key: &str, value: &str) {
-    if value.is_empty() {
-        obj.shift_remove(key);
-    } else {
-        obj.insert(key.to_string(), Value::String(value.to_string()));
-    }
 }
 
 /// 能解析成整数才写入；解析不了（含空串）就删除该键。
@@ -666,8 +656,7 @@ fn sync_env(root: &mut Map<String, Value>, providers: &[ProviderRow]) {
 /// 且无任何报错。这种冲突宁可不让存，请给卡片手填不同的变量名。
 fn first_env_name_conflict(providers: &[ProviderRow]) -> Option<String> {
     // name -> (先到的 provider key, 它的密钥值)
-    let mut seen: std::collections::HashMap<String, (&str, &str)> =
-        std::collections::HashMap::new();
+    let mut seen: HashMap<String, (&str, &str)> = HashMap::new();
     for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
         let name = env_key_name(p);
         if name.is_empty() {
