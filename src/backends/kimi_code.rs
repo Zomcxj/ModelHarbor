@@ -513,8 +513,13 @@ fn model_from_entry(alias: &str, entry: &Value) -> ModelRow {
 ///
 /// 界面清空的字段要**删掉**对应键而不是写空值：`display_name = ""` 是个真的空标题，
 /// `max_context_size` 写成 0 更是非法（schema 要求 ≥1）。
-fn entry_from_model(m: &ModelRow, alias: &str, old: Option<&Value>) -> Value {
+fn entry_from_model(m: &ModelRow, alias: &str, provider: &str, old: Option<&Value>) -> Value {
     let mut obj = old.and_then(Value::as_object).cloned().unwrap_or_default();
+    // `provider` 写在 `model` **之前**：Kimi 自己写条目就是这个顺序
+    // （`applyOpenPlatformConfig`：provider, model, maxContextSize, …）。对已存在的键
+    // `insert` 只更新值、保持原位，所以旧条目维持文件里原有的顺序不受影响；新条目
+    // （跨格式复制来的）曾把 `provider` 追到整条末尾，读起来像两段拼的。
+    obj.insert("provider".into(), Value::String(provider.to_string()));
     obj.insert("model".into(), Value::String(m.id.trim().to_string()));
     // alias 就是表键，不写进条目里（写了 Kimi 也不认，schema 无此字段）。
     let _ = alias;
@@ -644,10 +649,7 @@ fn provider_entry_from_row(p: &ProviderRow, old: Option<&Value>) -> Value {
     Value::Object(obj)
 }
 
-/// 界面状态 → 全部模型条目（含停用条目、含 `disabled` 标记）。
-///
-/// 主配置与全量副本共用这一步。`disabled` 每条必写（含 `false`）的理由与 WorkBuddy
-/// 完全相同：省掉 `false` 会让「用户全勾上」与「这份副本从没记录过勾选」变成同一状态。
+/// 界面状态 → 全部模型条目。
 fn all_models(providers: &[ProviderRow], base: &Value) -> Vec<(String, String, Value)> {
     // 旧条目按 alias 建索引：界面没接管的键要从这里继承。
     let old: Map<String, Value> = models_map(base).cloned().unwrap_or_default();
@@ -671,10 +673,7 @@ fn all_models(providers: &[ProviderRow], base: &Value) -> Vec<(String, String, V
             } else {
                 m.kimi_alias.trim().to_string()
             };
-            let mut entry = entry_from_model(m, &alias, old.get(&alias));
-            if let Some(obj) = entry.as_object_mut() {
-                obj.insert("provider".into(), Value::String(provider.clone()));
-            }
+            let entry = entry_from_model(m, &alias, &provider, old.get(&alias));
             out.push((provider.clone(), alias, entry));
         }
     }
@@ -1066,7 +1065,7 @@ max_context_size = 1000
         let mut m = model_from_entry("a", &entry);
         m.tool_call = true; // 界面勾上工具调用
         m.reasoning = true;
-        let out = entry_from_model(&m, "a", Some(&entry));
+        let out = entry_from_model(&m, "a", "p", Some(&entry));
         let caps: Vec<&str> = out["capabilities"]
             .as_array()
             .unwrap()
@@ -1090,7 +1089,7 @@ max_context_size = 1000
         .unwrap();
         let mut m = model_from_entry("a", &entry);
         m.reasoning = false;
-        let out = entry_from_model(&m, "a", Some(&entry));
+        let out = entry_from_model(&m, "a", "p", Some(&entry));
         let caps: Vec<&str> = out["capabilities"]
             .as_array()
             .unwrap()
@@ -1196,7 +1195,7 @@ max_context_size = 1000
         .unwrap();
         let mut m = model_from_entry("a", &entry);
         m.variants = "low, max".into(); // 用户改了档位，high 不在了
-        let out = entry_from_model(&m, "a", Some(&entry));
+        let out = entry_from_model(&m, "a", "p", Some(&entry));
         assert!(
             out.get("default_effort").is_none(),
             "不在清单里的 default_effort 必须删掉"
@@ -1204,7 +1203,7 @@ max_context_size = 1000
         // 仍在清单里时保留用户选的默认档
         let mut m2 = model_from_entry("a", &entry);
         m2.variants = "low, high, max".into();
-        let out2 = entry_from_model(&m2, "a", Some(&entry));
+        let out2 = entry_from_model(&m2, "a", "p", Some(&entry));
         assert_eq!(out2["default_effort"], "high");
     }
 
@@ -1317,6 +1316,42 @@ base_url = "https://api.openai.com/v1"
         }
     }
 
+    /// 新条目的键序：`provider` 在 `model` 之前（Kimi 自己的条目顺序）。
+    #[test]
+    fn a_new_entry_puts_provider_before_model() {
+        let entry: Value = toml::from_str(
+            "model = \"m\"
+max_context_size = 1
+",
+        )
+        .unwrap();
+        let m = model_from_entry("a", &entry);
+        let out = entry_from_model(&m, "a", "openai_247kan", None);
+        let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
+        assert_eq!(keys[0], "provider");
+        assert_eq!(keys[1], "model");
+    }
+
+    /// 旧条目的键序不受影响（insert 对已存在的键只更新值、保持原位）。
+    #[test]
+    fn an_existing_entry_keeps_its_file_order() {
+        let entry: Value = toml::from_str(
+            "provider = \"p\"
+model = \"m\"
+max_context_size = 1
+display_name = \"M\"
+",
+        )
+        .unwrap();
+        let m = model_from_entry("a", &entry);
+        let out = entry_from_model(&m, "a", "p", Some(&entry));
+        let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            ["provider", "model", "max_context_size", "display_name"]
+        );
+    }
+
     /// 认不出来的键（`overrides` / `reasoning_key` / 模型级 `base_url`）原样保留。
     #[test]
     fn unmodelled_keys_are_inherited() {
@@ -1334,7 +1369,7 @@ max_output_size = 500
         )
         .unwrap();
         let m = model_from_entry("a", &entry);
-        let out = entry_from_model(&m, "a", Some(&entry));
+        let out = entry_from_model(&m, "a", "p", Some(&entry));
         assert_eq!(out["reasoning_key"], "reasoning_content");
         assert_eq!(out["beta_api"], true);
         assert_eq!(out["base_url"], "https://override/v1");

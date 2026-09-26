@@ -3138,6 +3138,8 @@ mod model_enable_visibility_tests {
             ConfigFormat::OhMyPi,
             ConfigFormat::DeepSeekHarness,
             ConfigFormat::ZCode,
+            ConfigFormat::QwenCode,
+            ConfigFormat::KimiCode,
         ] {
             let app = app_loaded_from_opencode(page);
             assert!(
@@ -3175,6 +3177,8 @@ mod model_enable_visibility_tests {
             ConfigFormat::OhMyPi,
             ConfigFormat::DeepSeekHarness,
             ConfigFormat::ZCode,
+            ConfigFormat::QwenCode,
+            ConfigFormat::KimiCode,
         ] {
             assert!(
                 !format.has_model_enable(),

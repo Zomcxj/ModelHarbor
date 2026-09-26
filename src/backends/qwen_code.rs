@@ -40,19 +40,13 @@
 //!    往一个 v1/v2 文件里补 `$version: 4` 会让 Qwen Code 跳过它自己的 v1→v4 迁移，
 //!    旧结构的设置被按新结构解读——那是在帮用户改坏配置。
 //!
-//! ## 启用/停用（照搬 WorkBuddy 的两份配置）
+//! ## 没有「停用」这回事
 //!
-//! QwenCode **没有** `disabled` 字段：停用的语义就是**整条不写进 `settings.json`**。
-//! 界面要显示全部配置（用户得看得见每一条才能决定勾哪条），这两件事不可能由同一个文件
-//! 承担，于是拆成两份：
-//!
-//! - `~/.qwen/settings.json` —— Qwen Code 真正读的生效清单：只含启用的条目。
-//! - 同目录 `modelProviders.full.json` —— 本工具维护的全量副本：所有条目 + 每条自己的
-//!   勾选标记（`disabled`，**每条必写**，含 `false`），外加 `providerProtocol`。
-//!   为什么 `false` 也必须写，见 `backends::workbuddy` 的模块说明——同一条教训。
-//!
-//! 副本里带上 `providerProtocol` 是有必要的：一个 pid 下若只剩停用条目，它就不会出现在
-//! 主配置里，映射被当作孤儿清掉，再加载时该 pid 的协议就无从得知了。
+//! QwenCode 的 schema 里没有 `disabled` 字段，`/model` 选择器对不同厂商的重复模型也
+//! 照列不误（判重只针对「协议 + id + baseUrl」完全相同的三重重复，跨厂商撞不上）——
+//! 既没有需要开关去裁决的去重，也没有可写的开关字段。曾经照 WorkBuddy 的样子给这里
+//! 加过停用开关与全量副本 `modelProviders.full.json`，按用户指正移除：那是本工具发明
+//! 的状态。删卡片就是真删（`.bak` 备份仍然兜底）。
 //!
 //! ## 两条「认不出来就原样保留」的规则
 //!
@@ -77,12 +71,6 @@ pub struct QwenCodeBackend;
 
 pub static BACKEND: QwenCodeBackend = QwenCodeBackend;
 
-/// 全量副本的文件名（与 `settings.json` 同目录）。
-///
-/// 名字必须与主配置不同：Qwen Code 只按精确文件名读自己的设置，同目录其他文件它不看。
-/// 也**不能**叫 `settings.json.bak` 之类——这份副本是本工具的工作文件，不是备份。
-const FULL_STORE_NAME: &str = "modelProviders.full.json";
-
 /// 内置 pid：协议由 pid 自身决定，**不需要** `providerProtocol` 映射。
 const BUILTIN_PIDS: [&str; 5] = ["openai", "anthropic", "gemini", "vertex-ai", "qwen-oauth"];
 
@@ -97,15 +85,10 @@ fn default_local_path() -> String {
     format!("{}\\.qwen\\settings.json", home_dir_string())
 }
 
-/// 全量副本路径：与主配置同目录、固定文件名。
-pub fn full_store_path(config_path: &str) -> String {
-    crate::util::sibling_path(config_path, FULL_STORE_NAME)
-}
-
-/// 本次保存是否会让生效清单的条目数变少（供保存流程决定是否先备份原文件）。
+/// 本次保存是否会让条目数变少（供保存流程决定是否先备份原文件）。
 ///
-/// Qwen Code 的「停用」是整条不写，所以一次普通保存删掉的东西可能比跨格式转换还多
-/// （与 WorkBuddy 同理）。原文件读不出时按「会收缩」处理，让调用方去读原文件并备份。
+/// 删卡片就会收缩——没有停用概念之后，`.bak` 兜底的对象是「删除」。
+/// 原文件读不出时按「会收缩」处理，让调用方去读原文件并备份。
 pub fn shrinks_on_save(before: &Value, after: &Value) -> bool {
     fn count(root: &Value) -> usize {
         providers_map(root)
@@ -319,10 +302,6 @@ fn model_from_entry(entry: &Value) -> ModelRow {
     m.store = false;
     m.variants = efforts_from_entry(entry).join(", ");
     m.original_variants = m.variants.clone();
-    m.disabled = entry
-        .get("disabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     m.source_format = Some(ConfigFormat::QwenCode);
     m.raw = entry.clone();
     m
@@ -394,7 +373,7 @@ fn route(
     (builtin_pid.to_string(), None, wire)
 }
 
-/// 一条待写入的条目：落在哪个 pid、该 pid 需要的映射、条目内容（含 `disabled`）。
+/// 一条待写入的条目：落在哪个 pid、该 pid 需要的映射、条目内容。
 struct Placed {
     pid: String,
     /// `Some(协议桶名)` = 这个 pid 是自定义的，要在 `providerProtocol` 里声明。
@@ -437,13 +416,7 @@ fn place(providers: &[ProviderRow], base: &Value) -> Vec<Placed> {
                 .unwrap_or_else(|| p.key.trim())
                 .to_string();
             let old = index.get(id.as_str()).copied();
-            let mut entry = entry_from_provider(p, m, &id, wire, old);
-            if let Some(obj) = entry.as_object_mut() {
-                obj.insert(
-                    "disabled".into(),
-                    Value::Bool(m.map(|m| m.disabled).unwrap_or(false)),
-                );
-            }
+            let entry = entry_from_provider(p, m, &id, wire, old);
             out.push(Placed {
                 pid: pid.clone(),
                 mapping: mapping.clone(),
@@ -580,27 +553,11 @@ fn set_num(obj: &mut Map<String, Value>, key: &str, text: &str) {
     }
 }
 
-/// 按 pid 分组，**保留** `disabled` 键（全量副本用）。
-fn group_all(placed: &[Placed]) -> Map<String, Value> {
+/// 按 pid 分组（没有停用概念，全部条目都进主配置）。
+fn group_by_pid(placed: &[Placed]) -> Map<String, Value> {
     let mut out: Map<String, Value> = Map::new();
     for item in placed {
         push_entry(&mut out, &item.pid, item.entry.clone());
-    }
-    out
-}
-
-/// 按 pid 分组，**去掉** `disabled` 键（主配置用：QwenCode 的 schema 里没有这个键）。
-fn effective_by_pid(placed: &[Placed]) -> Map<String, Value> {
-    let mut out: Map<String, Value> = Map::new();
-    for item in placed {
-        if item.entry.get("disabled").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-        let mut entry = item.entry.clone();
-        if let Some(obj) = entry.as_object_mut() {
-            obj.shift_remove("disabled");
-        }
-        push_entry(&mut out, &item.pid, entry);
     }
     out
 }
@@ -729,26 +686,17 @@ fn env_key_name(p: &ProviderRow) -> String {
     crate::credentials::default_env_name(&p.key)
 }
 
-/// 条目列表 → [`BackendLoad`]（主配置与全量副本共用）。
-///
-/// `trusted_flags` = 这批条目的 `disabled` 键可以信任（读的是全量副本时为 `true`）。
-/// 主配置里没有这个键（Qwen Code 不认），所以从主配置读时一律当启用。
+/// 条目列表 → [`BackendLoad`]。
 fn build_load(
     entries: Vec<(String, Value)>,
     env: Option<&Map<String, Value>>,
     protocols: Option<&Map<String, Value>>,
-    trusted_flags: bool,
 ) -> BackendLoad {
     let mut providers: Vec<ProviderRow> = Vec::new();
     for (pid, entry) in &entries {
-        let Some(mut row) = provider_from_entry(pid, protocols, entry, env) else {
+        let Some(row) = provider_from_entry(pid, protocols, entry, env) else {
             continue;
         };
-        if !trusted_flags {
-            if let Some(m) = row.models.first_mut() {
-                m.disabled = false;
-            }
-        }
         providers.push(row);
     }
     BackendLoad {
@@ -757,41 +705,6 @@ fn build_load(
         providers,
         extras: Value::Object(Map::new()),
     }
-}
-
-/// 全量副本的完整 root（含 `modelProviders` 与 `providerProtocol`）。
-fn load_full_store_root(config_path: &str) -> Option<Value> {
-    if config_path.trim().is_empty() {
-        return None;
-    }
-    let text = crate::util::read_config_content(&full_store_path(config_path)).ok()?;
-    if text.trim().is_empty() {
-        return None;
-    }
-    let root = parse_config_content(&text).ok()?;
-    providers_map(&root)?;
-    Some(root)
-}
-
-/// 把主配置里「副本还没有」的条目并进来（按 pid + id 判重）。
-///
-/// 用户可能手改了 `settings.json`（Qwen Code 自己也会写它——`/auth`、`/model` 都会），
-/// 手加/自动加的条目不在副本里；不补的话它在界面上根本看不见。
-fn merge_full_and_effective(
-    full: &[(String, Value)],
-    effective: &[(String, Value)],
-) -> Vec<(String, Value)> {
-    let key_of = |(pid, entry): &(String, Value)| {
-        (pid.clone(), entry_id(entry).unwrap_or_default().to_string())
-    };
-    let known: HashSet<(String, String)> = full.iter().map(key_of).collect();
-    let mut out = full.to_vec();
-    for item in effective {
-        if !known.contains(&key_of(item)) {
-            out.push(item.clone());
-        }
-    }
-    out
 }
 
 impl Backend for QwenCodeBackend {
@@ -832,45 +745,14 @@ impl Backend for QwenCodeBackend {
         let root = parse_config_content(content)?;
         let env = root.get("env").and_then(Value::as_object).cloned();
         let protocols = provider_protocols(&root).cloned();
-        let mut load = build_load(entries_from(&root), env.as_ref(), protocols.as_ref(), false);
+        let mut load = build_load(entries_from(&root), env.as_ref(), protocols.as_ref());
         load.root = root.clone();
         load.extras = root;
         Ok(load)
     }
 
-    /// 带路径解析：优先读全量副本（含停用条目与逐条的勾选标记）。
-    ///
-    /// 密钥仍从**主配置**读——副本里不存 `env`（密钥留在 Qwen Code 真正读的那个文件里，
-    /// 少一处明文落盘）。协议映射两侧都读，主配置优先：它是 Qwen Code 实际生效的那份。
-    fn parse_at(&self, content: &str, path: &str) -> Result<BackendLoad, String> {
-        let root = parse_config_content(content)?;
-        let env = root.get("env").and_then(Value::as_object).cloned();
-        let mut protocols = provider_protocols(&root).cloned().unwrap_or_default();
-        let mut trusted = false;
-        let entries = match load_full_store_root(path) {
-            Some(full) => {
-                if let Some(m) = provider_protocols(&full) {
-                    for (pid, value) in m {
-                        protocols
-                            .entry(pid.clone())
-                            .or_insert_with(|| value.clone());
-                    }
-                }
-                trusted = true;
-                merge_full_and_effective(&entries_from(&full), &entries_from(&root))
-            }
-            None => entries_from(&root),
-        };
-        let protocols = if protocols.is_empty() {
-            None
-        } else {
-            Some(protocols)
-        };
-        let mut load = build_load(entries, env.as_ref(), protocols.as_ref(), trusted);
-        load.root = root.clone();
-        load.extras = root;
-        Ok(load)
-    }
+    // `parse_at` 用 trait 缺省实现（直接 `parse`）：没有全量副本可读，
+    // 主配置就是全部状态。
 
     fn serialize_root(
         &self,
@@ -879,8 +761,8 @@ impl Backend for QwenCodeBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
-        // 这个函数的产物是 **Qwen Code 的生效清单**：只含启用的条目。全量副本由
-        // `save_sidecars` 另写一份，两者共用 `place` 构造，字段口径必然一致。
+        // 这个函数的产物就是 **Qwen Code 的全部生效状态**：没有停用概念，
+        // `settings.json` 一份文件承担所有条目。
         let base = target_root.unwrap_or(extras);
         let placed = place(providers, base);
         let mut root = base.as_object().cloned().unwrap_or_default();
@@ -892,7 +774,7 @@ impl Backend for QwenCodeBackend {
         }
         sync_env(&mut root, providers);
 
-        let mut map = effective_by_pid(&placed);
+        let mut map = group_by_pid(&placed);
         for (pid, extra) in unmanaged_of(base, &placed) {
             match extra {
                 Value::Array(items) => {
@@ -916,31 +798,6 @@ impl Backend for QwenCodeBackend {
             root.insert("providerProtocol".into(), Value::Object(protocols));
         }
         Value::Object(root)
-    }
-
-    /// 全量副本（`modelProviders.full.json`）：所有条目 + 每条自己的勾选标记 + 协议映射。
-    ///
-    /// 继承未知字段的基底取**副本本身**（上次的完整状态，字段最全），没有才退回主配置。
-    /// 只用主配置当基底会让停用条目的未知字段在每次保存时被抹掉——那正是这份副本要
-    /// 解决的问题。副本读不出、主配置也读不出就取消保存：静默用空基底会丢字段。
-    fn save_sidecars(&self, path: &str, providers: &[ProviderRow]) -> Result<(), String> {
-        let base = match load_full_store_root(path) {
-            Some(root) => root,
-            None => self
-                .load_target_root(path)
-                .map_err(|e| format!("无法读取全量副本与主配置，已取消保存: {e}"))?,
-        };
-        let placed = place(providers, &base);
-        let mut root = Map::new();
-        root.insert("modelProviders".into(), Value::Object(group_all(&placed)));
-        let protocols = protocols_for(&placed, &base);
-        if !protocols.is_empty() {
-            root.insert("providerProtocol".into(), Value::Object(protocols));
-        }
-        super::write_config(
-            &full_store_path(path),
-            &crate::app::pretty_json(&Value::Object(root)),
-        )
     }
 
     fn load_target_root(&self, path: &str) -> Result<Value, String> {
@@ -1044,7 +901,7 @@ mod tests {
         .unwrap();
         let env = None;
         let protocols = provider_protocols(&base).cloned();
-        let load = build_load(entries_from(&base), env, protocols.as_ref(), true);
+        let load = build_load(entries_from(&base), env, protocols.as_ref());
         assert_eq!(load.providers.len(), 1);
         let out = QwenCodeBackend.serialize_root(&[], &load.providers, &base, None);
         assert_eq!(out["providerProtocol"]["idealab"], "openai");
@@ -1089,29 +946,25 @@ mod tests {
             .is_none());
     }
 
-    /// `disabled` 的条目只进副本、不进生效清单。
+    /// 写出的条目永远不带 `disabled`（schema 没这个键，也没有停用概念；
+    /// `ModelRow.disabled` 是界面共享结构上的字段，与本后端无关）。
     #[test]
-    fn disabled_entries_leave_the_effective_file() {
+    fn written_entries_carry_no_disabled_key() {
         let mut p = ProviderRow::new();
         p.key = "m1".into();
         let mut m = ModelRow::new();
         m.id = "m1".into();
-        m.disabled = true;
+        m.disabled = true; // 共享结构上的残留值，保存时必须视而不见
         p.models.push(m);
-        let effective = QwenCodeBackend.serialize_root(
+        let out = QwenCodeBackend.serialize_root(
             &[],
             std::slice::from_ref(&p),
             &Value::Object(Map::new()),
             None,
         );
-        assert!(
-            effective["modelProviders"]
-                .as_object()
-                .is_none_or(|m| m.is_empty()),
-            "停用条目不得出现在生效清单里"
-        );
-        let all = group_all(&place(std::slice::from_ref(&p), &Value::Object(Map::new())));
-        assert_eq!(all["openai"][0]["disabled"], true, "副本里必须记下勾选状态");
+        let entry = &out["modelProviders"]["openai"][0];
+        assert_eq!(entry["id"], "m1", "没有停用概念：全部条目都进主配置");
+        assert!(entry.get("disabled").is_none());
     }
 
     /// 条目里界面没接管的键要继承下来。
@@ -1125,7 +978,7 @@ mod tests {
             } ] } }"#,
         )
         .unwrap();
-        let load = build_load(entries_from(&base), None, None, true);
+        let load = build_load(entries_from(&base), None, None);
         let out = QwenCodeBackend.serialize_root(&[], &load.providers, &base, None);
         let e = &out["modelProviders"]["openai"][0];
         assert_eq!(

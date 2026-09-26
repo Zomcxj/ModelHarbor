@@ -4,7 +4,8 @@
 //! 1. `modelProviders` 的键是 provider id、值是**数组**，一条元素 = 一条完整路由
 //!    （自带 `baseUrl` / `envKey`），所以界面是「一条 = 一张卡片」；
 //! 2. 密钥在**顶层 `env[envKey]`**，不在条目里；
-//! 3. 没有 `disabled` 字段，停用 = 整条不写 → 拆成生效清单 + 全量副本两份文件。
+//! 3. 没有 `disabled` 字段，也没有需要开关裁决的去重——`settings.json` 一份文件
+//!    承担全部条目；曾经的启用开关与 `modelProviders.full.json` 副本已移除。
 
 use model_harbor::backends;
 use model_harbor::format::ConfigFormat;
@@ -510,107 +511,62 @@ fn known_custom_pid_is_kept_and_refreshed() {
     assert!(root["modelProviders"]["idealab"][0].get("id").is_some());
 }
 
-// ---------------------------------------------------------------- 启用 / 停用
+// ---------------------------------------------------------------- 启用 / 停用（没有）
 
 #[test]
-fn disabled_entries_leave_the_effective_file() {
-    let first = load(&settings_json());
-    let mut providers = first.providers.clone();
-    providers[0].models[0].disabled = true;
-    let root = qwen_backend().serialize_root(&[], &providers, &first.extras, None);
-    let ids: Vec<&str> = root["modelProviders"]["openai"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|e| e["id"].as_str())
-        .collect();
-    assert!(!ids.contains(&"gpt-4o"), "停用条目不得进生效清单");
-    assert!(ids.contains(&"openai/gpt-4o"), "其余条目照常");
-    // schema 里没有 disabled 这个键，生效清单里不能出现它
-    assert!(root["modelProviders"]["openai"][0]
-        .get("disabled")
-        .is_none());
-}
+fn there_is_no_disabled_concept_on_the_qwen_page() {
+    // Qwen Code 的 schema 没有 disabled/enabled 字段，`/model` 对不同厂商的重复模型
+    // 照列不误（判重只针对协议+id+baseUrl 完全相同的三重重复）。曾经的启用开关与
+    // `modelProviders.full.json` 副本是本工具发明的状态，已按用户指正移除。
+    assert!(!ConfigFormat::QwenCode.has_model_enable());
 
-#[test]
-fn full_store_records_every_flag_including_false() {
-    let dir = temp_dir("full_store");
-    let path = dir.join("settings.json");
-    std::fs::write(&path, settings_json()).unwrap();
-
-    let first = load(&settings_json());
-    let mut providers = first.providers.clone();
-    providers[0].models[0].disabled = true;
-    qwen_backend()
-        .save_sidecars(&path.to_string_lossy(), &providers)
-        .expect("写全量副本");
-
-    let sidecar = dir.join("modelProviders.full.json");
-    let text = std::fs::read_to_string(&sidecar).expect("副本应存在");
-    let full: Value = serde_json::from_str(&text).unwrap();
-    let entries = full["modelProviders"]["openai"].as_array().unwrap();
-    assert_eq!(entries.len(), 2, "副本里两条都在");
-    // 每条**都**写 disabled（含 false）：省掉 false 会让「全勾上」与「从没记录过勾选」
-    // 变成同一状态，而且会自我延续。
-    for entry in entries {
+    let root = qwen_backend().serialize_root(
+        &[],
+        &load(&settings_json()).providers,
+        &load(&settings_json()).extras,
+        None,
+    );
+    for entry in root["modelProviders"]["openai"].as_array().unwrap() {
         assert!(
-            entry.get("disabled").and_then(Value::as_bool).is_some(),
-            "副本里每条都必须写 disabled：{entry}"
+            entry.get("disabled").is_none(),
+            "{} 不该带 disabled",
+            entry["id"]
         );
     }
-    let disabled: Vec<bool> = entries
-        .iter()
-        .map(|e| e["disabled"].as_bool().unwrap())
-        .collect();
-    assert_eq!(disabled, vec![true, false]);
-    // 副本带协议映射，否则一个 pid 只剩停用条目时协议就无从得知了
-    assert_eq!(full["providerProtocol"]["idealab"], "openai");
-
-    std::fs::remove_dir_all(&dir).ok();
+    // 全部条目都进主配置（2 条 openai + 手加时才有的别家），没有筛选
+    assert_eq!(
+        root["modelProviders"]["openai"].as_array().unwrap().len(),
+        2
+    );
 }
 
 #[test]
-fn loading_prefers_the_full_store_so_disabled_entries_stay_visible() {
-    let dir = temp_dir("prefer_full");
+fn no_sidecar_is_written_any_more() {
+    let dir = temp_dir("no_sidecar");
     let path = dir.join("settings.json");
     std::fs::write(&path, settings_json()).unwrap();
-    let config_path = path.to_string_lossy().to_string();
 
     let first = load(&settings_json());
-    let mut providers = first.providers.clone();
-    providers[0].models[0].disabled = true;
-    // 生效清单只留启用的
-    let effective = qwen_backend().serialize_root(&[], &providers, &first.extras, None);
-    std::fs::write(&path, serde_json::to_string(&effective).unwrap()).unwrap();
     qwen_backend()
-        .save_sidecars(&config_path, &providers)
-        .unwrap();
-
-    let content = std::fs::read_to_string(&path).unwrap();
-    let reloaded = qwen_backend().parse_at(&content, &config_path).unwrap();
-    let gpt = reloaded
-        .providers
-        .iter()
-        .find(|p| p.key == "gpt-4o")
-        .expect("停用条目必须仍在界面上，否则用户勾不回来");
-    assert!(gpt.models[0].disabled, "勾选状态要还原");
+        .save_sidecars(&path.to_string_lossy(), &first.providers)
+        .ok();
+    // QwenCode 已从 sidecar 名单里摘掉：即便误调也不得产出文件
+    assert!(
+        !dir.join("modelProviders.full.json").exists(),
+        "不该再写全量副本"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
-fn entries_added_by_hand_to_settings_survive_the_full_store() {
-    // Qwen Code 自己也会写 settings.json（/auth、/model）：副本里没有的条目要并进来，
-    // 否则用户在 Qwen Code 里新配的模型在界面上看不见。
+fn entries_added_by_hand_to_settings_stay_visible() {
+    // Qwen Code 自己也会写 settings.json（/auth、/model）：没有副本之后主配置就是
+    // 全部状态，手加的条目自然能看见。
     let dir = temp_dir("hand_added");
     let path = dir.join("settings.json");
     std::fs::write(&path, settings_json()).unwrap();
     let config_path = path.to_string_lossy().to_string();
-
-    let first = load(&settings_json());
-    qwen_backend()
-        .save_sidecars(&config_path, &first.providers)
-        .unwrap();
 
     // 手加一条
     let mut root: Value = serde_json::from_str(&settings_json()).unwrap();
@@ -757,45 +713,12 @@ fn cross_format_export_does_not_leak_qwen_only_keys() {
 // ---------------------------------------------------------------- 保存流程
 
 #[test]
-fn full_store_aborts_when_the_config_is_unreadable() {
-    // 副本与主配置都读不出时必须**报错**（由调用方取消保存），不能静默用空基底：
-    // 空基底会让停用条目的未知字段（`capabilities.agent`、`generationConfig.*`）
-    // 在这一次保存里被抹掉。宁可不让存，也不能蒙眼覆写。
-    let dir = temp_dir("sidecar_corrupt");
-    let path = dir.join("settings.json");
-    std::fs::write(&path, r#"{"modelProviders": {"openai": ["#).unwrap();
-
-    let err = qwen_backend()
-        .save_sidecars(&path.to_string_lossy(), &[])
-        .expect_err("损坏的配置必须让保存失败");
-    assert!(err.contains("无法读取"), "应给出可读的错误：{err}");
-    // 副本不该被写出来
-    assert!(!dir.join("modelProviders.full.json").exists());
-
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn shrinks_on_save_detects_disabling() {
+fn shrinks_on_save_detects_deletions() {
+    // 停用没了，但删卡片仍会让条目变少——`.bak` 备份的触发条件依然需要它。
     use model_harbor::backends::qwen_code::shrinks_on_save;
     let before: Value = serde_json::from_str(&settings_json()).unwrap();
     let after = json!({"modelProviders": {"openai": [{"id": "gpt-4o"}]}});
     assert!(shrinks_on_save(&before, &after), "条目变少要触发备份");
     assert!(!shrinks_on_save(&after, &before), "条目变多不用备份");
     assert!(!shrinks_on_save(&before, &before), "没变不用备份");
-}
-
-#[test]
-fn full_store_path_sits_beside_the_config() {
-    use model_harbor::backends::qwen_code::full_store_path;
-    assert_eq!(
-        full_store_path(r"C:\Users\me\.qwen\settings.json"),
-        r"C:\Users\me\.qwen\modelProviders.full.json"
-    );
-    assert_eq!(
-        full_store_path("/home/me/.qwen/settings.json"),
-        "/home/me/.qwen/modelProviders.full.json"
-    );
-    // 名字必须与主配置不同，否则会把生效清单覆盖成副本
-    assert!(!full_store_path("settings.json").ends_with("settings.json"));
 }

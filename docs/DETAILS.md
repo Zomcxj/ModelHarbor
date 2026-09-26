@@ -51,7 +51,7 @@ cargo build --release
 | 上下文 / 输出 | `limit.context` / `limit.output` | `contextWindow` / `maxTokens` | 同 pi | 同 pi | `properties.contextWindow` / `optionSpecs.maxOutputTokens.max` | `maxInputTokens` / `maxOutputTokens` | `generationConfig.contextWindowSize` / `generationConfig.samplingParams.max_tokens` | `max_context_size`（必填）/ `max_output_size` |
 | 输入模态 | `modalities.input` | `input` | `input` | `input` | `properties.supports*` | `supportsImages` | `capabilities.vision` | `capabilities` 里的 `image_in` 等标签（界面不给控件，见下） |
 | 推理档位 | `variants`（none…ultra） | `thinkingLevelMap`（off…ultra） | `thinking.efforts` | `reasoningEfforts` | `optionSpecs.reasoningLevel.values` | `supportsReasoning`（布尔，无档位） | `capabilities.reasoning.efforts` | `support_efforts`（各模型自带词表） |
-| 模型启用 | — | — | — | — | `config.enabled`（ZCode 自管，本工具不接管） | `disabled` | 停用即不写入（见下） | —（schema 无此概念，界面无开关） |
+| 模型启用 | — | — | — | — | `config.enabled`（ZCode 自管，本工具不接管） | `disabled` | —（schema 无此概念，界面无开关） | —（schema 无此概念，界面无开关） |
 | 模型存储 | Map（键 = model id） | Array（含 `id`） | 同 pi | 同 pi | 独立规则表 | Array（含 `id`） | Map（pid → Array，含 `id`） | 顶层全局表（键 = alias，靠 `provider` 字段关联） |
 | Agents 区块 | 支持 | — | — | — | — | — | — | — |
 
@@ -400,12 +400,11 @@ llm-pi-ai:
 
 ## 注意事项
 
-- **「启用」开关出现在 WorkBuddy 与 Qwen Code 两页**（其余八家的模型 schema 里没有模型级启用字段）。两家的共同点是：生效清单只含启用的条目，**关掉不删配置**。
-  - **WorkBuddy** 的选择器按模型 id **全局去重**，同一个模型名无论挂在哪个厂商下都只会列出一行、只有第一条生效，所以开关是**全局互斥**的——打开一个，同名的其他条目自动关闭。只有开启的会写进 `models.json`；关闭的条目仍保存在同目录的 `models.full.json`，开回来即恢复。
-  - **Qwen Code** 的 schema 里没有 `disabled` 字段，**停用就是整条不写进 `settings.json`**；全部条目与勾选状态记在同目录的 `modelProviders.full.json`，开回来即恢复。
-  - **Kimi Code 没有这个开关**：它的模型 schema 里没有 disabled/enabled 字段，模型表又按别名一一索引——既不去重也没有开关，每条别名都是独立生效的一行。`managed:` 开头的 provider 及其模型由 Kimi Code 的 `/login` 生成、与 `credentials/` 配套，本工具**只读保留、不进界面**。
+- **「启用」开关只有 WorkBuddy 一页有**（其余九家的模型 schema 里没有模型级启用字段）。它的选择器按模型 id **全局去重**，同一个模型名无论挂在哪个厂商下都只会列出一行、只有第一条生效，所以开关是**全局互斥**的——打开一个，同名的其他条目自动关闭。只有开启的会写进 `models.json`；关闭的条目仍保存在同目录的 `models.full.json`，开回来即恢复。
+  - **Qwen Code 与 Kimi Code 都没有这个开关**：两家的 schema 里都没有 disabled/enabled 字段。Qwen Code 的 `/model` 对不同厂商的重复模型照列不误（判重只针对协议+id+baseUrl 完全相同的三重重复），Kimi Code 的模型表按别名一一索引、根本不去重——开关在两家都是多余发明的状态。
+  - **Kimi Code 的 `managed:` provider** 及其模型由 `/login` 生成、与 `credentials/` 配套，本工具**只读保留、不进界面**。
 - **WorkBuddy 的模型 `id` 就是发给上游的模型名**，不要为了区分同名模型去改它——改了会直接请求失败。要用哪一家，就在那一家的卡片上打开「启用」。
-- **两页各有一个伴生文件**（WorkBuddy 的 `models.full.json`、Qwen Code 的 `modelProviders.full.json`，都与主配置同目录），保存全部条目与勾选状态，含 API key。**不要手工删除它们**：删了之后未勾选的条目会从界面上消失。两家都只按精确文件名读自己的主配置，同目录其他文件不看。Kimi Code 没有伴生文件，`config.toml` 就是全部状态。
+- **伴生文件只有 WorkBuddy 一个**（`models.full.json`，与 `models.json` 同目录），保存全部条目与勾选状态，含 API key。**不要手工删除它**：删了之后未勾选的条目会从界面上消失。WorkBuddy 只按精确文件名读自己的主配置，同目录其他文件不看。Qwen Code 与 Kimi Code 没有伴生文件，各自的主配置就是全部状态。
 - **Qwen Code 的密钥存在主配置顶层的 `env` 里**（条目上只写变量名 `envKey`），本工具**只增改、绝不删**：那个命名空间是跨 provider 共享的，Qwen Code 自己的 `/auth` 也往里写（例如 Coding Plan 的 `BAILIAN_CODING_PLAN_API_KEY`），按「有没有条目引用」去修剪会把刚配好的凭据静默删掉。
 - **Qwen Code 的 `providerProtocol` 改动需要重启 Qwen Code 才生效**（`modelProviders` 是热加载的，协议映射只在启动时读一次）。
 - **ZCode 的模型开关由 ZCode 自己维护**：你在 ZCode 界面里停用的模型，ModelHarbor 保存时不会把它重新打开。
@@ -420,7 +419,7 @@ llm-pi-ai:
 ## 平台与安全
 
 - 当前**仅支持 Windows**
-- 配置文件中的 `apiKey` 为**明文**（DSH 的 `.credentials.yaml`、WorkBuddy 的 `models.full.json`、Qwen Code 的 `env` 与 `modelProviders.full.json`、Kimi Code 的 `api_key` 同样），请勿提交到公开仓库
+- 配置文件中的 `apiKey` 为**明文**（DSH 的 `.credentials.yaml`、WorkBuddy 的 `models.full.json`、Qwen Code 的 `env`、Kimi Code 的 `api_key` 同样），请勿提交到公开仓库
 - 界面设置文件只保存界面选择、不含密钥，可以安全删除（会恢复默认界面设置）
 - 站点面板令牌存在 `%USERPROFILE%\.modelharbor\tokens.json`，**含凭证且为明文**（与 agent 配置文件同级风险），请勿提交或同步到共享目录。里面只有你主动填过的站点，在「令牌」面板点「删除」或直接删除该文件即可清空
 - 令牌与用户 ID **不会**写进 `settings.json`，也不会写进任何 agent 配置文件；接口请求只把它们放进请求头（不进 URL、不进日志与状态栏文本）
