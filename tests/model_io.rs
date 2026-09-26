@@ -404,8 +404,8 @@ fn new_model_writes_defaults_for_reasoning_tool_call_and_limit() {
     let out = model.to_value();
     assert_eq!(out["reasoning"], true);
     assert_eq!(out["tool_call"], true);
-    assert_eq!(out["limit"]["context"], 272000);
-    assert_eq!(out["limit"]["output"], 128000);
+    assert_eq!(out["limit"]["context"], 262000);
+    assert_eq!(out["limit"]["output"], 131000);
     assert_eq!(
         out["options"]["store"], false,
         "新增模型应写出 options.store=false（与既有配置一致）"

@@ -520,15 +520,18 @@ struct VariantsCtx<'a> {
 }
 
 /// 上下文（输入）的常用预设值，单位为 **k（1000）**——与仓库里既有的写法一致
-/// （`ModelRow::new()` 的 `272000` 就是 272k）。
+/// （`ModelRow::new()` 的 `262000` 就是 262k）。
 ///
 /// 取 `1000` 而不是 `1024`：厂商文档与网关界面普遍按 1000 报数（「上下文 128k」），
 /// 而这些字段是**发给上游的声明**，少声明一点是安全的，多声明会被上游直接拒绝。
-/// 所以 `1024k` 落到 `1024000` 而不是 `1048576`。
-const CONTEXT_PRESETS: [u32; 7] = [128, 200, 256, 272, 300, 500, 1024];
+/// 所以 `262k` 落到 `262000` 而不是 `262144`、`1024k` 落到 `1024000` 而不是 `1048576`。
+const CONTEXT_PRESETS: [u32; 8] = [128, 200, 256, 262, 300, 400, 500, 1024];
 
 /// 最大输出（output）的常用预设值，单位同上。
-const OUTPUT_PRESETS: [u32; 4] = [32, 64, 128, 256];
+///
+/// `131` / `262` 看着不像整数是有意的：对应厂商常声明的 `131072` / `262144`，
+/// 按 1000 进制落成 `131000` / `262000`（少声明，安全）。
+const OUTPUT_PRESETS: [u32; 4] = [32, 64, 131, 262];
 
 /// 预设值的显示文本（`128k`）与实际写入配置的数字（`128000`）。
 ///
@@ -554,7 +557,7 @@ fn preset_index(value: &str, presets: &[u32]) -> Option<usize> {
 
 /// 数值字段右侧的预设下拉：选一项就把该值填进字段。
 ///
-/// 用下拉而不是按钮组：上下文有 7 个预设，平铺会把整行挤爆（这一行本来就有
+/// 用下拉而不是按钮组：上下文有 8 个预设，平铺会把整行挤爆（这一行本来就有
 /// id / name / 三个勾选框），而下拉在收起时只占一个控件的宽度。
 ///
 /// 只**填值**、不锁定：填完仍可继续手动编辑。选中项按当前值反查，所以手填的
@@ -574,7 +577,7 @@ fn preset_combo(
     };
     // 只有真正点了某一项才写回：初值是 `None` 而不是 `selected`，
     // 否则「打开下拉又点空白处关掉」也会走一次赋值（虽然写的是同一个数，
-    // 但会把 `" 272000 "` 这类带空白的值静默改写，属于用户没要求的改动）。
+    // 但会把 `" 262000 "` 这类带空白的值静默改写，属于用户没要求的改动）。
     let mut picked: Option<usize> = None;
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(text)
@@ -1259,13 +1262,17 @@ mod tests {
         // 1024k 取 1000 进制（1024000）而不是 1048576：这些字段是发给上游的声明，
         // 少声明是安全的、多声明会被直接拒绝。
         assert_eq!(preset_value(1024), "1024000");
+        // 131 / 262 对应厂商的 131072 / 262144，同样按 1000 进制落数。
+        assert_eq!(preset_label(131), "131k");
+        assert_eq!(preset_value(131), "131000");
+        assert_eq!(preset_value(262), "262000");
     }
 
     /// 预设表要覆盖用户点名的那几个值，且从小到大排好（下拉里的顺序就是它）。
     #[test]
     fn the_tables_hold_the_requested_values_in_order() {
-        assert_eq!(CONTEXT_PRESETS, [128, 200, 256, 272, 300, 500, 1024]);
-        assert_eq!(OUTPUT_PRESETS, [32, 64, 128, 256]);
+        assert_eq!(CONTEXT_PRESETS, [128, 200, 256, 262, 300, 400, 500, 1024]);
+        assert_eq!(OUTPUT_PRESETS, [32, 64, 131, 262]);
         for table in [&CONTEXT_PRESETS[..], &OUTPUT_PRESETS[..]] {
             assert!(
                 table.windows(2).all(|w| w[0] < w[1]),
@@ -1275,12 +1282,14 @@ mod tests {
         }
     }
 
-    /// 仓库里的占位值 `272000` 应当正好命中一个预设，否则新模型的下拉会显示
-    /// 「选择...」而看不出自己其实已经是 272k。
+    /// 仓库里的占位值 `262000` 应当正好命中一个预设，否则新模型的下拉会显示
+    /// 「选择...」而看不出自己其实已经是 262k。
     #[test]
     fn the_built_in_placeholder_matches_a_preset() {
         let placeholder = crate::model::ModelRow::new().context;
-        assert_eq!(placeholder, preset_value(272));
+        assert_eq!(placeholder, preset_value(262));
+        let output = crate::model::ModelRow::new().output;
+        assert_eq!(output, preset_value(131));
     }
 
     /// 手填的非预设值不能被误认成某个预设——否则下拉会显示一个用户没选过的标签，

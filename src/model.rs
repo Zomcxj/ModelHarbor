@@ -237,8 +237,8 @@ impl ModelRow {
             store: false,
             // 新建模型默认启用：`disabled` 只由 WorkBuddy 页的开关显式设置。
             disabled: false,
-            context: "272000".into(),
-            output: "128000".into(),
+            context: "262000".into(),
+            output: "131000".into(),
             modalities_input: "text, image".into(),
             modalities_output: "text".into(),
             variants: "medium, high, xhigh, max".into(),
