@@ -1,5 +1,5 @@
-use crate::app::save::SaveTarget;
 use crate::app::App;
+use crate::app::save::SaveTarget;
 use crate::format::ConfigFormat;
 use crate::model::{ModelRow, ProviderRow};
 
@@ -128,6 +128,77 @@ fn a_typed_path_on_the_current_page_is_still_honored() {
     );
     assert!(!pi_path.exists(), "默认目标不该被写（用户已改路径）");
     assert!(zcode_path.exists(), "其他页照旧写各自的目标");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
+    let dir = temp_dir("opencode_wsl");
+    let local_path = dir.join("opencode.json");
+    let wsl_path = format!("/tmp/model_harbor_opencode_{}.json", std::process::id());
+    let source = serde_json::json!({
+        "agent": { "writer": { "mode": "subagent", "model": "p1/m1" } },
+        "provider": {
+            "p1": {
+                "npm": "@ai-sdk/openai-compatible",
+                "options": { "baseURL": "https://source.example/v1", "apiKey": "test-key" },
+                "models": { "m1": { "name": "m1" } }
+            }
+        },
+        "mcp": { "keep": true }
+    });
+    let target = serde_json::json!({
+        "agent": { "old": { "mode": "subagent" } },
+        "provider": { "old": { "models": {} } },
+        "mcp": { "target": true }
+    });
+    std::fs::write(&local_path, serde_json::to_string(&source).unwrap()).unwrap();
+    let target_text = serde_json::to_string(&target).unwrap();
+    crate::backends::write_config(&wsl_path, &target_text).expect("写入 WSL 测试目标");
+
+    let local_text = std::fs::read_to_string(&local_path).unwrap();
+    let load = crate::backends::backend(ConfigFormat::Opencode)
+        .parse_at(&local_text, &local_path.display().to_string())
+        .unwrap();
+    let mut app = App {
+        agents: load.agents,
+        providers: load.providers,
+        root: load.root,
+        config_path: local_path.display().to_string(),
+        loaded_path: local_path.display().to_string(),
+        source_format: ConfigFormat::Opencode,
+        current_page: ConfigFormat::Opencode,
+        ..App::default()
+    };
+
+    let backup = app
+        .save_backend_to(ConfigFormat::Opencode, &wsl_path)
+        .expect("同步到 WSL 应成功")
+        .expect("覆盖 WSL 配置前必须备份旧文件");
+    assert_eq!(backup, format!("{wsl_path}.bak"));
+    let old_backup = crate::util::read_config_content(&backup).expect("读取 WSL 备份");
+    let old_output: serde_json::Value = serde_json::from_str(&old_backup).unwrap();
+    assert!(old_output["provider"].get("old").is_some());
+
+    let written = crate::util::read_config_content(&wsl_path).expect("读取 WSL 测试目标");
+    let output: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert!(
+        output["agent"].get("writer").is_some(),
+        "agent 未同步: {output}"
+    );
+    assert!(
+        output["provider"].get("p1").is_some(),
+        "provider 未同步: {output}"
+    );
+    assert!(
+        output["provider"].get("old").is_none(),
+        "WSL 旧 provider 不应残留: {output}"
+    );
+    assert_eq!(output["mcp"]["keep"], true);
+    assert!(output["mcp"].get("target").is_none());
+
+    crate::util::remove_config(&backup).ok();
+    crate::util::remove_config(&wsl_path).ok();
     std::fs::remove_dir_all(&dir).ok();
 }
 

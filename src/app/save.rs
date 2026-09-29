@@ -697,6 +697,10 @@ impl App {
         // 跨格式目标（来源格式不同）做「干净转换」：目标文件里由组件状态接管的
         // provider / agent 容器整体丢弃（条目与顺序都来自界面），其余顶层字段保留。
         let is_current = self.source_format == fmt && path == self.loaded_path;
+        // WSL 同步是当前页面配置的完整镜像，不是向 WSL 旧文件做保守 upsert：
+        // 否则 WSL 独有的旧 provider 会永久残留，导致两端配置越积越不一致。
+        let is_opencode_wsl_sync =
+            fmt.is_opencode_family() && self.source_format == fmt && is_wsl_path(path);
         let cross_format = self.source_format != fmt;
         // 写往**别的**页面时，agent 的 model 必须先按目标页网关归一：三页共用同一份
         // agents 数据，而 `model` 的 provider 前缀必须是目标页网关认的（kilo 网关不认
@@ -707,7 +711,7 @@ impl App {
         } else {
             self.agents.clone()
         };
-        let target_root: Option<Value> = if is_current {
+        let target_root: Option<Value> = if is_current || is_opencode_wsl_sync {
             None
         } else {
             // 目标文件存在但读不出 / 解析不了 → 取消保存。静默回落空对象会把
@@ -784,9 +788,9 @@ impl App {
         // 跨格式转换会整体接管目标文件的 provider/agent：先把原文件滚动备份为 .bak，
         // 备份失败则取消保存（宁可不让存，也不能把旧配置静默抵掉）。原文件**读不出**
         // 同样取消保存——备份的前提是知道原文件里有什么，读失败还继续写就是蒙眼覆写。
-        let backup = if (cross_format && !is_current) || shrinks {
+        let backup = if (cross_format && !is_current) || shrinks || is_opencode_wsl_sync {
             match util::read_config_content(path) {
-                Ok(old) if !old.is_empty() && old != content => {
+                Ok(old) if !old.is_empty() && (old != content || is_opencode_wsl_sync) => {
                     let backup_path = format!("{}.bak", path);
                     backends::write_config(&backup_path, &old).map_err(|e| {
                         format!("保存前备份失败（{}），已取消保存: {}", backup_path, e)
