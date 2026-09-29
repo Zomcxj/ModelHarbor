@@ -424,9 +424,15 @@ impl App {
                     )
                     .on_hover_text(wsl_tip);
                     ui.separator();
-                    let look_btn = ui
-                        .button("外观")
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let look_tint = ui.visuals().text_color();
+                    let look_btn = toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.palette.as_ref(),
+                        false,
+                        look_tint,
+                    )
+                    .on_hover_text("外观")
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
                     egui::Popup::menu(&look_btn)
                         // 菜单默认是 `top_down_justified`：每一项的填充会撑满整个
                         // 弹出宽度，文字只占左边一小段，看着像「填充与文字没对齐」。
@@ -489,7 +495,22 @@ impl App {
             });
             // 第二行：配置文件 / 保存格式
             ui.horizontal(|ui| {
-                ui.label("配置文件:");
+                // 行内混排了 14px 小图标、较高的输入框与 24px 图标按钮。
+                // egui 是即时模式：先放的矮控件按当时行高居中，后面高控件
+                // 把行撞高后不会回溯重新居中，就会“靠上”。先把行高钉到 24，
+                // 所有控件（含第一个小图标）就都基于同一高度垂直居中。
+                ui.set_min_height(24.0);
+                // 来源（后端 / agent）图标移到路径框前面（原「配置文件」标记位置）。
+                // 只显示各后端官方图标（名称见悬停提示）。
+                if let Some(icon) = self.icon_for(self.source_format) {
+                    ui.add(
+                        egui::Image::from_texture(icon)
+                            .fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                    )
+                    .on_hover_text(format!("来源：{}", self.source_format.label()));
+                } else {
+                    ui.label(egui::RichText::new(self.source_format.label()).weak());
+                }
                 let path_resp =
                     ui.add(egui::TextEdit::singleline(&mut self.config_path).desired_width(420.0));
                 // 回车确认：按当前输入路径重新加载（egui 单行编辑回车即失焦）
@@ -505,19 +526,17 @@ impl App {
                         self.reload();
                     }
                 }
-                // 文件来源显示在原本“加载”按钮的位置；加载改为回车或“浏览”。
-                // 只显示“来源：”+ 各后端官方图标（名称见悬停提示）。
-                ui.label(egui::RichText::new("来源:").weak());
-                if let Some(icon) = self.icon_for(self.source_format) {
-                    ui.add(
-                        egui::Image::from_texture(icon)
-                            .fit_to_exact_size(egui::vec2(14.0, 14.0)),
-                    )
-                    .on_hover_text(self.source_format.label());
-                } else {
-                    ui.label(egui::RichText::new(self.source_format.label()).weak());
-                }
-                if ui.button("浏览").clicked() {
+                // 「浏览」按钮放回路径框右侧，点击弹出选文件对话框。
+                let browse_tint = ui.visuals().text_color();
+                if toolbar_icon_button(
+                    ui,
+                    self.toolbar_icons.folder_open.as_ref(),
+                    false,
+                    browse_tint,
+                )
+                .on_hover_text("浏览…选择配置文件")
+                .clicked()
+                {
                     if let Some(p) = show_file_dialog() {
                         self.config_path = p;
                         self.reload();
@@ -528,7 +547,20 @@ impl App {
                         .on_hover_text("路径已修改但未加载：保存时将按“先读后合并”写入该路径（不破坏目标文件已有配置）。\n在此按回车可切换到该文件。");
                 }
                 ui.separator();
-                ui.label("保存格式:");
+                let fmt_wk = ui.visuals().weak_text_color();
+                match self.toolbar_icons.file_output.as_ref() {
+                    Some(tex) => {
+                        ui.add(
+                            egui::Image::from_texture(tex)
+                                .fit_to_exact_size(egui::vec2(14.0, 14.0))
+                                .tint(fmt_wk),
+                        )
+                        .on_hover_text("保存格式");
+                    }
+                    None => {
+                        ui.label("保存格式:");
+                    }
+                }
                 let format_btn = ui.button(self.save_format.label());
                 if format_btn.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -657,20 +689,51 @@ impl App {
                     );
                     // 右侧：当前页 + 数量统计，随时可见页面身份
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "agents: {} | providers: {}",
-                                self.agents.len(),
-                                self.providers.len()
-                            ))
-                            .size(crate::theme::TEXT_SMALL)
-                            .weak(),
-                        );
-                        ui.label(
-                            egui::RichText::new(format!("当前页: {}", self.current_page.label()))
-                                .size(crate::theme::TEXT_SMALL)
-                                .weak(),
-                        );
+                        ui.horizontal(|ui| {
+                            let wk = ui.visuals().weak_text_color();
+                            // 当前页：后端官方图标 + 名称
+                            if let Some(icon) = self.icon_for(self.current_page) {
+                                ui.add(
+                                    egui::Image::from_texture(icon)
+                                        .fit_to_exact_size(egui::vec2(12.0, 12.0)),
+                                );
+                            }
+                            ui.label(
+                                egui::RichText::new(self.current_page.label())
+                                    .size(crate::theme::TEXT_SMALL)
+                                    .weak(),
+                            );
+                            ui.separator();
+                            // agents 计数（bot 图标）
+                            if let Some(tex) = self.toolbar_icons.bot.as_ref() {
+                                ui.add(
+                                    egui::Image::from_texture(tex)
+                                        .fit_to_exact_size(egui::vec2(12.0, 12.0))
+                                        .tint(wk),
+                                )
+                                .on_hover_text("agents");
+                            }
+                            ui.label(
+                                egui::RichText::new(self.agents.len().to_string())
+                                    .size(crate::theme::TEXT_SMALL)
+                                    .weak(),
+                            );
+                            ui.add_space(crate::theme::SPACE_2);
+                            // providers 计数（server 图标）
+                            if let Some(tex) = self.toolbar_icons.server.as_ref() {
+                                ui.add(
+                                    egui::Image::from_texture(tex)
+                                        .fit_to_exact_size(egui::vec2(12.0, 12.0))
+                                        .tint(wk),
+                                )
+                                .on_hover_text("providers");
+                            }
+                            ui.label(
+                                egui::RichText::new(self.providers.len().to_string())
+                                    .size(crate::theme::TEXT_SMALL)
+                                    .weak(),
+                            );
+                        });
                     });
                 });
             });
@@ -699,19 +762,38 @@ impl App {
                 .filter(|t| t.available && !t.path.trim().is_empty())
                 .map(|t| (t.backend.label().to_string(), t.path.clone()))
                 .collect();
-            if ui
-                .button(format!("一键保存 ({})", installed.len()))
+            let save_all_tint = ui.visuals().text_color();
+            let save_all_btn = match self.toolbar_icons.layers.as_ref() {
+                Some(tex) => ui.add(egui::Button::image_and_text(
+                    egui::Image::from_texture(tex)
+                        .fit_to_exact_size(egui::vec2(14.0, 14.0))
+                        .tint(save_all_tint),
+                    format!("({})", installed.len()),
+                )),
+                None => ui.button(format!("一键保存 ({})", installed.len())),
+            };
+            if save_all_btn
+                .on_hover_text(format!("一键保存：写入 {} 个已安装目标", installed.len()))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
             {
                 self.save_all();
             }
-            if ui
-                .add_enabled(
-                    can_save,
-                    egui::Button::new(egui::RichText::new("保存").strong())
-                        .fill(ui.visuals().selection.bg_fill),
+            let save_tint = ui.visuals().text_color();
+            let save_fill = ui.visuals().selection.bg_fill;
+            let save_btn = match self.toolbar_icons.save.as_ref() {
+                Some(tex) => egui::Button::image_and_text(
+                    egui::Image::from_texture(tex)
+                        .fit_to_exact_size(egui::vec2(14.0, 14.0))
+                        .tint(save_tint),
+                    egui::RichText::new("保存").strong(),
                 )
+                .fill(save_fill),
+                None => egui::Button::new(egui::RichText::new("保存").strong()).fill(save_fill),
+            };
+            if ui
+                .add_enabled(can_save, save_btn)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
             {
                 self.save_page(fmt);
@@ -751,8 +833,9 @@ fn toolbar_icon_button(
     let feedback_rect = rect.shrink(1.0);
     let pressed = response.is_pointer_button_down_on();
     let hovered = response.hovered();
-    let corner = egui::CornerRadius::same(3);
     let visuals = ui.visuals();
+    // 圆角跟随当前主题形状（与其它控件一致），不再写死 3。
+    let corner = visuals.widgets.inactive.corner_radius;
     let fill = if active {
         visuals.selection.bg_fill
     } else if pressed {

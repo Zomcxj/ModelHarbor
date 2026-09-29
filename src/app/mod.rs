@@ -470,6 +470,13 @@ struct ToolbarIcons {
     eye_off: Option<egui::TextureHandle>,
     key_round: Option<egui::TextureHandle>,
     activity: Option<egui::TextureHandle>,
+    palette: Option<egui::TextureHandle>,
+    folder_open: Option<egui::TextureHandle>,
+    save: Option<egui::TextureHandle>,
+    layers: Option<egui::TextureHandle>,
+    file_output: Option<egui::TextureHandle>,
+    bot: Option<egui::TextureHandle>,
+    server: Option<egui::TextureHandle>,
 }
 
 impl App {
@@ -532,6 +539,34 @@ impl App {
         self.toolbar_icons.activity = load(
             "toolbar_icon_activity",
             include_bytes!("../../assets/icons/activity.svg"),
+        );
+        self.toolbar_icons.palette = load(
+            "toolbar_icon_palette",
+            include_bytes!("../../assets/icons/palette.svg"),
+        );
+        self.toolbar_icons.folder_open = load(
+            "toolbar_icon_folder_open",
+            include_bytes!("../../assets/icons/folder-open.svg"),
+        );
+        self.toolbar_icons.save = load(
+            "toolbar_icon_save",
+            include_bytes!("../../assets/icons/save.svg"),
+        );
+        self.toolbar_icons.layers = load(
+            "toolbar_icon_layers",
+            include_bytes!("../../assets/icons/layers.svg"),
+        );
+        self.toolbar_icons.file_output = load(
+            "toolbar_icon_file_output",
+            include_bytes!("../../assets/icons/file-output.svg"),
+        );
+        self.toolbar_icons.bot = load(
+            "toolbar_icon_bot",
+            include_bytes!("../../assets/icons/bot.svg"),
+        );
+        self.toolbar_icons.server = load(
+            "toolbar_icon_server",
+            include_bytes!("../../assets/icons/server.svg"),
         );
     }
 }

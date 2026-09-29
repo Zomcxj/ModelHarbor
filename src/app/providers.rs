@@ -123,8 +123,6 @@ impl ProviderFormFlags {
             },
             context_label: if show_oc {
                 "limit.context"
-            } else if show_zcode {
-                "properties.contextWindow"
             } else if show_wb {
                 "maxInputTokens"
             } else if show_qwen {
@@ -133,13 +131,13 @@ impl ProviderFormFlags {
             } else if show_kimi {
                 "max_context_size"
             } else {
+                // ZCode 也走这里（去掉 `properties.` 前缀，只显示字段名）。
                 "contextWindow"
             },
             output_label: if show_oc {
                 "limit.output"
-            } else if show_zcode {
-                "optionSpecs.maxOutputTokens.max"
-            } else if show_wb {
+            } else if show_zcode || show_wb {
+                // ZCode 去掉 `optionSpecs.….max` 路径，只显示字段名（与 WorkBuddy 一致）。
                 "maxOutputTokens"
             } else if show_qwen {
                 "max_tokens"
