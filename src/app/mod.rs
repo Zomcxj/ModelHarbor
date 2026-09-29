@@ -204,6 +204,8 @@ pub struct App {
     pi_extras: Value,
     /// 各后端官方图标纹理（与 BACKENDS 顺序对齐，首帧惰性加载）。
     backend_icons: Vec<Option<egui::TextureHandle>>,
+    /// 顶部工具栏图标纹理（Lucide SVG 栅格化，首帧惰性加载）。
+    toolbar_icons: ToolbarIcons,
 }
 
 /// 启动时的方言判定：以**文件内容**为准，路径所属页面只作回退。
@@ -353,6 +355,7 @@ impl Default for App {
             load_error: None,
             pi_extras: Value::Object(Map::new()),
             backend_icons: Vec::new(),
+            toolbar_icons: ToolbarIcons::default(),
         };
         app.apply_load();
         app
@@ -381,8 +384,9 @@ impl eframe::App for App {
             self.net_guard = crate::netguard::detect();
             self.net_guard_at = frame_time;
         }
-        // 首帧惰性加载各后端官方图标
+        // 首帧惰性加载各后端官方图标和顶部工具栏图标
         self.load_backend_icons(ctx);
+        self.load_toolbar_icons(ctx);
         self.poll_model_fetch();
         self.poll_latency();
         self.poll_balance();
@@ -397,15 +401,17 @@ impl eframe::App for App {
         self.ui_status_bar(ctx);
         // 右侧配置预览/编辑面板：宽度由 preview_ratio 控制（拖动左边缘分隔条调整），
         // 窗口缩放时按该比例适配；窄窗口下限 220px，并保证组件区至少 320px。
-        if self.show_preview {
-            let screen_w = ctx.content_rect().width().max(1.0);
-            let max_w = (screen_w - 320.0).max(220.0);
-            let preview_w = (screen_w * self.preview_ratio).clamp(220.0, max_w);
-            let side = egui::SidePanel::right("preview_panel")
-                .exact_width(preview_w)
-                .show(ctx, |ui| {
-                    self.ui_preview_panel(ui);
-                });
+        // `show_animated` 在打开 / 隐藏期间保留侧栏占位并补间宽度，行为与 Provider
+        // 卡片的 animated_collapse 一致；动画结束后才挂载真实预览内容。
+        let screen_w = ctx.content_rect().width().max(1.0);
+        let max_w = (screen_w - 320.0).max(220.0);
+        let preview_w = (screen_w * self.preview_ratio).clamp(220.0, max_w);
+        let side = egui::SidePanel::right("preview_panel")
+            .exact_width(preview_w)
+            .show_animated(ctx, self.show_preview, |ui| {
+                self.ui_preview_panel(ui);
+            });
+        if let Some(side) = side {
             // 分隔条用 Foreground 层的独立热区：同层注册会被占满面板的文本框抢走拖拽。
             self.ui_preview_resizer(ctx, side.response.rect, screen_w);
         }
@@ -457,6 +463,15 @@ impl eframe::App for App {
     }
 }
 
+#[derive(Default)]
+struct ToolbarIcons {
+    panel_right: Option<egui::TextureHandle>,
+    eye: Option<egui::TextureHandle>,
+    eye_off: Option<egui::TextureHandle>,
+    key_round: Option<egui::TextureHandle>,
+    activity: Option<egui::TextureHandle>,
+}
+
 impl App {
     /// 惰性加载各后端官方图标（首帧一次）。
     fn load_backend_icons(&mut self, ctx: &egui::Context) {
@@ -477,6 +492,47 @@ impl App {
                 })
             })
             .collect();
+    }
+
+    /// 惰性加载顶部工具栏图标：SVG 资源栅格化后交给 egui 纹理系统。
+    fn load_toolbar_icons(&mut self, ctx: &egui::Context) {
+        if self.toolbar_icons.panel_right.is_some() {
+            return;
+        }
+        let options = &Default::default();
+        let load = |name: &str, svg: &[u8]| {
+            let image = egui_extras::image::load_svg_bytes_with_size(
+                svg,
+                egui::SizeHint::Size {
+                    width: 20,
+                    height: 20,
+                    maintain_aspect_ratio: true,
+                },
+                options,
+            )
+            .ok()?;
+            Some(ctx.load_texture(name, image, egui::TextureOptions::LINEAR))
+        };
+        self.toolbar_icons.panel_right = load(
+            "toolbar_icon_panel_right",
+            include_bytes!("../../assets/icons/panel-right.svg"),
+        );
+        self.toolbar_icons.eye = load(
+            "toolbar_icon_eye",
+            include_bytes!("../../assets/icons/eye.svg"),
+        );
+        self.toolbar_icons.eye_off = load(
+            "toolbar_icon_eye_off",
+            include_bytes!("../../assets/icons/eye-off.svg"),
+        );
+        self.toolbar_icons.key_round = load(
+            "toolbar_icon_key_round",
+            include_bytes!("../../assets/icons/key-round.svg"),
+        );
+        self.toolbar_icons.activity = load(
+            "toolbar_icon_activity",
+            include_bytes!("../../assets/icons/activity.svg"),
+        );
     }
 }
 

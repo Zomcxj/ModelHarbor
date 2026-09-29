@@ -490,11 +490,8 @@ impl App {
             // 第二行：配置文件 / 保存格式
             ui.horizontal(|ui| {
                 ui.label("配置文件:");
-                let path_resp = ui
-                    .add(egui::TextEdit::singleline(&mut self.config_path).desired_width(420.0))
-                    .on_hover_text(
-                        "回车加载该路径；留空后回车 = 清除本页路径覆盖，回到自动探测到的默认路径。\n手动指定过的路径按页面记住（存在 .modelharbor/settings.json）。",
-                    );
+                let path_resp =
+                    ui.add(egui::TextEdit::singleline(&mut self.config_path).desired_width(420.0));
                 // 回车确认：按当前输入路径重新加载（egui 单行编辑回车即失焦）
                 if path_resp.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -550,6 +547,93 @@ impl App {
                 if format_btn.clicked() {
                     self.save_format = self.save_format.toggled();
                 }
+
+                // 顶部工具组：体检、令牌、密钥显隐和右侧预览面板开关。
+                // 右对齐后越晚添加的控件越靠左，保持侧边栏图标贴近工具组外侧。
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let sidebar = toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.panel_right.as_ref(),
+                        self.show_preview,
+                        ui.visuals().text_color(),
+                    )
+                    .on_hover_text(if self.show_preview {
+                        "关闭侧边栏"
+                    } else {
+                        "打开侧边栏"
+                    });
+                    if sidebar.clicked() {
+                        self.show_preview = !self.show_preview;
+                        if self.show_preview {
+                            // 打开时以组件状态重建待保存文档。
+                            self.reset_preview_draft();
+                        }
+                    }
+
+                    // 全局密钥显隐：一键切换全部 API Key 的明文 / 掩码。
+                    let api_keys = toolbar_icon_button(
+                        ui,
+                        if self.show_api_keys {
+                            self.toolbar_icons.eye.as_ref()
+                        } else {
+                            self.toolbar_icons.eye_off.as_ref()
+                        },
+                        self.show_api_keys,
+                        ui.visuals().text_color(),
+                    )
+                    .on_hover_text(if self.show_api_keys {
+                        "隐藏密钥"
+                    } else {
+                        "显示密钥"
+                    });
+                    if api_keys.clicked() {
+                        self.show_api_keys = !self.show_api_keys;
+                    }
+
+                    // 令牌：站点面板访问令牌（PAT）管理；填了才能查账号级真实余额。
+                    let tokens = toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.key_round.as_ref(),
+                        self.show_tokens,
+                        ui.visuals().text_color(),
+                    )
+                    .on_hover_text("令牌");
+                    if tokens.clicked() {
+                        self.show_tokens = !self.show_tokens;
+                        if self.show_tokens {
+                            // 重新打开时按已保存的值重填草稿，避免残留上次未保存的改动。
+                            self.token_draft.clear();
+                            self.token_uid_draft.clear();
+                        }
+                    }
+
+                    // 体检：把重名 / 非法数字 / 可疑 URL / 跨网关引用等检查汇总成一张清单。
+                    let (blockers, warnings) =
+                        health::count_by_severity(&health::collect(&health::HealthInput {
+                            page: self.current_page,
+                            providers: &self.providers,
+                            agents: &self.agents,
+                            source_is_opencode: self.source_format.is_opencode_family(),
+                        }));
+                    let semantics = crate::theme::semantics(ui);
+                    let (count, color) = if blockers > 0 {
+                        (blockers, semantics.err)
+                    } else if warnings > 0 {
+                        (warnings, semantics.warn)
+                    } else {
+                        (0, ui.visuals().text_color())
+                    };
+                    let health_button = toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.activity.as_ref(),
+                        count > 0,
+                        color,
+                    )
+                    .on_hover_text("体检");
+                    if health_button.clicked() {
+                        self.show_health = !self.show_health;
+                    }
+                });
             });
         });
     }
@@ -597,12 +681,12 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             let fmt = self.current_page;
             let target = self.page_save_path(fmt);
-            let (path, kind, can_save) = match &target {
-                PageTarget::Current(p) => (p.clone(), "当前文件（agent/provider 整体替换）", true),
-                PageTarget::Modified(p) => (p.clone(), "路径已修改未加载：先读后合并写入", true),
+            let (path, can_save) = match &target {
+                PageTarget::Current(p) => (p.clone(), true),
+                PageTarget::Modified(p) => (p.clone(), true),
                 PageTarget::Default(p) => {
                     let ok = self.targets.iter().any(|t| t.backend == fmt && t.available);
-                    (p.clone(), "默认目标（Windows 本地；WSL 仅勾选后写入）", ok)
+                    (p.clone(), ok)
                 }
             };
             // 一键保存：把同一份界面状态写到每个已安装后端的目标路径，
@@ -638,8 +722,7 @@ impl App {
             // 路径可能很长（吸顶区是固定高度，不能换行）：截断显示，全文放悬停。
             ui.add(
                 egui::Label::new(egui::RichText::new(format!("写入: {path}")).weak()).truncate(),
-            )
-            .on_hover_text(format!("{kind}\n{path}"));
+            );
             // 该格式不支持的区块提前提示，避免保存后才发现数据没写入
             if !fmt.is_opencode_family() && !self.agents.is_empty() {
                 ui.label(
@@ -652,84 +735,79 @@ impl App {
                 )
                 .on_hover_text("该格式不支持 agent 定义，保存时将忽略");
             }
-            // 右端按钮组：「令牌 · 显示密钥 · 预览」（右对齐布局里越晚添加越靠左，
-            // 所以按倒序加）。三个都跟「保存 / 看」同一个动作有关，放在保存这一行；
-            // 嵌套的右对齐布局会占掉本行剩余宽度，所以它们紧贴右边缘，
-            // 写入路径太长把本行占满时会落到下一行并同样靠右。
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // 预览：右侧面板实时展示当前页面的序列化内容，可编辑并应用回组件。
-                if ui
-                    .button(if self.show_preview {
-                        "关闭预览"
-                    } else {
-                        "预览"
-                    })
-                    .clicked()
-                {
-                    self.show_preview = !self.show_preview;
-                    if self.show_preview {
-                        // 打开时以组件状态重建待保存文档
-                        self.reset_preview_draft();
-                    }
-                }
-                // 全局密钥显隐：一键切换全部 API Key 的明文 / 掩码。
-                // 文案带「密钥」二字，与区块「隐藏/展开」、卡片 ▼/▶ 折叠按钮明确区分。
-                if ui
-                    .button(if self.show_api_keys {
-                        "隐藏密钥"
-                    } else {
-                        "显示密钥"
-                    })
-                    .clicked()
-                {
-                    self.show_api_keys = !self.show_api_keys;
-                }
-                // 令牌：站点面板访问令牌（PAT）管理；填了才能查账号级真实余额。
-                if ui.button("令牌").clicked() {
-                    self.show_tokens = !self.show_tokens;
-                    if self.show_tokens {
-                        // 重新打开时按已保存的值重填草稿（避免残留上次未保存的改动）。
-                        self.token_draft.clear();
-                        self.token_uid_draft.clear();
-                    }
-                }
-                // 体检：把重名 / 非法数字 / 可疑 URL / 跨网关引用等检查汇总成一张清单。
-                // 按钮上带问题数量——需要先处理的问题不该等点开才发现。
-                let (blockers, warnings) =
-                    health::count_by_severity(&health::collect(&health::HealthInput {
-                        page: fmt,
-                        providers: &self.providers,
-                        agents: &self.agents,
-                        source_is_opencode: self.source_format.is_opencode_family(),
-                    }));
-                let semantics = crate::theme::semantics(ui);
-                let (label, color) = if blockers > 0 {
-                    (format!("体检 ({})", blockers), semantics.err)
-                } else if warnings > 0 {
-                    (format!("体检 ({})", warnings), semantics.warn)
-                } else {
-                    ("体检".to_string(), ui.visuals().text_color())
-                };
-                if ui
-                    .button(egui::RichText::new(label).color(color))
-                    .on_hover_text(
-                        "检查当前页配置：重名、非法数字、可疑 baseUrl、\
-                         agent 的 model 指向别家网关、未填密钥等。\n\
-                         只列出问题，不自动修改。",
-                    )
-                    .clicked()
-                {
-                    self.show_health = !self.show_health;
-                }
-            });
         });
         ui.separator();
     }
 }
 
+/// 使用 SVG 纹理的图标按钮：激活、悬停和按下状态都有明确视觉反馈。
+fn toolbar_icon_button(
+    ui: &mut egui::Ui,
+    texture: Option<&egui::TextureHandle>,
+    active: bool,
+    tint: egui::Color32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+    let feedback_rect = rect.shrink(1.0);
+    let pressed = response.is_pointer_button_down_on();
+    let hovered = response.hovered();
+    let corner = egui::CornerRadius::same(3);
+    let visuals = ui.visuals();
+    let fill = if active {
+        visuals.selection.bg_fill
+    } else if pressed {
+        visuals.widgets.active.bg_fill.gamma_multiply(0.35)
+    } else if hovered {
+        visuals.widgets.hovered.bg_fill.gamma_multiply(0.35)
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if fill != egui::Color32::TRANSPARENT {
+        ui.painter().rect_filled(feedback_rect, corner, fill);
+    }
+    ui.painter().rect_stroke(
+        feedback_rect,
+        corner,
+        if pressed {
+            visuals.widgets.active.bg_stroke
+        } else if hovered {
+            visuals.widgets.hovered.bg_stroke
+        } else {
+            visuals.widgets.inactive.bg_stroke
+        },
+        egui::StrokeKind::Inside,
+    );
+    if let Some(texture) = texture {
+        ui.painter().image(
+            texture.id(),
+            rect.shrink(3.0),
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            tint,
+        );
+    }
+    response
+}
+
 #[cfg(test)]
 mod tests {
-    use super::sticky_y;
+    use super::{sticky_y, toolbar_icon_button};
+    use eframe::egui;
+
+    #[test]
+    fn toolbar_icon_button_has_a_fixed_hit_target() {
+        let ctx = egui::Context::default();
+        let mut states = Vec::new();
+        for open in [false, true] {
+            ctx.begin_pass(egui::RawInput::default());
+            egui::CentralPanel::default().show(&ctx, |ui| {
+                let response = toolbar_icon_button(ui, None, open, egui::Color32::WHITE);
+                states.push(response.rect.size());
+            });
+            let _ = ctx.end_pass();
+        }
+        assert_eq!(states[0], states[1]);
+        assert_eq!(states[0], egui::vec2(24.0, 24.0));
+    }
 
     #[test]
     fn sticky_stays_put_until_it_hits_the_clip() {

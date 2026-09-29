@@ -1,5 +1,5 @@
-use crate::app::App;
 use crate::app::save::SaveTarget;
+use crate::app::App;
 use crate::format::ConfigFormat;
 use crate::model::{ModelRow, ProviderRow};
 
