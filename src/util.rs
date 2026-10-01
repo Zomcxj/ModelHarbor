@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 /// 构造 wsl 命令：Windows 下带 CREATE_NO_WINDOW，
 /// 避免 GUI 程序拉起控制台进程（wsl.exe）时闪现终端窗口。
-fn wsl_command() -> Command {
+pub(crate) fn wsl_command() -> Command {
     let mut cmd = Command::new("wsl");
     #[cfg(target_os = "windows")]
     {
@@ -15,6 +15,22 @@ fn wsl_command() -> Command {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     cmd
+}
+
+/// WSL 是否真的可用：`wsl -e true` 退出码 0 才算。
+/// 只装了 `wsl.exe` 但没装任何发行版的机器（如 CI 镜像）上该命令非零退出。
+/// 结果进程内缓存：首次探测可能拉起发行版（秒级），后续调用零开销。
+/// 只服务于测试守卫（无 WSL 时跳过 WSL 同步测试），非 test 编译不参与。
+#[cfg(test)]
+pub(crate) fn wsl_usable() -> bool {
+    static USABLE: OnceLock<bool> = OnceLock::new();
+    *USABLE.get_or_init(|| {
+        wsl_command()
+            .args(["-e", "true"])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    })
 }
 
 pub fn str_at<'a>(v: &'a Value, k: &str) -> &'a str {

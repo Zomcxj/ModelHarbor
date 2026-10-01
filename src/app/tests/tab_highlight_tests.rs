@@ -130,8 +130,11 @@ fn tab_shapes_at_with(
     // （44 宽 + 4 间距），写死 `left < 400` 时第 9 个页签（left=392，图标在 406）
     // 会被整条滤掉，表现为「少了一个图标 tint」。
     let strip_right = 48.0 * crate::backends::BACKENDS.len() as f32 + 8.0;
+    // top 上界必须落在**两行之间**：页签本体在第 1 行（top=2、bottom=24），
+    // 而第 2 行（路径行）的「浏览」按钮 left≈459 < strip_right、top=35，
+    // 旧上界 40 会把它当成第 11 个页签算进来（「每个后端图标各一个按钮」11≠10）。
     let in_strip = |r: &egui::Rect| {
-        r.top() < 40.0 && r.left() < strip_right && r.width() < 60.0 && r.height() < 40.0
+        r.top() < 28.0 && r.left() < strip_right && r.width() < 60.0 && r.height() < 40.0
     };
     // 悬停时同一个页签会画出**两个**矩形：egui 的 hover 框（外扩 1px、底色
     // `#383838`、描边强调色）与我们补画的落点绿环（无填充）。非悬停时只有一个本体。

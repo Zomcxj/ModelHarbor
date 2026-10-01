@@ -133,6 +133,13 @@ fn a_typed_path_on_the_current_page_is_still_honored() {
 
 #[test]
 fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
+    // 本测试全程依赖**真实的 wsl.exe**（写入目标、镜像、读回校验）。
+    // CI 是干净机器：装不了 WSL，`wsl cp` 直接失败。先探可用性，
+    // 不可用就提前返回（Rust 测试没有官方 skip，约定 eprintln + return）。
+    if !crate::util::wsl_usable() {
+        eprintln!("跳过：本机没有可用的 WSL，无法做 WSL 同步测试");
+        return;
+    }
     let dir = temp_dir("opencode_wsl");
     let local_path = dir.join("opencode.json");
     let wsl_path = format!("/tmp/model_harbor_opencode_{}.json", std::process::id());
