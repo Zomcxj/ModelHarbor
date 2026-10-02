@@ -9,3 +9,6 @@
 .pi/
 .ruff_cache/
 .zcode/
+
+# 本地验证工具（golden_dump），约定不入库
+/examples/
