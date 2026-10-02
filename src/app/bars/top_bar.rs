@@ -264,8 +264,10 @@ impl App {
                         self.project_dsh_credentials();
                     }
                     self.sync_provider_secrets(id);
-                    // 对应 agent 未在 WSL 安装的页面：关闭并禁用 WSL 同步
-                    if backends::wsl_target(id).is_none() {
+                    // 对应 agent 未在 WSL 安装的页面：关闭并禁用 WSL 同步。
+                    // 仅在同步已开启时才探测：wsl_target 首次调用会拉起 wsl 进程
+                    // （启动 WSL 虚拟机），未开同步就探测 = 软件一开就占内存。
+                    if self.sync_wsl && backends::wsl_target(id).is_none() {
                         self.sync_wsl = false;
                     }
                     self.current_page = id;
@@ -300,15 +302,28 @@ impl App {
                 ui.separator();
                 // 右侧：WSL 同步 + 主题
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // 按当前页面检测对应 agent 是否已在 WSL 安装
+                    // WSL 探测**按需**：只在「同步已勾选」时才检测安装状态——
+                    // wsl_target 首次调用会拉起 wsl 进程（启动 WSL 虚拟机），
+                    // 未开启同步的启动 / 切页不应付出这份内存与启动开销。
                     let current = self.current_page;
-                    let wsl_installed = backends::wsl_target(current).is_some();
-                    let wsl_tip = if wsl_installed {
-                        format!("保存时同步写入 WSL 侧 {} 的配置", current.label())
+                    let (wsl_installed, wsl_tip) = if self.sync_wsl {
+                        let installed = backends::wsl_target(current).is_some();
+                        let tip = if installed {
+                            format!("保存时同步写入 WSL 侧 {} 的配置", current.label())
+                        } else {
+                            format!(
+                                "WSL 中未检测到 {} 安装（配置文件或其目录均不存在），保存仅写 Windows 本地",
+                                current.label()
+                            )
+                        };
+                        (installed, tip)
                     } else {
-                        format!(
-                            "WSL 中未检测到 {} 安装（配置文件或其目录均不存在），保存仅写 Windows 本地",
-                            current.label()
+                        (
+                            true,
+                            format!(
+                                "勾选后保存时同步写入 WSL 侧 {} 的配置（首次勾选会检测 WSL 安装状态，会拉起 WSL）",
+                                current.label()
+                            ),
                         )
                     };
                     ui.add_enabled(
@@ -316,6 +331,15 @@ impl App {
                         egui::Checkbox::new(&mut self.sync_wsl, "WSL同步"),
                     )
                     .on_hover_text(wsl_tip);
+                    // 勾选后探测发现未安装：自动收回勾选并提示，避免复选框停在
+                    // 「勾着但灰掉」的矛盾状态。
+                    if self.sync_wsl && !wsl_installed {
+                        self.sync_wsl = false;
+                        self.status = format!(
+                            "WSL 中未检测到 {} 安装，已关闭 WSL 同步",
+                            current.label()
+                        );
+                    }
                     ui.separator();
                     let look_tint = ui.visuals().text_color();
                     let look_btn = toolbar_icon_button(
