@@ -47,12 +47,24 @@
 //! 结果按后端分别落盘到 `.modelharbor/free-models-<后端>.json`，超过
 //! [`CACHE_TTL_SECS`] 才在后台重新拉取。缓存只存模型 id 列表，不含任何凭证。
 
-use crate::format::ConfigFormat;
-use serde_json::Value;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
-
 /// 价格数据源（models.dev 全量模型库）。
+mod net;
+mod parse;
+
+pub use net::{cache_path, fetch_remote, load_cache, save_cache, Cache, CACHE_TTL_SECS};
+pub use parse::{parse_kilo_free, parse_live_models, parse_models_dev_free, FreeModel};
+
+// 扁平门面（仅测试）：把子模块项平铺进本模块命名空间，
+// 让 `use super::*` 的单测直接看到 combine / 缓存助手等 pub(super) 项。
+#[cfg(test)]
+use net::*;
+#[cfg(test)]
+use parse::*;
+
+use crate::format::ConfigFormat;
+#[cfg(test)]
+use serde_json::Value;
+
 pub const SOURCE_URL: &str = "https://models.dev/api.json";
 
 /// opencode Zen 网关的模型列表（可用性数据源）。
@@ -60,11 +72,6 @@ pub const OPENCODE_LIVE_URL: &str = "https://opencode.ai/zen/v1/models";
 
 /// Kilo 网关的模型列表（含 `isFree` 标记）。
 pub const KILO_LIVE_URL: &str = "https://api.kilo.ai/api/gateway/models";
-
-/// 缓存有效期（秒）：超过则在后台重新拉取。24 小时。
-///
-/// 免费模型上下架不是分钟级事件，一天一次足够；界面上的「刷新」按钮可随时强制重取。
-pub const CACHE_TTL_SECS: i64 = 24 * 60 * 60;
 
 /// 某个后端的免费模型配置。`None` 表示该后端没有免费层。
 pub struct Source {
@@ -207,239 +214,6 @@ pub fn model_is_valid_on(page: ConfigFormat, configured_keys: &[String], model: 
         return false;
     };
     gateway_provider_ids(page).contains(&prefix) || configured_keys.iter().any(|key| key == prefix)
-}
-
-/// 落盘缓存的内容（`fetched_at` + 模型 id 列表）。
-pub struct Cache {
-    pub models: Vec<String>,
-    /// 是否仍在有效期内（过期也照样返回 `models`，由调用方决定要不要后台刷新）。
-    pub fresh: bool,
-}
-
-/// 当前时间（秒级 Unix 时间戳）。
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// 缓存文件名：按后端区分，避免两个页面的列表互相覆盖。
-///
-/// 用 `label()` 作标识（它同时是页签顺序等持久化状态用的稳定 key）。
-fn cache_file(format: ConfigFormat) -> String {
-    format!("free-models-{}.json", format.label())
-}
-
-/// 某个后端的缓存文件路径。
-pub fn cache_path(format: ConfigFormat) -> PathBuf {
-    crate::prefs::Prefs::config_dir().join(cache_file(format))
-}
-
-/// models.dev 里的一个免费模型。
-#[derive(Debug)]
-pub struct FreeModel {
-    pub id: String,
-    /// 数据源是否已标记其下架（保守标记，不代表网关已停供）。
-    pub deprecated: bool,
-}
-
-/// 该模型是否「价格为零」。
-///
-/// 价格必须是**显式的 0**：字段缺失说明数据源还没收录价格，按收费处理。
-fn is_zero_cost(model: &Value) -> bool {
-    let zero = |key: &str| {
-        model
-            .get("cost")
-            .and_then(|cost| cost.get(key))
-            .and_then(Value::as_f64)
-            == Some(0.0)
-    };
-    zero("input") && zero("output")
-}
-
-/// 解析响应 JSON，失败时给出**带开头片段**的错误。
-///
-/// 片段只取 120 个字符：models.dev 的正文约 4.8 MB，整个塞进提示里既没人看也拖慢界面。
-/// 三个解析器（models.dev / 网关 `/models` / Kilo 网关）共用这一段——错误文案必须一致，
-/// 否则同一个网络故障在不同后端下会显示成不同的话。
-fn parse_json(text: &str) -> Result<Value, String> {
-    serde_json::from_str(text).map_err(|err| {
-        let snippet = text.chars().take(120).collect::<String>();
-        format!("响应不是合法 JSON（{}）：{}", err, snippet)
-    })
-}
-
-/// 取响应里的 `data` 数组（OpenAI 风格的 `/models` 响应）。
-fn data_items(root: &Value) -> Result<&Vec<Value>, String> {
-    root.get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "响应里没有 data 数组".to_string())
-}
-
-/// 从 `data[].id` 收集模型 id，排序去重。
-fn ids_from_data(items: &[Value], keep: impl Fn(&Value) -> bool) -> Vec<String> {
-    let mut ids: Vec<String> = items
-        .iter()
-        .filter(|item| keep(item))
-        .filter_map(|item| item.get("id").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .collect();
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
-/// 从 models.dev 的 `api.json` 全文里筛出指定厂商的免费模型。
-pub fn parse_models_dev_free(text: &str, provider: &str) -> Result<Vec<FreeModel>, String> {
-    let root = parse_json(text)?;
-    let provider = root
-        .get(provider)
-        .ok_or_else(|| format!("数据里没有 {} 厂商", provider))?;
-    let models = provider
-        .get("models")
-        .and_then(Value::as_object)
-        .ok_or_else(|| format!("{} 厂商下没有 models", provider))?;
-    let mut found: Vec<FreeModel> = models
-        .iter()
-        .filter(|(_, model)| is_zero_cost(model))
-        .map(|(id, model)| FreeModel {
-            id: id.clone(),
-            deprecated: model.get("status").and_then(Value::as_str) == Some("deprecated"),
-        })
-        .collect();
-    found.sort_by(|a, b| a.id.cmp(&b.id));
-    found.dedup_by(|a, b| a.id == b.id);
-    Ok(found)
-}
-
-/// 解析 OpenAI 风格 `/models` 响应里的 id（`data[].id`）。
-pub fn parse_live_models(text: &str) -> Result<Vec<String>, String> {
-    let root = parse_json(text)?;
-    Ok(ids_from_data(data_items(&root)?, |_| true))
-}
-
-/// 解析 Kilo 网关响应里 `isFree == true` 的模型 id。
-///
-/// 用响应自带的 `isFree` 字段而不是「id 以 `:free` 结尾」或价格推断：
-/// `kilo-auto/free` 与 `openrouter/free` 两个免费项并不带 `:free` 后缀，
-/// 按后缀筛会漏掉它们。
-pub fn parse_kilo_free(text: &str) -> Result<Vec<String>, String> {
-    let root = parse_json(text)?;
-    Ok(ids_from_data(data_items(&root)?, |item| {
-        item.get("isFree").and_then(Value::as_bool) == Some(true)
-    }))
-}
-
-/// 合并两个数据源：`live` 为 `Some` 时取交集（免费且网关在供）；
-/// 为 `None`（网关请求失败）时退回「只信 models.dev，并排除 deprecated」。
-fn combine(free: Vec<FreeModel>, live: Option<&[String]>) -> Vec<String> {
-    let mut ids: Vec<String> = match live {
-        Some(live) => free
-            .into_iter()
-            .filter(|model| live.iter().any(|id| id == &model.id))
-            .map(|model| model.id)
-            .collect(),
-        None => free
-            .into_iter()
-            .filter(|model| !model.deprecated)
-            .map(|model| model.id)
-            .collect(),
-    };
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
-/// 统一的 HTTP 客户端：`api.json` 有 4.8 MB，读超时按大文件放宽。
-fn agent(read_secs: u64) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(read_secs))
-        .build()
-}
-
-/// 发起一次 GET 并取回正文，错误文本统一走人话映射。
-fn get_text(url: &str, read_secs: u64) -> Result<String, String> {
-    let response = agent(read_secs)
-        .get(url)
-        .set("Accept", "application/json")
-        .set("User-Agent", "ModelHarbor")
-        .call()
-        .map_err(|err| match err {
-            ureq::Error::Status(code, _) => crate::http_status::label(code),
-            ureq::Error::Transport(transport) => format!(
-                "网络错误：{}",
-                crate::app::bars::sanitize_network_error(&transport.to_string())
-            ),
-        })?;
-    response.into_string().map_err(|err| err.to_string())
-}
-
-/// 后台线程内执行：按后端拉取免费模型列表。
-///
-/// 没有免费层的后端直接返回空列表（不是错误）。
-pub fn fetch_remote(format: ConfigFormat) -> Result<Vec<String>, String> {
-    match format {
-        // opencode：models.dev 的价格 + Zen 网关的可用性，两者求交。
-        ConfigFormat::Opencode => {
-            let free = parse_models_dev_free(&get_text(SOURCE_URL, 60)?, "opencode")?;
-            // 网关列表很小（几 KB），拉不到就回退，不让整个流程失败。
-            let live = get_text(OPENCODE_LIVE_URL, 15)
-                .ok()
-                .and_then(|text| parse_live_models(&text).ok());
-            Ok(combine(free, live.as_deref()))
-        }
-        // Kilo：网关响应自带 isFree，一个请求即可。
-        ConfigFormat::Kilocode => parse_kilo_free(&get_text(KILO_LIVE_URL, 60)?),
-        // 其余后端没有免费层。
-        _ => Ok(Vec::new()),
-    }
-}
-
-/// 从指定路径读取缓存；文件缺失 / 读不出 / 结构不符都返回 `None`。
-fn load_cache_at(path: &Path) -> Option<Cache> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let root: Value = serde_json::from_str(&text).ok()?;
-    let models: Vec<String> = root
-        .get("models")?
-        .as_array()?
-        .iter()
-        .filter_map(|item| item.as_str())
-        .map(str::to_string)
-        .filter(|id| !id.trim().is_empty())
-        .collect();
-    if models.is_empty() {
-        return None;
-    }
-    let fetched_at = root.get("fetched_at").and_then(Value::as_i64).unwrap_or(0);
-    let age = unix_now().saturating_sub(fetched_at);
-    Some(Cache {
-        models,
-        // 时间戳落在未来（改过系统时间）时按「刚取过」处理，不必重取。
-        fresh: age < CACHE_TTL_SECS,
-    })
-}
-
-/// 从指定路径写入缓存（原子写，失败只返回错误文本，不影响界面）。
-fn save_cache_at(path: &Path, models: &[String]) -> Result<(), String> {
-    let payload = serde_json::json!({
-        "fetched_at": unix_now(),
-        "models": models,
-    });
-    crate::util::atomic_write_text(path, &crate::app::pretty_json(&payload))
-}
-
-/// 读取某个后端的缓存。
-pub fn load_cache(format: ConfigFormat) -> Option<Cache> {
-    load_cache_at(&cache_path(format))
-}
-
-/// 把结果写入某个后端的缓存。
-pub fn save_cache(format: ConfigFormat, models: &[String]) -> Result<(), String> {
-    save_cache_at(&cache_path(format), models)
 }
 
 #[cfg(test)]
