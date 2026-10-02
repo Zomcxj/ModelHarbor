@@ -495,6 +495,32 @@ impl App {
                         }
                     }
 
+                    // 代理支持：放行 / 禁用「模型延迟测试」走系统代理；亮起 = 已放行。
+                    // 检测详情折进悬停提示（原 Providers 标题行里的开关 + 独立文字标签
+                    // 随之取消，见 providers/section.rs）。
+                    let mut proxy_tip = if self.allow_model_test_with_proxy {
+                        "代理支持：已放行「模型延迟测试」。".to_string()
+                    } else {
+                        "代理支持：放行后即使检测到代理 / VPN 也允许「模型延迟测试」。默认关闭。".to_string()
+                    };
+                    if let Some(reason) = &self.net_guard {
+                        proxy_tip.push_str(&format!("\n当前检测：{reason}"));
+                    }
+                    proxy_tip.push_str(
+                        "\n中转站普遍有多 IP 检测 / 测活风控，经代理做推理探测可能被封号；\n\
+                         「连通性测试」不做推理，不受影响。",
+                    );
+                    let proxy = toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.globe.as_ref(),
+                        self.allow_model_test_with_proxy,
+                        ui.visuals().text_color(),
+                    )
+                    .on_hover_text(proxy_tip);
+                    if proxy.clicked() {
+                        self.allow_model_test_with_proxy = !self.allow_model_test_with_proxy;
+                    }
+
                     // 全局密钥显隐：一键切换全部 API Key 的明文 / 掩码。
                     let api_keys = toolbar_icon_button(
                         ui,

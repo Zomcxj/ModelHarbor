@@ -480,6 +480,7 @@ struct ToolbarIcons {
     folder_open: Option<egui::TextureHandle>,
     chevrons_down_up: Option<egui::TextureHandle>,
     database: Option<egui::TextureHandle>,
+    globe: Option<egui::TextureHandle>,
     save: Option<egui::TextureHandle>,
     layers: Option<egui::TextureHandle>,
     file_output: Option<egui::TextureHandle>,
@@ -588,6 +589,10 @@ impl App {
         self.toolbar_icons.database = load(
             "toolbar_icon_database",
             include_bytes!("../../assets/icons/database.svg"),
+        );
+        self.toolbar_icons.globe = load(
+            "toolbar_icon_globe",
+            include_bytes!("../../assets/icons/globe.svg"),
         );
     }
 }
