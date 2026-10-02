@@ -427,6 +427,12 @@ mod tests {
                 "{} 玻璃档的面板底色没变透明",
                 t.key()
             );
+            // 层次不变量：控件底必须比面板实，否则卡片看着像挖空的洞。
+            assert!(
+                glass.widgets.inactive.bg_fill.a() > glass.panel_fill.a(),
+                "{} 玻璃档的控件底比面板还透，层次反了",
+                t.key()
+            );
         }
         assert_eq!(labels.len(), Theme::ALL.len());
     }
