@@ -77,16 +77,20 @@ impl App {
                 }
                 if !self.agents.is_empty() {
                     let all_open = self.agents.iter().all(|a| !self.agent_collapsed(&a.key));
-                    if ui
-                        .push_id("agents_toggle_all", |ui| {
-                            ui.button(if all_open {
-                                "收起全部卡片"
-                            } else {
-                                "展开全部卡片"
-                            })
-                        })
-                        .inner
-                        .clicked()
+                    // 与 Providers 标题行同一套图标钮：展开/收起全部。
+                    let chevrons_tint = ui.visuals().text_color();
+                    if crate::app::bars::toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.chevrons_down_up.as_ref(),
+                        false,
+                        chevrons_tint,
+                    )
+                    .on_hover_text(if all_open {
+                        "收起全部卡片"
+                    } else {
+                        "展开全部卡片"
+                    })
+                    .clicked()
                     {
                         // all_open 为真 = 现在全部展开 → 按钮是「收起全部」
                         self.set_all_agents_collapsed(all_open);

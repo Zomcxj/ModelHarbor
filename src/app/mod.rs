@@ -478,6 +478,8 @@ struct ToolbarIcons {
     activity: Option<egui::TextureHandle>,
     palette: Option<egui::TextureHandle>,
     folder_open: Option<egui::TextureHandle>,
+    chevrons_down_up: Option<egui::TextureHandle>,
+    database: Option<egui::TextureHandle>,
     save: Option<egui::TextureHandle>,
     layers: Option<egui::TextureHandle>,
     file_output: Option<egui::TextureHandle>,
@@ -578,6 +580,14 @@ impl App {
         self.toolbar_icons.zap = load(
             "toolbar_icon_zap",
             include_bytes!("../../assets/icons/zap.svg"),
+        );
+        self.toolbar_icons.chevrons_down_up = load(
+            "toolbar_icon_chevrons_down_up",
+            include_bytes!("../../assets/icons/chevrons-down-up.svg"),
+        );
+        self.toolbar_icons.database = load(
+            "toolbar_icon_database",
+            include_bytes!("../../assets/icons/database.svg"),
         );
     }
 }

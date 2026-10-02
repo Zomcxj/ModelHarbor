@@ -71,105 +71,126 @@ impl App {
         sticky_end(ui, anchor, |ui| {
             ui.horizontal(|ui| {
                 ui.strong(egui::RichText::new("Providers").size(crate::theme::TEXT_HEADING));
-                if !self.providers.is_empty() {
-                    let all_open = self
-                        .providers
-                        .iter()
-                        .all(|p| !self.provider_collapsed(&p.key));
-                    if ui
-                        .push_id("providers_toggle_all", |ui| {
-                            ui.button(if all_open {
-                                "收起全部卡片"
-                            } else {
-                                "展开全部卡片"
-                            })
-                        })
-                        .inner
-                        .clicked()
-                    {
-                        // all_open 为真 = 现在全部展开 → 按钮是「收起全部」
-                        self.set_all_providers_collapsed(all_open);
-                        // 批量不走高度补间：25 张卡同时把整份表单画进裁剪区会卡。
-                        let ctx = ui.ctx().clone();
-                        let open = !all_open;
-                        for provider in &self.providers {
-                            crate::motion::snap_collapse(
-                                &ctx,
-                                egui::Id::new(("provider_card", provider.key.clone())),
-                                open,
-                            );
-                        }
-                    }
-                }
-                // 连通性测试：放在标题行右侧，收起全部卡片时也始终可见。
-                // zap 图标：批量测所有厂商连通性；文字回退见 toolbar_icon_button 的 None 分支。
-                let zap_tint = ui.visuals().text_color();
-                if crate::app::bars::toolbar_icon_button(
-                    ui,
-                    self.toolbar_icons.zap.as_ref(),
-                    false,
-                    zap_tint,
-                )
-                .on_hover_text("连通性测试：批量测全部厂商的连通性")
-                .clicked()
-                {
-                    let targets: Vec<(String, String, String, String)> = self
-                        .providers
-                        .iter()
-                        .map(|p| {
-                            let api = p.effective_api();
-                            (
-                                p.key.clone(),
-                                p.base_url.clone(),
-                                credentials::effective_secret(p),
-                                api,
-                            )
-                        })
-                        .collect();
-                    let count = targets.len();
-                    for (key, base, secret, api) in targets {
-                        Self::start_provider_latency(&mut self.latency, &key, &base, &secret, &api);
-                    }
-                    self.status = format!("已开始连通性测试（{} 个厂商）", count);
-                }
-                // 查询用户数据：一次查完当前页面全部厂商（只读管理接口，直连不走代理）。
-                // 一份结果里能有什么就显示什么：余额 / 已用 / 今日 / 近 7 天 / 签到状态。
-                // 查不到的站点不在卡片上显示，只在状态栏汇总（避免一堆红字噪音）。
-                if ui.button("查询用户数据").clicked() {
-                    let targets: Vec<balance::Query> = self
-                        .providers
-                        .iter()
-                        .map(|p| balance::Query {
-                            key: p.key.clone(),
-                            base_url: p.base_url.clone(),
-                            secret: credentials::effective_secret(p),
-                            // 站点级面板令牌：没设置就是空串（只查 sk- 那两个接口）。
-                            pat: self.station_pat(&p.base_url),
-                            // 旧版 new-api 要的用户 ID：没填就是空串（不发该头）。
-                            user_id: self.station_user_id(&p.base_url),
-                        })
-                        .collect();
-                    let now = ui.input(|i| i.time);
-                    let mut started = 0usize;
-                    for query in targets {
-                        if Self::start_balance_query(&mut self.balance, query, now).is_none() {
-                            started += 1;
-                        }
-                    }
-                    self.balance_batch = started > 0;
-                    self.status = if started == 0 {
-                        "所有厂商都还在冷却中，请几秒后再试".to_string()
-                    } else {
-                        format!("已开始查询 {} 个厂商的用户数据…", started)
-                    };
-                }
                 // 「令牌」「预览」「显示密钥」都搬到了页头「保存」那一行右端
                 // （见 `bars::ui_page_header`）：它们都跟「保存 / 看」这个动作有关，
                 // 放在 Providers 标题行只有切到该页才看得到。
                 //
-                // 「代理支持」留在同一行、靠右：它是个安全开关，靠右能与这排视图
-                // 按钮分开；右对齐布局里越晚添加越靠左，所以先放开关、再放文字。
+                // 右侧动作组（右对齐布局里越晚添加越靠左）：查询用户数据、连通性
+                // 测试、展开/收起全部统一用图标钮贴在行尾右上角；「代理支持」开关
+                // 在它们左侧，与这排视图/动作按钮分开。
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // 查询用户数据（database 图标，最贴行尾）：一次查完当前页面全部厂商
+                    // （只读管理接口，直连不走代理）。一份结果里能有什么就显示什么：
+                    // 余额 / 已用 / 今日 / 近 7 天 / 签到状态。查不到的站点不在卡片上
+                    // 显示，只在状态栏汇总（避免一堆红字噪音）。
+                    let database_tint = ui.visuals().text_color();
+                    if crate::app::bars::toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.database.as_ref(),
+                        false,
+                        database_tint,
+                    )
+                    .on_hover_text("查询用户数据：批量查全部厂商的余额/用量/签到")
+                    .clicked()
+                    {
+                        let targets: Vec<balance::Query> = self
+                            .providers
+                            .iter()
+                            .map(|p| balance::Query {
+                                key: p.key.clone(),
+                                base_url: p.base_url.clone(),
+                                secret: credentials::effective_secret(p),
+                                // 站点级面板令牌：没设置就是空串（只查 sk- 那两个接口）。
+                                pat: self.station_pat(&p.base_url),
+                                // 旧版 new-api 要的用户 ID：没填就是空串（不发该头）。
+                                user_id: self.station_user_id(&p.base_url),
+                            })
+                            .collect();
+                        let now = ui.input(|i| i.time);
+                        let mut started = 0usize;
+                        for query in targets {
+                            if Self::start_balance_query(&mut self.balance, query, now).is_none() {
+                                started += 1;
+                            }
+                        }
+                        self.balance_batch = started > 0;
+                        self.status = if started == 0 {
+                            "所有厂商都还在冷却中，请几秒后再试".to_string()
+                        } else {
+                            format!("已开始查询 {} 个厂商的用户数据…", started)
+                        };
+                    }
+                    // 连通性测试（zap 图标）：批量测所有厂商连通性；
+                    // 文字回退见 toolbar_icon_button 的 None 分支。
+                    let zap_tint = ui.visuals().text_color();
+                    if crate::app::bars::toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.zap.as_ref(),
+                        false,
+                        zap_tint,
+                    )
+                    .on_hover_text("连通性测试：批量测全部厂商的连通性")
+                    .clicked()
+                    {
+                        let targets: Vec<(String, String, String, String)> = self
+                            .providers
+                            .iter()
+                            .map(|p| {
+                                let api = p.effective_api();
+                                (
+                                    p.key.clone(),
+                                    p.base_url.clone(),
+                                    credentials::effective_secret(p),
+                                    api,
+                                )
+                            })
+                            .collect();
+                        let count = targets.len();
+                        for (key, base, secret, api) in targets {
+                            Self::start_provider_latency(
+                                &mut self.latency,
+                                &key,
+                                &base,
+                                &secret,
+                                &api,
+                            );
+                        }
+                        self.status = format!("已开始连通性测试（{} 个厂商）", count);
+                    }
+                    // 展开/收起全部（chevrons 图标）：收起全部卡片时也始终可见。
+                    if !self.providers.is_empty() {
+                        let all_open = self
+                            .providers
+                            .iter()
+                            .all(|p| !self.provider_collapsed(&p.key));
+                        let chevrons_tint = ui.visuals().text_color();
+                        if crate::app::bars::toolbar_icon_button(
+                            ui,
+                            self.toolbar_icons.chevrons_down_up.as_ref(),
+                            false,
+                            chevrons_tint,
+                        )
+                        .on_hover_text(if all_open {
+                            "收起全部卡片"
+                        } else {
+                            "展开全部卡片"
+                        })
+                        .clicked()
+                        {
+                            // all_open 为真 = 现在全部展开 → 按钮是「收起全部」
+                            self.set_all_providers_collapsed(all_open);
+                            // 批量不走高度补间：25 张卡同时把整份表单画进裁剪区会卡。
+                            let ctx = ui.ctx().clone();
+                            let open = !all_open;
+                            for provider in &self.providers {
+                                crate::motion::snap_collapse(
+                                    &ctx,
+                                    egui::Id::new(("provider_card", provider.key.clone())),
+                                    open,
+                                );
+                            }
+                        }
+                    }
                     let allow_probe = self.allow_model_test_with_proxy;
                     let mut allow_checked = allow_probe;
                     if ui
