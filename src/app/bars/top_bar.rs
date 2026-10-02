@@ -536,6 +536,11 @@ impl App {
                     };
                     if let Some(reason) = &self.net_guard {
                         proxy_tip.push_str(&format!("\n当前检测：{reason}"));
+                    } else {
+                        proxy_tip.push_str(
+                            "\n当前未检测到代理 / VPN：此开关暂无影响，查询与测试照常可用。\n\
+                             检测到后（每 5 秒复查）未放行会拦截「模型延迟测试」。",
+                        );
                     }
                     proxy_tip.push_str(
                         "\n中转站普遍有多 IP 检测 / 测活风控，经代理做推理探测可能被封号；\n\
@@ -550,12 +555,17 @@ impl App {
                     .on_hover_text(proxy_tip);
                     if proxy.clicked() {
                         self.allow_model_test_with_proxy = !self.allow_model_test_with_proxy;
-                        // 状态栏即时回声（旧标题行开关有文字标签，搬进顶栏后动作要有反馈）。
+                        // 状态栏即时回声（旧标题行开关有文字标签，搬进顶栏后动作要有反馈）；
+                        // 未检测到代理时明说「暂无实际影响」，避免误以为开关失效。
                         self.status = if self.allow_model_test_with_proxy {
                             "代理支持：已放行「模型延迟测试」".to_string()
                         } else {
                             "代理支持：已恢复拦截「模型延迟测试」".to_string()
                         };
+                        if self.net_guard.is_none() {
+                            self.status
+                                .push_str("（当前未检测到代理 / VPN，开关暂无实际影响）");
+                        }
                     }
 
                     // 全局密钥显隐：一键切换全部 API Key 的明文 / 掩码。
