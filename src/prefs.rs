@@ -207,6 +207,8 @@ pub struct Prefs {
     pub guide_dismissed: bool,
     /// 界面形状标识（`soft` / `compact` / `slab` / `sharp` / `panel` / `pill`；空 = 用默认档）。
     pub ui_style: String,
+    /// 玻璃背景：面板 / 卡片半透明，透出 DWM 亚克力模糊（正交于主题与形状）。
+    pub glass: bool,
     /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
     /// 只对已安装的那一组生效——未安装的页面始终排在后面并按字母序。
     pub tab_order: Vec<String>,
@@ -306,6 +308,8 @@ impl Prefs {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             ui_style: get_str("ui_style"),
+            // 只有真正的布尔 true 才开玻璃：缺字段、字符串 "true" 都按关闭处理。
+            glass: root.get("glass").and_then(Value::as_bool).unwrap_or(false),
             tab_order: get_list("tab_order"),
         }
     }
@@ -358,6 +362,7 @@ impl Prefs {
             Value::Bool(self.guide_dismissed),
         );
         root.insert("ui_style".to_string(), Value::String(self.ui_style.clone()));
+        root.insert("glass".to_string(), Value::Bool(self.glass));
         // 顶栏顺序按用户拖动结果原样写出：这里**不能**排序，
         // 顺序本身就是这个键的内容（与 collapsed 的排序去重不同）。
         root.insert(
@@ -444,6 +449,8 @@ mod tests {
             allow_model_test_with_proxy: true,
             guide_dismissed: true,
             ui_style: "slab".to_string(),
+            // 非默认值：往返测试要能盖住玻璃档的读写。
+            glass: true,
             tab_order: vec!["pi".to_string(), "zcode".to_string()],
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
@@ -524,6 +531,24 @@ mod tests {
             "{}",
             prefs.to_json()
         );
+    }
+
+    #[test]
+    fn glass_defaults_off_and_round_trips() {
+        // 默认关闭：玻璃会降低对比度，不该默认打开。
+        assert!(!Prefs::default().glass);
+        // 只有真正的布尔 true 才开：缺字段、字符串 "true" 都按关闭处理。
+        assert!(!Prefs::parse(r#"{"version":3,"show_api_keys":true}"#).glass);
+        assert!(!Prefs::parse(r#"{"glass":"true"}"#).glass);
+        assert!(Prefs::parse(r#"{"glass":true}"#).glass);
+        let prefs = Prefs {
+            glass: true,
+            ..Default::default()
+        };
+        let text = prefs.to_json();
+        assert!(text.contains(r#""glass": true"#), "{text}");
+        assert!(Prefs::parse(&text).glass);
+        assert_eq!(Prefs::parse(&text), prefs);
     }
 
     #[test]

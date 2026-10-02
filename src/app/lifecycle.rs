@@ -12,11 +12,19 @@ impl super::App {
         }
     }
 
-    /// 主题 / 形状任一变化（含首次启动）时重新套用样式。
+    /// 主题 / 形状 / 玻璃档任一变化（含首次启动）时重新套用样式。
     pub(in crate::app) fn apply_theme_if_changed(&mut self, ctx: &egui::Context) {
         let shape = self.ui_style;
-        if crate::theme::needs_apply_style(&mut self.applied_theme, self.theme, shape) {
-            self.theme.apply_style(ctx, shape);
+        let glass = self.glass;
+        if crate::theme::needs_apply_style(&mut self.applied_theme, self.theme, shape, glass) {
+            self.theme.apply_style(ctx, shape, glass);
+            // 窗口层：DWM 背景与圆角。窗口本身恒为透明窗口（见 main.rs），
+            // 这里只切「DWM 画不画模糊」——切档无需重建窗口。
+            crate::windowfx::set_backdrop(if glass {
+                crate::windowfx::Backdrop::Acrylic
+            } else {
+                crate::windowfx::Backdrop::None
+            });
         }
     }
 

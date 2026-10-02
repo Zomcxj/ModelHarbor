@@ -242,7 +242,11 @@ mod tests {
         }
         let run = |on: bool| {
             let ctx = egui::Context::default();
-            crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+            crate::theme::Theme::Dark.apply_style(
+                &ctx,
+                crate::theme::UiStyle::from_key("cloud"),
+                false,
+            );
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -283,7 +287,11 @@ mod tests {
     #[test]
     fn toggle_click_flips_the_value() {
         let ctx = egui::Context::default();
-        crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+        crate::theme::Theme::Dark.apply_style(
+            &ctx,
+            crate::theme::UiStyle::from_key("cloud"),
+            false,
+        );
         let mut value = false;
         let mut rect = egui::Rect::NOTHING;
         let input = egui::RawInput {
@@ -405,7 +413,11 @@ mod tests {
     #[test]
     fn toggle_animates_towards_the_target_over_time() {
         let ctx = egui::Context::default();
-        crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+        crate::theme::Theme::Dark.apply_style(
+            &ctx,
+            crate::theme::UiStyle::from_key("cloud"),
+            false,
+        );
         let id = egui::Id::new("toggle_anim");
         let base = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(

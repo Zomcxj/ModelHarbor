@@ -36,8 +36,11 @@ type TabShapes = (
 /// 而不是在测试里再写一份颜色常量——那样改了主题也照样通过。
 fn hover_visuals() -> (egui::Color32, egui::Color32) {
     let ctx = egui::Context::default();
-    crate::theme::Theme::from_key("dark")
-        .apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+    crate::theme::Theme::from_key("dark").apply_style(
+        &ctx,
+        crate::theme::UiStyle::from_key("cloud"),
+        false,
+    );
     let hovered = ctx.style().visuals.widgets.hovered;
     (hovered.bg_fill, hovered.bg_stroke.color)
 }
@@ -69,8 +72,11 @@ fn tab_shapes_at_with(
     press_at: Option<egui::Pos2>,
 ) -> TabShapes {
     let ctx = egui::Context::default();
-    crate::theme::Theme::from_key("dark")
-        .apply_style(&ctx, crate::theme::UiStyle::from_key("cloud"));
+    crate::theme::Theme::from_key("dark").apply_style(
+        &ctx,
+        crate::theme::UiStyle::from_key("cloud"),
+        false,
+    );
     // 图标是 `update()` 里惰性加载的；测试直接调 `ui_top_bar` 不经过 `update`，
     // 不先加载就没有贴图网格，tint 也就无从断言。
     app.load_backend_icons(&ctx);

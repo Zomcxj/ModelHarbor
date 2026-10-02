@@ -21,7 +21,7 @@ pub use tokens::{
 };
 
 use eframe::egui::{self, Stroke};
-use style::ACTIVE_STYLE_ID;
+use style::{ACTIVE_STYLE_ID, GLASS_ID};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
@@ -146,13 +146,13 @@ impl Theme {
         egui::Theme::from_dark_mode(self.palette().dark)
     }
 
-    /// 按当前主题 + 默认形状套用样式。
+    /// 按当前主题 + 默认形状套用样式（不带玻璃档）。
     pub fn apply(&self, ctx: &egui::Context) {
         let style = UiStyle::default();
-        self.apply_style(ctx, style);
+        self.apply_style(ctx, style, false);
     }
-    /// 按主题 + 形状预设套用样式（顶部栏的「外观」面板用它）。
-    pub fn apply_style(&self, ctx: &egui::Context, shape: UiStyle) {
+    /// 按主题 + 形状预设 + 玻璃档套用样式（顶部栏的「外观」面板用它）。
+    pub fn apply_style(&self, ctx: &egui::Context, shape: UiStyle, glass: bool) {
         let mut style = egui::Style::default();
         style.spacing.item_spacing = egui::vec2(SPACE_2 / 2.0, SPACE_2);
         style.spacing.button_padding = egui::vec2(SPACE_4 - 2.0, SPACE_1 - 1.0);
@@ -178,7 +178,7 @@ impl Theme {
         );
         let palette = self.palette();
         let dark = palette.dark;
-        style.visuals = palette.into_visuals();
+        style.visuals = palette.into_visuals(glass);
         let radius = shape.radius();
         for w in [
             &mut style.visuals.widgets.noninteractive,
@@ -218,6 +218,15 @@ impl Theme {
         // 形状存进上下文：`ui.rs` 里的卡片要读它决定描边宽度与内嵌亮线，
         // 而 `Frame` 只能拿到 `Ui`，拿不到 `App` 的字段。
         ctx.data_mut(|data| data.insert_temp(egui::Id::new(ACTIVE_STYLE_ID), shape));
+        // 玻璃档也存进上下文：卡片 / 面板的 Frame 拿不到 App 字段，
+        // 但需要知道该不该给底色留透明度。
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new(GLASS_ID), glass));
+    }
+
+    /// 当前是否玻璃档（没套过样式时为 `false`）。
+    pub fn active_glass(ctx: &egui::Context) -> bool {
+        ctx.data(|data| data.get_temp::<bool>(egui::Id::new(GLASS_ID)))
+            .unwrap_or(false)
     }
 }
 
@@ -322,7 +331,7 @@ mod tests {
     fn shape_preset_reaches_the_style() {
         let ctx = egui::Context::default();
         for style in UiStyle::ALL {
-            Theme::Dark.apply_style(&ctx, style);
+            Theme::Dark.apply_style(&ctx, style, false);
             let widgets = ctx.style().visuals.widgets.noninteractive;
             assert_eq!(
                 widgets.corner_radius.nw,
@@ -343,23 +352,49 @@ mod tests {
     /// 形状预设变化时 `needs_apply_style` 要重套样式。
     #[test]
     fn shape_change_reapplies_the_style() {
-        let mut applied: Option<(Theme, UiStyle)> = None;
-        assert!(needs_apply_style(&mut applied, Theme::Dark, UiStyle::Soft));
-        assert!(!needs_apply_style(&mut applied, Theme::Dark, UiStyle::Soft));
+        let mut applied: Option<(Theme, UiStyle, bool)> = None;
         assert!(needs_apply_style(
             &mut applied,
             Theme::Dark,
-            UiStyle::Minimal
+            UiStyle::Soft,
+            false
+        ));
+        assert!(!needs_apply_style(
+            &mut applied,
+            Theme::Dark,
+            UiStyle::Soft,
+            false
+        ));
+        assert!(needs_apply_style(
+            &mut applied,
+            Theme::Dark,
+            UiStyle::Minimal,
+            false
         ));
         assert!(needs_apply_style(
             &mut applied,
             Theme::Light,
-            UiStyle::Minimal
+            UiStyle::Minimal,
+            false
         ));
         assert!(!needs_apply_style(
             &mut applied,
             Theme::Light,
-            UiStyle::Minimal
+            UiStyle::Minimal,
+            false
+        ));
+        // 玻璃档单独变化也要重套（底色 alpha 写在 style 里）。
+        assert!(needs_apply_style(
+            &mut applied,
+            Theme::Light,
+            UiStyle::Minimal,
+            true
+        ));
+        assert!(!needs_apply_style(
+            &mut applied,
+            Theme::Light,
+            UiStyle::Minimal,
+            true
         ));
     }
 
@@ -370,9 +405,13 @@ mod tests {
         // 没套过样式时是默认档。
         assert_eq!(active_style(&ctx), UiStyle::default());
         for style in UiStyle::ALL {
-            Theme::Dark.apply_style(&ctx, style);
+            Theme::Dark.apply_style(&ctx, style, false);
             assert_eq!(active_style(&ctx), style, "{} 没存进上下文", style.key());
         }
+        // 玻璃档也要能从上下文读回来。
+        assert!(!Theme::active_glass(&ctx));
+        Theme::Dark.apply_style(&ctx, UiStyle::Soft, true);
+        assert!(Theme::active_glass(&ctx));
     }
 
     #[test]
@@ -380,7 +419,14 @@ mod tests {
         let mut labels = std::collections::HashSet::new();
         for t in Theme::ALL {
             assert!(labels.insert(t.label()), "duplicate label: {}", t.label());
-            let _ = t.palette().into_visuals(); // must not panic
+            let _ = t.palette().into_visuals(false); // must not panic
+                                                     // 玻璃档也要能构造（底色缩 alpha，不得 panic）。
+            let glass = t.palette().into_visuals(true);
+            assert!(
+                glass.panel_fill.a() < 255,
+                "{} 玻璃档的面板底色没变透明",
+                t.key()
+            );
         }
         assert_eq!(labels.len(), Theme::ALL.len());
     }

@@ -41,6 +41,10 @@ fn main() -> eframe::Result {
             .with_inner_size([1250.0, 820.0])
             .with_min_inner_size([970.0, 660.0])
             .with_title("ModelHarbor")
+            // 恒为透明窗口：玻璃档需要 alpha 通道，而 eframe 的 glow 后端
+            // **只在建窗时**读 `transparent`（运行时不重建窗口），所以这里
+            // 固定打开；关闭玻璃时靠不透明的清屏色盖满，观感与普通窗口一致。
+            .with_transparent(true)
             .with_icon(egui::IconData {
                 rgba: ICON_BYTES.to_vec(),
                 width: ICON_W,
@@ -64,6 +68,9 @@ fn main() -> eframe::Result {
                             let hwnd = w.hwnd.get() as *mut core::ffi::c_void;
                             model_harbor::cursor::init_cursors(hwnd);
                         }
+                        // 窗口外观（DWM 背景 / 圆角）需要句柄；同样在这里登记一次。
+                        model_harbor::windowfx::set_main_hwnd(w.hwnd.get());
+                        model_harbor::windowfx::set_rounded_corners();
                     }
                 }
             }

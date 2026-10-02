@@ -180,6 +180,9 @@ impl UiStyle {
 /// 当前形状预设存在上下文里的键。
 pub(super) const ACTIVE_STYLE_ID: &str = "modelharbor_active_ui_style";
 
+/// 当前玻璃档存在上下文里的键（卡片 / 面板 Frame 读它决定底色透明度）。
+pub(super) const GLASS_ID: &str = "modelharbor_active_glass";
+
 /// 当前生效的形状预设（还没套用样式时是默认档）。
 pub fn active_style(ctx: &egui::Context) -> UiStyle {
     ctx.data(|data| data.get_temp::<UiStyle>(egui::Id::new(ACTIVE_STYLE_ID)))
@@ -200,17 +203,18 @@ pub fn needs_apply(applied: &mut Option<Theme>, theme: Theme) -> bool {
     true
 }
 
-/// 主题或圆角变了都要重套样式。
+/// 主题、形状或玻璃档变了都要重套样式。
 ///
-/// `applied` 记录已套用的（主题, 圆角），会被就地更新。
+/// `applied` 记录已套用的（主题, 形状, 玻璃），会被就地更新。
 pub fn needs_apply_style(
-    applied: &mut Option<(Theme, UiStyle)>,
+    applied: &mut Option<(Theme, UiStyle, bool)>,
     theme: Theme,
     shape: UiStyle,
+    glass: bool,
 ) -> bool {
-    if *applied == Some((theme, shape)) {
+    if *applied == Some((theme, shape, glass)) {
         return false;
     }
-    *applied = Some((theme, shape));
+    *applied = Some((theme, shape, glass));
     true
 }
