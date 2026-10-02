@@ -6,6 +6,14 @@ use eframe::egui::Color32;
 /// `Visuals::disabled_alpha()` 核对，egui 改了默认值就会红。
 pub(crate) const DISABLED_ALPHA: f32 = 0.5;
 
+/// 玻璃档：面板底色保留的不透明度（其余透出 DWM 亚克力模糊）。
+///
+/// 面板是窗口底，最透；卡片 / 输入框比它实一点，文字才压得住（见 `GLASS_SURFACE_ALPHA`）。
+pub const GLASS_PANEL_ALPHA: f32 = 0.58;
+
+/// 玻璃档：卡片 / 输入框底色的不透明度（比面板实，层次才分得出来）。
+pub const GLASS_SURFACE_ALPHA: f32 = 0.72;
+
 // ── 间距刻度（4 的倍数）────────────────────────────────────────────
 /// 行内元素之间。
 pub const SPACE_1: f32 = 4.0;

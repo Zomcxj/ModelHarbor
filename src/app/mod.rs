@@ -148,6 +148,8 @@ pub struct App {
     show_health: bool,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
     ui_style: crate::theme::UiStyle,
+    /// 玻璃背景：面板 / 卡片半透明 + DWM 亚克力模糊（正交于主题与形状）。
+    glass: bool,
     /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
     tab_order: Vec<String>,
     /// 上次网络守卫检测时刻（egui 秒）。
@@ -155,7 +157,7 @@ pub struct App {
     theme: Theme,
     /// 已应用到 egui 的主题：egui 0.33 的 `set_style` 是**每个主题各存一份 style**，
     /// 所以主题一变就必须显式再 `apply` 一次，否则只有按钮文字变、界面颜色不跟着变。
-    applied_theme: Option<(Theme, crate::theme::UiStyle)>,
+    applied_theme: Option<(Theme, crate::theme::UiStyle, bool)>,
     save_format: SaveFormat,
     /// 滚轮切换保存格式的门门：一次连续滚动手势只切换一次。
     save_format_wheel_latch: bool,
@@ -325,6 +327,7 @@ impl Default for App {
             guide_dismissed: prefs.guide_dismissed,
             show_health: false,
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
+            glass: prefs.glass,
             tab_order: prefs.tab_order.clone(),
             net_guard_at: 0.0,
             // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
@@ -371,6 +374,18 @@ impl Default for App {
 }
 
 impl eframe::App for App {
+    /// 窗口清屏色：玻璃档透明（透出 DWM 亚克力），否则铺主题面板色。
+    ///
+    /// 玻璃档必须用**全透明**而不是带 alpha 的面板色：面板 Frame 自己会铺底色，
+    /// 清屏层再铺一层会把 DWM 模糊盖住。
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        if self.glass {
+            egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
+        } else {
+            visuals.panel_fill.to_normalized_gamma_f32()
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 第一件事就是套用主题：启动时（applied_theme == None）与切换主题后都必须走这里，
         // 否则会出现「按钮文字是浅色、界面还是深色」的错配。
@@ -625,6 +640,7 @@ impl App {
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
             guide_dismissed: self.guide_dismissed,
             ui_style: self.ui_style.key().to_string(),
+            glass: self.glass,
             tab_order: self.tab_order.clone(),
         }
     }

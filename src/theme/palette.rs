@@ -59,17 +59,32 @@ impl Palette {
         over(over(self.panel, faded(self.widget)), faded(self.text))
     }
 
-    pub(super) fn into_visuals(self) -> Visuals {
+    pub(super) fn into_visuals(self, glass: bool) -> Visuals {
         let hint = self.hint_color();
         let mut v = if self.dark {
             Visuals::dark()
         } else {
             Visuals::light()
         };
-        v.panel_fill = self.panel;
-        v.window_fill = self.panel;
-        v.faint_bg_color = self.faint;
-        v.extreme_bg_color = self.extreme;
+        // 玻璃档：底色整体缩放（`gamma_multiply` 连 alpha 一起乘）。
+        // 预乘色等比例缩放 = 「同一个颜色、更透」，直接改 alpha 会把颜色洗掉。
+        let surface = |c: Color32| {
+            if glass {
+                c.gamma_multiply(super::tokens::GLASS_SURFACE_ALPHA)
+            } else {
+                c
+            }
+        };
+        let panel = surface(self.panel);
+        v.panel_fill = if glass {
+            self.panel.gamma_multiply(super::tokens::GLASS_PANEL_ALPHA)
+        } else {
+            self.panel
+        };
+        let _ = panel;
+        v.window_fill = v.panel_fill;
+        v.faint_bg_color = surface(self.faint);
+        v.extreme_bg_color = surface(self.extreme);
         // 正文色写进各状态的 `fg_stroke`，**不用** `override_text_color`：
         // 后者会连纯文本 `WidgetText` 的颜色一起钉死（`WidgetText::into_galley`
         // 对纯文本是 `override_text_color.unwrap_or(PLACEHOLDER)`），于是
@@ -89,12 +104,12 @@ impl Palette {
         v.weak_text_color = Some(hint);
         v.hyperlink_color = self.accent;
         v.selection.bg_fill = self.accent;
-        v.widgets.inactive.weak_bg_fill = self.widget;
-        v.widgets.inactive.bg_fill = self.widget;
-        v.widgets.hovered.weak_bg_fill = self.hover;
-        v.widgets.hovered.bg_fill = self.hover;
-        v.widgets.active.weak_bg_fill = self.accent;
-        v.widgets.active.bg_fill = self.accent;
+        v.widgets.inactive.weak_bg_fill = surface(self.widget);
+        v.widgets.inactive.bg_fill = surface(self.widget);
+        v.widgets.hovered.weak_bg_fill = surface(self.hover);
+        v.widgets.hovered.bg_fill = surface(self.hover);
+        v.widgets.active.weak_bg_fill = surface(self.accent);
+        v.widgets.active.bg_fill = surface(self.accent);
         // 控件描边：控件底色与面板底色只差 1.2–1.5:1，不给描边就靠这点色差分边界。
         // 输入框用 `extreme` 底，同样靠这条线成形。
         let edge = Stroke::new(1.0f32, self.border);

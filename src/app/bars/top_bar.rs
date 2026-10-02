@@ -414,6 +414,14 @@ impl App {
                                     }
                                 }
                             });
+                            ui.add_space(crate::theme::SPACE_2);
+                            // 玻璃：正交于配色与形状，对全部主题生效。
+                            ui.checkbox(&mut self.glass, "玻璃背景")
+                                .on_hover_text(
+                                    "面板与卡片半透明，透出窗口后面的桌面（DWM 亚克力模糊）。\n\
+                                     需要 Windows 11；旧系统自动降级为不透明。\n\
+                                     玻璃档会略微降低文字与底色的对比度。",
+                                );
                         });
                 });
             });
