@@ -507,8 +507,9 @@ impl App {
                 self.model_fetch.clear();
                 self.model_fetch_open.clear();
                 self.latency.clear();
-                // agent 的 key 集合可能已被预览内容换掉，各页的 model 视图随之失效。
-                self.agent_models_by_page.clear();
+                // agent 的 key 集合可能被预览内容换掉，但各页的 model 记忆**不清**：
+                // 它按 (config_id, page) 键控且还原时按 agent key 逐条查（缺失自然跳过），
+                // 同文件预览应用后记忆仍有效；换文件后旧键自然失配。
                 self.probe.release(None);
                 true
             }

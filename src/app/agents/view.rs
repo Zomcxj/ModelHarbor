@@ -23,7 +23,8 @@ impl App {
 
     /// 用某页的记忆覆盖 `view` 里对应 agent 的 model（key 已被删的条目自然跳过）。
     fn overlay_remembered_models(&self, page: ConfigFormat, view: &mut [AgentRow]) {
-        let Some(saved) = self.agent_models_by_page.get(&page) else {
+        let key = (self.config_id(), page);
+        let Some(saved) = self.agent_models_by_page.get(&key) else {
             return;
         };
         for agent in view.iter_mut() {
@@ -75,9 +76,10 @@ impl App {
         replaced
     }
 
-    /// 记下某页当前的 agent model 视图（页面 → agent key → model）。
+    /// 记下某页当前的 agent model 视图（（文件身份， 页面） → agent key → model）。
     ///
     /// 用 `key.trim()` 作键：与保存时的重复判定同一口径，改名前后不会错位。
+    /// 外层带文件身份：记忆属于某份文件，同文件重载后仍有效，换文件后自然失配。
     fn remember_agent_models(&mut self, page: ConfigFormat) {
         if !page.is_opencode_family() {
             return;
@@ -87,7 +89,8 @@ impl App {
             .iter()
             .map(|a| (a.key.trim().to_string(), a.model.clone()))
             .collect();
-        self.agent_models_by_page.insert(page, view);
+        let key = (self.config_id(), page);
+        self.agent_models_by_page.insert(key, view);
     }
 
     /// 本页动态拉到的网关免费模型裸 id；没有免费层（mimocode）时为空。

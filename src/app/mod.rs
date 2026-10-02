@@ -111,7 +111,13 @@ pub struct App {
     /// 为什么需要按页记忆、切页时怎么归一，见 [`crate::app::agents`] 的切页归一说明；
     /// 这里只记字面语义：只在**离开**页面时写入，当前页的权威值永远是 `agents` 本身
     /// （用户可能正在编辑）。
-    agent_models_by_page: HashMap<ConfigFormat, HashMap<String, String>>,
+    /// 各 opencode 系页的 agent model 视图记忆：**（文件身份， 页面） → agent key → model**。
+    ///
+    /// 键里带 [`App::config_id`]（文件身份）：记忆属于「某份文件」——同文件重载
+    /// （手动加载 / 预览应用）后记忆仍然有效，换文件后旧记忆自然失配（查不到即跳过），
+    /// 不再需要整表清空（整表清空会把同文件重载场景下刚存下的记忆一起抹掉，
+    /// 切页还原就失效了）。
+    agent_models_by_page: HashMap<(String, ConfigFormat), HashMap<String, String>>,
     /// 首帧需要自动后台拉取的后端（缓存缺失 / 过期）；拉过即清空。
     free_models_auto: Vec<ConfigFormat>,
     /// 每个 provider 的延迟测试状态（key → 状态）。

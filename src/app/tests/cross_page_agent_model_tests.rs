@@ -351,6 +351,41 @@ fn app_with(agents: Vec<AgentRow>, page: ConfigFormat) -> App {
     }
 }
 
+/// **回归**：同文件重载（手动加载 / 预览应用）后，各页的 model 记忆必须还在。
+///
+/// 事故现场：切到 mimocode 再切回 opencode 的过程中发生过一次同文件重载，
+/// 旧实现在重载时整表清空 `agent_models_by_page`，切回后还原失效，内存里
+/// 指向别家网关的前缀被判无效，全部被换成网关首选（用户看到的是 big-pickle）。
+/// 记忆按 (config_id, page) 键控后，同文件重载不再清表。
+#[test]
+fn reloading_the_same_file_keeps_the_per_page_model_memory() {
+    let dir = temp_dir("reload-keeps-memory");
+    let path = dir.join("cfg.json");
+    std::fs::write(
+        &path,
+        r#"{"provider": {}, "agent": {"fallback": {"model": "opencode/mimo-v2.6-flash-free"}}}"#,
+    )
+    .unwrap();
+    let mut app = app_with(
+        vec![agent("fallback", "opencode/mimo-v2.6-flash-free")],
+        ConfigFormat::Opencode,
+    );
+    app.config_path = path.to_string_lossy().into_owned();
+    app.loaded_path = app.config_path.clone();
+
+    // 切到 mimocode：指向别家网关的引用被换成本页首选
+    app.normalize_agent_models_for_page(ConfigFormat::Mimocode, Some(ConfigFormat::Opencode));
+    assert_eq!(app.agents[0].model, "mimo/mimo-auto");
+
+    // 同文件重载（旧实现在这里整表清空记忆）
+    app.reload_for_page(ConfigFormat::Opencode, false);
+    assert_eq!(app.agents[0].model, "opencode/mimo-v2.6-flash-free");
+
+    // 切回 opencode：记忆仍在，还原用户原值而不是换成网关首选
+    app.normalize_agent_models_for_page(ConfigFormat::Opencode, Some(ConfigFormat::Mimocode));
+    assert_eq!(app.agents[0].model, "opencode/mimo-v2.6-flash-free");
+}
+
 /// **回归**：opencode → kilo → opencode 走一圈，原来配好的 `opencode/…` 必须还在。
 ///
 /// 这是切页归一最容易踩的坑：单向替换之后切回来，用户什么也没改却丢了配置。
@@ -442,18 +477,58 @@ fn saving_to_a_page_uses_that_pages_remembered_choice() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 重新加载配置后，旧文件的 agent 视图必须作废（键可能已不存在）。
+/// 重新加载后：**加载页**的记忆重置为文件值（未保存的编辑随重载丢弃），
+/// **其他页**的记忆保留（同文件下切回去仍能还原各自视图）。
+///
+/// 旧语义是整表清空：同文件重载会把刚存下的记忆一起抹掉，切回原页时还原
+/// 失效，指向别家网关的引用被判无效，全部被换成网关首选（big-pickle 事故）。
 #[test]
-fn reloading_discards_the_per_page_memory() {
+fn reloading_reseeds_loaded_page_and_keeps_other_pages_memory() {
+    let dir = temp_dir("reload-reseed");
+    let path = dir.join("cfg.json");
+    std::fs::write(
+        &path,
+        r#"{"provider": {}, "agent": {"a": {"model": "opencode/big-pickle"}}}"#,
+    )
+    .unwrap();
     let mut app = app_with(
-        vec![agent("old", "opencode/big-pickle")],
+        vec![agent("a", "opencode/big-pickle")],
         ConfigFormat::Opencode,
     );
+    app.config_path = path.to_string_lossy().into_owned();
+    app.loaded_path = app.config_path.clone();
+
+    // 去 kilo 页再回来，留下两页的记忆
     app.normalize_agent_models_for_page(ConfigFormat::Kilocode, Some(ConfigFormat::Opencode));
-    assert!(!app.agent_models_by_page.is_empty(), "切页应当留下记忆");
+    app.current_page = ConfigFormat::Kilocode;
+    app.agents[0].model = "kilo/kilo-auto/balanced".into();
+    app.normalize_agent_models_for_page(ConfigFormat::Opencode, Some(ConfigFormat::Kilocode));
+    app.current_page = ConfigFormat::Opencode;
+    assert_eq!(app.agents[0].model, "opencode/big-pickle");
+
+    // 用户在 opencode 页改了模型（未保存），然后同文件重载
+    app.agents[0].model = "opencode/longcat-2.5-preview-free".into();
+    app.normalize_agent_models_for_page(ConfigFormat::Kilocode, Some(ConfigFormat::Opencode));
+    app.current_page = ConfigFormat::Kilocode;
+    app.normalize_agent_models_for_page(ConfigFormat::Opencode, Some(ConfigFormat::Kilocode));
+    app.current_page = ConfigFormat::Opencode;
+    assert_eq!(app.agents[0].model, "opencode/longcat-2.5-preview-free");
+
     app.reload_for_page(ConfigFormat::Opencode, false);
-    assert!(
-        app.agent_models_by_page.is_empty(),
-        "重新加载后旧记忆必须清空"
+
+    // 加载页记忆 = 文件值（未保存的编辑被丢弃）
+    let op = (app.config_id(), ConfigFormat::Opencode);
+    assert_eq!(
+        app.agent_models_by_page[&op]["a"], "opencode/big-pickle",
+        "重载后加载页的记忆应回到文件值"
     );
+    // 其他页记忆保留
+    let kilo = (app.config_id(), ConfigFormat::Kilocode);
+    assert_eq!(
+        app.agent_models_by_page[&kilo]["a"], "kilo/kilo-auto/balanced",
+        "其他页的记忆不应被重载抹掉"
+    );
+    // 当前 agents 也回到文件值
+    assert_eq!(app.agents[0].model, "opencode/big-pickle");
+    std::fs::remove_dir_all(&dir).ok();
 }

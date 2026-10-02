@@ -68,6 +68,18 @@ impl super::App {
                 self.providers = load.providers;
                 self.pi_extras = load.extras;
                 self.load_error = None;
+                // 把「文件里这一页的 agent model 视图」播种进记忆：重载 = 文件为准，
+                // 该页未保存的编辑随重载丢弃；其他页的记忆不受影响（它们按
+                // (config_id, page) 键控，仍能还原各自视图）。
+                if self.source_format.is_opencode_family() {
+                    let view = self
+                        .agents
+                        .iter()
+                        .map(|a| (a.key.trim().to_string(), a.model.clone()))
+                        .collect();
+                    self.agent_models_by_page
+                        .insert((self.config_id(), self.source_format), view);
+                }
                 self.status = format!(
                     "已加载 ({}): {} agents, {} providers",
                     self.source_format.label(),
@@ -104,9 +116,10 @@ impl super::App {
         self.model_fetch.clear();
         self.model_fetch_open.clear();
         self.latency.clear();
-        // 各页的 agent model 视图是「上一个文件」的，键（agent 名）可能已经不存在，
-        // 留着会让下次切页把陈旧的值覆盖到新文件上。
-        self.agent_models_by_page.clear();
+        // 各页的 agent model 视图记忆**不清**：它按 (config_id, page) 键控，
+        // 同文件重载后依然有效（还原切页视图靠它），换文件后旧键自然失配。
+        // （曾在这里整表清空：同文件重载会把刚存下的记忆一起抹掉，切回原页
+        // 时还原失效，指向别家网关的引用被判无效，全部被换成网关首选。）
         // 用户数据查询结果同样跟着配置走，重新加载后重查。
         self.balance.clear();
         self.balance_batch = false;
