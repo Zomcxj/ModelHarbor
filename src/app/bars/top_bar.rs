@@ -269,6 +269,7 @@ impl App {
                     // （启动 WSL 虚拟机），未开同步就探测 = 软件一开就占内存。
                     if self.sync_wsl && backends::wsl_target(id).is_none() {
                         self.sync_wsl = false;
+                        crate::util::wsl_set_enabled(false);
                     }
                     self.current_page = id;
                     // WorkBuddy 页的数据可能来自别的方言（没有 `disabled` 概念，一律读成
@@ -326,15 +327,21 @@ impl App {
                             ),
                         )
                     };
-                    ui.add_enabled(
-                        wsl_installed,
-                        egui::Checkbox::new(&mut self.sync_wsl, "WSL同步"),
-                    )
-                    .on_hover_text(wsl_tip);
+                    let wsl_cb = ui
+                        .add_enabled(
+                            wsl_installed,
+                            egui::Checkbox::new(&mut self.sync_wsl, "WSL同步"),
+                        )
+                        .on_hover_text(wsl_tip);
+                    // 勾选状态变化 → 同步 WSL 总闸（是否允许拉起 wsl 进程探测 / 读写）。
+                    if wsl_cb.changed() {
+                        crate::util::wsl_set_enabled(self.sync_wsl);
+                    }
                     // 勾选后探测发现未安装：自动收回勾选并提示，避免复选框停在
                     // 「勾着但灰掉」的矛盾状态。
                     if self.sync_wsl && !wsl_installed {
                         self.sync_wsl = false;
+                        crate::util::wsl_set_enabled(false);
                         self.status = format!(
                             "WSL 中未检测到 {} 安装，已关闭 WSL 同步",
                             current.label()
@@ -543,6 +550,12 @@ impl App {
                     .on_hover_text(proxy_tip);
                     if proxy.clicked() {
                         self.allow_model_test_with_proxy = !self.allow_model_test_with_proxy;
+                        // 状态栏即时回声（旧标题行开关有文字标签，搬进顶栏后动作要有反馈）。
+                        self.status = if self.allow_model_test_with_proxy {
+                            "代理支持：已放行「模型延迟测试」".to_string()
+                        } else {
+                            "代理支持：已恢复拦截「模型延迟测试」".to_string()
+                        };
                     }
 
                     // 全局密钥显隐：一键切换全部 API Key 的明文 / 掩码。

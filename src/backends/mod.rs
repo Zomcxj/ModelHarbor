@@ -191,6 +191,11 @@ pub fn load_backend(id: ConfigFormat, path: &str) -> Result<BackendLoad, String>
 /// 探测结果进程级缓存（单次批量 `wsl` 调用 + 缓存的 `$HOME`）：
 /// 运行期间在 WSL 侧新装 agent 不会被感知，需重启应用。
 pub fn wsl_target(id: ConfigFormat) -> Option<String> {
+    // 总闸关闭时直接 None：不探测、不写缓存（否则关闭期间探测到的全部 None
+    // 会被 OnceLock 永久缓存，开启同步后永远无法识别「已安装」）。
+    if !crate::util::wsl_enabled() {
+        return None;
+    }
     static CACHE: OnceLock<HashMap<ConfigFormat, Option<String>>> = OnceLock::new();
     CACHE
         .get_or_init(probe_wsl_targets)

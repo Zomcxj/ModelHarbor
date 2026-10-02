@@ -136,10 +136,19 @@ fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
     // 本测试全程依赖**真实的 wsl.exe**（写入目标、镜像、读回校验）。
     // CI 是干净机器：装不了 WSL，`wsl cp` 直接失败。先探可用性，
     // 不可用就提前返回（Rust 测试没有官方 skip，约定 eprintln + return）。
+    // 显式 opt-in：本测试用真实 wsl.exe 写入 / 读回，每次运行都会拉起 WSL 虚拟机。
+    // 例行 cargo test 不该在用户机器上悄悄启动 WSL——只有设置
+    // MODELHARBOR_WSL_TEST=1 时才执行；CI 没装 WSL，同样跳过。
+    if std::env::var("MODELHARBOR_WSL_TEST").as_deref() != Ok("1") {
+        eprintln!("跳过：设置 MODELHARBOR_WSL_TEST=1 才运行真实 WSL 同步测试（会启动 WSL）");
+        return;
+    }
     if !crate::util::wsl_usable() {
         eprintln!("跳过：本机没有可用的 WSL，无法做 WSL 同步测试");
         return;
     }
+    // WSL 总闸默认关闭（防误拉起虚拟机）；预置目标文件前显式开闸。
+    crate::util::wsl_set_enabled(true);
     let dir = temp_dir("opencode_wsl");
     let local_path = dir.join("opencode.json");
     let wsl_path = format!("/tmp/model_harbor_opencode_{}.json", std::process::id());
@@ -177,6 +186,8 @@ fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
         current_page: ConfigFormat::Opencode,
         ..App::default()
     };
+    // App::default() 会按 prefs.sync_wsl 复位总闸；本测试验证 WSL 同步，构造后再开闸。
+    crate::util::wsl_set_enabled(true);
 
     let backup = app
         .save_backend_to(ConfigFormat::Opencode, &wsl_path)
@@ -207,6 +218,8 @@ fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
     crate::util::remove_config(&backup).ok();
     crate::util::remove_config(&wsl_path).ok();
     std::fs::remove_dir_all(&dir).ok();
+    // 收尾关闸：不干扰其他并行测试的 WSL 状态假设。
+    crate::util::wsl_set_enabled(false);
 }
 
 #[test]
