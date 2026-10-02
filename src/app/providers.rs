@@ -404,7 +404,17 @@ impl App {
                     }
                 }
                 // 连通性测试：放在标题行右侧，收起全部卡片时也始终可见。
-                if ui.button("连通性测试").clicked() {
+                // zap 图标：批量测所有厂商连通性；文字回退见 toolbar_icon_button 的 None 分支。
+                let zap_tint = ui.visuals().text_color();
+                if super::bars::toolbar_icon_button(
+                    ui,
+                    self.toolbar_icons.zap.as_ref(),
+                    false,
+                    zap_tint,
+                )
+                .on_hover_text("连通性测试：批量测全部厂商的连通性")
+                .clicked()
+                {
                     let targets: Vec<(String, String, String, String)> = self
                         .providers
                         .iter()

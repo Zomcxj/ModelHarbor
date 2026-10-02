@@ -477,6 +477,7 @@ struct ToolbarIcons {
     file_output: Option<egui::TextureHandle>,
     bot: Option<egui::TextureHandle>,
     server: Option<egui::TextureHandle>,
+    zap: Option<egui::TextureHandle>,
 }
 
 impl App {
@@ -567,6 +568,10 @@ impl App {
         self.toolbar_icons.server = load(
             "toolbar_icon_server",
             include_bytes!("../../assets/icons/server.svg"),
+        );
+        self.toolbar_icons.zap = load(
+            "toolbar_icon_zap",
+            include_bytes!("../../assets/icons/zap.svg"),
         );
     }
 }

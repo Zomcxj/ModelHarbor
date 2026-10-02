@@ -823,7 +823,7 @@ impl App {
 }
 
 /// 使用 SVG 纹理的图标按钮：激活、悬停和按下状态都有明确视觉反馈。
-fn toolbar_icon_button(
+pub(in crate::app) fn toolbar_icon_button(
     ui: &mut egui::Ui,
     texture: Option<&egui::TextureHandle>,
     active: bool,
