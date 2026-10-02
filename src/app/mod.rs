@@ -363,6 +363,8 @@ impl Default for App {
             backend_icons: Vec::new(),
             toolbar_icons: ToolbarIcons::default(),
         };
+        // WSL 总闸与同步勾选同步初始化：未勾选时启动链上的任何探测都不会拉起 wsl。
+        crate::util::wsl_set_enabled(prefs.sync_wsl);
         app.apply_load();
         app
     }
@@ -478,7 +480,7 @@ struct ToolbarIcons {
     activity: Option<egui::TextureHandle>,
     palette: Option<egui::TextureHandle>,
     folder_open: Option<egui::TextureHandle>,
-    chevrons_down_up: Option<egui::TextureHandle>,
+    unfold: Option<egui::TextureHandle>,
     database: Option<egui::TextureHandle>,
     globe: Option<egui::TextureHandle>,
     save: Option<egui::TextureHandle>,
@@ -582,9 +584,9 @@ impl App {
             "toolbar_icon_zap",
             include_bytes!("../../assets/icons/zap.svg"),
         );
-        self.toolbar_icons.chevrons_down_up = load(
-            "toolbar_icon_chevrons_down_up",
-            include_bytes!("../../assets/icons/chevrons-down-up.svg"),
+        self.toolbar_icons.unfold = load(
+            "toolbar_icon_unfold",
+            include_bytes!("../../assets/icons/unfold.svg"),
         );
         self.toolbar_icons.database = load(
             "toolbar_icon_database",

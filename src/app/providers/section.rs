@@ -83,7 +83,7 @@ impl App {
                     let chevrons_tint = ui.visuals().text_color();
                     if crate::app::bars::toolbar_icon_button(
                         ui,
-                        self.toolbar_icons.chevrons_down_up.as_ref(),
+                        self.toolbar_icons.unfold.as_ref(),
                         false,
                         chevrons_tint,
                     )

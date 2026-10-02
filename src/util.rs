@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 /// 构造 wsl 命令：Windows 下带 CREATE_NO_WINDOW，
@@ -231,8 +232,28 @@ pub fn is_wsl_path(path: &str) -> bool {
     path.starts_with('/') && !path.contains(':')
 }
 
+/// WSL 总闸：默认关闭。任何 wsl 子进程调用都会把 WSL 虚拟机拉起（常驻吃内存），
+/// 因此只有用户勾选「WSL同步」时才放行；未放行时所有探测 / 读写直接短路。
+/// 单点拦截：调用方各自判断会漏（启动链 refresh_targets→validate_target 曾漏拦）。
+static WSL_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// 放行 / 禁止 WSL 子进程调用（勾选状态变化时由 App 同步调用）。
+pub fn wsl_set_enabled(on: bool) {
+    WSL_ENABLED.store(on, Ordering::Relaxed);
+}
+
+/// 当前是否放行 WSL 调用。
+pub fn wsl_enabled() -> bool {
+    WSL_ENABLED.load(Ordering::Relaxed)
+}
+
 /// WSL 默认发行版的 $HOME（进程级缓存：每次 `wsl` 调用约需数百毫秒，不可重复探测）。
 pub fn wsl_home() -> Option<String> {
+    // 总闸关闭时直接短路，且不碰缓存：否则关闭期间探测到的 None 会被
+    // OnceLock 永久缓存，开启同步后永远拿不到 $HOME。
+    if !wsl_enabled() {
+        return None;
+    }
     static CACHE: OnceLock<Option<String>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
@@ -275,6 +296,10 @@ pub struct WslPathProbe {
 /// 每项依次输出 `F`（文件）/ `E`（存在非文件）/ `P`（父目录存在）/ `N`（均不存在）。
 pub fn wsl_batch_probe(paths: &[String]) -> Vec<WslPathProbe> {
     let fallback = || vec![WslPathProbe::default(); paths.len()];
+    // 总闸关闭：不拉起 wsl 进程，直接按「全部不存在」处理。
+    if !wsl_enabled() {
+        return fallback();
+    }
     if paths.is_empty() {
         return Vec::new();
     }
@@ -333,6 +358,9 @@ pub fn win_to_wsl(path: &str) -> String {
 }
 
 pub fn read_wsl_file(path: &str) -> Result<String, String> {
+    if !wsl_enabled() {
+        return Err("WSL 同步未开启".to_string());
+    }
     let out = wsl_command()
         .args(["cat", path])
         .output()
@@ -375,6 +403,9 @@ pub fn remove_config(path: &str) -> Result<(), String> {
     }
 }
 pub fn write_wsl_file(path: &str, content: &str) -> Result<(), String> {
+    if !wsl_enabled() {
+        return Err("WSL 同步未开启".to_string());
+    }
     // 固定名临时文件可能被本地恶意进程预置同名符号链接指向受害文件，
     // 且内容含 API Key 明文；改用带纳秒时间的随机名降低风险。
     let nonce = std::time::SystemTime::now()
