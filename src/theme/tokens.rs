@@ -3,12 +3,12 @@ use eframe::egui::Color32;
 /// 淡化禁用控件时用的 alpha（与 egui 的 `Visuals::disabled_alpha` 默认值一致）。
 pub(crate) const DISABLED_ALPHA: f32 = 0.5;
 
-/// 玻璃档：面板底色保留的不透明度（其余透出 DWM 亚克力模糊）。
+/// 亚克力档：面板底色保留的不透明度（其余透出 DWM 亚克力模糊）。
 ///
 /// 卡片 / 输入框比它实，见 [`GLASS_SURFACE_ALPHA`]；两者保持差距，且卡片始终比面板**实**。
 pub const GLASS_PANEL_ALPHA: f32 = 0.50;
 
-/// 玻璃档：卡片 / 输入框 / 控件底色的不透明度，高于 [`GLASS_PANEL_ALPHA`]。
+/// 亚克力档：卡片 / 输入框 / 控件底色的不透明度，高于 [`GLASS_PANEL_ALPHA`]。
 pub const GLASS_SURFACE_ALPHA: f32 = 0.55;
 
 // ── 间距刻度（4 的倍数）────────────────────────────────────────────

@@ -60,7 +60,7 @@ impl Palette {
         } else {
             Visuals::light()
         };
-        // 玻璃档：底色整体缩放（`gamma_multiply` 连 alpha 一起乘）。
+        // 亚克力档：底色整体缩放（`gamma_multiply` 连 alpha 一起乘）。
         let surface = |c: Color32| {
             if glass {
                 c.gamma_multiply(super::tokens::GLASS_SURFACE_ALPHA)

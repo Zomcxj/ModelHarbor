@@ -145,7 +145,7 @@ impl Theme {
         let style = UiStyle::default();
         self.apply_style(ctx, style, false);
     }
-    /// 按主题 + 形状预设 + 玻璃档套用样式。
+    /// 按主题 + 形状预设 + 亚克力档套用样式。
     pub fn apply_style(&self, ctx: &egui::Context, shape: UiStyle, glass: bool) {
         let mut style = egui::Style::default();
         style.spacing.item_spacing = egui::vec2(SPACE_2 / 2.0, SPACE_2);
@@ -211,11 +211,11 @@ impl Theme {
         ctx.set_style(style);
         // 形状存进上下文：`ui.rs` 里的卡片读它决定描边宽度与内嵌亮线。
         ctx.data_mut(|data| data.insert_temp(egui::Id::new(ACTIVE_STYLE_ID), shape));
-        // 玻璃档也存进上下文：卡片 / 面板的 Frame 读它决定底色透明度。
+        // 亚克力档也存进上下文：卡片 / 面板的 Frame 读它决定底色透明度。
         ctx.data_mut(|data| data.insert_temp(egui::Id::new(GLASS_ID), glass));
     }
 
-    /// 当前是否玻璃档（没套过样式时为 `false`）。
+    /// 当前是否亚克力档（没套过样式时为 `false`）。
     pub fn active_glass(ctx: &egui::Context) -> bool {
         ctx.data(|data| data.get_temp::<bool>(egui::Id::new(GLASS_ID)))
             .unwrap_or(false)
@@ -373,7 +373,7 @@ mod tests {
             UiStyle::Minimal,
             false
         ));
-        // 玻璃档单独变化也要重套（底色 alpha 写在 style 里）。
+        // 亚克力档单独变化也要重套（底色 alpha 写在 style 里）。
         assert!(needs_apply_style(
             &mut applied,
             Theme::Light,
@@ -398,7 +398,7 @@ mod tests {
             Theme::Dark.apply_style(&ctx, style, false);
             assert_eq!(active_style(&ctx), style, "{} 没存进上下文", style.key());
         }
-        // 玻璃档也能从上下文读回来。
+        // 亚克力档也能从上下文读回来。
         assert!(!Theme::active_glass(&ctx));
         Theme::Dark.apply_style(&ctx, UiStyle::Soft, true);
         assert!(Theme::active_glass(&ctx));
@@ -409,18 +409,19 @@ mod tests {
         let mut labels = std::collections::HashSet::new();
         for t in Theme::ALL {
             assert!(labels.insert(t.label()), "duplicate label: {}", t.label());
-            let _ = t.palette().into_visuals(false); // 不得 panic
-                                                     // 玻璃档也能构造（底色缩 alpha，不得 panic）。
+            // 不带亚克力档也要能构造。
+            let _ = t.palette().into_visuals(false);
+            // 亚克力档也能构造（底色缩 alpha，不得 panic）。
             let glass = t.palette().into_visuals(true);
             assert!(
                 glass.panel_fill.a() < 255,
-                "{} 玻璃档的面板底色没变透明",
+                "{} 亚克力档的面板底色没变透明",
                 t.key()
             );
             // 层次不变量：控件底比面板实。
             assert!(
                 glass.widgets.inactive.bg_fill.a() > glass.panel_fill.a(),
-                "{} 玻璃档的控件底比面板还透，层次反了",
+                "{} 亚克力档的控件底比面板还透，层次反了",
                 t.key()
             );
         }

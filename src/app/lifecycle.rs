@@ -12,7 +12,7 @@ impl super::App {
         }
     }
 
-    /// 主题 / 形状 / 玻璃档任一变化（含首次启动）时重新套用样式。
+    /// 主题 / 形状 / 亚克力档任一变化（含首次启动）时重新套用样式。
     pub(in crate::app) fn apply_theme_if_changed(&mut self, ctx: &egui::Context) {
         let shape = self.ui_style;
         let glass = self.glass;

@@ -139,14 +139,14 @@ pub struct App {
     show_health: bool,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
     ui_style: crate::theme::UiStyle,
-    /// 玻璃背景：面板 / 卡片半透明 + DWM 亚克力模糊（正交于主题与形状）。
+    /// 亚克力：面板 / 卡片半透明 + DWM 亚克力模糊（正交于主题与形状）。
     glass: bool,
     /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
     tab_order: Vec<String>,
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
-    /// 已应用到 egui 的主题（主题 + 形状 + 玻璃）。
+    /// 已应用到 egui 的主题（主题 + 形状 + 亚克力）。
     applied_theme: Option<(Theme, crate::theme::UiStyle, bool)>,
     save_format: SaveFormat,
     /// 滚轮切换保存格式的门门：一次连续滚动手势只切换一次。
@@ -352,7 +352,7 @@ impl Default for App {
 }
 
 impl eframe::App for App {
-    /// 窗口清屏色：玻璃档返回透明，非玻璃档返回主题面板色。
+    /// 窗口清屏色：亚克力档返回透明，非亚克力档返回主题面板色。
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         if self.glass {
             egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
