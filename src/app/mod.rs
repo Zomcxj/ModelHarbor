@@ -38,7 +38,7 @@ enum SaveFormat {
 }
 
 impl SaveFormat {
-    /// 切到另一种保存格式（滚轮与点击共用同一翻转，别处不得另写一份）。
+    /// 切到另一种保存格式。
     fn toggled(self) -> Self {
         match self {
             SaveFormat::Current => SaveFormat::Compact,
@@ -77,14 +77,13 @@ pub struct App {
     new_agent: AgentRow,
     new_provider: ProviderRow,
     config_path: String,
-    /// 最近一次实际加载的路径（config_path 与之不等时按“未加载”处理，防止误覆盖）。
+    /// 最近一次实际加载的路径；与 `config_path` 不等时按“未加载”处理。
     loaded_path: String,
     status: String,
     show_new_agent: bool,
     show_new_provider: bool,
     /// 已折叠的卡片（`页面/类别/名字`，见 `prefs::collapsed_id`）。
-    /// 用「折叠集合」而不是「展开集合」：新加载进来的卡片默认是展开的，
-    /// 而且这份状态能原样落盘、不会被「重新加载」清空。
+    /// 新加载进来的卡片默认展开。
     collapsed: HashSet<String>,
     variant_open: HashSet<String>,
     agent_drag_src: Option<String>,
@@ -101,22 +100,14 @@ pub struct App {
     model_fetch_open: HashSet<String>,
     /// 各后端内置网关的免费模型（后端 → 状态）。
     ///
-    /// 动态拉取而非写死：免费层会随上游上下架，写死的 id 迟早变成「选了却跑不起来」
-    /// 的过期项（见 [`crate::opencode_models`]）。opencode 与 kilocode 各有自己的
-    /// 网关与列表，mimocode 没有免费层（不进这张表）。启动先用落盘缓存填充，
-    /// 缓存缺失或过期才在后台重新拉取。
+    /// opencode 与 kilocode 各有自己的网关与列表，mimocode 没有免费层（不进这张表）。
+    /// 启动先用落盘缓存填充，缓存缺失或过期才在后台重新拉取。
     free_models: HashMap<ConfigFormat, FreeModelsState>,
-    /// 各 opencode 系页面**各自**的 agent model 视图（页面 → agent key → model）。
+    /// 各 opencode 系页面**各自**的 agent model 视图记忆：
+    /// **（文件身份，页面） → agent key → model**。
     ///
-    /// 为什么需要按页记忆、切页时怎么归一，见 [`crate::app::agents`] 的切页归一说明；
-    /// 这里只记字面语义：只在**离开**页面时写入，当前页的权威值永远是 `agents` 本身
-    /// （用户可能正在编辑）。
-    /// 各 opencode 系页的 agent model 视图记忆：**（文件身份， 页面） → agent key → model**。
-    ///
-    /// 键里带 [`App::config_id`]（文件身份）：记忆属于「某份文件」——同文件重载
-    /// （手动加载 / 预览应用）后记忆仍然有效，换文件后旧记忆自然失配（查不到即跳过），
-    /// 不再需要整表清空（整表清空会把同文件重载场景下刚存下的记忆一起抹掉，
-    /// 切页还原就失效了）。
+    /// 只在**离开**页面时写入；当前页的权威值永远是 `agents` 本身。
+    /// 键带 [`App::config_id`]（文件身份），换文件后旧记忆失配即跳过。
     agent_models_by_page: HashMap<(String, ConfigFormat), HashMap<String, String>>,
     /// 首帧需要自动后台拉取的后端（缓存缺失 / 过期）；拉过即清空。
     free_models_auto: Vec<ConfigFormat>,
@@ -132,7 +123,7 @@ pub struct App {
     show_tokens: bool,
     /// 令牌面板里正在编辑的文本（键 = 站点 origin），未保存的草稿。
     token_draft: HashMap<String, String>,
-    /// 令牌面板里「用户 ID」的草稿（旧版 new-api 的 `New-Api-User` 头，可留空）。
+    /// 令牌面板里「用户 ID」的草稿（`New-Api-User` 头，可留空）。
     token_uid_draft: HashMap<String, String>,
     /// 已点「显示」的站点（单条掩码开关，默认跟随全局「显示密钥」）。
     token_reveal: HashSet<String>,
@@ -155,8 +146,7 @@ pub struct App {
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
-    /// 已应用到 egui 的主题：egui 0.33 的 `set_style` 是**每个主题各存一份 style**，
-    /// 所以主题一变就必须显式再 `apply` 一次，否则只有按钮文字变、界面颜色不跟着变。
+    /// 已应用到 egui 的主题（主题 + 形状 + 玻璃）。
     applied_theme: Option<(Theme, crate::theme::UiStyle, bool)>,
     save_format: SaveFormat,
     /// 滚轮切换保存格式的门门：一次连续滚动手势只切换一次。
@@ -168,7 +158,7 @@ pub struct App {
     sync_wsl: bool,
     /// 全局 API Key 显隐：一键控制所有密钥输入框的明文/掩码显示。
     show_api_keys: bool,
-    /// 已落盘的界面偏好快照：与当前值不同就写盘（避免每帧重复写文件）。
+    /// 已落盘的界面偏好快照；与当前值不同就写盘。
     prefs_saved: crate::prefs::Prefs,
     /// 右侧配置预览/编辑面板是否打开。
     show_preview: bool,
@@ -180,9 +170,9 @@ pub struct App {
     preview_draft: String,
     /// 最近一次文本编辑的时间点（ctx 时间），用于防抖自动保存。
     preview_dirty_at: Option<f64>,
-    /// 用户最近一次在预览框内输入的帧时间（用于判断「正在手改预览」）。
+    /// 用户最近一次在预览框内输入的帧时间。
     preview_edit_at: Option<f64>,
-    /// 最近一次文本解析是否成功（解析失败不写盘、不覆盖文本）。
+    /// 最近一次文本解析是否成功；失败时不写盘、不覆盖文本。
     preview_parse_ok: bool,
     /// 最近一次预览文本解析失败的报错（成功时为 None），用于面板内红字提示。
     preview_parse_error: Option<String>,
@@ -194,17 +184,15 @@ pub struct App {
     preview_find_focus: bool,
     /// 待跳转的命中字节偏移（Enter/按钮跳转后用光标滚动到该处）。
     preview_find_jump: Option<usize>,
-    /// 对比视图显示「磁盘上的目标文件 → 待保存文档」的逐行改动。
+    /// 对比视图：显示「磁盘上的目标文件 → 待保存文档」的逐行改动。
     ///
-    /// 只读视图：对比模式下不渲染文本框，因此不存在「手改被对比覆盖」的问题，
-    /// 切回编辑模式时草稿仍是原样。
+    /// 只读视图：对比模式下不渲染文本框。
     preview_diff_mode: bool,
-    /// 对比结果缓存（签名 → 显示行与统计），避免每帧重算 LCS。
+    /// 对比结果缓存（签名 → 显示行与统计）。
     preview_diff_cache: Option<(u64, Vec<diff::DiffLine>, diff::DiffSummary)>,
-    /// 待重算的对比签名与它首次出现的时刻（见 `ui_preview_diff` 的防抖说明）。
+    /// 待重算的对比签名与它首次出现的时刻（见 `ui_preview_diff` 的防抖）。
     preview_diff_pending: Option<(u64, f64)>,
-    /// 成功写盘的次数。对比视图把它并进缓存签名：写盘后磁盘内容变了，
-    /// 缓存必须作废，否则会继续显示一份已经落盘的「改动」。
+    /// 成功写盘的次数；并进对比缓存的签名，写盘后缓存作废。
     save_serial: u64,
     /// 光标所在行（1-based；失焦时保留最后位置）。
     preview_cursor_line: usize,
@@ -218,14 +206,7 @@ pub struct App {
 
 /// 启动时的方言判定：以**文件内容**为准，路径所属页面只作回退。
 ///
-/// `detect_preferring_overrides` 只回答「哪一页填了覆盖路径且文件存在」，
-/// 不看内容。用户把 opencode.json 填到 pi 页时，用 pi 方言去读会解析出
-/// 0 条 provider——表现为「写了路径却不自动加载」。这里按内容纠正，
-/// 与手动加载（`reload_for_page`）用同一套判定。
-///
-/// **文件读不出内容时保持页面推断**：`detect_for_path` 在无内容时按扩展名
-/// 回落（`.json` → opencode），据此改判会在文件缺失 / 无权限时把页面
-/// 误判成 opencode，并可能把错误路径记进持久化覆盖。
+/// 文件读不出内容时保持页面推断。
 fn startup_format(owner: ConfigFormat, path: &str) -> ConfigFormat {
     let path = path.trim();
     if path.is_empty() {
@@ -245,19 +226,16 @@ fn startup_format(owner: ConfigFormat, path: &str) -> ConfigFormat {
 impl Default for App {
     fn default() -> Self {
         let prefs = crate::prefs::Prefs::load();
-        // 路径：先套用 prefs 里用户手动指定过的覆盖，再定位要打开的页面
-        // （覆盖过且文件存在的页面优先，其次才按默认路径自动探测）。
+        // 路径：先套用 prefs 里用户手动指定过的覆盖，再定位要打开的页面。
         let mut paths = ConfigPaths::default();
         paths.apply_overrides(&prefs.config_paths);
         let (format, path) = paths
             .detect_preferring_overrides(&prefs.config_paths)
             .unwrap_or((ConfigFormat::Opencode, String::new()));
-        // 启动探测只按「哪一页有覆盖路径」选后端；方言以文件内容为准
-        // （为什么见 `startup_format` 文档）。
+        // 启动探测只按「哪一页有覆盖路径」选后端；方言以文件内容为准。
         let format = startup_format(format, &path);
-        // 各后端内置网关的免费模型：逐后端读一次落盘缓存，界面先用它渲染；
-        // 缓存缺失或过期的后端由首帧自动在后台重取（不阻塞启动）。
-        // 只对确实有免费层的后端建状态（见 `opencode_models::source_for`）。
+        // 各后端内置网关的免费模型：逐后端读一次落盘缓存；缺失或过期的后端
+        // 由首帧在后台重取。只对确实有免费层的后端建状态。
         let mut free_models: HashMap<ConfigFormat, FreeModelsState> = HashMap::new();
         let mut free_models_auto: Vec<ConfigFormat> = Vec::new();
         for format in [
@@ -330,9 +308,9 @@ impl Default for App {
             glass: prefs.glass,
             tab_order: prefs.tab_order.clone(),
             net_guard_at: 0.0,
-            // 界面设置来自家目录 .modelharbor/settings.json（缺省即 App 默认）。
+            // 界面设置来自家目录 .modelharbor/settings.json。
             theme: Theme::from_key(&prefs.theme),
-            // 交给第一帧的 apply_theme_if_changed 应用（保证 prefs 里的主题真正生效）
+            // 交给第一帧的 apply_theme_if_changed 应用
             applied_theme: None,
             save_format: SaveFormat::from_key(&prefs.save_format),
             prefs_saved: prefs.clone(),
@@ -366,7 +344,7 @@ impl Default for App {
             backend_icons: Vec::new(),
             toolbar_icons: ToolbarIcons::default(),
         };
-        // WSL 总闸与同步勾选同步初始化：未勾选时启动链上的任何探测都不会拉起 wsl。
+        // WSL 总闸与同步勾选同步初始化。
         crate::util::wsl_set_enabled(prefs.sync_wsl);
         app.apply_load();
         app
@@ -374,10 +352,7 @@ impl Default for App {
 }
 
 impl eframe::App for App {
-    /// 窗口清屏色：玻璃档透明（透出 DWM 亚克力），否则铺主题面板色。
-    ///
-    /// 玻璃档必须用**全透明**而不是带 alpha 的面板色：面板 Frame 自己会铺底色，
-    /// 清屏层再铺一层会把 DWM 模糊盖住。
+    /// 窗口清屏色：玻璃档返回透明，非玻璃档返回主题面板色。
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         if self.glass {
             egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
@@ -387,8 +362,7 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 第一件事就是套用主题：启动时（applied_theme == None）与切换主题后都必须走这里，
-        // 否则会出现「按钮文字是浅色、界面还是深色」的错配。
+        // 第一件事就是套用主题：启动时与切换主题后都走这里。
         self.apply_theme_if_changed(ctx);
         let dropped = ctx.input(|i| {
             i.raw
@@ -400,8 +374,7 @@ impl eframe::App for App {
             self.config_path = path;
             self.reload();
         }
-        // 每 5 秒复查一次系统代理 / VPN：用户可能在运行期间开关 Clash 等，
-        // 守卫结论用于禁用模型延迟测试（见 netguard 模块说明）。
+        // 每 5 秒复查一次系统代理 / VPN，结论用于禁用模型延迟测试。
         let frame_time = ctx.input(|i| i.time);
         if frame_time - self.net_guard_at >= 5.0 {
             self.net_guard = crate::netguard::detect();
@@ -414,18 +387,16 @@ impl eframe::App for App {
         self.poll_latency();
         self.poll_balance();
         self.poll_free_models();
-        // 首次启动 / 缓存过期：只自动拉一次（拉过即清空，失败也不反复重试，
-        // 用户可在 Agents 的模型下拉旁点「刷新」手动重取）。
+        // 首次启动 / 缓存过期：只自动拉一次（拉过即清空），用户可手动重取。
         for format in std::mem::take(&mut self.free_models_auto) {
             self.start_free_models_fetch(format);
         }
         self.persist_prefs_if_changed();
         self.ui_top_bar(ctx);
         self.ui_status_bar(ctx);
-        // 右侧配置预览/编辑面板：宽度由 preview_ratio 控制（拖动左边缘分隔条调整），
-        // 窗口缩放时按该比例适配；窄窗口下限 220px，并保证组件区至少 320px。
-        // `show_animated` 在打开 / 隐藏期间保留侧栏占位并补间宽度，行为与 Provider
-        // 卡片的 animated_collapse 一致；动画结束后才挂载真实预览内容。
+        // 右侧配置预览/编辑面板：宽度由 preview_ratio 控制，窗口缩放时按该比例适配；
+        // 下限 220px，组件区至少 320px。`show_animated` 在打开 / 隐藏期间保留侧栏
+        // 占位并补间宽度；动画结束后才挂载真实预览内容。
         let screen_w = ctx.content_rect().width().max(1.0);
         let max_w = (screen_w - 320.0).max(220.0);
         let preview_w = (screen_w * self.preview_ratio).clamp(220.0, max_w);
@@ -435,7 +406,7 @@ impl eframe::App for App {
                 self.ui_preview_panel(ui);
             });
         if let Some(side) = side {
-            // 分隔条用 Foreground 层的独立热区：同层注册会被占满面板的文本框抢走拖拽。
+            // 分隔条注册在 Foreground 层的独立热区。
             self.ui_preview_resizer(ctx, side.response.rect, screen_w);
         }
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -448,11 +419,8 @@ impl eframe::App for App {
                     ..egui::scroll_area::ScrollSource::ALL
                 })
                 .show(ui, |ui| {
-                    // 顶部不留空白：Providers 吸顶条一滚就会贴到滚动区可视顶。
-                    // 多出 4px 时，标题会从内容流位置跳到可视顶，看起来整行往上抬。
-                    // （egui 还会把裁剪顶上扩 3px，见 bars::sticky_y 的说明。）
-                    // Providers 在上、Agents 在下：Agents 只属于 opencode 页面，
-                    // 且按需求放在 Providers 下方（只影响界面顺序，不动配置文件里的字段顺序）。
+                    // 顶部不留空白。Providers 在上、Agents 在下；Agents 只属于 opencode
+                    // 页面，且只影响界面顺序。
                     self.ui_providers_section(ui);
                     ui.add_space(crate::theme::SPACE_2);
                     if self.current_page.is_opencode_family() {
@@ -466,11 +434,9 @@ impl eframe::App for App {
         // 配置体检：同样是独立悬浮窗，保存前想核对一遍时打开。
         self.ui_health_window(ctx);
         self.paint_drag_ghost(ctx);
-        // 抓取光标：控件在各自绘制时只「提出请求」（悬停=手掌、按住=拳头），
-        // 这里帧末统一提交，同一帧只碰一次系统光标。
+        // 抓取光标：控件绘制时只提出请求，这里帧末统一提交。
         //
-        // 兜底：拖动中即便没有任何热区报状态（指针已拖离原把手、又悬在空白处），
-        // 也必须保持拳头——否则光标会退回箭头，看着像「拖丢了」。
+        // 拖动中即便没有任何热区报状态，也保持拳头。
         let mut want = crate::ui::take_grab_cursor(ctx);
         if self.is_dragging_anything() {
             want = crate::ui::GrabCursor::Fist;
@@ -647,8 +613,7 @@ impl App {
 
     /// 站点面板令牌悬浮窗所在的层级。
     ///
-    /// 用 `Foreground`：高于预览分隔条所在的 `Middle`，分割线不会横穿悬浮窗；
-    /// 又低于 `Tooltip`，悬停提示仍显示在窗上面。
+    /// 用 `Foreground`：高于预览分隔条所在的 `Middle`，又低于 `Tooltip`。
     const TOKENS_WINDOW_ORDER: egui::Order = egui::Order::Foreground;
 
     /// 按格式取官方图标纹理（图标未加载时返回 None）。
@@ -658,7 +623,7 @@ impl App {
     }
 }
 
-// ---------- 兼容再导出：保持既有外部路径（测试与 backends）可用 ----------
+// ---------- 兼容再导出：保持既有外部路径可用 ----------
 pub use crate::backends::opencode::merge_opencode_root;
 pub use crate::util::parse_config_content;
 

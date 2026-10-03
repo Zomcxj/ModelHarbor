@@ -1,24 +1,6 @@
 //! opencode 系后端：`opencode` / `kilocode` / `mimocode` 三个同源格式共用一套实现。
-//!
-//! 结构（三者字段与结构一致）：顶层 `agent`（subagent 定义 map）+ `provider`（map）+
-//! 其他顶层字段（如 `mcp`）原样保留。
-//!
-//! **为什么合成一个模块**：Kilo Code 与 MiMo Code 都是 opencode 的 fork，配置 schema
-//! 的字段与结构一致——顶层 `provider` / `agent`，provider 的 `options.baseURL` /
-//! `options.apiKey` / `options.timeout`，模型的 `models.<id>.limit.context|output` /
-//! `tool_call` / `reasoning`。差别只有三处：**配置目录名、主配置文件名、图标**。复制三份
-//! 解析器只会让以后的格式修正要改三遍、且迟早改漏一处，所以这里把这三处做成 [`Flavor`]
-//! 参数，其余全部共用。
-//!
-//! **但「字段相同」不等于「required 相同」**：mimocode 额外要求 `modalities` 的
-//! `input` / `output` 成对，opencode 与 kilo 都只把它当可选。写盘前必须按目标方言补齐
-//! （见 [`complete_required_model_fields`]），否则源方言允许的半截字段写过去就是非法文件。
-//!
-//! **判别只能靠路径**：三者的内容形状一致，任何基于内容特征的判别都无法区分它们
-//! （比如「顶层有 provider 对象」对三者同时为真）。所以 [`detect`] 按**目录名或文件名**
-//! 认领，内容特征只作为最后的兜底（归 opencode）。这也意味着用户把 `kilo.json` 的内容
-//! 拷到 `opencode.json` 里时，判出来的是 opencode——按路径认领的必然结果，且无害：
-//! 三者写盘用的字段口径完全相同。
+//! 顶层 `agent`（subagent 定义 map）、`provider`（map）与其他顶层字段（如 `mcp`）原样保留。
+//! 三者的差别只有配置目录名、主配置文件名、`$schema` 与图标，由 [`Flavor`] 区分。
 
 use super::{Backend, BackendLoad};
 use crate::convert;
@@ -33,11 +15,9 @@ pub struct Flavor {
     pub id: ConfigFormat,
     /// 配置目录名（`~/.config/<dir>/`）。
     pub dir: &'static str,
-    /// 主配置文件名。Kilo 也接受 `kilo.jsonc`、MiMo 也接受 `mimocode.jsonc`，
-    /// 这里取官方文档给出的首选（`kilo.json` / `mimocode.json`）。
+    /// 主配置文件名；Kilo 与 MiMo 的 `.jsonc` 变体也被接受。
     pub file: &'static str,
-    /// 官方 `$schema` 地址。**新建 / 合并后缺失时会写进配置**：CLI 自己生成的
-    /// 配置就带这个字段，缺了编辑器与 CLI 都拿不到 schema 提示。已有值一律保留。
+    /// 官方 `$schema` 地址；新建 / 合并后缺失时写入，已有值一律保留。
     pub schema: &'static str,
     /// 32×32 未预乘 RGBA 原始字节。
     pub icon: &'static [u8],
@@ -54,9 +34,8 @@ pub static OPENCODE: Flavor = Flavor {
     icon: include_bytes!("../../assets/agents/opencode_32.bin"),
 };
 
-/// Kilo Code（`@kilocode/cli`）：opencode 的 fork，配置目录 `~/.config/kilo/`，
-/// 主配置 `kilo.json`（也接受 `kilo.jsonc`；文档另注它会读同目录下遗留的
-/// `opencode.json`，但**不再**回退 `.opencode` 目录）。
+/// Kilo Code（`@kilocode/cli`）：配置目录 `~/.config/kilo/`，主配置 `kilo.json`；
+/// 同目录下遗留的 `opencode.json` 也会被读取，但不回退 `.opencode` 目录。
 pub static KILOCODE: Flavor = Flavor {
     id: ConfigFormat::Kilocode,
     dir: "kilo",
@@ -65,14 +44,9 @@ pub static KILOCODE: Flavor = Flavor {
     icon: include_bytes!("../../assets/agents/kilocode_32.bin"),
 };
 
-/// MiMo Code（`@mimo-ai/cli`，小米）：opencode 的 fork，配置目录
-/// `~/.config/mimocode/`（Windows 亦为 `%LOCALAPPDATA%\mimocode\`，两者同源解析），
-/// 主配置 `mimocode.json`（也接受 `mimocode.jsonc`）。它**不读** `opencode.json`。
-///
-/// 图标用小米官方 logo（橙底白 `mi`），**不取 MiMo Code 的 favicon**：MiMo 仓库里的
-/// favicon / 桌面应用图标 / console logo 全都沿用 opencode 的同一份图形
-/// （`favicon.svg` 与 opencode 官方逐字节相同），照抄会得到一个和 opencode 页签
-/// 看起来一样的图标。
+/// MiMo Code（`@mimo-ai/cli`，小米）：配置目录 `~/.config/mimocode/`
+/// （Windows 为 `%LOCALAPPDATA%\mimocode\`），主配置 `mimocode.json`；不读 `opencode.json`。
+/// 图标为小米官方 logo（橙底白 `mi`）。
 pub static MIMOCODE: Flavor = Flavor {
     id: ConfigFormat::Mimocode,
     dir: "mimocode",
@@ -81,7 +55,7 @@ pub static MIMOCODE: Flavor = Flavor {
     icon: include_bytes!("../../assets/agents/mimocode_32.bin"),
 };
 
-/// 兼容旧引用：本家 opencode 的后端实例。
+/// 本家 opencode 的后端实例。
 pub static BACKEND: OpenCodeFamilyBackend = OpenCodeFamilyBackend(&OPENCODE);
 
 /// Kilo Code 后端实例。
@@ -112,10 +86,10 @@ impl Flavor {
     /// 主配置的 `.jsonc` 变体路径（`kilo.json` → `kilo.jsonc`）。
     fn jsonc_variant(&self, path: &str) -> String {
         let stem = self.file.trim_end_matches(".json");
-        // 只替换**文件名**那一段，别动父目录里可能出现的同名子串。
+        // 只替换文件名那一段。
         match path.rfind(&self.file) {
             Some(at) => format!("{}{}.jsonc", &path[..at], stem),
-            // 路径里没有主文件名（用户自定义名）：按扩展名整体换。
+            // 路径里没有主文件名：按扩展名整体换。
             None => format!("{}.jsonc", path.trim_end_matches(".json")),
         }
     }
@@ -134,10 +108,7 @@ impl Backend for OpenCodeFamilyBackend {
         self.0.default_wsl_path()
     }
 
-    /// 默认名不存在时回退 `.jsonc` 变体（CLI 首次运行可能只生成那个）。
-    ///
-    /// 传进来的已经是 `.jsonc` 时不重复追加（解析结果会被再喂回来，
-    /// 候选必须幂等，否则会滚出 `kilo.jsonc.jsonc` 这种路径）。
+    /// 默认名不存在时回退 `.jsonc` 变体；候选幂等，传入的已是 `.jsonc` 时不重复追加。
     fn path_candidates(&self, path: &str) -> Vec<String> {
         let variant = self.0.jsonc_variant(path);
         if variant == path {
@@ -158,21 +129,14 @@ impl Backend for OpenCodeFamilyBackend {
         probe.file_exists || probe.parent_dir_exists
     }
 
-    /// 判别：**先按路径认领，再退回内容特征**。
+    /// 判别：先按路径（目录名或文件名）认领，再退回内容特征。
     ///
-    /// 三者的内容形状一模一样，内容判别分不开它们；能分开的只有路径。所以路径里出现
-    /// 本成员的目录名或文件名时直接认领。都不匹配时用内容特征兜底，且只有 opencode
-    /// 本家会认（它是这一族的代表，也是 `BACKENDS` 的判别回落项）——否则三个同源后端
-    /// 会为同一份内容互相抢，判出哪个取决于注册顺序，反而不可预期。
-    ///
-    /// 内容兜底有个前提：**同族没人靠路径认领**。Kilo 会读同目录下遗留的
-    /// `~/.config/kilo/opencode.json`，该文件按路径属于 kilocode；若此时还让 opencode
-    /// 按内容（顶层 `provider`）兜底，注册顺序在前的 opencode 会把它抢走。
+    /// 内容兜底只对 opencode 本家生效，且要求同族无人按路径认领。
     fn detect(&self, content: &str, path: &str) -> bool {
         if path_matches(self.0, path) {
             return true;
         }
-        // 同族任一成员已按路径认领，内容兜底不得再抢。
+        // 同族任一成员已按路径认领，内容兜底不再生效。
         if FAMILY.iter().any(|f| path_matches(f, path)) {
             return false;
         }
@@ -248,9 +212,7 @@ impl Backend for OpenCodeFamilyBackend {
             }
             Some(target) => with_schema(merge_opencode_root(target, agents, providers), schema),
         };
-        // 各家 required 不同：源方言允许的半截字段写进目标方言会变成非法文件
-        // （详见 `complete_required_model_fields`）。补齐放在最后，连目标文件里
-        // 保留下来的旧条目一起过一遍。
+        // 按目标方言补齐必需字段，含目标文件里保留下来的旧条目。
         complete_required_fields_in(&mut root, self.0.id);
         root
     }
@@ -264,46 +226,36 @@ impl Backend for OpenCodeFamilyBackend {
     }
 }
 
-/// opencode 系全体成员。`path_matches` 需要知道「同族还有谁」，才能判断某个目录名
-/// 是否已经明确把文件判给了别的成员。
+/// opencode 系全体成员。
 pub static FAMILY: &[&Flavor] = &[&OPENCODE, &KILOCODE, &MIMOCODE];
 
-/// 路径是否属于某个 opencode 系成员：看路径段里有没有它的目录名或文件名。
+/// 路径是否属于某个 opencode 系成员：路径段里含其目录名或文件名。
 ///
-/// 同时接受 `/` 与 `\` 分隔（WSL 路径用 `/`），且大小写不敏感（Windows）。
+/// 同时接受 `/` 与 `\` 分隔，且大小写不敏感。
 fn path_matches(flavor: &Flavor, path: &str) -> bool {
     if path.trim().is_empty() {
         return false;
     }
     let lower = path.to_lowercase().replace('\\', "/");
-    // 目录名是最强信号：命中即认领。
+    // 目录名命中即认领。
     let dir_seg = format!("/{}/", flavor.dir);
     if lower.contains(&dir_seg) {
         return true;
     }
-    // 同族其他成员的目录名出现时，文件名不再是本成员的线索。Kilo 会读同目录下遗留的
-    // `~/.config/kilo/opencode.json`——那个文件属于 kilocode，若按文件名判给 opencode，
-    // 页面与保存路径都会认错门。
+    // 同族其他成员的目录名出现时，文件名不再是本成员的线索。
     let other_dir = FAMILY
         .iter()
         .any(|f| f.dir != flavor.dir && lower.contains(&format!("/{}/", f.dir)));
     if other_dir {
         return false;
     }
-    // 文件名：主名（`kilo.json`）与其 `.jsonc` 变体（`kilo.jsonc`）。
+    // 文件名：主名与其 `.jsonc` 变体。
     let stem = flavor.file.trim_end_matches(".json");
     let names = [format!("/{}", flavor.file), format!("/{}.jsonc", stem)];
     names.iter().any(|n| lower.ends_with(n.as_str()))
 }
 
-/// 保证 `$schema` 存在、且排在首位。
-///
-/// CLI 自己生成的配置就带这个字段（`kilo.json` 里只有一行 `$schema`），它让编辑器与
-/// CLI 拿到字段补全。此前新建 / 合并到不存在的目标时完全不写它，写出的配置是个裸的
-/// `{"agent":{},"provider":{}}`，用户会看到「预览里没有 $schema」。
-///
-/// **已有值一律保留**：用户可能手动改成别的 schema 地址（或旧版本地址），
-/// 覆盖成官方值等于替用户改配置。
+/// 保证 `$schema` 存在、且排在首位；已有值一律保留。
 fn with_schema(root: Value, schema: &str) -> Value {
     let Value::Object(mut o) = root else {
         return root;
@@ -314,38 +266,19 @@ fn with_schema(root: Value, schema: &str) -> Value {
     Value::Object(convert::order_fields(o, &["$schema"]))
 }
 
-/// 按目标方言补齐模型级**必需成对字段**，让写出的配置一定通过 CLI 的 schema 校验。
+/// 按目标方言补齐模型级**必需成对字段**。
 ///
-/// ## 为什么必须做
+/// 三家 CLI 的 required 不同：`limit.context` / `limit.output` 三家都要求成对；
+/// `modalities.input` / `modalities.output` 仅 mimocode 要求成对。
 ///
-/// 三个 CLI 都用 zod 校验配置，schema 里的 `required` 是真会拒绝启动的（实测
-/// `mimo models` / `kilo models` / `opencode models` 对半截 `limit` 一律报
-/// `Missing key … limit.output`）。而三家的 required **并不相同**：
-///
-/// | 字段 | opencode | kilo | mimocode |
-/// |---|---|---|---|
-/// | `limit.context` + `limit.output` | 必需 | 必需 | 必需 |
-/// | `modalities.input` + `modalities.output` | 可选 | 可选 | **必需** |
-///
-/// 于是同一份配置在三页之间并不等价：源方言（opencode）允许只写
-/// `modalities.output`，写进 mimocode 就变成**非法文件**——用户遇到的正是这个
-/// （opencode 里那几个只写了 output 的模型，切到 mimo 页保存后 `mimo` 拒绝加载）。
-///
-/// ## 补法
-///
-/// 按「缺的那一侧有没有安全的默认值」分两种，不搞一刀切：
-///
-/// - `modalities`：缺的一侧补 `["text"]`。整块省略时 CLI 就是按「纯文本」理解的，
-///   补 text 是对源方言语义的**忠实**表达，同时保住了用户明确写出的那一侧。
-/// - `limit`：半截 limit **无法表达**（schema 要数字，而「不限」没有对应值），凭空
-///   编一个上下文窗口比交给 CLI 自己的模型库更糟，所以整块删掉——`limit` 在模型级
-///   本来就是可选的，省略后 CLI 用它自己的数据。
+/// 补法：`modalities` 缺的一侧补 `["text"]`；`limit` 只给一半时整块删除
+/// （`limit` 在模型级可选）。`modalities` 两侧都没写时整块删除。
 fn complete_required_model_fields(model: &mut Value, flavor: ConfigFormat) {
     let Some(obj) = model.as_object_mut() else {
         return;
     };
 
-    // limit：三家都要求 context + output 成对（limit 整块可省略，但不能只给一半）。
+    // limit：三家都要求 context + output 成对（整块可省略，不能只给一半）。
     let limit_sides = obj
         .get("limit")
         .and_then(Value::as_object)
@@ -369,7 +302,7 @@ fn complete_required_model_fields(model: &mut Value, flavor: ConfigFormat) {
     };
     match (has_input, has_output) {
         (true, true) => {}
-        // 两侧都没写等于没声明模态：整块删掉才是合法形状（`{}` 会被拒）。
+        // 两侧都没写：整块删掉（`{}` 非法）。
         (false, false) => {
             obj.remove("modalities");
         }
@@ -388,10 +321,7 @@ fn fill_text_modality(obj: &mut Map<String, Value>, side: &str) {
     }
 }
 
-/// 对整个 root 的 `provider.*.models.*` 逐个补齐必需字段。
-///
-/// 覆盖**目标文件里原有的模型**，不只是界面接管的那些：合并写入时目标文件里的条目
-/// 会保留下来，它们同样要能通过校验，否则照样是「CLI 起不来」。
+/// 对整个 root 的 `provider.*.models.*` 逐个补齐必需字段，含目标文件里原有的模型。
 fn complete_required_fields_in(root: &mut Value, flavor: ConfigFormat) {
     let Some(providers) = root.get_mut("provider").and_then(Value::as_object_mut) else {
         return;

@@ -1,16 +1,11 @@
 //! 工具自身设置持久化：家目录下的 `.modelharbor/settings.json`
 //! （Windows：`C:\Users\<用户名>\.modelharbor\settings.json`）。
 //!
-//! 只存**界面选择**（密钥显隐、保存格式、主题、同步 WSL、卡片折叠、各页配置路径覆盖）
-//! —— 配置内容永远以用户自己的 agent 配置文件为真源，这里一个字段都不存：
-//! 不存密钥、不存模型、不存配置内容。叫 settings 而不是 config，正是为了不和
-//! 那些「配置文件」混淆。
+//! 只存界面选择（密钥显隐、保存格式、主题、同步 WSL、卡片折叠、各页配置路径覆盖），
+//! 不存密钥、模型与配置内容。
 //!
-//! 文件不存在 / 读不出 / 解析失败都用默认值（界面偏好坏了不该影响工具可用性）。
-//! 空字符串表示「没设置过」，由调用方回落到自己的默认值。
-//!
-//! 兼容：早期版本叫 `prefs.json`（先在家目录、更早还在 `%APPDATA%`）。
-//! 读取时按「新名字 → 旧名字」「家目录 → %APPDATA%」逐个回退，写盘只写新位置的新名字，
+//! 文件不存在 / 读不出 / 解析失败都用默认值；空字符串表示「没设置过」。
+//! 读取按「新名字 → 旧名字」「家目录 → %APPDATA%」逐个回退，写盘只写新名字，
 //! 并在首次写入后清掉同目录的旧文件。
 
 use serde_json::{Map, Value};
@@ -25,10 +20,10 @@ fn nested_str(root: &Value, outer: &str, inner: &str) -> String {
         .to_string()
 }
 
-/// 配置目录名（家目录下的点目录，与任何 agent 配置目录无关）。
+/// 配置目录名（家目录下的点目录）。
 pub const DIR_NAME: &str = ".modelharbor";
 const FILE_NAME: &str = "settings.json";
-/// 旧文件名（早期版本）：只用于读取时回退与写入后清理。
+/// 旧文件名：只用于读取时回退与写入后清理。
 const LEGACY_FILE_NAME: &str = "prefs.json";
 /// 崩溃日志文件名。
 const CRASH_FILE_NAME: &str = "crash.log";
@@ -69,14 +64,12 @@ fn append_line(path: &Path, entry: &str) -> bool {
     file.write_all(entry.as_bytes()).is_ok() && file.flush().is_ok()
 }
 
-/// 把一段崩溃记录追加到 `crash.log`。
-///
-/// 返回是否写入成功，供调用方与测试判断；调用它本身绝不会 panic。
+/// 把一段崩溃记录追加到 `crash.log`：返回是否写入成功；本身不会 panic。
 pub fn append_crash_log(entry: &str) -> bool {
     crash_log_path().is_some_and(|path| append_line(&path, entry))
 }
 
-/// 旧位置（`%APPDATA%` 下同名目录）：早期版本放在这里。
+/// 旧位置（`%APPDATA%` 下同名目录）。
 fn legacy_dir() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join(DIR_NAME))
 }
@@ -97,7 +90,7 @@ fn read_candidates() -> Vec<PathBuf> {
     out
 }
 
-/// 写入后清掉同目录下的旧文件名（一次性迁移收尾；失败不影响本次保存）。
+/// 清掉同目录下的旧文件名；失败不影响本次保存。
 fn remove_legacy_next_to(path: &Path) {
     let Some(dir) = path.parent() else {
         return;
@@ -108,10 +101,10 @@ fn remove_legacy_next_to(path: &Path) {
     }
 }
 
-/// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
+/// 写盘用的 schema 版本（读取时忽略）。
 const SCHEMA_VERSION: u64 = 12;
 
-/// 配置身份：规范化路径后做稳定 FNV-1a 哈希，避免把用户目录明文写进设置键。
+/// 配置身份：规范化路径后的稳定 FNV-1a 哈希。
 pub fn config_identity(path: &str) -> String {
     let normalized = path.trim().replace('\\', "/").to_lowercase();
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
@@ -200,8 +193,7 @@ pub struct Prefs {
     pub collapsed: Vec<String>,
     /// 检测到系统代理 / VPN 时是否仍允许「模型延迟测试」。
     ///
-    /// 中转站普遍有多 IP 检测 / 测活风控，默认 `false` 保持拦截；
-    /// 用户明确知道风险时可以打开（会影响延迟测试，不影响连通性测试与用量查询）。
+    /// 默认 `false`；只影响延迟测试，不影响连通性测试与用量查询。
     pub allow_model_test_with_proxy: bool,
     /// 是否已经关掉首次使用引导条。
     pub guide_dismissed: bool,
@@ -210,7 +202,7 @@ pub struct Prefs {
     /// 玻璃背景：面板 / 卡片半透明，透出 DWM 亚克力模糊（正交于主题与形状）。
     pub glass: bool,
     /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
-    /// 只对已安装的那一组生效——未安装的页面始终排在后面并按字母序。
+    /// 只对已安装的那一组生效，未安装的页面排在后面并按字母序。
     pub tab_order: Vec<String>,
 }
 
@@ -236,10 +228,9 @@ impl Prefs {
         Self::config_dir().join(FILE_NAME)
     }
 
-    /// 从默认路径加载（全读不到即默认值）。
+    /// 从默认路径加载。
     ///
-    /// 按 [`read_candidates`] 顺序回退：新位置没有就读旧文件名、再读旧的
-    /// `%APPDATA%` 位置（一次性迁移：老设置不丢，下次写盘自动落到新位置）。
+    /// 按 [`read_candidates`] 顺序逐个回退，全读不到即默认值。
     pub fn load() -> Prefs {
         for candidate in read_candidates() {
             if let Ok(text) = std::fs::read_to_string(&candidate) {
@@ -260,7 +251,7 @@ impl Prefs {
                 .unwrap_or("")
                 .to_string()
         };
-        // 字符串数组字段（折叠表 / 签到授权）读取方式一致，提一个闭包。
+        // 读取字符串数组字段（折叠表 / 签到授权）。
         let get_list = |key: &str| {
             root.get(key)
                 .and_then(Value::as_array)
@@ -314,7 +305,7 @@ impl Prefs {
         }
     }
 
-    /// 序列化（固定字段顺序，便于人工核对 / diff）。
+    /// 序列化（固定字段顺序）。
     pub fn to_json(&self) -> String {
         let mut root = Map::new();
         root.insert("version".to_string(), Value::Number(SCHEMA_VERSION.into()));
@@ -341,7 +332,7 @@ impl Prefs {
             paths.insert(key.to_string(), Value::String(value.clone()));
         }
         root.insert("config_paths".to_string(), Value::Object(paths));
-        // 两个字符串数组都排序去重后写出：内容一样就不产生 diff（避免写盘噪声）。
+        // 两个字符串数组都排序去重后写出。
         let sorted_array = |items: &[String]| {
             let mut list: Vec<&String> = items.iter().collect();
             list.sort();
@@ -363,8 +354,7 @@ impl Prefs {
         );
         root.insert("ui_style".to_string(), Value::String(self.ui_style.clone()));
         root.insert("glass".to_string(), Value::Bool(self.glass));
-        // 顶栏顺序按用户拖动结果原样写出：这里**不能**排序，
-        // 顺序本身就是这个键的内容（与 collapsed 的排序去重不同）。
+        // 顶栏顺序按原样写出：顺序本身就是这个键的内容，不做排序去重。
         root.insert(
             "tab_order".to_string(),
             Value::Array(
@@ -377,7 +367,7 @@ impl Prefs {
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// 落盘到默认路径，并清掉同目录下的旧文件名（一次性迁移收尾）。
+    /// 落盘到默认路径，并清掉同目录下的旧文件名。
     pub fn save(&self) -> Result<(), String> {
         let path = Self::path();
         let result = self.save_to(&path);
@@ -389,8 +379,7 @@ impl Prefs {
 
     /// 落盘到指定路径（单测用）。
     ///
-    /// 原子写：先写同目录临时文件并同步，再替换正式文件；替换失败保留原设置
-    ///（实现见 [`crate::util::atomic_write_text`]，与站点令牌文件共用同一套策略）。
+    /// 原子写：先写同目录临时文件并同步，再替换正式文件；替换失败保留原设置。
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
         crate::util::atomic_write_text(path, &self.to_json())
     }
@@ -441,7 +430,7 @@ mod tests {
                 qwen_code: String::new(),
                 kimi_code: String::new(),
             },
-            // 按字母序给出：to_json 会排序写出，因此往返应完全相等
+            // 按字母序给出，to_json 会排序写出。
             collapsed: vec![
                 collapsed_id("cfg", "agents", "build"),
                 collapsed_id("cfg", "providers", "openai"),
@@ -449,14 +438,14 @@ mod tests {
             allow_model_test_with_proxy: true,
             guide_dismissed: true,
             ui_style: "slab".to_string(),
-            // 非默认值：往返测试要能盖住玻璃档的读写。
+            // 非默认值，覆盖玻璃档的读写。
             glass: true,
             tab_order: vec!["pi".to_string(), "zcode".to_string()],
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
     }
 
-    /// 顶栏顺序按拖动结果原样写出：排序会毁掉这个键的内容。
+    /// 顶栏顺序按原样写出，不排序。
     #[test]
     fn tab_order_is_written_verbatim_not_sorted() {
         let prefs = Prefs {
@@ -486,7 +475,7 @@ mod tests {
         assert_eq!(text.matches("b/2").count(), 1, "不应重复：{text}");
         let back = Prefs::parse(&text);
         assert_eq!(back.collapsed, vec!["a/1".to_string(), "b/2".to_string()]);
-        // 再次写出应完全相同（内容一致 → 不产生 diff）
+        // 再次写出应完全相同。
         assert_eq!(back.to_json(), text);
     }
 
@@ -523,7 +512,7 @@ mod tests {
             prefs.collapsed,
             vec!["providers/p".to_string(), "agents/a".to_string()]
         );
-        // 写出的版本号跟当前 schema 走（这里不写死数字，避免每次升版都要改测试）。
+        // 写出的版本号跟当前 schema 走。
         assert!(
             prefs
                 .to_json()
@@ -535,7 +524,7 @@ mod tests {
 
     #[test]
     fn glass_defaults_off_and_round_trips() {
-        // 默认关闭：玻璃会降低对比度，不该默认打开。
+        // 默认关闭。
         assert!(!Prefs::default().glass);
         // 只有真正的布尔 true 才开：缺字段、字符串 "true" 都按关闭处理。
         assert!(!Prefs::parse(r#"{"version":3,"show_api_keys":true}"#).glass);
@@ -553,7 +542,7 @@ mod tests {
 
     #[test]
     fn proxy_model_test_override_defaults_off_and_round_trips() {
-        // 默认必须是拦截：老设置文件里没有这个键时，绝不能变成“默认放行”。
+        // 缺字段时默认拦截。
         assert!(
             !Prefs::default().allow_model_test_with_proxy,
             "默认要保持拦截"
@@ -646,7 +635,7 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        // 前两个候选必须是「家目录的新名字 → 家目录的旧名字」
+        // 前两个候选：家目录的新名字 → 家目录的旧名字。
         assert_eq!(candidates.first().map(String::as_str), Some(FILE_NAME));
         assert_eq!(
             candidates.get(1).map(String::as_str),
@@ -693,7 +682,7 @@ mod tests {
         for forbidden in [".config", ".pi", ".omp", ".dsh", "opencode"] {
             assert!(!text.contains(forbidden), "不应写进 agent 配置：{text}");
         }
-        // 有家目录时必须在家里，而不是 %APPDATA%
+        // 有家目录时必须在家里。
         let has_home =
             std::env::var_os("USERPROFILE").is_some() || std::env::var_os("HOME").is_some();
         if has_home {
@@ -709,7 +698,7 @@ mod tests {
         // 缺字段 = 没关过 = 显示引导。
         assert!(!Prefs::default().guide_dismissed);
         assert!(!Prefs::parse(r#"{"version":6}"#).guide_dismissed);
-        // 字符串 "true" 不算关闭（与代理开关同一口径：只认真布尔）。
+        // 字符串 "true" 不算关闭，只认真布尔。
         assert!(!Prefs::parse(r#"{"guide_dismissed":"true"}"#).guide_dismissed);
         assert!(Prefs::parse(r#"{"guide_dismissed":true}"#).guide_dismissed);
     }
@@ -728,7 +717,7 @@ mod tests {
 
     #[test]
     fn ui_style_defaults_to_empty_and_round_trips() {
-        // 空字符串 = 用默认档（与 `theme` / `save_format` 同一口径）。
+        // 空字符串 = 用默认档。
         assert_eq!(Prefs::default().ui_style, "");
         assert_eq!(Prefs::parse(r#"{"ui_style":"slab"}"#).ui_style, "slab");
         // 类型不对按没设置过处理。

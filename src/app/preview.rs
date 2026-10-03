@@ -7,13 +7,13 @@ use crate::backends;
 use crate::format::ConfigFormat;
 use eframe::egui;
 
-/// 预览编辑框的固定 id（切页时需要主动释放焦点，见 reset_preview_draft）。
+/// 预览编辑框的固定 id（切页时主动释放焦点，见 `reset_preview_draft`）。
 pub(super) const PREVIEW_EDITOR_ID: &str = "preview_editor";
 
 /// 预览框内停止输入多久后，允许用组件状态重建草稿（秒）。
 pub(super) const PREVIEW_EDIT_IDLE_SECS: f64 = 2.0;
 
-/// 预览查找：大小写不敏感的字符级匹配，返回不重叠的字节区间。
+/// 是否用组件状态重建预览草稿：解析失败时不重建，编辑后静置满 `PREVIEW_EDIT_IDLE_SECS` 才重建。
 pub(super) fn preview_should_rebuild(parse_failed: bool, edited_at: Option<f64>, now: f64) -> bool {
     if parse_failed {
         return false;
@@ -21,6 +21,7 @@ pub(super) fn preview_should_rebuild(parse_failed: bool, edited_at: Option<f64>,
     edited_at.is_none_or(|at| now - at >= PREVIEW_EDIT_IDLE_SECS)
 }
 
+/// 预览查找：大小写不敏感的字符级匹配，返回不重叠的字节区间。
 pub(super) fn find_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
     if query.is_empty() {
         return Vec::new();
@@ -50,10 +51,6 @@ pub(super) fn find_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
 }
 
 /// 把字节偏移向下钳到字符边界（并钳到长度内）。
-///
-/// 查找偏移按帧首文本计算；同帧内草稿被编辑过后，过期偏移可能落在多字节字符
-/// 中间，直接切片会 panic（`byte index is not a char boundary`）——
-/// `min(len)` 只兜上界，兜不了字符边界，所以向下找最近的边界。
 pub(super) fn floor_char_boundary(text: &str, mut byte: usize) -> usize {
     byte = byte.min(text.len());
     while byte > 0 && !text.is_char_boundary(byte) {
@@ -62,19 +59,12 @@ pub(super) fn floor_char_boundary(text: &str, mut byte: usize) -> usize {
     byte
 }
 
-/// 预览分隔条所在的层级。
-///
-/// 用 `Middle`：预览面板本身在 `background` 层，`Middle` 已经足够接住拖拽
-/// （不会被面板里的文本框抢走）；同时低于令牌悬浮窗所在的 `Foreground`，
-/// 分割线不会画到窗上面。
-///
-/// 分隔条被拖动时 egui 会把它提到**本层**顶部 —— 层级不变，所以拖动过程中
-/// 也不会盖住窗。两者同层时就没有这个保证。
+/// 预览分隔条所在的层级：高于预览面板的 `background` 层，低于令牌悬浮窗的 `Foreground` 层。
 pub(super) const PREVIEW_RESIZER_ORDER: egui::Order = egui::Order::Middle;
 
 impl App {
     /// 预览面板左边缘的拖动分隔条：拖拽调整预览宽度比例（窗口缩放时按比例适配）。
-    /// 用独立 Area 承载热区，避免被同层的文本框/滚动区抢走拖拽。
+    /// 热区由独立 `Area` 承载。
     pub(super) fn ui_preview_resizer(
         &mut self,
         ctx: &egui::Context,
@@ -116,9 +106,9 @@ impl App {
     }
 
     /// 预览文本语法：opencode / pi 为 JSON(C)，omp / DSH 为 YAML，kimi-code 为 TOML；
-    /// 另按内容首字符兜底（`{` / `[` 视为 JSON），避免格式与页面不匹配时高亮错乱。
+    /// 首字符为 `{` / `[` 时按 JSON。
     pub(super) fn preview_syntax(&self, text: &str) -> PreviewSyntax {
-        // 内容兜底：以 `{` / `[` 开头一律按 JSON 处理（例如误把 JSON 当 YAML 页面导入）。
+        // 内容兜底：以 `{` / `[` 开头按 JSON 处理。
         if matches!(
             text.trim_start().as_bytes().first(),
             Some(b'{') | Some(b'[')
@@ -128,8 +118,7 @@ impl App {
         // opencode 系: opencode.json / kilo.json / mimocode.json（均 JSONC）
         // pi: ~/.pi/agent/models.json（JSONC）
         // omp: models.yml / DSH: settings.yaml（YAML）
-        // zcode: provider_config.json / workbuddy: models.json / qwen-code: settings.json
-        // （均为 JSON；qwen-code 的 settings.json 是 JSONC，去掉注释后仍是 JSON）
+        // zcode: provider_config.json / workbuddy: models.json / qwen-code: settings.json（JSON）
         // kimi-code: ~/.kimi-code/config.toml（TOML）
         match self.current_page {
             ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
@@ -145,8 +134,7 @@ impl App {
     }
 
     /// 重置预览编辑状态，让草稿在下一帧按当前组件状态重建。
-    /// 切页/重新加载/打开预览时调用：草稿只在「预览未聚焦且上次解析成功」时
-    /// 才跟随组件状态，否则会停留在上一页的内容上。
+    /// 切页 / 重新加载 / 打开预览时调用。
     pub(super) fn reset_preview_draft(&mut self) {
         self.preview_focused = false;
         self.preview_parse_ok = true;
@@ -155,16 +143,14 @@ impl App {
         self.preview_edit_at = None;
     }
 
-    /// 预览面板：右侧实时展示「待保存文档」（与保存按钮同路径、同合并语义）；
+    /// 预览面板：右侧实时展示「待保存文档」（与保存按钮同路径、同合并语义）。
     /// 文本框始终可编辑：编辑内容实时解析并应用回组件，停止输入后自动写盘。
     pub(super) fn ui_preview_panel(&mut self, ui: &mut egui::Ui) {
         let now = ui.ctx().input(|i| i.time);
         // 待保存文档：与 page_save_path / save_backend_to 相同路径与合并逻辑。
         let doc = self.preview_document();
-        // 组件状态是「待保存文档」的唯一来源：只要用户没在预览框里手改（停止输入
-        // 超过 PREVIEW_EDIT_IDLE_SECS）且上次解析没失败，就按组件状态重建草稿。
-        // 不再依赖「预览是否持有焦点」—— 焦点残留或解析失败会让预览停在旧内容上，
-        // 用户再动一下预览还会把旧内容解析回组件，导致保存写回旧配置。
+        // 组件状态是「待保存文档」的唯一来源：用户没在预览框里手改（停止输入超过
+        // PREVIEW_EDIT_IDLE_SECS）且上次解析没失败时，按组件状态重建草稿。
         if preview_should_rebuild(
             self.preview_parse_error.is_some(),
             self.preview_edit_at,
@@ -186,8 +172,6 @@ impl App {
                 "预览编辑"
             });
             // 「对比」切换：显示自加载以来「磁盘原文件 → 待保存文档」的改动。
-            // 保存会把 provider / agent 容器整体接管，跨格式还会整段重建，
-            // 下手前先看清楚改了什么比对着两份 JSON 肉眼比对靠谱。
             if ui
                 .selectable_label(self.preview_diff_mode, "对比")
                 .on_hover_text(
@@ -227,12 +211,12 @@ impl App {
             self.reset_preview_draft();
         }
         ui.separator();
-        // 对比模式是只读视图：不渲染文本框，因此也没有查找栏与自动保存的交互。
+        // 对比模式是只读视图：不渲染文本框，无查找栏与自动保存。
         if self.preview_diff_mode {
             self.ui_preview_diff(ui);
             return;
         }
-        // Ctrl+F：激活查找（读原始按键事件，避免被文本框消耗）。
+        // Ctrl+F：激活查找（读原始按键事件）。
         let ctrl_f = ui.input(|i| {
             i.events.iter().any(|e| {
                 matches!(
@@ -313,15 +297,14 @@ impl App {
                 }
             });
         }
-        // 文本框：常规自上而下布局的最后一个元素，占满剩余高度，
-        // 滚轮/滚动条均正常（用 bottom_up 会把滚动错位到底部）。
+        // 文本框：常规自上而下布局的最后一个元素，占满剩余高度，滚轮/滚动条正常。
         let text_width = (ui.available_width() - 14.0).max(120.0);
         let mut edited = false;
         let mut cursor_line: Option<usize> = None;
         // 查找高亮：命中段加底色，当前命中用更亮的底色。
         let find_query = self.preview_find.clone();
         let find_active = self.preview_find_active && !find_query.is_empty();
-        // 可变：layouter 里要按当前文本过滤过期偏移（见下方 retain）。
+        // 可变：layouter 里按当前文本过滤过期偏移。
         let mut find_matches = if find_active {
             find_matches(&self.preview_draft, &find_query)
         } else {
@@ -332,13 +315,13 @@ impl App {
             .min(find_matches.len().saturating_sub(1));
         let find_jump = self.preview_find_jump.take();
         let syntax = self.preview_syntax(&self.preview_draft);
-        // 语法配色按当前主题明暗选：写死一套深色配色在浅底上读不清。
+        // 语法配色按当前主题明暗选。
         let palette = SyntaxPalette::for_dark(self.theme.is_dark());
         let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
             let text = text.as_str();
             let font_id = egui::TextStyle::Monospace.resolve(ui.style());
             let mut job = egui::text::LayoutJob::default();
-            // 自适应换行：使用 TextEdit 传入的换行宽度，长行不再溢出面板。
+            // 自适应换行：使用 TextEdit 传入的换行宽度。
             job.wrap.max_width = wrap_width;
             let base = ui.visuals().text_color();
             let push = |job: &mut egui::text::LayoutJob, seg: &str, color: egui::Color32| {
@@ -368,10 +351,7 @@ impl App {
             }
             // 2) 查找命中底色叠加在语法色之上
             if !find_matches.is_empty() {
-                // 命中偏移是帧首按当时草稿算的；TextEdit 在本帧应用按键后草稿已变，
-                // 过期偏移可能落在多字节字符中间——galley 按它切片会 panic
-                // （查找开着时在预览框里打字，每一帧都有这个窗口）。
-                // 按当前文本只保留两端都是字符边界的命中；内容级刷新等下一帧。
+                // 只保留两端都是字符边界的命中；内容级刷新等下一帧。
                 find_matches.retain(|&(s, e)| text.is_char_boundary(s) && text.is_char_boundary(e));
                 apply_find_background(&mut job, &find_matches, find_current, palette);
             }
@@ -389,13 +369,12 @@ impl App {
                     .desired_rows(24)
                     .hint_text("在此直接编辑：改动实时应用到左侧组件，停止输入约 0.8s 后自动保存")
                     .layouter(&mut layouter);
-                // 用 show 而非 add：需要 output.cursor_range 计算光标所在行。
+                // 用 show：需要 output.cursor_range 计算光标所在行。
                 let output = edit.show(ui);
                 let resp = output.response;
                 // 查找命中跳转：把光标移到命中处并写回状态，滚动区随之滚动。
                 if let Some(byte) = find_jump {
-                    // 跳转偏移同样可能过期（帧首算的、本帧已编辑）：先钳回字符边界，
-                    // 否则切片 panic（`min(len)` 只兜上界，兜不了字符边界）。
+                    // 跳转偏移可能过期：先钳回字符边界。
                     let bounded = floor_char_boundary(&self.preview_draft, byte);
                     let char_idx = self.preview_draft[..bounded].chars().count();
                     let ccursor = egui::text::CCursor::new(char_idx);
@@ -406,8 +385,7 @@ impl App {
                             ccursor, ccursor,
                         )));
                     state.store(ui.ctx(), resp.id);
-                    // 主动把命中位置滚入视野：egui 只在文本框内容变化时自动滚动到光标，
-                    // 通过按钮/Enter 跳转时光标是外部设置的，需要自己请求滚动。
+                    // 主动把命中位置滚入视野。
                     let rect = output
                         .galley
                         .pos_from_cursor(ccursor)
@@ -433,7 +411,7 @@ impl App {
         if let Some(line) = cursor_line {
             self.preview_cursor_line = line;
         }
-        // 编辑 → 实时解析并应用回组件状态（解析失败不写盘、不覆盖）。
+        // 编辑 → 实时解析并应用回组件状态（解析失败不写盘）。
         if edited {
             self.apply_preview_draft();
             self.preview_dirty_at = Some(now);
@@ -459,8 +437,7 @@ impl App {
         };
         let is_current = self.source_format == fmt && path == self.loaded_path;
         // 与 save_backend_to 同一套语义：跨格式目标做干净转换（provider 容器由界面接管），
-        // 预览显示的内容就是保存将要写出的内容。agent 的 model 也必须按目标页网关归一，
-        // 否则预览会显示一份「看着没问题、写出去却是无效引用」的内容。
+        // agent 的 model 按目标页网关归一。
         let agents = if self.source_format != fmt {
             self.agents_for_page(fmt)
         } else {
@@ -469,8 +446,7 @@ impl App {
         let target_root = if is_current {
             None
         } else {
-            // 与保存同一语义：目标文件读不出就报错，而不是显示一份
-            // 「保存时根本写不出去」的预览。
+            // 与保存同一语义：目标文件读不出即报错。
             let mut target = backend.load_target_root(&path)?;
             if self.source_format != fmt {
                 strip_cross_format_containers(fmt, &mut target, !agents.is_empty());
@@ -507,9 +483,7 @@ impl App {
                 self.model_fetch.clear();
                 self.model_fetch_open.clear();
                 self.latency.clear();
-                // agent 的 key 集合可能被预览内容换掉，但各页的 model 记忆**不清**：
-                // 它按 (config_id, page) 键控且还原时按 agent key 逐条查（缺失自然跳过），
-                // 同文件预览应用后记忆仍有效；换文件后旧键自然失配。
+                // agent 的 key 集合可能被预览内容换掉，各页的 model 记忆保留。
                 self.probe.release(None);
                 true
             }
@@ -522,8 +496,8 @@ impl App {
         }
     }
 
-    /// 实时保存：把当前待保存文档写入目标文件（仅本地，不触发 WSL 同步；
-    /// 解析失败、目标不可用时跳过并提示，绝不写坏文件）。
+    /// 实时保存：把当前待保存文档写入目标文件（仅本地，不触发 WSL 同步）。
+    /// 解析失败、目标不可用时跳过并提示。
     pub(super) fn preview_autosave(&mut self) {
         if !self.preview_parse_ok {
             self.status = "预览内容解析失败，未保存（修正文本后会自动保存）".into();
@@ -561,17 +535,8 @@ impl App {
 
     /// 对比视图：逐行显示「目标文件当前内容 → 待保存文档」的改动。
     ///
-    /// 基线是**此刻磁盘上该目标文件的内容**，所以语义很干脆：这里显示的就是
-    /// 「按一下保存会改掉什么」。保存之后（或预览手改触发自动保存后）磁盘内容
-    /// 追上待保存文档，对比自然变空——那不是缺陷，而是「没有待保存的改动」。
-    ///
-    /// 结果按 `(路径, 草稿, 写盘次数)` 签名缓存。签名里必须有写盘次数：保存后
-    /// 磁盘内容变了，而路径与草稿都没变，只看这两者会把一份已经落盘的改动
-    /// 一直显示下去。
-    ///
-    /// 重算还要**防抖**：LCS 是 O(n·m)，预览框每敲一个字符草稿都变，逐键重算
-    /// 会在长文件上卡住输入。签名变化后先记下时刻，静置 [`DIFF_DEBOUNCE_SECS`]
-    /// 才真算；期间沿用旧结果，所以画面不会闪空。
+    /// 基线是**此刻磁盘上该目标文件的内容**。结果按 `(路径, 草稿, 写盘次数)` 签名缓存，
+    /// 签名变化后静置 [`DIFF_DEBOUNCE_SECS`] 才重算，期间沿用旧结果。
     pub(super) fn ui_preview_diff(&mut self, ui: &mut egui::Ui) {
         let now = ui.ctx().input(|i| i.time);
         let doc = self.preview_document();
@@ -588,20 +553,18 @@ impl App {
         let (due, pending) = diff_step(cached, self.preview_diff_pending, signature, now);
         self.preview_diff_pending = pending;
         if due {
-            // 读不出目标文件（还不存在 / 无权限）按空内容比：整份文档显示为新增，
-            // 正是「这个文件还没有，保存会创建它」的真实含义。
+            // 读不出目标文件（还不存在 / 无权限）按空内容比。
             let baseline = crate::util::read_config_content(&path).unwrap_or_default();
             let (lines, summary) =
                 diff::diff_hunks(&baseline, &self.preview_draft, diff::CONTEXT_LINES);
             self.preview_diff_cache = Some((signature, lines, summary));
         } else if cached != Some(signature) {
-            // egui 默认只在有输入时重绘；用户停手后不会再有帧，防抖就永远等不到
-            // 那一刻。这里显式要求到点重绘一次。
+            // 显式要求到点重绘一次，保证防抖到期时有帧。
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_secs_f64(DIFF_DEBOUNCE_SECS));
         }
         let Some((_, lines, summary)) = &self.preview_diff_cache else {
-            // 还没算出结果（刚打开对比）：给一行提示，避免看着像坏了。
+            // 还没算出结果（刚打开对比）：给一行提示。
             ui.label(egui::RichText::new("正在计算差异…").small().weak());
             return;
         };
@@ -649,14 +612,11 @@ impl App {
     }
 }
 
-/// 对比重算的防抖时长（秒）。与预览自动保存的 0.8s 同量级：用户停手后
-/// 两者几乎同时落定，不会出现「已经保存了、对比还停在旧结果上」的错觉。
+/// 对比重算的防抖时长（秒）。
 const DIFF_DEBOUNCE_SECS: f64 = 0.5;
 
-/// 对比重算是否到点。
-///
-/// 抽成纯函数是为了能直接测「同一个签名等够时间才算、换了签名就重新计时」，
-/// 不必驱动 egui。`pending` 是上一帧记下的 `(签名, 首次见到它的时刻)`。
+/// 对比重算是否到点：同一签名静置满 [`DIFF_DEBOUNCE_SECS`] 才算。
+/// `pending` 是上一帧记下的 `(签名, 首次见到它的时刻)`。
 pub(super) fn diff_recompute_due(pending: Option<(u64, f64)>, signature: u64, now: f64) -> bool {
     match pending {
         Some((p, at)) if p == signature => now - at >= DIFF_DEBOUNCE_SECS,
@@ -666,13 +626,7 @@ pub(super) fn diff_recompute_due(pending: Option<(u64, f64)>, signature: u64, no
 
 /// 防抖的一步状态转移：返回 `(本帧是否重算, 下一步的 pending)`。
 ///
-/// 把「何时记时刻」与「何时算」放在一起，是因为它们必须配套：曾经把
-/// `pending = Some((signature, now))` 写在 `else` 里每帧无条件执行，于是
-/// `now - at` 永远是 0，防抖永远不到点，界面一直停在「正在计算差异…」。
-/// 只测 [`diff_recompute_due`] 看不出这个问题——错在调用方的状态更新。
-///
-/// `cached` 是当前缓存里那份结果的签名（`None` = 还没有任何结果）：没有结果可
-/// 显示时立刻算，不让刚打开对比的人先等半秒。
+/// `cached` 是当前缓存结果的签名（`None` = 还没有任何结果），无结果可显示时立刻算。
 pub(super) fn diff_step(
     cached: Option<u64>,
     pending: Option<(u64, f64)>,
@@ -680,13 +634,13 @@ pub(super) fn diff_step(
     now: f64,
 ) -> (bool, Option<(u64, f64)>) {
     if cached == Some(signature) {
-        // 缓存已是最新：清掉计时状态，免得残留的旧签名挡住下一次判定。
+        // 缓存已是最新：清掉计时状态。
         return (false, None);
     }
     if cached.is_none() || diff_recompute_due(pending, signature, now) {
         return (true, None);
     }
-    // 只在该签名**首次出现**时记时刻，后续帧沿用，否则永远等不到点。
+    // 只在该签名**首次出现**时记时刻，后续帧沿用。
     match pending {
         Some((p, at)) if p == signature => (false, Some((p, at))),
         _ => (false, Some((signature, now))),
@@ -694,9 +648,7 @@ pub(super) fn diff_step(
 }
 
 /// 对比缓存的签名：目标路径 + 待保存文档 + 写盘次数。
-///
-/// 用标准库默认哈希即可——它只用于判断「要不要重算」，不参与任何安全判定，
-/// 碰撞的后果仅仅是少算一次差异（下一帧签名变化仍会重算）。
+/// 用标准库默认哈希，只用于判断「要不要重算」。
 pub(super) fn diff_signature(path: &str, draft: &str, save_serial: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

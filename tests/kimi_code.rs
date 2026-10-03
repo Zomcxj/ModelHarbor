@@ -1,17 +1,11 @@
-//! KimiCode 后端回归：`~/.kimi-code/config.toml` 的判别 / 解析 / 序列化 / 两份配置。
+//! KimiCode 后端回归：`~/.kimi-code/config.toml` 的判别 / 解析 / 序列化。
 //!
-//! 结构上最要紧的三点（细节见 `src/backends/kimi_code.rs` 的模块说明）：
-//! 1. 模型在**顶层全局表** `[models."<alias>"]` 里，靠 `provider` 字段 join 到
-//!    `[providers.<name>]`——模型不嵌在 provider 下，这是本项目唯一这样的格式；
-//! 2. 表键是 alias，`model` 是发给上游的 wire id，**两者可以不同**；
-//! 3. 没有 `disabled` 字段，也没有去重——每条别名都是独立生效的一行；界面没有
-//!    启用开关，也不会写出伴生的全量副本（曾经的开关已按用户指正移除）。
+//! 结构：模型在顶层全局表 `[models."<alias>"]` 里，靠 `provider` 字段 join 到
+//! `[providers.<name>]`；表键是 alias，`model` 是发给上游的 wire id，两者可以不同；
+//! 没有 `disabled` 字段，也没有去重。`api_key` / `api_key_env` / `oauth` 三者互斥，
+//! `managed:*` provider 来自 OAuth 登录、只读。
 //!
-//! 另外两条硬约束：`api_key` / `api_key_env` / `oauth` 三者互斥（同时写会让 Kimi Code
-//! **启动失败**），`managed:*` provider 来自 OAuth 登录、只读。
-//!
-//! 本文件**不读** `~/.kimi-code/config.toml`：Kimi Code 桌面端会随时改写它
-//! （调研期间就被外部改过两次），测试会随用户的实际使用漂移。样本是冻结的副本。
+//! 本文件不读 `~/.kimi-code/config.toml`，样本是冻结的副本。
 
 use model_harbor::backends;
 use model_harbor::format::ConfigFormat;
@@ -37,10 +31,10 @@ fn kimi_backend() -> &'static dyn backends::Backend {
     backends::backend(ConfigFormat::KimiCode)
 }
 
-/// 真实形态样本：本机 `~/.kimi-code/config.toml` 的**冻结副本**（密钥已替换为占位符）。
+/// 真实形态样本：本机 `~/.kimi-code/config.toml` 的冻结副本（密钥已替换为占位符）。
 ///
-/// 覆盖了全部要点：`managed:` + oauth 子表、alias ≠ model（`kimi-code/k3` ↔ `k3`）、
-/// 两种 provider type、`[thinking]` 顶层表、以及没有 `display_name` 的条目。
+/// 含 `managed:` + oauth 子表、alias ≠ model、两种 provider type、`[thinking]` 顶层表，
+/// 以及没有 `display_name` 的条目。
 fn config_toml() -> String {
     r#"default_model = "sensenova/sensenova-6.8-flash-lite"
 default_permission_mode = "auto"
@@ -126,7 +120,7 @@ fn detect_matches_the_install_path() {
     let b = kimi_backend();
     assert!(b.detect("", r"C:\Users\me\.kimi-code\config.toml"));
     assert!(b.detect("", "/home/me/.kimi-code/config.toml"));
-    // 路径对就该认，哪怕文件还是空的（首次运行、刚登录还没写模型）
+    // 路径对就认，空文件也认
     assert!(b.detect("", r"C:\Users\me\.kimi-code\config.toml"));
     // 同目录的别的文件不算
     assert!(!b.detect("{}", r"C:\Users\me\.kimi-code\mcp.json"));
@@ -137,9 +131,9 @@ fn detect_matches_the_install_path() {
 fn detect_matches_the_content_shape() {
     let b = kimi_backend();
     assert!(b.detect(&config_toml(), ""), "真实形态应命中");
-    // `managed:kimi-code` + `type = "kimi"` 是极强特征
+    // `managed:kimi-code` + `type = "kimi"`
     assert!(b.detect("[providers.\"managed:kimi-code\"]\ntype = \"kimi\"\n", ""));
-    // `default_permission_mode` 是 Kimi 独有的顶层键
+    // `default_permission_mode` 是 Kimi 的顶层键
     assert!(b.detect("default_permission_mode = \"auto\"\n", ""));
     // 两张表同时出现 + 模型带 max_context_size
     assert!(b.detect(
@@ -150,8 +144,7 @@ fn detect_matches_the_content_shape() {
 
 #[test]
 fn detect_rejects_codex_shape() {
-    // Codex 也是 `config.toml` + TOML，顶层键是 `model_providers`（带下划线）。
-    // 两者只能靠路径与键名分辨——不能把别人的配置收进来。
+    // Codex 的顶层键是 `model_providers`（带下划线），靠路径与键名分辨。
     let codex = r#"
 model = "gpt-5"
 model_provider = "openai"
@@ -162,18 +155,18 @@ base_url = "https://api.openai.com/v1"
 wire_api = "responses"
 "#;
     assert!(!kimi_backend().detect(codex, ""));
-    // 显式带 Codex 特征时，即使路径像也不认（路径命中优先，所以这里给空路径）
+    // 显式带 Codex 特征时，即使路径像也不认
     assert!(!kimi_backend().detect(codex, r"C:\Users\me\.codex\config.toml"));
 }
 
 #[test]
 fn detect_does_not_steal_sibling_formats() {
-    // KimiCode 的 TOML 不能被 pi 系抢走
+    // KimiCode 的 TOML 不被 pi 系抢走
     assert_eq!(
         backends::detect_format(&config_toml(), ""),
         ConfigFormat::KimiCode
     );
-    // 反过来也不能抢别人的
+    // 反过来也不抢别人的
     assert_eq!(
         backends::detect_format(r#"{"provider": {}}"#, ""),
         ConfigFormat::Opencode
@@ -206,7 +199,7 @@ fn models_join_to_their_provider_by_the_provider_field() {
 
 #[test]
 fn managed_providers_stay_out_of_the_ui() {
-    // `managed:*` 由 OAuth 维护，界面无从编辑，显示出来只会让人以为能改。
+    // `managed:*` 由 OAuth 维护，界面不显示。
     let load = load(&config_toml());
     assert_eq!(load.providers.len(), 1, "只列出 sensenova");
     assert_eq!(load.providers[0].key, "sensenova");
@@ -270,7 +263,7 @@ max_context_size = 1000
 
 #[test]
 fn parse_reads_display_name_and_efforts() {
-    // k3 是 managed 的，界面看不到；用构造样本验证同一条读取路径
+    // k3 是 managed 的；用构造样本验证 display_name 与 efforts 的读取路径
     let content = r#"
 [providers.p]
 type = "openai"
@@ -297,8 +290,7 @@ support_efforts = [ "low", "high" ]
 
 #[test]
 fn parse_does_not_invent_undeclared_defaults() {
-    // 条目只写了必填字段：上下文之外的数值/模态/档位一律留空，
-    // 否则 ModelRow::new() 的预填值会被当成用户配置写回文件。
+    // 条目只写了必填字段：上下文之外的数值 / 模态 / 档位一律留空。
     let content = r#"
 [providers.p]
 type = "openai"
@@ -319,8 +311,7 @@ max_context_size = 1
 
 #[test]
 fn orphan_models_do_not_panic_and_are_kept() {
-    // `provider` 指向不存在的键：无处归属，界面不显示，但**不能删**——
-    // 那可能是用户先写模型后补 provider 的中间态。
+    // `provider` 指向不存在的键：无处归属，界面不显示，但保留。
     let content = r#"
 [providers.p]
 type = "openai"
@@ -393,7 +384,7 @@ fn serialize_keeps_the_top_level_extras() {
 
 #[test]
 fn serialize_preserves_managed_entries_verbatim() {
-    // 误改 managed 会破坏登录态（credentials/ 里的凭据与这份声明配对）。
+    // managed 条目与 credentials/ 里的凭据配对，原样保留。
     let root = toml_value(&config_toml());
     let out = kimi_backend().serialize_root(&[], &[], &root, None);
     let managed = &out["providers"]["managed:kimi-code"];
@@ -411,8 +402,7 @@ fn serialize_preserves_managed_entries_verbatim() {
 
 #[test]
 fn serialize_writes_display_name_even_when_it_equals_the_wire_id() {
-    // 官方写法每条模型都带 `display_name`（等于 `model` 也带，本机 7 条全带）。
-    // 早先按「等于 model 就省掉」处理，一次保存就把这个键从用户文件里删了。
+    // 官方写法每条模型都带 `display_name`（等于 `model` 时也带）。
     let content = "[providers.p]\ntype = \"openai\"\n\n\
          [models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1000\n\
          display_name = \"m\"\n";
@@ -492,8 +482,7 @@ max_context_size = 1
 
 #[test]
 fn type_is_written_verbatim_and_never_rewritten() {
-    // 硬套一张「内部协议 → type」映射表会把用户的 type 悄悄改写：
-    // `kimi` 是 Kimi 自己的 wire 类型，映射到 `openai` 会把 OAuth 那条改成另一种协议。
+    // 已有的 type 逐字保留，不做映射。
     for ty in [
         "kimi",
         "openai",
@@ -515,9 +504,7 @@ fn type_is_written_verbatim_and_never_rewritten() {
 
 #[test]
 fn cross_format_providers_get_a_kimi_vocabulary_type() {
-    // 跨格式复制来的 provider 带的是本工具的内部协议名。曾把它逐字写进 `type`，
-    // Kimi 的 `resolveModelProtocol` 认不得（既不在 protocol 枚举里、也查不到
-    // provider definition），切模型就报 "must declare a wire protocol"。
+    // 跨格式复制来的 provider 带的是内部协议名，写 `type` 时按 Kimi 词表翻译。
     for (api, expected) in [
         ("openai-completions", "openai"),
         ("openai-responses", "openai_responses"),
@@ -540,8 +527,7 @@ fn cross_format_providers_get_a_kimi_vocabulary_type() {
 
 #[test]
 fn an_invalid_type_in_the_file_is_healed_on_the_next_save() {
-    // 上一版已经把内部协议名写进了用户文件。重新加载时它逐字进 pi_api，
-    // 保存时按词表翻译——文件自愈。
+    // 文件里的内部协议名逐字进 pi_api，保存时按词表翻译。
     let content = "[providers.openai_apizh]
 type = \"openai-completions\"
 base_url = \"https://gw.example.com/v1\"
@@ -568,8 +554,7 @@ max_context_size = 262000
 
 #[test]
 fn api_key_and_api_key_env_are_mutually_exclusive_on_save() {
-    // 同时写两个会让 Kimi Code **启动失败**（源码判成配置冲突并拒绝），
-    // 比「配置不生效」严重得多——必须在写盘前挡住。
+    // 同时写 api_key 与 api_key_env 会被 Kimi Code 拒绝，写盘前挡住。
     let dir = temp_dir("xor");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -592,8 +577,7 @@ fn api_key_and_api_key_env_are_mutually_exclusive_on_save() {
 
 #[test]
 fn a_reserved_managed_name_is_refused() {
-    // `managed:` 是 /login 的保留前缀：这类 provider 不进界面，用户手起这个名字的话，
-    // 它名下的模型下次加载就凭空消失——写盘前必须挡住。
+    // `managed:` 是 /login 的保留前缀，写盘前挡住。
     let dir = temp_dir("managed_reserved");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -613,8 +597,7 @@ fn a_reserved_managed_name_is_refused() {
 #[test]
 fn an_alias_collision_across_providers_is_refused() {
     // 别名就是 TOML 表键：provider "a" + model "b/c" 与 provider "a/b" + model "c"
-    // 会生成同一个键，后写覆盖先写，有一条静默消失。同 provider 内 model id 重复
-    // 由保存入口查重拦下，这里拦的是跨 provider 的组合撞名。
+    // 生成同一个键，这里拦跨 provider 的组合撞名（同 provider 内的重复由保存入口查重）。
     let dir = temp_dir("alias_clash");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -642,10 +625,9 @@ fn an_alias_collision_across_providers_is_refused() {
 
 #[test]
 fn an_empty_api_key_does_not_conflict_with_oauth() {
-    // 本机真实文件里 `managed:kimi-code` 就是 `api_key = ""` + `oauth`：
     // 判据是「非空字符串」，空串视同未设置。
     let load = load(&config_toml());
-    // managed 不进界面，所以这里不通过 providers 走；直接构造一份带 oauth 的
+    // 直接构造一份带 oauth 的 provider
     let mut p = ProviderRow::new();
     p.key = "oauth-provider".into();
     p.api_key = String::new();
@@ -665,7 +647,7 @@ fn an_empty_api_key_does_not_conflict_with_oauth() {
 
 #[test]
 fn writing_a_key_clears_the_env_name_and_vice_versa() {
-    // 界面两个框：填了一个就清掉另一个（XOR 的落地点）。
+    // 界面两个框：填了一个就清掉另一个。
     let content = "[providers.p]\ntype = \"openai\"\napi_key_env = \"OLD\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1\n";
     let root = toml_value(content);
     let load = load(content);
@@ -681,7 +663,7 @@ fn writing_a_key_clears_the_env_name_and_vice_versa() {
 
 #[test]
 fn capabilities_are_only_added_never_removed() {
-    // 官方："only ever added, never removed"。删标签会让 Kimi 静默降级能力。
+    // 已有的标签只增不删。
     let content = "[providers.p]\ntype = \"openai\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1\ncapabilities = [ \"dynamically_loaded_tools\", \"max_context_tokens\" ]\n";
     let root = toml_value(content);
     let load = load(content);
@@ -705,8 +687,7 @@ fn capabilities_are_only_added_never_removed() {
 
 #[test]
 fn unchecking_reasoning_can_actually_disable_thinking() {
-    // 例外：thinking / always_thinking 是「支持思考」开关的两种表达，
-    // 取消勾选要能一并移除，否则开关形同虚设。
+    // 例外：thinking / always_thinking 是「支持思考」开关的两种表达，取消勾选时一并移除。
     let content = "[providers.p]\ntype = \"openai\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1\ncapabilities = [ \"thinking\", \"always_thinking\", \"tool_use\" ]\n";
     let root = toml_value(content);
     let load = load(content);
@@ -728,7 +709,7 @@ fn unchecking_reasoning_can_actually_disable_thinking() {
 
 #[test]
 fn max_context_size_is_required_and_never_zeroed() {
-    // schema 要求 ≥1：写成 0 是非法值，不如不写这个键让 Kimi 自己报缺必填。
+    // schema 要求 ≥1：值为 0 时省略该键。
     let content = "[providers.p]\ntype = \"openai\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1000\n";
     let root = toml_value(content);
     let load = load(content);
@@ -746,7 +727,7 @@ fn default_effort_must_stay_inside_support_efforts() {
     let content = "[providers.p]\ntype = \"openai\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1\nsupport_efforts = [ \"low\", \"high\" ]\ndefault_effort = \"high\"\n";
     let root = toml_value(content);
     let load = load(content);
-    // 用户改了档位，high 不在了 → default_effort 必须删掉（留着是无效配置）
+    // 档位清单里没有 high 时删掉 default_effort
     let mut providers = load.providers.clone();
     providers[0].models[0].variants = "low, max".into();
     let out = kimi_backend().serialize_root(&[], &providers, &root, None);
@@ -763,8 +744,8 @@ fn default_effort_must_stay_inside_support_efforts() {
 #[test]
 fn there_is_no_disabled_concept_on_the_kimi_page() {
     // Kimi 的模型 schema（`ModelAliasBaseSchema`）没有 disabled/enabled 字段，模型表
-    // 又按别名一一索引——没有去重，也没有开关。曾经的启用开关是本工具发明的状态，
-    // 已按用户指正移除；写出的条目永远不带 `disabled`，全部条目一律进 `config.toml`。
+    // 又按别名一一索引——没有去重，也没有开关。写出的条目不带 `disabled`，
+    // 全部条目一律进 `config.toml`。
     assert!(!ConfigFormat::KimiCode.has_model_enable());
 
     let root = toml_value(&config_toml());
@@ -779,7 +760,7 @@ fn there_is_no_disabled_concept_on_the_kimi_page() {
 
 #[test]
 fn no_sidecar_is_written_any_more() {
-    // 副本随停用开关一起移除：保存后同目录不得多出 models.full.toml。
+    // 保存后同目录不写全量副本 models.full.toml。
     let dir = temp_dir("no_sidecar");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -795,8 +776,7 @@ fn no_sidecar_is_written_any_more() {
 
 #[test]
 fn hand_added_entries_are_visible_without_a_sidecar() {
-    // Kimi Code 自己也会写 config.toml（/login、/model）。没有副本之后主配置就是
-    // 全部状态，手加的条目自然能看见。
+    // 主配置即全部状态，手加的条目能看见。
     let dir = temp_dir("hand_added");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -821,7 +801,7 @@ fn hand_added_entries_are_visible_without_a_sidecar() {
 
 #[test]
 fn shrinks_on_save_detects_deletions() {
-    // 停用没了，但删卡片仍会让条目变少——`.bak` 备份的触发条件依然需要它。
+    // 删卡片仍会让条目变少——`.bak` 备份的触发条件需要它。
     use model_harbor::backends::kimi_code::shrinks_on_save;
     let before = toml_value(&config_toml());
     let after = toml_value(
@@ -840,8 +820,7 @@ fn cross_format_strip_keeps_managed_and_drops_ui_owned() {
     model_harbor::app::strip_cross_format_containers(ConfigFormat::KimiCode, &mut root, false);
     let obj = root.as_object().unwrap();
 
-    // `managed:*` 是 `/login` 的登录态（与 credentials/ 配对），界面不显示也无从重建：
-    // 剔干净就等于把用户已登录的官方模型删了。
+    // `managed:*` 是 `/login` 的登录态（与 credentials/ 配对），界面不显示也无从重建。
     let providers = obj["providers"].as_object().expect("providers 表要留下");
     assert_eq!(providers.len(), 1, "只该留下 managed provider");
     let managed = &providers["managed:kimi-code"];
@@ -868,7 +847,7 @@ fn cross_format_strip_keeps_managed_and_drops_ui_owned() {
 
 #[test]
 fn cross_format_strip_drops_the_tables_when_nothing_is_managed() {
-    // 没有只读内容时仍是「整体接管」：表要整个删掉，不留空壳。
+    // 没有只读内容时仍是「整体接管」：表整个删掉，不留空壳。
     let mut root = toml_value(
         "[providers.sensenova]\ntype = \"openai\"\n\n\
          [models.\"sensenova/x\"]\nprovider = \"sensenova\"\nmodel = \"x\"\nmax_context_size = 1000\n",
@@ -881,7 +860,7 @@ fn cross_format_strip_drops_the_tables_when_nothing_is_managed() {
 
 #[test]
 fn cross_format_strip_keeps_orphan_models() {
-    // `provider` 指向表里根本没有的键：本工具认不出的内容，格式转换不该替它决定去留。
+    // `provider` 指向表里没有的键：本工具认不出的内容，保留原样。
     let mut root = toml_value(
         "[providers.sensenova]\ntype = \"openai\"\n\n\
          [models.\"ghost/x\"]\nprovider = \"ghost\"\nmodel = \"x\"\nmax_context_size = 1000\n",
@@ -894,7 +873,7 @@ fn cross_format_strip_keeps_orphan_models() {
 
 #[test]
 fn cross_format_strip_leaves_other_formats_alone() {
-    // 剔 Kimi 的表不该动别人的容器
+    // 剔 Kimi 的表不动别人的容器
     let mut root = toml_value("[providers.p]\ntype = \"openai\"\n");
     model_harbor::app::strip_cross_format_containers(ConfigFormat::Opencode, &mut root, false);
     assert!(root.as_object().unwrap().get("providers").is_some());
@@ -902,7 +881,7 @@ fn cross_format_strip_leaves_other_formats_alone() {
 
 #[test]
 fn models_can_be_copied_to_another_format() {
-    // 从 Kimi 页复制到 opencode 页不该报错，且模型 id 是 wire id（不是 alias）。
+    // 复制到别的格式时模型 id 是 wire id（不是 alias）。
     let load = load(&config_toml());
     let m = &provider(&load, "sensenova").models[0];
     let value = m.to_value();
