@@ -147,46 +147,51 @@ impl App {
         };
         let card_id = egui::Id::new(("agent_card", key.clone()));
         let resp = card_frame(ui, open, highlight, card_id, |ui| {
-            ui.horizontal(|ui| {
-                let h = ui.add(DragHandle);
-                if h.drag_started() {
-                    self.agent_drag_src = Some(key.clone());
-                    self.agent_drag_target = None;
-                }
-                if h.drag_stopped() {
-                    if self.agent_drag_src == Some(key.clone()) {
-                        if let Some(dst) = self.agent_drag_target.clone() {
-                            let s = self.agents.iter().position(|a| a.key == key);
-                            let d = self.agents.iter().position(|a| a.key == dst);
-                            if let (Some(s), Some(d)) = (s, d) {
-                                move_item(&mut self.agents, s, d);
+            // 同 Provider 卡片头：左组内容不定长，用 `Sides::shrink_left().truncate()`
+            // 先量右组，保证「删除 / 复制」永远贴在卡片右缘、不被裁剪。
+            let _ = egui::Sides::new().shrink_left().truncate().show(
+                ui,
+                |ui| {
+                    let h = ui.add(DragHandle);
+                    if h.drag_started() {
+                        self.agent_drag_src = Some(key.clone());
+                        self.agent_drag_target = None;
+                    }
+                    if h.drag_stopped() {
+                        if self.agent_drag_src == Some(key.clone()) {
+                            if let Some(dst) = self.agent_drag_target.clone() {
+                                let s = self.agents.iter().position(|a| a.key == key);
+                                let d = self.agents.iter().position(|a| a.key == dst);
+                                if let (Some(s), Some(d)) = (s, d) {
+                                    move_item(&mut self.agents, s, d);
+                                }
                             }
                         }
+                        self.agent_drag_src = None;
+                        self.agent_drag_target = None;
                     }
-                    self.agent_drag_src = None;
-                    self.agent_drag_target = None;
-                }
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(if open { "▼" } else { "▶" }).size(14.0),
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(if open { "▼" } else { "▶" }).size(14.0),
+                            )
+                            .frame(false),
                         )
-                        .frame(false),
-                    )
-                    .clicked()
-                {
-                    self.set_agent_collapsed(&key, open);
-                }
-                ui.strong(&self.agents[idx].key);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        .clicked()
+                    {
+                        self.set_agent_collapsed(&key, open);
+                    }
+                    ui.strong(&self.agents[idx].key);
+                },
+                |ui| {
                     if ui.button("删除").clicked() {
                         *to_remove = Some(idx);
                     }
                     if ui.button("复制").clicked() {
                         *to_copy = Some(idx);
                     }
-                });
-            });
+                },
+            );
             // 折叠 / 展开带高度动画；动画 id 按 key 派生，改名即换 id（状态不串卡）。
             crate::motion::animated_collapse(ui, card_id, open, |ui| {
                 self.render_agent_form(ui, idx);
