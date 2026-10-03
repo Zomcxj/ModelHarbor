@@ -182,15 +182,22 @@ impl App {
                 status.push_str(&format!("（已忽略 {} 个无效数字字段）", bad));
             }
         }
-        // WSL 同步：仅勾选“WSL同步”且写入路径为本地时，同步到 WSL 侧默认路径；
-        // 写入前检测对应 agent 是否已安装（未安装则跳过并提示）。
+        // WSL 同步：仅勾选“WSL同步”且写入路径为本地时，同步到 WSL 侧默认路径。
+        // 写入前按三态判定（探测在后台跑，不阻塞保存）：
+        // 「已安装」才写；「确认未安装」提示跳过；「探测中」也跳过但明说原因——
+        // 把「未知」当成「未安装」会误导（用户以为没装，其实只是还没探完）。
         if self.sync_wsl && ok && !is_wsl_path(path) {
-            match backends::wsl_target(fmt) {
-                Some(wsl_path) => match self.save_backend_to(fmt, &wsl_path) {
-                    Ok(_) => status.push_str(&format!("; {}(WSL): 已同步", fmt.label())),
-                    Err(e) => status.push_str(&format!("; {}(WSL): 同步失败({})", fmt.label(), e)),
-                },
-                None => status.push_str(&format!("; {}(WSL): 未安装，跳过同步", fmt.label())),
+            match backends::wsl_target_state(fmt) {
+                backends::WslTargetState::Installed(wsl_path) => {
+                    match self.save_backend_to(fmt, &wsl_path) {
+                        Ok(_) => status.push_str(&format!("; {}(WSL): 已同步", fmt.label())),
+                        Err(e) => {
+                            status.push_str(&format!("; {}(WSL): 同步失败({})", fmt.label(), e))
+                        }
+                    }
+                }
+                // 未安装 / 探测中都不写；文案分开（不把「还没探完」说成「没装」）。
+                other => status.push_str(&wsl_skip_note(fmt, &other)),
             }
         }
         status
@@ -371,5 +378,57 @@ impl App {
             | ConfigFormat::QwenCode
             | ConfigFormat::KimiCode => &self.root,
         }
+    }
+}
+
+/// WSL 同步被跳过时的状态栏补充文案（按三态区分）。
+///
+/// 「探测中」与「确认未安装」都不写入，但措辞必须分开：把「还没探完」说成
+/// 「未安装」会让用户以为 WSL 里真的没装，跑去重复安装。传入 `Installed`
+/// 不属于「跳过」情形，由调用方先分支处理（这里退回通用文案，不 panic）。
+fn wsl_skip_note(fmt: ConfigFormat, state: &backends::WslTargetState) -> String {
+    match state {
+        backends::WslTargetState::NotInstalled => {
+            format!("; {}(WSL): 未安装，跳过同步", fmt.label())
+        }
+        // 探测还没出结果：不写、不报「未安装」，明说在检测。
+        // 用户下次保存时探测已完成，自然就会同步。
+        backends::WslTargetState::Unknown => {
+            format!("; {}(WSL): 正在检测安装状态，本次跳过同步", fmt.label())
+        }
+        backends::WslTargetState::Installed(_) => {
+            format!("; {}(WSL): 未同步（内部状态异常）", fmt.label())
+        }
+    }
+}
+
+#[cfg(test)]
+mod wsl_skip_note_tests {
+    use super::*;
+
+    /// 「探测中」不能写成「未安装」——两者措辞必须可区分。
+    #[test]
+    fn unknown_does_not_claim_not_installed() {
+        let fmt = ConfigFormat::Opencode;
+        let unknown = wsl_skip_note(fmt, &backends::WslTargetState::Unknown);
+        let missing = wsl_skip_note(fmt, &backends::WslTargetState::NotInstalled);
+
+        assert!(
+            unknown.contains("正在检测"),
+            "探测中应明说在检测：{unknown}"
+        );
+        assert!(
+            !unknown.contains("未安装"),
+            "探测中不得说成未安装（用户会以为真没装）：{unknown}"
+        );
+        assert!(missing.contains("未安装"), "确认未安装应直说：{missing}");
+        assert_ne!(unknown, missing, "两种跳过的文案必须不同");
+    }
+
+    /// 文案带上后端名：一次保存会写多个目标，状态栏里必须能分辨是哪个。
+    #[test]
+    fn note_names_the_backend() {
+        let note = wsl_skip_note(ConfigFormat::KimiCode, &backends::WslTargetState::Unknown);
+        assert!(note.contains(ConfigFormat::KimiCode.label()), "{note}");
     }
 }
