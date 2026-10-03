@@ -1,9 +1,7 @@
 //! WorkBuddy 后端回归：`~/.workbuddy/models.json` 的判别 / 解析 / 序列化。
 //!
-//! 两个结构特殊之处：
-//! 1. 根是**顶层数组**（provider 信息内联在每条模型里）——通用 JSON 序列化器
-//!    假定对象根，用错会把它静默变成 `{}` 毁掉配置，所以这里钉住数组形态；
-//! 2. 协议由 `useCustomProtocol` + URL 后缀表达，文件里没有协议字段。
+//! 结构要点：根是顶层数组，provider 信息内联在每条模型里；
+//! 协议由 `useCustomProtocol` + URL 后缀表达，文件里没有协议字段。
 
 use model_harbor::backends;
 use model_harbor::convert;
@@ -47,7 +45,7 @@ fn load_wb(content: &str) -> backends::BackendLoad {
 fn detect_requires_non_empty_array_with_id() {
     let b = backends::backend(ConfigFormat::WorkBuddy);
     assert!(b.detect(&workbuddy_json(), ""), "非空数组应命中");
-    // `[]` 不认：空数组太泛，会抢走别人的配置
+    // `[]` 不认
     assert!(!b.detect("[]", ""));
     // 反例
     assert!(!b.detect("{}", ""));
@@ -106,7 +104,6 @@ fn parse_maps_model_attributes() {
 
 #[test]
 fn render_keeps_the_array_root() {
-    // 这是防回归的关键：通用序列化器假定对象根，会把数组变成 `{}`。
     let load = load_wb(&workbuddy_json());
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
@@ -169,7 +166,7 @@ fn chat_protocol_keeps_base_url_and_unchecked() {
 
 #[test]
 fn custom_protocol_url_is_not_normalized() {
-    // 勾选自定义协议时 URL 原样使用：手写的完整路径不得被改写或重复追加。
+    // 勾选自定义协议时 URL 原样使用。
     let mut p = ProviderRow::new();
     p.key = "m1".into();
     p.base_url = "https://api.example.com/v1/messages".into();
@@ -189,8 +186,7 @@ fn custom_protocol_url_is_not_normalized() {
 
 #[test]
 fn messages_suffix_never_doubles_v1() {
-    // 基址已带 /v1 时补后缀不得拼成 /v1/v1/messages；历史写坏的 /v1/v1/messages
-    // 再次保存要收敛回 /v1/messages。
+    // 补后缀后不得出现 /v1/v1/messages。
     let b = backends::backend(ConfigFormat::WorkBuddy);
     for (base, expect) in [
         (
@@ -220,9 +216,7 @@ fn messages_suffix_never_doubles_v1() {
 
 #[test]
 fn parse_leaves_variants_empty_so_zcode_export_invents_no_reasoning() {
-    // WorkBuddy 无「思考档位」概念（只有布尔 supportsReasoning）。解析后 variants
-    // 必须为空，否则 ModelRow::new() 的默认档位会在跨格式存到 ZCode 时被凭空写成
-    // reasoningLevel.values，污染每个模型。
+    // WorkBuddy 只有布尔 `supportsReasoning`，没有「思考档位」；解析后 variants 为空。
     let content = r#"[
       { "id": "acct", "name": "some-model", "url": "https://x.invalid/v1",
         "apiKey": "k", "useCustomProtocol": false,
@@ -247,8 +241,8 @@ fn parse_leaves_variants_empty_so_zcode_export_invents_no_reasoning() {
 
 #[test]
 fn model_id_is_the_model_and_name_is_the_provider() {
-    // WorkBuddy 约定：条目 `id` = 模型名（发给 API 的模型），`name` = 提供商标签。
-    // 解析后模型行 id 拿模型名、provider.key 拿提供商——写回保持不变。
+    // WorkBuddy 约定：条目 `id` = 模型名（发给 API 的模型），`name` = 提供商标签；
+    // 写回保持不变。
     let content = r#"[
       { "id": "claude-opus-5", "name": "ps.air-outer",
         "url": "https://ps.air-outer.com/v1/messages", "apiKey": "k",
@@ -289,7 +283,7 @@ fn current_file_save_preserves_unknown_entry_keys() {
 
 #[test]
 fn does_not_invent_capability_flags() {
-    // 原条目没写 supports* 时不得凭空补，否则会把「未声明」变成「明确不支持」。
+    // 原条目没写 supports* 时不补。
     let content = r#"[
       { "id": "m1", "name": "M1", "vendor": "Custom", "url": "https://x.invalid/v1",
         "apiKey": "k", "useCustomProtocol": false }
@@ -364,16 +358,14 @@ fn modalities_and_supports_map_both_ways() {
 
 #[test]
 fn undeclared_supports_images_is_not_reported_as_text_only() {
-    // 条目**没写** supportsImages 时是「未声明」，不是「只支持文本」。
-    // 旧实现返回 "text"，跨格式写出时给 ZCode 凭空补 inputFormat.supportsText: true
-    // ——用户「正常」那份配置里多出来的 inputFormat 就是这么来的。
+    // 条目没写 supportsImages 时是「未声明」，不是「只支持文本」。
     assert_eq!(
         convert::workbuddy_modalities_from_raw(&json!({ "id": "m", "name": "p" })),
         "",
         "未声明模态时必须留空，不能默认成 text"
     );
 
-    // 未声明模态的条目转成 ZCode，不得凭空长出 inputFormat。
+    // 未声明模态的条目转成 ZCode，不写 inputFormat。
     let mut p = ProviderRow::new();
     p.key = "p1".into();
     p.base_url = "https://x.example/v1".into();
@@ -382,7 +374,7 @@ fn undeclared_supports_images_is_not_reported_as_text_only() {
     let mut m = ModelRow::new();
     m.id = "m1".into();
     m.context = "272000".into();
-    // 关键：清掉 ModelRow::new 的默认模态，模拟「源里没声明」。
+    // 清掉 ModelRow::new 的默认模态，模拟源里未声明。
     m.modalities_input.clear();
     m.raw = json!({ "id": "m1", "name": "p1", "url": "https://x.example/v1" });
     p.models = vec![m];
@@ -434,8 +426,7 @@ fn multi_model_json() -> String {
 
 #[test]
 fn parse_groups_one_provider_into_a_single_card() {
-    // 文件按模型扁平存储，同一 `name` 的条目就是「一家提供商的多个模型」：
-    // 必须合成一张卡片（各自成为一个模型行），否则一家提供商在界面里散成好几张卡。
+    // 文件按模型扁平存储，同一 `name` 的条目合成一张卡片，各自成为一个模型行。
     let load = load_wb(&multi_model_json());
     assert_eq!(load.providers.len(), 2, "两家提供商");
     let ar = &load.providers[0];
@@ -447,7 +438,7 @@ fn parse_groups_one_provider_into_a_single_card() {
         vec!["claude-opus-5", "claude-opus-4-8"],
         "同 provider 的模型按文件顺序合并"
     );
-    // 每个模型各自带着自己那条条目的属性，不串味。
+    // 每个模型带自己那条条目的属性。
     assert_eq!(ar.models[0].output, "128000");
     assert_eq!(ar.models[1].output, "64000");
     assert_eq!(load.providers[1].key, "claude_linxi");
@@ -455,10 +446,7 @@ fn parse_groups_one_provider_into_a_single_card() {
 
 #[test]
 fn save_writes_one_entry_per_model() {
-    // 曾经的 bug：只写 models.first()，一家提供商第二个模型起全部丢失
-    // （用户的 models.json 里 openai_zmofas 的 gpt-5.6-terra / grok-4.5 就是这么丢的）。
-    // 现在「一家提供商的每个模型各写一条」仍然成立；少掉的那条是**同 id 被关闭**的
-    // （见 duplicate_ids_keep_only_the_first_enabled）。
+    // 一家提供商的每个模型各写一条；同 id 的第二条不写盘。
     let load = load_wb(&multi_model_json());
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
@@ -488,9 +476,8 @@ fn save_writes_one_entry_per_model() {
 
 #[test]
 fn duplicate_ids_keep_only_the_first_enabled() {
-    // WorkBuddy 的选择器**按裸 id 全局去重**：同名模型无论挂在哪个厂商下都只列出一行、
-    // 只认第一条。界面必须如实反映这一点——每个 id 只有第一条启用，其余默认关闭，
-    // 且关闭的**不写入配置**（写进去也不生效，只会占地方、让人以为配了）。
+    // WorkBuddy 选择器按裸 id 全局去重，只认第一条；每个 id 第一条启用，
+    // 其余关闭且不写入配置。
     let load = load_wb(&multi_model_json());
     let flags: Vec<(String, bool)> = load
         .providers
@@ -517,16 +504,11 @@ fn duplicate_ids_keep_only_the_first_enabled() {
 
 #[test]
 fn entry_id_stays_the_plain_api_model_name() {
-    // `id` 是**发给 API 的模型名**。绝不能为了「避免重名」把 provider 拼进去
-    // （`claude_linxi:claude-opus-5`）——那是把非法模型名发给服务端，直接吃
-    // "Provider rejected the model request"。
-    //
-    // 连「同 id 第 2 条起加两位序号」也不行——序号会进请求体变成不存在的模型名。
-    // 这里断言每个写出的 id 都**逐字等于**某个原始模型名。
+    // `id` 是发给 API 的模型名，写出的 id 逐字等于某个原始模型名。
     let load = load_wb(&multi_model_json());
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
-    // 原始模型名集合：每个写出的 id 必须**逐字**等于其中之一。
+    // 原始模型名集合：每个写出的 id 必须逐字等于其中之一。
     let originals: Vec<String> = load
         .providers
         .iter()
@@ -542,8 +524,7 @@ fn entry_id_stays_the_plain_api_model_name() {
             "id 必须是原始模型名逐字，不得改名或加序号：{id}"
         );
     }
-    // 同名模型分属两家时，默认只有**第一条**（先出现的那个厂商）写盘——
-    // WorkBuddy 只认第一条，把第二条也写进去不会生效，只会占地方。
+    // 同名模型分属两家时，默认只写盘第一条。
     let opus: Vec<(&str, &str)> = root
         .as_array()
         .unwrap()
@@ -560,9 +541,8 @@ fn entry_id_stays_the_plain_api_model_name() {
 
 #[test]
 fn same_model_id_across_providers_keeps_its_own_entry_fields() {
-    // 旧实现按 `id` 单独建索引：目标文件里 `gpt-5.6-sol` 有四条（各家一条），
-    // 后写的 provider 会认领到别家条目的 tags / credits 等字段。
-    // 索引必须是 (name, id) 二元组。
+    // 索引按 (name, id) 二元组：目标文件里同一个 id 有多条（各家一条），
+    // 每条只继承自己那家旧条目的字段。
     let target = json!([
         { "id": "gpt-5.6-sol", "name": "openai_apizh", "url": "https://a.example/v1",
           "useCustomProtocol": false, "tags": ["apizh-only"] },
@@ -587,9 +567,7 @@ fn same_model_id_across_providers_keeps_its_own_entry_fields() {
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let out = b.serialize_root(&[], &providers, &json!([]), Some(&target));
     let entries = out.as_array().unwrap();
-    // 同一个 id 只写第一条（WorkBuddy 只认第一条）。留下的这条必须继承
-    // **它自己那家**旧条目的字段，不能认领到别家的 tags —— 索引因此必须是
-    // (name, id) 二元组，只按 id 建索引会让 apizh 认领到 leyi 的字段。
+    // 同一个 id 只写第一条；留下的这条继承它自己那家旧条目的字段。
     assert_eq!(entries.len(), 1, "同 id 只留第一条：{entries:#?}");
     assert_eq!(entries[0]["name"], json!("openai_apizh"));
     assert_eq!(
@@ -602,7 +580,7 @@ fn same_model_id_across_providers_keeps_its_own_entry_fields() {
 
 #[test]
 fn a_provider_without_models_still_writes_one_entry() {
-    // 刚建好还没填模型的卡片保存后不能凭空消失（id 回落到 provider key）。
+    // 没有模型的卡片也写一条条目，id 回落到 provider key。
     let mut p = ProviderRow::new();
     p.key = "brand-new".into();
     p.base_url = "https://new.example/v1".into();
@@ -616,14 +594,7 @@ fn a_provider_without_models_still_writes_one_entry() {
 
 #[test]
 fn duplicate_model_ids_are_written_verbatim_never_renamed() {
-    // WorkBuddy 的选择器 `appendModel` 是 `if (ids.has(model.id)) return;`——
-    // **只按裸 id 去重且全局生效**，所以 36 条条目里 15 个不同 id 就只列 15 行。
-    //
-    // 曾经试图给重复 id 加序号（`gpt-5.6-sol` → `gpt-5.6-sol01`）来绕过去重，
-    // 那是错的：`id` 同时就是**发给上游的模型名**（`configureModelConfig` 把 `ec.id`
-    // 赋给 `agent.model`，`ModelProvider.getModel` 把这个字符串原样放进请求体），
-    // 加序号会让请求体变成不存在的模型名，上游直接 model-not-found。
-    // 所以这里必须原样写出，重复就重复——去重是 WorkBuddy 的既有机制，不是配置错误。
+    // id 一律原样写出，既不加序号也不拼厂商；同 id 的第二条起不写盘。
     let provider = |key: &str, model: &str| {
         let mut p = ProviderRow::new();
         p.key = key.to_string();
@@ -648,9 +619,7 @@ fn duplicate_model_ids_are_written_verbatim_never_renamed() {
         .iter()
         .map(|e| e["id"].as_str().unwrap())
         .collect();
-    // **id 一律原样写出**：既不加序号（`gpt-5.6-sol01`），也不拼厂商。
-    // 同 id 的第二条起不写盘（WorkBuddy 只认第一条），所以只剩两条。
-    // 逐字相等本身就证明了「没加序号」——加了序号这里就对不上。
+    // 同 id 的第二条起不写盘，只剩两条。
     assert_eq!(
         ids,
         vec!["gpt-5.6-sol", "unique-model"],
@@ -667,8 +636,7 @@ fn duplicate_model_ids_are_written_verbatim_never_renamed() {
 
 #[test]
 fn genuine_model_names_ending_in_digits_are_left_alone() {
-    // 用户文件里真实存在 `deepseek-v4-flash-0731`、`claude-opus-5`、`grok-4.6`
-    // 这类末尾本就是数字的模型名。既然不再做任何改名/还原，它们必须逐字节保留。
+    // 末尾本就是数字的模型名必须逐字节保留。
     let saved = json!([
         { "id": "deepseek-v4-flash-0731", "name": "gm_huige0", "url": "https://x.example/v1" },
         { "id": "claude-opus-5", "name": "claude_a", "url": "https://x.example/v1" },
@@ -698,9 +666,7 @@ fn genuine_model_names_ending_in_digits_are_left_alone() {
 
 #[test]
 fn saving_twice_is_byte_stable() {
-    // 存 → 读 → 再存必须字节一致，否则每次保存都在改文件。
-    // 现在多了一层「同 id 只留第一条」的收敛，第一次保存就会把它做完，
-    // 所以第二次必须与第一次完全一致（而不是每次都在删条目）。
+    // 存 → 读 → 再存必须字节一致。
     let provider = |key: &str, model: &str| {
         let mut p = ProviderRow::new();
         p.key = key.to_string();
@@ -720,7 +686,7 @@ fn saving_twice_is_byte_stable() {
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let first = b.serialize_root(&[], &providers, &json!([]), None);
     let text1 = b.render(&first, false).unwrap();
-    // 同 id 的两条只留第一条（b 被收敛掉）。
+    // 同 id 的两条只留第一条。
     let names: Vec<&str> = first
         .as_array()
         .unwrap()
@@ -742,10 +708,7 @@ fn saving_twice_is_byte_stable() {
 
 #[test]
 fn disabled_models_are_omitted_from_the_file() {
-    // 关闭的模型**不写入配置**：WorkBuddy 按裸 id 全局去重，写进去也不生效，
-    // 只会占地方、让人以为配了。所以「关闭」靠不写这条表达。
-    // 但留下的那条要显式写 `disabled: false`——这份文件是用户自己的配置，
-    // 勾选状态应当在它自己里面看得见，而不是只能去副本里找。
+    // 关闭的模型不写入配置；留下的那条显式写 `disabled: false`。
     let saved = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1" },
         { "id": "gpt-5.6-sol", "name": "b", "url": "https://x.example/v1" }
@@ -753,7 +716,7 @@ fn disabled_models_are_omitted_from_the_file() {
     let b = backends::backend(ConfigFormat::WorkBuddy);
     let text = serde_json::to_string(&saved).unwrap();
     let load = b.parse(&text).unwrap();
-    // 读：两条都进界面（用户要看得见才能切换），同 id 的第一条启用、其余关闭。
+    // 读：两条都进界面；同 id 的第一条启用、其余关闭。
     let flags: Vec<bool> = load
         .providers
         .iter()
@@ -788,10 +751,8 @@ fn disabled_models_are_omitted_from_the_file() {
 
 #[test]
 fn legacy_disabled_keys_are_honored_not_ignored() {
-    // 早期版本写过 `disabled`。这个键**现在是有含义的**（两份文件都靠它记录勾选），
-    // 但只在读全量副本时才采信。这里读的是主配置（`parse`，按位置推导），
-    // 所以文件里的 `disabled: true` 不参与判定——主配置本身就是生效清单，
-    // 里面的条目都是启用的，写出的生效清单里该键恒为 `false`。
+    // 早期版本写过 `disabled`。主配置（`parse`，按位置推导）里的该键不参与判定，
+    // 写出的生效清单里该键恒为 `false`。
     let saved = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://x.example/v1",
           "disabled": true },
@@ -811,11 +772,7 @@ fn legacy_disabled_keys_are_honored_not_ignored() {
     }
 }
 
-/// 生效清单（`models.json`）里的条目一律启用，所以 `disabled` 恒为 `false`。
-///
-/// 这个键必须**显式写出**：这份文件是用户自己的配置，勾选状态应当在它自己里面看得见，
-/// 而不是只能去同目录的全量副本里找。写 `false` 对 WorkBuddy 是无操作——
-/// `normalizeCustomModel` 的基底就是 `disabled: false`。
+/// 生效清单（`models.json`）里的条目一律启用，`disabled` 恒为 `false` 且显式写出。
 #[test]
 fn the_effective_list_marks_every_entry_enabled() {
     let saved = json!([
@@ -835,12 +792,7 @@ fn the_effective_list_marks_every_entry_enabled() {
     }
 }
 
-/// 全量副本必须**每条都写** `disabled`，勾选的写 `false`。
-///
-/// 用户报的「重复的模型名都启用了」根因就在这里：早期副本省掉了 `false`，
-/// 于是「用户全勾了」和「从没记录过勾选」在文件里长得一模一样（都缺这个键），
-/// 加载时只能一律当启用，而且会自我延续——全启用读进来、原样写回去，
-/// 永远生不出勾选记录。
+/// 全量副本必须每条都写 `disabled`，勾选的写 `false`。
 #[test]
 fn the_full_store_records_every_entrys_flag_explicitly() {
     let dir = temp_path("models.json");
@@ -875,16 +827,12 @@ fn the_full_store_records_every_entrys_flag_explicitly() {
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
-/// 旧副本（一条 `disabled` 都没写）加载时必须**自愈**成按位置推导。
-///
-/// 这是用户实际遇到的情形：`models.full.json` 里 35 条、16 个 id、零个标记。
-/// 逐条回退到按位置推导后，界面得到「每个模型名只勾第一条」，
-/// 保存一次即把推导结果落成显式标记，之后不再推导。
+/// 旧副本（一条 `disabled` 都没写）加载时按位置推导勾选状态。
 #[test]
 fn a_full_store_without_flags_heals_to_first_occurrence_enabled() {
     let dir = temp_path("models.json");
     let path = dir.display().to_string();
-    // 复刻线上那份旧副本：三条同名条目，一个 disabled 键都没有。
+    // 旧副本：三条同名条目，一个 disabled 键都没有。
     let flagless = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1" },
         { "id": "gpt-5.6-sol", "name": "b", "url": "https://b.example/v1" },
@@ -943,7 +891,7 @@ fn a_full_store_without_flags_heals_to_first_occurrence_enabled() {
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
-/// 用户手动调整过勾选后，不能再按位置重新推导——否则他勾的那条会被挤掉。
+/// 用户手动调整过勾选后，不再按位置重新推导。
 #[test]
 fn explicit_flags_survive_the_round_trip_even_when_they_break_position_order() {
     let dir = temp_path("models.json");
@@ -983,31 +931,24 @@ fn explicit_flags_survive_the_round_trip_even_when_they_break_position_order() {
 #[test]
 fn full_store_sits_next_to_models_json() {
     let b = backends::backend(ConfigFormat::WorkBuddy);
-    // 通过 trait 对象拿不到 full_store_path（它是本模块的自由函数），
-    // 所以这里用 parse_at 的副作用间接验证：副本不存在时必须退回主配置。
     let _ = b;
     let path = r"C:\Users\me\.workbuddy\models.json";
     let full = model_harbor::backends::workbuddy::full_store_path(path);
     assert_eq!(full, r"C:\Users\me\.workbuddy\models.full.json");
-    // 名字必须与 models.json 不同：WorkBuddy 按精确文件名读后者，
-    // 同名会直接把生效清单覆盖成全量清单，去重就白做了。
+    // 副本名与主配置文件名不同。
     assert!(!full.ends_with("models.json") || full.ends_with("models.full.json"));
     assert_ne!(
         std::path::Path::new(&full).file_name(),
         std::path::Path::new(path).file_name()
     );
-    // WSL 路径用 `/` 分隔，与 credentials::sidecar_path 同一套规则。
+    // WSL 路径用 `/` 分隔，与 `credentials::sidecar_path` 同一套规则。
     assert_eq!(
         model_harbor::backends::workbuddy::full_store_path("/home/me/.workbuddy/models.json"),
         "/home/me/.workbuddy/models.full.json"
     );
 }
 
-/// 核心回归：取消勾选的条目**不能丢**。
-///
-/// 拆成两份配置之前，「取消勾选」= 保存时整条跳过 = 条目连同 API key 一起从磁盘上
-/// 永久消失（用户的 36 条会掉到 15 条、12 个厂商整体消失）。现在取消勾选只是把它
-/// 从生效清单移到全量副本里，勾回来必须能原样恢复。
+/// 取消勾选的条目仍保留在全量副本里。
 #[test]
 fn unchecking_a_model_keeps_it_in_the_full_store() {
     let dir = temp_path("models.json");
@@ -1033,12 +974,11 @@ fn unchecking_a_model_keeps_it_in_the_full_store() {
     let root = b.serialize_root(&[], &providers, &load.extras, Some(&saved));
     assert_eq!(root.as_array().unwrap().len(), 1, "生效清单只留勾选那条");
     assert_eq!(root.as_array().unwrap()[0]["name"], json!("b"));
-    // 写两份，**顺序与 save.rs 一致**：先写全量副本，再写主配置。
-    // 副本的字段继承基底读的是副本自己，所以必须赶在主配置被筛过之前写。
+    // 写两份，顺序与 save.rs 一致：先写全量副本，再写主配置。
     b.save_sidecars(&path, &providers).expect("写全量副本");
     std::fs::write(&dir, b.render(&root, false).unwrap()).unwrap();
 
-    // 全量副本里两条都在，且各自带着自己的字段。
+    // 全量副本里两条都在，各自带着自己的字段。
     let full_path = model_harbor::backends::workbuddy::full_store_path(&path);
     let full: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&full_path).unwrap()).unwrap();
@@ -1053,7 +993,7 @@ fn unchecking_a_model_keeps_it_in_the_full_store() {
     );
     assert_eq!(items[0]["disabled"], json!(true), "勾选状态记录在副本里");
 
-    // 重新加载：必须优先读副本，两条都在、勾选状态原样还原。
+    // 重新加载：优先读副本，两条都在、勾选状态原样还原。
     let reloaded = b
         .parse_at(&std::fs::read_to_string(&dir).unwrap(), &path)
         .unwrap();
@@ -1061,8 +1001,7 @@ fn unchecking_a_model_keeps_it_in_the_full_store() {
     assert!(reloaded.providers[0].models[0].disabled, "第一条仍是关闭");
     assert!(!reloaded.providers[1].models[0].disabled, "第二条仍是勾选");
 
-    // 勾回来：生效清单重新变成两条？不——同 id 只能生效一条，
-    // 但把第一条也勾上后，界面两条都启用，保存时按顺序留第一条。
+    // 勾回来：同 id 只能生效一条，两条都启用时按顺序留第一条。
     let mut back = reloaded.providers.clone();
     back[0].models[0].disabled = false;
     let root2 = b.serialize_root(&[], &back, &reloaded.extras, None);
@@ -1076,7 +1015,7 @@ fn unchecking_a_model_keeps_it_in_the_full_store() {
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
-/// 副本不存在时必须退回主配置，且按位置推导勾选状态。
+/// 副本不存在时退回主配置，并按位置推导勾选状态。
 #[test]
 fn without_the_full_store_the_effective_list_is_read_by_position() {
     let dir = temp_path("models.json");
@@ -1098,11 +1037,7 @@ fn without_the_full_store_the_effective_list_is_read_by_position() {
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
-/// 用户手改 `models.json` 后，新加的条目必须出现在界面上。
-///
-/// 全量副本是 ModelHarbor 上次保存的快照；WorkBuddy 自己不写 `models.json`
-/// （它是用户手编的），所以「主配置里有、副本里没有」是正常情况。
-/// 只读副本会让用户刚手加的模型在界面上凭空消失。
+/// 用户手改 `models.json` 后，新加的条目出现在界面上。
 #[test]
 fn hand_added_entries_in_models_json_still_show_up() {
     let dir = temp_path("models.json");
@@ -1147,20 +1082,12 @@ fn hand_added_entries_in_models_json_still_show_up() {
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
-/// 用户报的原始症状：**同一个 id 的多条全被判成启用**时，加载必须收敛成只启用第一条。
-///
-/// 两种来源都会造成这种状态：
-/// 1. 旧副本/别人给的文件里一条 `disabled` 都没写（按位置推导本就能治）；
-/// 2. 用户把重复项**全勾上过**，于是副本里全是显式 `false`——这时「信任显式标记」
-///    反而会把全启用原样读回来，正是「打开全部启用」。
-///
-/// WorkBuddy 的选择器按裸 id 全局去重，多开的根本不生效，所以无论标记从哪来，
-/// 同一 id 只留文件里第一条启用。
+/// 同一个 id 的多条全被判成启用时，加载收敛成只启用第一条。
 #[test]
 fn duplicate_ids_all_marked_enabled_are_reduced_to_the_first() {
     let dir = temp_path("models.json");
     let path = dir.display().to_string();
-    // 复刻「全勾过」的副本：三条同名条目，**每条都显式写了 disabled: false**。
+    // 三条同名条目，每条都显式写了 disabled: false。
     let all_on = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1",
           "disabled": false },
@@ -1209,18 +1136,12 @@ fn duplicate_ids_all_marked_enabled_are_reduced_to_the_first() {
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
-/// 用户明确指定了启用哪一条时，去重必须**尊重他的选择**，不能按文件顺序顶掉。
-///
-/// 规则（用户原话）：只有「重复 id 都被启用」才需要去重；用户自己设置过启用哪一条、
-/// 且不重复，就不该再按读取顺序推导。所以当一个 id 上既有**显式**标记的条目、
-/// 又有**没有标记、按位置推导**出来的条目时，显式的那条才是用户的意图，位置推导
-/// 的只是旧文件的兜底，必须让位。
+/// 有显式标记时，去重尊重它而不按文件顺序推导。
 #[test]
 fn an_explicit_choice_wins_over_position_derived_duplicates() {
     let dir = temp_path("models.json");
     let path = dir.display().to_string();
-    // 全量副本：同名两条。第一条没有标记（旧文件，按位置会推成启用），
-    // 第二条是用户显式勾选的（`disabled: false`）。
+    // 全量副本：同名两条。第一条没有标记，第二条显式标为启用（`disabled: false`）。
     let store = json!([
         { "id": "gpt-5.6-sol", "name": "a", "url": "https://a.example/v1" },
         { "id": "gpt-5.6-sol", "name": "b", "url": "https://b.example/v1",
@@ -1255,9 +1176,7 @@ fn an_explicit_choice_wins_over_position_derived_duplicates() {
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
-/// 非法数字**不能**被写成 0：界面与保存状态栏都告诉用户「该字段将被忽略」，
-/// 写成 `maxInputTokens: 0` 是另一回事——WorkBuddy 会照单全收，输入上限直接归零。
-/// 曾经用的是 `unwrap_or(0)`。
+/// 非法数字不被写成 0，而是跳过写入。
 #[test]
 fn invalid_numbers_are_skipped_not_written_as_zero() {
     let mut load = load_wb(&workbuddy_json());
@@ -1271,8 +1190,7 @@ fn invalid_numbers_are_skipped_not_written_as_zero() {
         .iter()
         .find(|e| e["id"] == json!("chat-model"))
         .expect("chat-model 条目应存在");
-    // 旧条目按 (name, id) 继承（`all_entries` 的既有行为），所以「跳过写入」在这里
-    // 表现为**原值保留**，与 ZCode 侧 `props` 由 raw 克隆而来完全同义。
+    // 旧条目按 (name, id) 继承，所以「跳过写入」表现为原值保留。
     assert_eq!(
         first["maxInputTokens"],
         json!(500000),

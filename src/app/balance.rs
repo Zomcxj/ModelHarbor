@@ -1,17 +1,11 @@
-//! 中转站「已用 / 余额 / 今日用量」查询：后台线程 + mpsc 通道（与延迟测试同一套写法）。
+//! 中转站「已用 / 余额 / 今日用量」查询：后台线程 + mpsc 通道。
 //!
 //! 两条路径（按优先级）：
-//! - **令牌额度**（只需 `sk-` key）：`/api/usage/token/` + `/api/log/token`
-//!   —— 额度、今日 / 近 7 天用量、按模型拆分；公益站多为「不限额度」，
-//!   此时只有「已用」有意义（不存在余额）；
-//! - **兼容账单**（`sk-` key）：`/dashboard/billing/subscription` + `/usage`，
-//!   额度多为占位值，所以余额仅供参考。
+//! - **令牌额度**（只需 `sk-` key）：`/api/usage/token/` + `/api/log/token`；
+//! - **兼容账单**（`sk-` key）：`/dashboard/billing/subscription` + `/usage`。
 //!
-//! 共同约束：
-//! - **直连**：复用探测请求的 agent 构造函数与直连配置（每次查询新建 Agent；ureq 默认不读系统代理）；
-//! - **只读**：全是管理接口，不发推理请求；
-//! - **节流**：同一 provider 两次查询至少间隔 [`BALANCE_COOLDOWN_MS`]；
-//! - 凭证只在请求头里用，**不进日志、不进状态栏文本**。
+//! 约束：直连（每次查询新建 Agent）；全部为只读管理接口；同一 provider 两次查询
+//! 间隔至少 [`BALANCE_COOLDOWN_MS`]；凭证只放在请求头里，不进日志与状态栏文本。
 
 use super::fetch::{apply_auth, latency_agent, AuthKind};
 use super::App;
@@ -22,7 +16,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 /// 同一 provider 两次查询的最小间隔（毫秒）。
 pub(super) const BALANCE_COOLDOWN_MS: f64 = 5_000.0;
 
-/// 一次查询的输入（拥有所有权，便于 move 进后台线程）。
+/// 一次查询的输入（拥有所有权，可 move 进后台线程）。
 #[derive(Clone, Default)]
 pub(super) struct Query {
     pub(super) key: String,
@@ -47,9 +41,9 @@ pub(super) struct BalanceState {
 }
 
 impl App {
-    /// 发起一次用户数据查询（字段拆分借用，便于在卡片内部调用）。
+    /// 发起一次用户数据查询。
     ///
-    /// 返回 `Some(提示文本)` 表示**没有**发起请求（正在查询中，或还在冷却期）。
+    /// 返回 `Some(提示文本)` 表示没有发起请求（正在查询中，或还在冷却期）。
     pub(super) fn start_balance_query(
         balance: &mut HashMap<String, BalanceState>,
         query: Query,
@@ -77,7 +71,7 @@ impl App {
         None
     }
 
-    /// 收割用户数据查询结果（在 `update` 里每帧调用，与 `poll_latency` 同批）。
+    /// 收割用户数据查询结果（在 `update` 里每帧调用）。
     pub(super) fn poll_balance(&mut self) {
         let mut finished = 0usize;
         for state in self.balance.values_mut() {
@@ -97,7 +91,7 @@ impl App {
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
-                    // 线程异常退出：结束等待，避免 Spinner 永久转圈。
+                    // 线程异常退出：结束等待。
                     state.rx = None;
                 }
             }
@@ -105,7 +99,7 @@ impl App {
         if finished == 0 || !self.balance_batch {
             return;
         }
-        // 一键查询：全部跑完后给一条汇总（查不到的站点不在卡片上显示，只在这里报数）。
+        // 一键查询：全部跑完后给一条汇总。
         if self.balance.values().any(|state| state.rx.is_some()) {
             return;
         }
@@ -116,14 +110,13 @@ impl App {
             .filter(|state| matches!(state.result, Some(Ok(_))))
             .count();
         self.balance_batch = false;
-        // 只报数，不报原因：追不到的原因（401 / WAF / 超时 / 站点未开该接口）
-        // 属于站点侧的事，统一静默；这里凭空断言「未开放该接口」反而是假的。
+        // 只报数，不报原因。
         self.status = format!("用户数据查询完成：{} 个查到，{} 个没查到", ok, total - ok);
     }
 }
 
 impl BalanceState {
-    /// 按当前本地日期返回展示副本；跨日只失效“今日”，累计/余额/近 7 天保留。
+    /// 按当前本地日期返回展示副本；跨日只失效「今日」，累计/余额/近 7 天保留。
     pub(super) fn display_result(
         &self,
         current_midnight: Option<i64>,
@@ -143,17 +136,17 @@ impl BalanceState {
 }
 
 /// 查询一个站点的用量：令牌额度接口优先，失败再退兼容账单；
-/// 填了面板令牌则再补一份**账号级**额度（两套口径分区展示）。
+/// 填了面板令牌则再补一份账号级额度。
 fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
     let endpoints = billing::endpoints(&query.base_url);
-    // 站点信息（面板名）与换算比两条路径都用，失败可容忍。
+    // 站点信息（面板名）与换算比，失败可容忍。
     let status = http_get(&endpoints.status, None).ok();
     let units = billing::parse_units(status.as_deref());
     let mut result = match fetch_token(&endpoints, &units, &query.secret, status.as_deref()) {
         Some(info) => Ok(info),
         None => fetch_compat(&query.base_url, &query.secret, status.as_deref()),
     };
-    // 面板令牌是可选增强：失败绝不影响已有结果，只往详情里补一行说明。
+    // 面板令牌为可选增强：失败只往详情里补一行说明。
     let pat = query.pat.trim();
     if !pat.is_empty() {
         let account = fetch_account(&endpoints, &units, pat, &query.user_id);
@@ -165,25 +158,16 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
     result
 }
 
-/// 面板账号额度：`GET {origin}/api/user/self`（需面板访问令牌 PAT）。
-///
-/// 鉴权只用 `Authorization: Bearer <pat>`：new-api 不再要求 `New-Api-User`
-/// 请求头（见其 `middleware/auth.go` 的 `classifyDashboardCredential`），
-/// 因此不额外发送用户 ID。该接口是**只读**的。
 /// 站点要求 `New-Api-User`（用户 ID）头时的提示。
-///
-/// 这**不是令牌的问题**：部署版本较旧的 new-api 用该头做一层防跨站校验，
-/// 取值必须等于登录用户的 ID（实测错值会回 “does not match logged in user”）。
-/// 只拿到状态码时会把这种 401 说成“令牌无效”，所以必须按正文分类。
 pub(super) const ACCOUNT_NEEDS_USER_ID: &str =
     "该站点要求 New-Api-User（用户 ID）头：请在「令牌」面板为它补填用户 ID（可在站点面板 F12 看 /api/user/self 请求的 New-Api-User 值）";
 
-/// 账号查询因缺 `New-Api-User` 头失败时，错误文本里一定含这个标记。
-///
-/// 令牌面板用它判断「是否该提醒用户补填用户 ID」——判断依据是**上次查询结果**，
-/// 而不是持久化的配置（站点要不要这个头是运行时才知道的）。
+/// 账号查询因缺 `New-Api-User` 头失败时，错误文本里包含的标记。
 pub(super) const NEEDS_USER_ID_MARK: &str = "New-Api-User";
 
+/// 面板账号额度：`GET {origin}/api/user/self`（需面板访问令牌 PAT）。
+///
+/// 鉴权只用 `Authorization: Bearer <pat>`；`New-Api-User` 头仅在用户填了用户 ID 时发送。
 fn fetch_account(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
@@ -196,10 +180,9 @@ fn fetch_account(
         .ok_or_else(|| "返回内容不是可识别的账号额度".to_string())
 }
 
-/// 签到状态：`GET /api/user/checkin`（**只读**，需面板访问令牌）。
+/// 签到状态：`GET /api/user/checkin`（只读，需面板访问令牌）。
 ///
-/// 本工具**不代签**：签到会改账号额度。所以这里只把状态读回来展示，
-/// 站点没开签到、没填令牌、或接口读不到一律回 `None`（卡片上就不写这一项）。
+/// 不代签；站点没开签到、没填令牌或接口读不到时返回 `None`。
 fn fetch_checkin(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
@@ -212,10 +195,7 @@ fn fetch_checkin(
 
 /// 把签到状态并进结果。
 ///
-/// 签到是**附加信息**，所以：
-/// - 读不到就不写（绝不写占位、也不报错——用户只是没得到这一项）；
-/// - 账号接口挂了但签到读到了，照样要显示（「有就输出」）：
-///   这时自己拼一份只有签到的结果。
+/// 读不到就不写；结果为 `Err` 时用签到数据拼一份可展示结果。
 fn merge_checkin(
     result: &mut Result<billing::Billing, String>,
     checkin: Option<billing::CheckinStatus>,
@@ -237,28 +217,23 @@ fn merge_checkin(
     }
 }
 
-/// `New-Api-User` 头的取值：空串（没填）表示**不发这个头**。
-///
-/// 不能发空值：旧版会把它当成“与登录用户不匹配”，反而把本来能通的站点弄坏。
+/// `New-Api-User` 头的取值：空串（没填）表示不发这个头。
 pub(super) fn user_id_header(user_id: &str) -> Option<&str> {
     let id = user_id.trim();
     (!id.is_empty()).then_some(id)
 }
 
-/// 账号接口专用请求：与 [`http_get`] 的区别是**保留错误响应正文**用于分类。
+/// 账号接口专用请求：与 [`http_get`] 的区别是保留错误响应正文用于分类。
 ///
-/// 旧版 new-api 用「401 + 正文里提到 `New-Api-User`」表达「令牌没问题，缺用户 ID」，
-/// 只拿到状态码就会把它误报成「令牌无效」。正文只在本地用于判断，
-/// **绝不进入错误文本**（避免把站点回显的内容带到状态栏）。
+/// 正文只在本地用于判断，不进入错误文本。
 fn account_get(url: &str, pat: &str, user_id: &str) -> Result<String, String> {
     let request = latency_agent()
         .get(url)
         .set("Accept", "application/json")
-        // 与 http_get 一致：ureq 默认 UA 会被部分站点的 WAF 直接拒掉。
+        // 与 http_get 一致：带浏览器 UA。
         .set("User-Agent", "Mozilla/5.0");
     let mut request = apply_auth(request, AuthKind::Bearer, pat);
-    // 旧版 new-api 用这个头做防跳站校验，值必须等于登录用户 ID；
-    // 新版不需要，所以只在用户真的填了的时候发。
+    // 用户填了用户 ID 时才发送该头。
     if let Some(id) = user_id_header(user_id) {
         request = request.set("New-Api-User", id);
     }
@@ -267,7 +242,7 @@ fn account_get(url: &str, pat: &str, user_id: &str) -> Result<String, String> {
             .into_string()
             .map_err(|err| format!("读取响应失败：{}", err)),
         Err(ureq::Error::Status(code, response)) => {
-            // 正文读失败就当作“没线索”：按状态码报，不能因此改变结论。
+            // 正文读失败时按状态码报。
             let body = response.into_string().unwrap_or_default();
             if body_requests_user_id(&body) {
                 return Err(ACCOUNT_NEEDS_USER_ID.to_string());
@@ -281,17 +256,14 @@ fn account_get(url: &str, pat: &str, user_id: &str) -> Result<String, String> {
     }
 }
 
-/// 站点是否在错误正文里要求 `New-Api-User`。
-///
-/// 各站文案不统一（英文 `header not provided` / 中文 `未提供 New-Api-User`），
-/// 所以只认头名本身、大小写不敏感，不去匹配整句。
+/// 站点是否在错误正文里要求 `New-Api-User`（头名匹配，大小写不敏感）。
 pub(super) fn body_requests_user_id(body: &str) -> bool {
     body.to_lowercase().contains("new-api-user")
 }
 
 /// 把账号查询结果并入已有结果：
-/// - 成功：写入 `account`；若令牌侧全军覆没（`Err`），用账号数据救回一条可展示结果；
-/// - 失败：**保留**已有结果不动，只在 `note` 里追加一行原因。
+/// - 成功：写入 `account`；结果为 `Err` 时用账号数据拼一份可展示结果；
+/// - 失败：保留已有结果不动，只在 `note` 里追加一行原因。
 fn merge_account(
     result: &mut Result<billing::Billing, String>,
     account: Result<billing::AccountInfo, String>,
@@ -303,7 +275,6 @@ fn merge_account(
             Err(_) => {
                 *result = Ok(billing::Billing {
                     panel,
-                    // 令牌侧没结果，但账号数据本身就是一份可展示结果。
                     source: billing::Source::Token,
                     account: Some(account),
                     ..Default::default()
@@ -322,7 +293,7 @@ fn merge_account(
     }
 }
 
-/// 账号接口错误的人话：401/403 一般是令牌本身的问题，直说而不是把 HTTP 术语丢给用户。
+/// 账号接口错误文本：401/403 转为「面板令牌无效或已撤销」，其余原样返回。
 fn account_error_message(err: &str) -> String {
     match crate::app::bars::http_status_code(err) {
         Some(401) | Some(403) => "面板令牌无效或已撤销".to_string(),
@@ -332,7 +303,6 @@ fn account_error_message(err: &str) -> String {
 
 /// 令牌额度：`/api/usage/token/`（额度）+ `/api/log/token`（今日 / 近 7 天用量）。
 ///
-/// 这两个接口直接用 `sk-` key 就能读，公益站（不限额度）也能拿到真实已用。
 /// 两边都没拿到时返回 `None`（交给调用方继续降级）。
 fn fetch_token(
     endpoints: &billing::Endpoints,
@@ -346,9 +316,7 @@ fn fetch_token(
     let mut note = (today_from == fallback_from)
         .then(|| "非 Windows 或读不到本地时间：今日按近 24 小时统计".to_string());
 
-    // 两个接口互相独立：把 baseUrl 指向中转域名的站点只有 relay 路由，
-    // `/api/usage/token/` 会回「Invalid URL」，但 `/api/log/token` 照样可用——
-    // 不能因为额度接口缺失就把今日 / 近 7 天一起丢掉。
+    // 两个接口互相独立，各自解析。
     let (usage, usage_error) = match http_get(&endpoints.token_usage(), Some(secret)) {
         Ok(text) => (billing::parse_token_usage(&text), None),
         Err(err) => (None, Some(err)),
@@ -356,20 +324,17 @@ fn fetch_token(
     let logs = match http_get(&endpoints.token_logs(), Some(secret)) {
         Ok(text) => billing::parse_token_logs(&text),
         Err(err) => {
-            // 额度读到了但日志不可用：保留额度，说明今日用量缺原因。
+            // 额度读到了但日志不可用：保留额度。
             note = Some(format!("调用日志不可用（{err}），今日用量取不到"));
             Vec::new()
         }
     };
 
-    // 两边都没拿到才算这个站点读不出来：沿用原有的兼容账单降级。
+    // 两边都没拿到时返回 `None`，由调用方降级到兼容账单。
     if usage.is_none() && logs.is_empty() {
         return None;
     }
     if usage.is_none() {
-        // 日志可用、额度不可用：说清是哪一步缺，而不是笼统报“失败”。
-        // 接口回了 200 但结构不认得的情况不再另加备注：详情里的
-        // 「未提供令牌额度接口」已经把结论说清了，重复一次只是噪音。
         if let Some(err) = usage_error {
             let reason = format!("令牌额度接口不可用（{err}）");
             note = Some(match note {
@@ -397,8 +362,7 @@ fn fetch_compat(
 ) -> Result<billing::Billing, String> {
     let mut endpoints = billing::endpoints(base_url);
     let mut subscription = http_get(&endpoints.subscription, Some(secret));
-    // 少数站点只在 `/v1` 下提供账单接口，而 pi 页里 anthropic 系的 baseUrl 只有 origin：
-    // **仅在 404 时**换一次路径重试，其他错误（403 被 WAF 拦、401 等）直接如实报出。
+    // 仅 404 时换到 `/v1` 路径重试一次，其他错误直接返回。
     if matches!(&subscription, Err(err) if crate::app::bars::http_status_code(err) == Some(404)) {
         let fallback = billing::endpoints_v1(base_url);
         if fallback.subscription != endpoints.subscription {
@@ -418,7 +382,7 @@ fn http_get(url: &str, secret: Option<&str>) -> Result<String, String> {
     let mut request = latency_agent()
         .get(url)
         .set("Accept", "application/json")
-        // 管理接口按浏览器身份请求：ureq 默认 UA 会被部分站点的 WAF 直接拒掉。
+        // 管理接口带浏览器 UA。
         .set("User-Agent", "Mozilla/5.0");
     if let Some(secret) = secret {
         request = apply_auth(request, AuthKind::Bearer, secret);
@@ -445,15 +409,14 @@ fn unix_now() -> i64 {
 
 /// 本地时区「今天 0 点」的秒级 Unix 时间戳。
 ///
-/// 做法：取本地墙上时间，用「先当成 UTC 换算」的方式得到两个数（当前墙上时间、
-/// 今天 0 点），差值就是时区偏移，再从今天 0 点里扣掉 —— 不需要时区数据库。
+/// 取本地墙上时间，减去它与 UTC 的时区偏移。
 #[cfg(windows)]
 pub(super) fn local_midnight_unix() -> Option<i64> {
     use windows_sys::Win32::Foundation::SYSTEMTIME;
     use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 
     let mut local = SYSTEMTIME::default();
-    // SAFETY: `GetLocalTime` 只写这一个结构体（无指针别名、无生命周期要求）。
+    // SAFETY: `GetLocalTime` 只写这一个结构体。
     unsafe { GetLocalTime(&mut local) };
     let (year, month, day) = (
         i64::from(local.wYear),
@@ -475,7 +438,7 @@ pub(super) fn local_midnight_unix() -> Option<i64> {
     Some(wall_clock_unix(year, month, day, 0, 0, 0) - offset)
 }
 
-/// 非 Windows：拿不到本地时区，调用方回退为「近 24 小时」。
+/// 非 Windows：拿不到本地时区，返回 `None`。
 #[cfg(not(windows))]
 pub(super) fn local_midnight_unix() -> Option<i64> {
     None
@@ -483,7 +446,7 @@ pub(super) fn local_midnight_unix() -> Option<i64> {
 
 /// 把年月日时分秒（按 UTC 理解）换算成秒级 Unix 时间戳。
 ///
-/// 纯函数，便于单测：用 Howard Hinnant 的 `days_from_civil` 算法，无闰年表。
+/// 用 Howard Hinnant 的 `days_from_civil` 算法。
 fn wall_clock_unix(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = if year >= 0 { year } else { year - 399 } / 400;
@@ -544,7 +507,7 @@ mod tests {
         assert_eq!(wall_clock_unix(2024, 3, 1, 0, 0, 0), 1_709_251_200);
         // 2024-02-29（闰日）
         assert_eq!(wall_clock_unix(2024, 2, 29, 0, 0, 0), 1_709_164_800);
-        // 2000-03-01（百年闰规则：2000 是闰年）
+        // 2000-03-01（百年闰规则）
         assert_eq!(wall_clock_unix(2000, 3, 1, 0, 0, 0), 951_868_800);
         assert_eq!(wall_clock_unix(1999, 12, 31, 23, 59, 59), 946_684_799);
         assert_eq!(
@@ -562,7 +525,7 @@ mod tests {
         assert!(now - midnight < 86_400 + 3_600, "0 点应落在过去 25 小时内");
     }
 
-    /// 一份可展示的令牌侧结果（用于验证账号数据不会把它冲掉）。
+    /// 一份可展示的令牌侧结果。
     fn token_side_result() -> billing::Billing {
         billing::Billing {
             source: billing::Source::Token,
@@ -584,12 +547,10 @@ mod tests {
 
     #[test]
     fn account_401_message_is_plain_language() {
-        // 401/403 基本就是令牌本身的问题：直说，不让用户去读 HTTP 术语。
         for code in [401, 403] {
             let err = crate::http_status::label(code);
             assert_eq!(account_error_message(&err), "面板令牌无效或已撤销", "{err}");
         }
-        // 其他错误（如 404 未开放、网络错误）如实报出，不猜。
         let not_found = crate::http_status::label(404);
         assert_eq!(account_error_message(&not_found), not_found);
         assert_eq!(
@@ -600,17 +561,16 @@ mod tests {
 
     #[test]
     fn user_id_requirement_is_not_reported_as_a_bad_token() {
-        // 实测两家的文案不一样，都要认出来。
+        // 两家的文案都要识别出来。
         for body in [
             r#"{"message":"Unauthorized, New-Api-User header not provided","success":false}"#,
             r#"{"message":"无权进行此操作，未提供 New-Api-User","success":false}"#,
             r#"{"message":"Unauthorized, New-Api-User does not match logged in user"}"#,
-            // 大小写不敏感：头名本身才是判据。
+            // 大小写不敏感。
             r#"{"message":"new-api-user missing"}"#,
         ] {
             assert!(body_requests_user_id(body), "应识别：{body}");
         }
-        // 普通令牌错误不能误判成「缺用户 ID」。
         for body in [
             r#"{"message":"Invalid token","success":false}"#,
             r#"{"message":"无权进行此操作，未登录且未提供 access token"}"#,
@@ -622,7 +582,6 @@ mod tests {
 
     #[test]
     fn user_id_message_survives_the_error_mapping() {
-        // 缺用户 ID 不是令牌问题：不能被 401 的兜底文案盖成「令牌无效」。
         let message = account_error_message(ACCOUNT_NEEDS_USER_ID);
         assert_eq!(message, ACCOUNT_NEEDS_USER_ID);
         assert!(
@@ -637,8 +596,7 @@ mod tests {
 
     #[test]
     fn user_id_header_is_sent_only_when_filled_in() {
-        // 空串 = 站点不需要这个头（新版 new-api），绝不能发一个空值，
-        // 否则反而会被判“与登录用户不匹配”。
+        // 空串与纯空白 = 不发这个头。
         assert_eq!(user_id_header(""), None);
         assert_eq!(user_id_header("   "), None);
         assert_eq!(user_id_header(" 777 "), Some("777"));
@@ -677,7 +635,6 @@ mod tests {
 
     #[test]
     fn account_success_rescues_a_failed_result() {
-        // 令牌侧两个接口都不可用（很多非 New-API 站），但账号数据拿到了 → 仍然可展示。
         let mut result: Result<billing::Billing, String> = Err("HTTP 404 Not Found".to_string());
         merge_account(&mut result, Ok(sample_account()), "TestPanel".to_string());
         let info = result.expect("有账号数据就应救回成功结果");
@@ -693,7 +650,6 @@ mod tests {
 
     #[test]
     fn account_failure_on_a_failed_result_stays_failed() {
-        // 两边都没拿到：保持失败（卡片不显示），不该凭空造出一个空结果。
         let mut result: Result<billing::Billing, String> = Err("HTTP 404 Not Found".to_string());
         merge_account(
             &mut result,
@@ -716,7 +672,6 @@ mod tests {
 
     #[test]
     fn checkin_rides_along_with_the_token_result() {
-        // 令牌侧本来就能展示：签到是附加信息，不能把已有结果冲掉。
         let mut result = Ok(token_side_result());
         merge_checkin(&mut result, Some(sample_checkin()), "TestPanel".to_string());
         let info = result.expect("应保持成功");
@@ -727,8 +682,6 @@ mod tests {
 
     #[test]
     fn checkin_rescues_a_failed_result() {
-        // 账号接口挂了（要 `New-Api-User` 的站点很常见），但签到读到了：
-        // 「有就输出」——这一项本身就该能显示，不该整条丢掉。
         let mut result: Result<billing::Billing, String> = Err("HTTP 401 Unauthorized".to_string());
         merge_checkin(&mut result, Some(sample_checkin()), "TestPanel".to_string());
         let info = result.expect("签到读到了就不算全失败");
@@ -739,7 +692,6 @@ mod tests {
 
     #[test]
     fn missing_checkin_changes_nothing() {
-        // 站点没开签到 / 没填面板令牌：结果原样保留。
         let mut result = Ok(token_side_result());
         merge_checkin(&mut result, None, "TestPanel".to_string());
         let info = result.expect("不该动");

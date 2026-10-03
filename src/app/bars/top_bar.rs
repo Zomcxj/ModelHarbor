@@ -9,11 +9,8 @@ use crate::ui::move_item;
 use crate::util::show_file_dialog;
 use eframe::egui;
 
-/// 外观面板里的形状预览按钮：填强调色、按预设圆角，选中画 2px 高亮描边。
-///
-/// 选中描边**统一 2px**、与形状自身的 `border_width` 解耦——云朵这类
-/// 外观弹层里的一行主题按钮：按钮用主题强调色填充、文字按底色取黑/白，
-/// 当前主题加一圈描边（颜色由调用方按面板底色定）。返回本帧被点中的主题。
+/// 外观弹层里的一行主题按钮：用主题强调色填充、文字按底色取黑/白，
+/// 当前主题加一圈 `ring` 描边。返回本帧被点中的主题。
 fn theme_button_row(
     ui: &mut egui::Ui,
     themes: &[Theme],
@@ -50,8 +47,8 @@ fn theme_button_row(
     clicked
 }
 
-/// 「卡片不描边」的预设若沿用自身宽度，选中后就没有和其他形状一样的
-/// 高亮圈。浅底用深描边、深底用白描边，保证任何主题下都看得清。
+/// 「卡片不描边」的预设按钮：按预设圆角与描边宽度绘制。
+/// 选中时描边固定 2px：浅底用深描边、深底用白描边。
 fn shape_button(
     ui: &mut egui::Ui,
     style: crate::theme::UiStyle,
@@ -110,20 +107,16 @@ impl App {
                         .position(|b| b.id() == id)
                         .unwrap_or(0);
                     let is_installed = installed(id);
-                    // 未安装的页面把图标调淡：egui 的 Button 没有 weak()，
-                    // 用 Image 的 tint 压暗（保持同一个按钮形状，只改观感）。
-                    // 已安装：WHITE = 乘以白 = 不改色（原图）。绝不能用
-                    // Color32::PLACEHOLDER——它是魔法值 rgba(0,255,183,4)，
-                    // 直接当 tint 会把图标乘成绿色（红通道归零）。
+                    // 未安装的页面把图标调淡：用 `Image` 的 tint 压暗。
+                    // 已安装用 `WHITE`（乘以白 = 原图）。
                     let is_selected = self.current_page == id;
-                    // 正被抓着的页签（拖动源）。三种状态刻意三色，互不看混：
-                    //   选中（我在这页）= 悬浮色 + 加粗描边，即「悬浮的加重版」；
-                    //   拖动源（我抓着这页）= 橙色，与卡片拖动源同源；
-                    //   换位目标（要换到这页）= 绿色，与卡片落点同源（在下面用画笔叠）。
+                    // 正被抓着的页签（拖动源）。三种状态各用一色：
+                    //   选中（我在这页）= 悬浮色 + 加粗描边；
+                    //   拖动源（我抓着这页）= 橙色；
+                    //   换位目标（要换到这页）= 绿色（在下面用画笔叠）。
                     let is_dragging = self.tab_drag_src == Some(id);
-                    // 图标保持原色（已安装）或压淡（未安装）。**不能按选中态改 tint**：
-                    // 先前改成「强调色上的文字色」，深色主题下那正好是黑色，图标直接变黑。
-                    // 状态一律靠底色 + 描边表达，图标本身不参与。
+                    // 图标保持原色（已安装）或压淡（未安装），不按选中态改 tint。
+                    // 状态靠底色 + 描边表达。
                     let icon_tint = if is_installed {
                         egui::Color32::WHITE
                     } else {
@@ -137,12 +130,10 @@ impl App {
                         ),
                         None => egui::Button::new(""),
                     };
-                    // 选中态 = 「悬浮的加重版」：底色就用悬浮色（`widgets.hovered.bg_fill`，
-                    // 未选中的页签悬停时也是这块底色），再把描边加粗到 2px 拉开层级。
-                    // 不另起一套颜色——用户要求选中沿用悬浮色系，只加重。
+                    // 选中态 = 悬浮色底 + 2px 描边。
                     let selected_fill = ui.visuals().widgets.hovered.bg_fill;
                     let selected_ring = ui.visuals().widgets.hovered.bg_stroke.color;
-                    // 拖动源用橙色（与卡片拖动源同源）；换位目标的绿环在按钮画完后补画。
+                    // 拖动源用橙色；换位目标的绿环在按钮画完后补画。
                     let btn = match (is_dragging, is_selected) {
                         (true, _) => btn
                             .fill(crate::ui::DRAG_SOURCE_FILL)
@@ -153,15 +144,13 @@ impl App {
                         }
                         (false, false) => btn,
                     };
-                    // 悬停提示只报页面名（未安装的补一句状态）。不写「可拖动换位」：
-                    // 未安装的页签本来就是灰的、拖不动，写了反而要读者自己去对号。
+                    // 悬停提示只报页面名（未安装的补一句状态）。
                     let tip = if is_installed {
                         id.label().to_string()
                     } else {
                         format!("{}（未安装）", id.label())
                     };
-                    // click_and_drag：普通 Button 只感应点击，drag_started/stopped
-                    // 永不触发，已安装页就拖不动。补上拖拽感应，点击仍照常工作。
+                    // click_and_drag：普通 Button 只感应点击，补上拖拽感应。
                     let btn_resp = ui
                         .add(
                             btn.min_size(egui::vec2(24.0, 22.0))
@@ -169,8 +158,6 @@ impl App {
                         )
                         .on_hover_text(tip);
                     // 光标：悬停张开手掌、按住握成拳头（与拖动把手同一套，见 crate::ui）。
-                    // 不用 egui 的 Grab/Grabbing：Windows 上它们被 winit 映射成
-                    // IDC_SIZEALL 四向箭头，看着像「可移动」而非抓取。
                     let want = crate::ui::grab_cursor_for(&btn_resp);
                     if want != crate::ui::GrabCursor::None {
                         crate::ui::request_grab_cursor(ui.ctx(), want);
@@ -183,30 +170,16 @@ impl App {
                     if btn_resp.clicked() {
                         clicked_page = Some(id);
                     }
-                    // 拖动换位：只认已安装段内的落点（未安装的位置是推导出来的，
-                    // 允许拖进去会和「未安装按字母序」的规则打架）。
+                    // 拖动换位：只认已安装段内的落点。
                     if is_installed && slot < installed_count {
                         if btn_resp.drag_started() {
                             self.tab_drag_src = Some(id);
                         }
                         // 换位目标：拖动中指针所在的槽位画绿环（与卡片落点同色）。
-                        // 必须在按钮画完后补画——指针是否在本控件上要等 allocate 之后才定，
-                        // 建按钮时还不知道会不会成为落点。
+                        // 在按钮画完后补画。
                         //
-                        // **这里必须用 `contains_pointer()`，不能用 `hovered()`。** egui 在
-                        // 「有指针按键按下且按下的不是本控件」时会**强制清掉** HOVERED
-                        // （context.rs: `if input.pointer.any_down() && !is_interacted_with`），
-                        // 而拖拽全程按着键、落点又不是被按下的那个控件——于是 `hovered()`
-                        // 在拖动中恒为 false，绿环一次都画不出来，`drop_on` 也永远是 None，
-                        // **换位整个功能是坏的**。`contains_pointer()` 正是 egui 为拖放落点
-                        // 提供的判定（文档原话：即使别的控件正被拖动也可能为 true）。
-                        // 用 `Inside` 与按钮自身的描边同几何（egui 的 `Frame` 就是 Inside），
-                        // 换位目标与选中态的环粗细/位置才完全一致；`Outside` 会多出一圈。
-                        //
-                        // 圆角必须取**按钮自己的** `corner_radius`，不能写死。写死 3.0 时
-                        // 云朵档的按钮圆角是 16，绿环就成了套在圆角按钮上的一个方框，
-                        // 看着像另画了个矩形而不是「把边框换成绿色」。取同一个值，
-                        // 绿环就精确压在按钮原有描边上，只换颜色、不改形状。
+                        // 用 `contains_pointer()`，不用 `hovered()`。用 `Inside` 与按钮自身的
+                        // 描边同几何；圆角取**按钮自己的** `corner_radius`。
                         if self.tab_drag_src.is_some() && btn_resp.contains_pointer() {
                             if self.tab_drag_src != Some(id) {
                                 ui.painter().rect_stroke(
@@ -224,14 +197,14 @@ impl App {
                     }
                 }
 
-                // 拖动中指针往往已经离开被拖的那个页签（拖到别的槽位上方），
-                // 光标不能退回默认箭头——整段拖动期间保持拳头，直到松手。
+                // 拖动中指针往往已经离开被拖的那个页签，整段拖动期间保持拳头光标，
+                // 直到松手。
                 if self.tab_drag_src.is_some() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     crate::ui::request_grab_cursor(ui.ctx(), crate::ui::GrabCursor::Fist);
                 }
 
-                // 松手：把被拖的页面移到落点位置，落点即用户看到的那个槽位。
+                // 松手：把被拖的页面移到落点位置。
                 if released {
                     if let (Some(src), Some(dst)) = (self.tab_drag_src, drop_on) {
                         let mut installed_ids: Vec<ConfigFormat> = order
@@ -255,8 +228,7 @@ impl App {
                 }
 
                 if let Some(id) = clicked_page {
-                    // 离开的是哪一页：切页归一要先把它当前的 agent model 视图存下来，
-                    // 否则切走再切回会把用户原来配好的值弄丢（见 normalize_agent_models_for_page）。
+                    // 离开的是哪一页：切页归一需要传入刚离开的页面。
                     let previous_page = self.current_page;
                     if id == ConfigFormat::DeepSeekHarness
                         && self.current_page != ConfigFormat::DeepSeekHarness
@@ -265,8 +237,7 @@ impl App {
                     }
                     self.sync_provider_secrets(id);
                     // 对应 agent 未在 WSL 安装的页面：关闭 WSL 同步。
-                    // 只在探测**确认**未安装时才收回勾选：探测在后台跑，
-                    // 「还没结果」不能当成「未安装」，否则切页会把勾选弹掉。
+                    // 只在探测**确认**未安装时收回勾选，`Unknown` 不算。
                     if self.sync_wsl
                         && backends::wsl_target_state(id) == backends::WslTargetState::NotInstalled
                     {
@@ -274,18 +245,13 @@ impl App {
                         crate::util::wsl_set_enabled(false);
                     }
                     self.current_page = id;
-                    // WorkBuddy 页的数据可能来自别的方言（没有 `disabled` 概念，一律读成
-                    // 启用）；进页时收敛成「每个 id 只启用第一条」（为什么见
-                    // `normalize_workbuddy_enable_flags`）。
+                    // WorkBuddy 页：进页时收敛成「每个 id 只启用第一条」。
                     if id == ConfigFormat::WorkBuddy {
                         self.normalize_workbuddy_enable_flags();
                     }
-                    // opencode 系三页共用同一份 agent 数据，但每页网关不同：agent 的
-                    // `model` 前缀若指向别家网关（如把 opencode/… 带到 kilo 页），
-                    // 目标页的网关根本不认，agent 跑不起来。进页即换成目标页自家网关的
-                    // 首选模型——界面立即可见，保存时自然写入正确的值。
-                    // 传入「刚离开的页面」：先把它的 model 视图存下来，否则切走再切回
-                    // 会把用户原来配好的值弄丢（详见 `normalize_agent_models_for_page`）。
+                    // opencode 系三页共用同一份 agent 数据，但每页网关不同：进页即把 agent 的
+                    // `model` 换成目标页自家网关的首选模型。传入「刚离开的页面」，先把它的
+                    // model 视图存下来。
                     if id.is_opencode_family() {
                         let leaving = (previous_page != id).then_some(previous_page);
                         let replaced = self.normalize_agent_models_for_page(id, leaving);
@@ -297,16 +263,14 @@ impl App {
                             );
                         }
                     }
-                    // 切换页面后必须重建预览草稿：草稿只在「预览未聚焦且上次解析成功」时才
-                    // 跟随组件状态，否则会停留在上一页的内容上（预览框仍有焦点或上次解析失败）。
+                    // 切换页面后重建预览草稿。
                     self.reset_preview_draft();
                     ctx.memory_mut(|m| m.surrender_focus(egui::Id::new(PREVIEW_EDITOR_ID)));
                 }
                 ui.separator();
                 // 右侧：WSL 同步 + 主题
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // WSL 探测在**后台线程**里跑（勾选同步后才启动），界面不等它：
-                    // 冷启动 WSL 虚拟机要几秒，同步执行会冻住窗口（旧版的「卡一下」）。
+                    // WSL 探测在**后台线程**里跑（勾选同步后才启动），界面不等它。
                     let current = self.current_page;
                     let probe_pending = self.sync_wsl && backends::wsl_probe_pending();
                     let (wsl_installed, wsl_tip) = if self.sync_wsl {
@@ -322,8 +286,7 @@ impl App {
                                     current.label()
                                 ),
                             ),
-                            // 探测中：复选框保持可用（不让用户觉得卡住），
-                            // 结果到达后自动更新（见下面的重绘请求）。
+                            // 探测中：复选框保持可用，结果到达后自动更新。
                             backends::WslTargetState::Unknown => (
                                 true,
                                 format!(
@@ -351,14 +314,12 @@ impl App {
                     if wsl_cb.changed() {
                         crate::util::wsl_set_enabled(self.sync_wsl);
                     }
-                    // 探测在途：转圈提示 + 请求重绘（结果到达后立即刷新，
-                    // 否则要等用户下次交互才更新）。
+                    // 探测在途：转圈提示 + 请求重绘。
                     if probe_pending {
                         ui.add(egui::Spinner::new().size(12.0));
                         ctx.request_repaint_after(std::time::Duration::from_millis(120));
                     }
-                    // 勾选后探测**确认**未安装：自动收回勾选并提示，避免复选框停在
-                    // 「勾着但灰掉」的矛盾状态。（探测中不算，见上面的三态说明。）
+                    // 勾选后探测**确认**未安装：自动收回勾选并提示。
                     if self.sync_wsl && !wsl_installed {
                         self.sync_wsl = false;
                         crate::util::wsl_set_enabled(false);
@@ -378,9 +339,7 @@ impl App {
                     .on_hover_text("外观")
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                     egui::Popup::menu(&look_btn)
-                        // 菜单默认是 `top_down_justified`：每一项的填充会撑满整个
-                        // 弹出宽度，文字只占左边一小段，看着像「填充与文字没对齐」。
-                        // 改成左对齐的普通纵向布局，填充就贴着文字宽度。
+                        // 菜单改成左对齐的普通纵向布局，每项填充贴着文字宽度。
                         .layout(egui::Layout::top_down(egui::Align::LEFT))
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
@@ -391,8 +350,7 @@ impl App {
                             // 当前主题的强调色（用于形状按钮填充）
                             let current_accent = self.theme.accent_color();
                             // 两行按钮共用同一个绘制函数（见 theme_button_row）；
-                            // 当前主题的描边色随行不同：深色行用白、亮色行用深灰，
-                            // 各自与所在面板底色保持对比。
+                            // 当前主题的描边色随行不同：深色行用白、亮色行用深灰。
                             ui.label(egui::RichText::new("深色").size(10.0).weak());
                             if let Some(t) = theme_button_row(
                                 ui,
@@ -436,8 +394,7 @@ impl App {
                             });
                             ui.add_space(crate::theme::SPACE_2);
                             // 亚克力：正交于配色与形状，对全部主题生效。
-                            // 内部标识（`prefs.glass`、`GLASS_*` 常量）不改名：改名会动
-                            // settings.json 的字段名，需要额外一轮迁移。
+                            // 内部标识（`prefs.glass`、`GLASS_*` 常量）不改名。
                             ui.checkbox(&mut self.glass, "亚克力背景");
                         });
                 });
@@ -445,12 +402,9 @@ impl App {
             // 第二行：配置文件 / 保存格式
             ui.horizontal(|ui| {
                 // 行内混排了 14px 小图标、较高的输入框与 24px 图标按钮。
-                // egui 是即时模式：先放的矮控件按当时行高居中，后面高控件
-                // 把行撞高后不会回溯重新居中，就会“靠上”。先把行高钉到 24，
-                // 所有控件（含第一个小图标）就都基于同一高度垂直居中。
+                // 先把行高钉到 24，所有控件基于同一高度垂直居中。
                 ui.set_min_height(24.0);
-                // 来源（后端 / agent）图标移到路径框前面（原「配置文件」标记位置）。
-                // 只显示各后端官方图标（名称见悬停提示）。
+                // 来源（后端 / agent）图标：只显示各后端官方图标（名称见悬停提示）。
                 if let Some(icon) = self.icon_for(self.source_format) {
                     ui.add(
                         egui::Image::from_texture(icon)
@@ -517,7 +471,7 @@ impl App {
                 let hovering = format_btn.hovered();
                 let scroll = ui
                     .input(|i| i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. })));
-                // 滚轮切换：一次连续滚动手势只切换一次，避免快速滚动时来回翻转
+                // 滚轮切换：一次连续滚动手势只切换一次。
                 if hovering && scroll && !self.save_format_wheel_latch {
                     self.save_format = self.save_format.toggled();
                     self.save_format_wheel_latch = true;
@@ -552,8 +506,6 @@ impl App {
                     }
 
                     // 代理支持：放行 / 禁用「模型延迟测试」走系统代理；亮起 = 已放行。
-                    // 检测详情折进悬停提示（原 Providers 标题行里的开关 + 独立文字标签
-                    // 随之取消，见 providers/section.rs）。
                     let mut proxy_tip = if self.allow_model_test_with_proxy {
                         "代理支持：已放行「模型延迟测试」。".to_string()
                     } else {
@@ -580,8 +532,7 @@ impl App {
                     .on_hover_text(proxy_tip);
                     if proxy.clicked() {
                         self.allow_model_test_with_proxy = !self.allow_model_test_with_proxy;
-                        // 状态栏即时回声（旧标题行开关有文字标签，搬进顶栏后动作要有反馈）；
-                        // 未检测到代理时明说「暂无实际影响」，避免误以为开关失效。
+                        // 状态栏回声。
                         self.status = if self.allow_model_test_with_proxy {
                             "代理支持：已放行「模型延迟测试」".to_string()
                         } else {
@@ -624,7 +575,7 @@ impl App {
                     if tokens.clicked() {
                         self.show_tokens = !self.show_tokens;
                         if self.show_tokens {
-                            // 重新打开时按已保存的值重填草稿，避免残留上次未保存的改动。
+                            // 重新打开时清空草稿。
                             self.token_draft.clear();
                             self.token_uid_draft.clear();
                         }

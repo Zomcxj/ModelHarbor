@@ -16,13 +16,11 @@
 //!       "manualProviderModelRules": [] } } }
 //! ```
 //!
-//! 只接管本文件：ZCode 的内置 provider 在 `config.json`、加密凭据在
-//! `credentials.json`、只读模型库在 `runtime/provider/.../zcode-builtin.json`，
-//! 三者都不属于用户可编辑面。
+//! 只接管本文件，内置 provider / 凭据 / 模型库不属于用户可编辑面。
 //!
 //! 模型级字段落在 `config.properties`（`contextWindow` / `supports*` 布尔）与
 //! `config.optionSpecs`（`maxOutputTokens.max` / `reasoningLevel.values`）。
-//! `optionSpecs.*.map` 是 ZCode 自己生成的 JS 表达式，**原样保留、不解析**。
+//! `optionSpecs.*.map` 原样保留、不解析。
 
 use super::{Backend, BackendLoad};
 use crate::convert;
@@ -97,7 +95,7 @@ fn model_config_of(root: &Value, provider_id: &str, model_id: &str) -> Option<Va
 /// 模型级 raw → ModelRow。
 ///
 /// `config` 为 `providerModelRules` 里那条规则的 `config`（可能缺失）。
-/// `raw` 整体保留，`optionSpecs.*.map` 等不认识的键因此不会丢。
+/// `raw` 整体保留。
 fn model_from_zcode(id: &str, config: Value) -> ModelRow {
     let mut row = ModelRow::new();
     row.id = id.to_string();
@@ -148,15 +146,13 @@ fn provider_from_zcode(rule: &Value, root: &Value) -> Option<ProviderRow> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    // ZCode 的 api.type 词表与 pi 系差一个 `chat`，转换后再进内部表示。
+    // ZCode 的 api.type 词表与 pi 系差一个 `chat`，转换后进内部表示。
     row.pi_api = convert::zcode_api_to_api(
         api.and_then(|a| a.get("type"))
             .and_then(Value::as_str)
             .unwrap_or_default(),
     );
-    // baseUrl 归一化后再进界面：ZCode 请求时按 kind 拼 `/v1/messages` 等后缀，
-    // 文件里若留着 `/v1`（或整段端点路径）会被拼成 `/v1/v1/messages` 而被服务端拒。
-    // 界面显示的就是 ZCode 真正当基址用的值，跨格式转换也不会把 `/v1` 带过去。
+    // baseUrl 归一化后进界面：不带 `/v1` 等端点后缀。
     let raw_base = api
         .and_then(|a| a.get("baseUrl"))
         .and_then(Value::as_str)
@@ -177,8 +173,7 @@ fn provider_from_zcode(rule: &Value, root: &Value) -> Option<ProviderRow> {
 
 /// ProviderRow → provider 规则的 `config`。
 fn provider_config_to_zcode(p: &ProviderRow) -> Value {
-    // 以 raw 为基底保留 ZCode 自有字段（group 等）；但来自其它方言的 raw
-    // 必须全新构造，否则会把对方的 id / vendor / url 当成扩展字段写进来。
+    // 以 raw 为基底保留 ZCode 自有字段（group 等）；来自其它方言的 raw 全新构造。
     let mut obj = if convert::is_workbuddy_shaped(&p.raw)
         || convert::is_opencode_shaped_provider(&p.raw)
         || convert::is_dsh_shaped_provider(&p.raw)
@@ -188,10 +183,7 @@ fn provider_config_to_zcode(p: &ProviderRow) -> Value {
         p.raw.as_object().cloned().unwrap_or_default()
     };
 
-    // `group` 是必填项：ZCode schema 要求，且个人 provider 缺它或用错值会直接抛
-    // 「Personal-only Provider 必须使用 standard-personal group」并拒绝整份配置
-    // （从 WorkBuddy 等转过来的 provider 没有 group，就是保存后 ZCode 里不显示的根因）。
-    // 已有 group（来自 ZCode 源，如 zai-family）则保留。
+    // `group` 是必填项，缺省写 `standard-personal`；已有 `group` 则保留。
     if !obj.contains_key("group") {
         obj.insert("group".into(), Value::String("standard-personal".into()));
     }
@@ -214,8 +206,7 @@ fn provider_config_to_zcode(p: &ProviderRow) -> Value {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    // 写出侧同样归一化：anthropic 的 baseUrl 末尾绝不能留 `/v1`
-    // （ZCode 会拼成 `/v1/v1/messages`，请求被服务端拒），其余协议剥掉各自的端点后缀。
+    // 写出侧同样归一化：剥掉 `/v1` 等端点后缀。
     let effective = p.effective_api();
     api.insert(
         "type".into(),
@@ -241,15 +232,11 @@ fn provider_config_to_zcode(p: &ProviderRow) -> Value {
 
 /// ModelRow → 模型规则的 `config`。
 ///
-/// `enabled` 是 `config` 的直接子键（与 `properties` 平级），不是 `properties`
-/// 里的项——写错位置 ZCode 会读不到，还会留下一个同名垃圾键。
-///
-/// 能力布尔只在**原文件已写该键**或**界面明确给出模态列表**时改写：
-/// 凭空补 `supports*: false` 会把「未声明」变成「明确不支持」，
-/// 反而关掉 ZCode 本来会按模型名推断的能力。
+/// `enabled` 是 `config` 的直接子键（与 `properties` 平级）。
+/// 能力布尔只在原文件已写该键或界面给出模态列表时改写。
 fn model_config_to_zcode(m: &ModelRow) -> Value {
-    // raw 为基底：`optionSpecs.*.map` 这类表达式与未知键原样保留。
-    // 来自其它方言的 raw 全新构造，避免对方字段（id / url / supportsImages…）泄漏。
+    // raw 为基底：`optionSpecs.*.map` 这类表达式与未知键原样保留；
+    // 来自其它方言的 raw 全新构造。
     let mut obj = if convert::is_workbuddy_shaped(&m.raw)
         || convert::is_opencode_shaped_model(&m.raw)
         || convert::is_dsh_shaped_model(&m.raw)
@@ -259,9 +246,7 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         m.raw.as_object().cloned().unwrap_or_default()
     };
 
-    // enabled 与 properties 平级。ModelHarbor 不接管这个开关（ZCode 自己的模型界面
-    // 维护它），所以**原值保留**：只在原文件没写该键时补 true。曾经无条件写 true，
-    // 会把用户在 ZCode 里关掉的模型重新打开。
+    // enabled 与 properties 平级：不接管该开关，只在原文件没写该键时补 true。
     if obj.get("enabled").and_then(Value::as_bool).is_none() {
         obj.insert("enabled".into(), Value::Bool(true));
     }
@@ -271,16 +256,12 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    // 只写能解析成整数的值。解析不了就**保持原样**（props 是 raw 的克隆），
-    // 与界面「无效数字：保存时该字段将被忽略」和保存状态栏的「已忽略 N 个无效
-    // 数字字段」同一口径——曾经写成 `unwrap_or(0)`，用户输错一个字就把
-    // `contextWindow: 0` 落盘，ZCode 里那个模型的上下文直接归零。
+    // 只写能解析成整数的值，解析不了保持原样（props 是 raw 的克隆）。
     if let Ok(context) = m.context.trim().parse::<i64>() {
         props.insert("contextWindow".into(), Value::Number(context.into()));
     }
-    // 模态：界面给出列表时按它写；列表为空时不动原有键。
-    // 落点是 `properties.inputFormat`（内置库如此嵌套），不是 properties 直接子键——
-    // 写平了 ZCode 读不到，还会和它自己写的 inputFormat 并存两套。
+    // 模态：界面给出列表时按它写，列表为空时不动原有键；
+    // 落点是 `properties.inputFormat`。
     if !m.modalities_input.trim().is_empty() {
         let mut input_format = props
             .get("inputFormat")
@@ -296,10 +277,7 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
                 "audio" => "supportsAudio",
                 _ => continue,
             };
-            // 只同步原本已声明的键，或新打开的模态（on）。绝不给未声明的键补
-            // false——那会把「未声明」变成「明确不支持」，凭空展开成五个 flag；
-            // 尤其 supportsText:false 会让 ZCode 隐藏/拒绝该模型（就是保存后
-            // 软件里不显示的根因）。
+            // 只同步原本已声明的键或新打开的模态（on），不给未声明的键补 false。
             if input_format.contains_key(field) || on {
                 input_format.insert(field.into(), Value::Bool(on));
             }
@@ -310,7 +288,7 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
             props.insert("inputFormat".into(), Value::Object(input_format));
         }
     }
-    // 同理：只在原文件已有该键时同步 tool_call，否则不凭空声明。
+    // 只在原文件已有该键时同步 tool_call。
     if props.contains_key("supportsToolCall") {
         props.insert("supportsToolCall".into(), Value::Bool(m.tool_call));
     }
@@ -332,8 +310,7 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         max.insert("max".into(), Value::Number(output.into()));
         specs.insert("maxOutputTokens".into(), Value::Object(max));
     }
-    // 档位：只在 UI 里有值且原文件已有该块时改写 values，其余情况不动——
-    // `map` 表达式由 ZCode 自己生成，我们只同步档位清单。
+    // 档位：UI 有值时只改写 `values`，`map` 表达式原样保留。
     let variants: Vec<Value> = m
         .variants
         .split(',')
@@ -428,7 +405,7 @@ impl Backend for ZCodeBackend {
             .cloned()
             .unwrap_or_default();
 
-        // providerOrder：完全按 UI 顺序（含删除生效）。
+        // providerOrder：按 UI 顺序（含删除生效）。
         let order: Vec<Value> = providers
             .iter()
             .filter(|p| !p.key.trim().is_empty())
@@ -541,11 +518,8 @@ impl Backend for ZCodeBackend {
         );
         cfg.insert("modelConfigRules".into(), Value::Object(model_cfg));
 
-        // 顶层与 config 的键序显式固定：ZCode 自己写出的顺序是
-        // schemaVersion → config，config 内 providerOrder → providerConfigRules
-        // → modelConfigRules。跨格式保存时 `strip_cross_format_containers` 删过键，
-        // 而 `Map::remove` 是 swap_remove 会打乱顺序（见该函数注释），
-        // 因此落笔前按固定顺序重排，与来源无关地恒定。
+        // 顶层与 config 的键序显式固定：schemaVersion → config，
+        // config 内 providerOrder → providerConfigRules → modelConfigRules。
         let cfg = convert::order_fields(
             cfg,
             &["providerOrder", "providerConfigRules", "modelConfigRules"],

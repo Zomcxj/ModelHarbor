@@ -5,8 +5,7 @@ use crate::util::{
 };
 use serde_json::{Map, Value};
 
-/// 推理档位的规范顺序（各方言并集）：写入时按此排序，删除后重新勾选
-/// 也会回到原本位置，而不是被追加到末尾。
+/// 推理档位的规范顺序（各方言并集）：写入时按此排序。
 const VARIANT_ORDER: &[&str] = &[
     "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
@@ -166,35 +165,26 @@ pub struct ModelRow {
     pub reasoning: bool,
     pub tool_call: bool,
     pub store: bool,
-    /// WorkBuddy 专属：关闭的模型**不写入配置文件**（保存时整条跳过）。
+    /// WorkBuddy 专属：关闭的模型不写入配置文件（保存时整条跳过）。
     ///
-    /// WorkBuddy 的选择器**按裸 id 全局去重**，同一个模型名无论挂在哪个厂商下都只列出一行、
-    /// 只认第一条，所以同一 id 的其余条目写进去也不会生效，只会占地方、让人以为配了。
-    /// 因此 UI 上同一 id 只允许开一个（开关互斥），关掉的一律不落盘。
-    /// **不能靠改 id 去重**——`id` 同时是发给上游的模型名，改名会让请求 model-not-found。
+    /// 同一 id 全局去重，UI 上只允许开一个（开关互斥）；`id` 是发给上游的
+    /// 模型名，不改名去重。
     pub disabled: bool,
     pub context: String,
     pub output: String,
     pub modalities_input: String,
     pub modalities_output: String,
     pub variants: String,
-    /// 加载时的思考档位投影，用于区分跨格式继承值与用户在目标页的手动输入。
+    /// 加载时的思考档位投影。
     pub original_variants: String,
     /// raw 所属格式；None 表示在当前页面中新建的条目。
     pub source_format: Option<ConfigFormat>,
     pub raw: Value,
-    /// KimiCode 专属：模型在顶层 `[models."<alias>"]` 表里的**表键**。
+    /// KimiCode 专属：模型在顶层 `[models."<alias>"]` 表里的表键。
     ///
-    /// Kimi 把模型放在**全局表**里，键是 alias，表内的 `model` 才是发给上游的 wire id，
-    /// **两者可以不同**（用户本机的 `kimi-code/k3` 表里 `model = "k3"`）。而
-    /// [`ModelRow::id`] 只能装一个，且它必须是 **wire id**——`id` 会被发给上游，
-    /// 改名会让请求 model-not-found（与 WorkBuddy 的 id 教训同源）。
-    ///
-    /// 所以 alias 单独存这里：界面显示 `id`（wire id），写回时用它作表键。
-    /// 新建模型时 alias 缺省 = `id`（与 Kimi Code 自己的 `/provider` 行为一致）。
-    ///
-    /// **不能把 alias 塞进 `raw` 的一个内部键**：`raw` 会随跨格式复制流到别的后端，
-    /// 那个内部键就成了写进别人配置里的垃圾字段。独立字段没有这个泄漏面。
+    /// Kimi 把模型放在全局表里，键是 alias，表内的 `model` 才是发给上游的 wire id，
+    /// 两者可以不同。`id` 只装 wire id（界面显示它），alias 单独存这里，
+    /// 写回时用它作表键。新建模型时 alias 缺省 = `id`。
     pub kimi_alias: String,
 }
 
@@ -249,7 +239,7 @@ impl ModelRow {
             reasoning: true,
             tool_call: true,
             store: false,
-            // 新建模型默认启用：`disabled` 只由 WorkBuddy 页的开关显式设置。
+            // 新建模型默认启用，`disabled` 只由 WorkBuddy 页的开关显式设置。
             disabled: false,
             context: "262000".into(),
             output: "131000".into(),
@@ -264,8 +254,8 @@ impl ModelRow {
     }
 
     pub fn to_value(&self) -> Value {
-        // pi/omp/DSH 来源需要转换方言，因此从干净对象构造；opencode 系来源
-        // 则以 raw 为基底，并只更新 UI 实际改动过的字段。
+        // pi/omp/DSH 来源从干净对象构造；opencode 系来源以 raw 为基底，
+        // 并只更新 UI 实际改动过的字段。
         let convert_dialect = self
             .source_format
             .is_some_and(|format| !format.is_opencode_family());
@@ -282,9 +272,8 @@ impl ModelRow {
         self.apply_modalities(&mut m, convert_dialect);
         self.apply_variants(&mut m, convert_dialect);
 
-        // 新建模型 / 跨格式写入时按 opencode 惯例键顺序输出（name、modalities、
-        // reasoning、tool_call、limit、options、variants），与配置文件保持一致；
-        // 同格式已有 raw 的模型保留原有键顺序，避免无意义的整文件重排。
+        // 新建模型 / 跨格式写入时按 opencode 惯例键顺序输出；
+        // 同格式已有 raw 的模型保留原有键顺序。
         if convert_dialect || raw_empty {
             m = canonical_model_order(m);
         }
@@ -295,7 +284,7 @@ impl ModelRow {
     fn apply_identity(&self, m: &mut Map<String, Value>, convert_dialect: bool) {
         if convert_dialect {
             set_str(m, "name", &self.name);
-            // reasoning/tool_call 是 opencode 专属控件。跨格式来源不继承默认值，
+            // reasoning/tool_call 是 opencode 专属控件：跨格式来源不继承默认值，
             // 但用户在 opencode 页明确勾选后仍可写入。
             if self.reasoning {
                 m.insert("reasoning".into(), true.into());
@@ -315,7 +304,7 @@ impl ModelRow {
     }
 
     /// `options.store`：新建模型（raw 为空）与既有配置一致写出 false，
-    /// 已有模型仍只在改动时写入，保持最小 diff。
+    /// 已有模型只在改动时写入。
     fn apply_store(&self, m: &mut Map<String, Value>, convert_dialect: bool, raw_empty: bool) {
         let raw_store = self
             .raw
@@ -504,11 +493,11 @@ pub struct ProviderRow {
     pub api_key: String,
     /// DSH 中保存于主配置的凭据引用名（apiKeyEnv）。
     pub api_key_env: String,
-    /// 加载时的 apiKeyEnv，用于清理重命名后的旧 ref。
+    /// 加载时的 apiKeyEnv。
     pub original_api_key_env: String,
     /// DSH 同级 `.credentials.yaml` 中 refs 下的实际密钥。
     pub api_key_secret: String,
-    /// 加载时的密钥，用于区分“原本缺失”与“用户明确清空”。
+    /// 加载时的密钥。
     pub original_api_key_secret: String,
     /// DSH provider 的 timeoutMs。
     pub dsh_timeout_ms: String,
@@ -516,12 +505,12 @@ pub struct ProviderRow {
     pub dsh_retry_mode: String,
     /// DSH provider 的 retryPolicy.maxRetries。
     pub dsh_max_retries: String,
-    /// 加载时的 DSH provider 参数，用于只保存用户实际修改的字段。
+    /// 加载时的 DSH provider 参数。
     pub original_dsh_timeout_ms: String,
     pub original_dsh_retry_mode: String,
     pub original_dsh_max_retries: String,
     pub timeout: String,
-    /// 加载时的 timeout（含缺省默认化），用于区分“未动过”与“用户修改”。
+    /// 加载时的 timeout（含缺省默认化）。
     pub original_timeout: String,
     pub compat: bool,
     /// pi: compat.requiresReasoningContentOnAssistantMessages；
@@ -536,16 +525,11 @@ pub struct ProviderRow {
     pub source_format: Option<ConfigFormat>,
     pub raw: Value,
     pub pi_api: String,
-    /// QwenCode 专属：该条目在 `modelProviders` 里的 **provider id**（map 键）。
+    /// QwenCode 专属：该条目在 `modelProviders` 里的 provider id（map 键）。
     ///
-    /// QwenCode 的结构是 `modelProviders[<pid>] = [<模型条目>, ...]`——一个 pid 下
-    /// 可以挂多条条目，且**每条条目自带 `baseUrl` / `envKey`**（官方示例里 `openai`
-    /// 这个 pid 下就混着 api.openai.com、openrouter.ai、requesty.ai 三家）。所以界面
-    /// 按「一条 = 一张卡片」建模，`key` 只存条目自己的 `id`，而**写回时得知道它属于
-    /// 哪个 pid**——就是这个字段。
-    ///
-    /// 不用 `key` 存 `"<pid>/<id>"`：那会让界面显示的 provider 名与用户文件里的
-    /// `id` 不一致，且用户手改 `key` 时前缀会被改坏。
+    /// QwenCode 的结构是 `modelProviders[<pid>] = [<模型条目>, ...]`，一个 pid 下
+    /// 可以挂多条条目，且每条条目自带 `baseUrl` / `envKey`。界面按「一条 = 一张卡片」
+    /// 建模，`key` 只存条目自己的 `id`，本字段记录它属于哪个 pid。
     pub qwen_pid: String,
 }
 
@@ -567,8 +551,8 @@ impl ProviderRow {
             .and_then(|c| c.get("supportsDeveloperRole"))
             .and_then(|v| v.as_bool())
             .unwrap_or_else(|| {
-                // opencode 缺省 npm 等价于 @ai-sdk/openai（chat/completions）；
-                // 这类 api 不支持 developer role，没有显式声明时不勾选。
+                // opencode 缺省 npm 等价于 @ai-sdk/openai（chat/completions），
+                // 未显式声明 developer role 时不勾选。
                 !matches!(
                     str_at(v, "npm"),
                     "" | "@ai-sdk/openai" | "@ai-sdk/openai-compatible"
@@ -624,11 +608,11 @@ impl ProviderRow {
         Self { base_url, ..row }
     }
 
-    /// 生效的 api（线上协议）。UI 显示、写盘、延迟测试共用同一套优先级，避免三处口径不一致：
-    /// 1. npm 非空 → 按 npm 包推导（opencode 侧以 npm 表达协议）；
+    /// 生效的 api（线上协议）。UI 显示、写盘、延迟测试共用同一套优先级：
+    /// 1. npm 非空 → 按 npm 包推导；
     /// 2. pi_api 非空 → 直接用（若被误写成 `@ai-sdk/...` 包名，按 npm 解释并自愈）；
-    /// 3. 原文件（raw）里的 api → 保留，兼容 pi-messages / google-vertex 等无 npm 对应的协议；
-    /// 4. 都没有 → 默认兼容层 openai-completions（api 字段始终会写出，不产生非法配置）。
+    /// 3. 原文件（raw）里的 api → 保留；
+    /// 4. 都没有 → 默认兼容层 openai-completions。
     pub fn effective_api(&self) -> String {
         if !self.npm.is_empty() {
             return crate::convert::npm_to_api(&self.npm);
@@ -649,14 +633,11 @@ impl ProviderRow {
     }
 
     /// 是否显式指定了协议（npm 或 api 任一侧有值），供下拉决定显示「(空)」还是协议名。
-    /// 与 [`Self::effective_api`] 的取值口径一致：二者都认为"没写"才是空。
     pub fn has_explicit_api(&self) -> bool {
         !self.npm.is_empty() || !self.pi_api.is_empty() || !str_at(&self.raw, "api").is_empty()
     }
 
     /// 选择「(空)」（不指定协议）：清掉 npm / pi_api，并抹掉 raw 里的 api。
-    /// raw 必须一并清理，否则 [`Self::effective_api`] 会从 raw 回退把旧协议写回去，
-    /// 造成界面显示「(空)」而落盘仍是旧协议。
     pub fn clear_api(&mut self) {
         self.npm.clear();
         self.pi_api.clear();
@@ -698,8 +679,8 @@ impl ProviderRow {
     }
 
     pub fn to_value(&self) -> Value {
-        // pi/omp/DSH 来源全新构造，防止方言键泄漏进 opencode 系；opencode 系
-        // 来源则以 raw 为基底，只更新发生变化的 provider 字段。
+        // pi/omp/DSH 来源全新构造；opencode 系来源以 raw 为基底，
+        // 只更新发生变化的 provider 字段。
         let convert_dialect = self
             .source_format
             .is_some_and(|format| !format.is_opencode_family());
@@ -728,8 +709,7 @@ impl ProviderRow {
                 .cloned()
                 .unwrap_or_default();
             if base_changed {
-                // opencode 的 anthropic-messages 必须带 /v1：跨格式写入时源值可能不带（pi / omp / dsh
-                // 读入会去掉 /v1），此处统一补齐；同格式且未改动时 base_changed 为 false，不会产生多余 diff。
+                // opencode 的 anthropic-messages 必须带 /v1。
                 let api = self.effective_api();
                 let base_url = crate::convert::with_v1_for_messages(&api, &self.base_url);
                 set_str(&mut options, "baseURL", &base_url);
