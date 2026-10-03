@@ -395,7 +395,7 @@ impl App {
                             ui.add_space(crate::theme::SPACE_2);
                             // 亚克力：正交于配色与形状，对全部主题生效。
                             // 内部标识（`prefs.glass`、`GLASS_*` 常量）不改名。
-                            ui.checkbox(&mut self.glass, "亚克力背景");
+                            ui.checkbox(&mut self.glass, "亚克力");
                         });
                 });
             });

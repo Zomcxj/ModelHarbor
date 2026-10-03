@@ -199,7 +199,7 @@ pub struct Prefs {
     pub guide_dismissed: bool,
     /// 界面形状标识（`soft` / `compact` / `slab` / `sharp` / `panel` / `pill`；空 = 用默认档）。
     pub ui_style: String,
-    /// 玻璃背景：面板 / 卡片半透明，透出 DWM 亚克力模糊（正交于主题与形状）。
+    /// 亚克力：面板 / 卡片半透明，透出 DWM 亚克力模糊（正交于主题与形状）。
     pub glass: bool,
     /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
     /// 只对已安装的那一组生效，未安装的页面排在后面并按字母序。
@@ -299,7 +299,7 @@ impl Prefs {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             ui_style: get_str("ui_style"),
-            // 只有真正的布尔 true 才开玻璃：缺字段、字符串 "true" 都按关闭处理。
+            // 只有真正的布尔 true 才开亚克力：缺字段、字符串 "true" 都按关闭处理。
             glass: root.get("glass").and_then(Value::as_bool).unwrap_or(false),
             tab_order: get_list("tab_order"),
         }
@@ -438,7 +438,7 @@ mod tests {
             allow_model_test_with_proxy: true,
             guide_dismissed: true,
             ui_style: "slab".to_string(),
-            // 非默认值，覆盖玻璃档的读写。
+            // 非默认值，覆盖亚克力档的读写。
             glass: true,
             tab_order: vec!["pi".to_string(), "zcode".to_string()],
         };

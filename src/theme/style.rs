@@ -175,7 +175,7 @@ impl UiStyle {
 /// 当前形状预设存在上下文里的键。
 pub(super) const ACTIVE_STYLE_ID: &str = "modelharbor_active_ui_style";
 
-/// 当前玻璃档存在上下文里的键。
+/// 当前亚克力档存在上下文里的键。
 pub(super) const GLASS_ID: &str = "modelharbor_active_glass";
 
 /// 当前生效的形状预设（还没套用样式时是默认档）。
@@ -195,9 +195,9 @@ pub fn needs_apply(applied: &mut Option<Theme>, theme: Theme) -> bool {
     true
 }
 
-/// 主题、形状或玻璃档变了都要重套样式。
+/// 主题、形状或亚克力档变了都要重套样式。
 ///
-/// `applied` 记录已套用的（主题, 形状, 玻璃），会被就地更新。
+/// `applied` 记录已套用的（主题, 形状, 亚克力），会被就地更新。
 pub fn needs_apply_style(
     applied: &mut Option<(Theme, UiStyle, bool)>,
     theme: Theme,

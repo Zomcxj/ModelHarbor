@@ -39,8 +39,8 @@ fn main() -> eframe::Result {
             .with_inner_size([1250.0, 820.0])
             .with_min_inner_size([970.0, 660.0])
             .with_title("ModelHarbor")
-            // 恒为透明窗口：玻璃档需要 alpha 通道，而 eframe 的 glow 后端只在
-            // 建窗时读 `transparent`；关闭玻璃时靠不透明的清屏色盖满。
+            // 恒为透明窗口：亚克力档需要 alpha 通道，而 eframe 的 glow 后端只在
+            // 建窗时读 `transparent`；关闭亚克力时靠不透明的清屏色盖满。
             .with_transparent(true)
             .with_icon(egui::IconData {
                 rgba: ICON_BYTES.to_vec(),
