@@ -46,6 +46,8 @@ mod preview_diff_tests;
 mod preview_find_boundary_tests;
 #[cfg(test)]
 mod preview_sync_tests;
+#[cfg(test)]
+mod provider_header_layout_tests;
 /// 用真实配置文件确认「启用」开关只在 WorkBuddy 页出现。
 ///
 /// 这是用户报的场景：加载 `opencode.json` 后，除 opencode 外的每一页都冒出了开关。
