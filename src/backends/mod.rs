@@ -24,7 +24,6 @@ use crate::util::{is_wsl_path, WslPathProbe};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
 
 /// 一个后端加载结果的完整快照。
 #[derive(Clone)]
@@ -188,20 +187,129 @@ pub fn load_backend(id: ConfigFormat, path: &str) -> Result<BackendLoad, String>
 
 /// WSL 目标路径（存在则返回）。
 ///
-/// 探测结果进程级缓存（单次批量 `wsl` 调用 + 缓存的 `$HOME`）：
-/// 运行期间在 WSL 侧新装 agent 不会被感知，需重启应用。
+/// 探测在**后台线程**里跑（单次批量 `wsl` 调用 + 缓存的 `$HOME`），结果进程级缓存：
+/// 首次调用不会阻塞界面——冷启动 WSL 虚拟机要几秒，在 UI 线程里同步执行会冻住窗口。
+/// 探测完成前返回 `None`（调用方需要区分「未安装」与「还没结果」时用
+/// [`wsl_target_state`]）。运行期间在 WSL 侧新装 agent 不会被感知，需重启应用。
 pub fn wsl_target(id: ConfigFormat) -> Option<String> {
-    // 总闸关闭时直接 None：不探测、不写缓存（否则关闭期间探测到的全部 None
-    // 会被 OnceLock 永久缓存，开启同步后永远无法识别「已安装」）。
-    if !crate::util::wsl_enabled() {
-        return None;
+    target_from_state(wsl_target_state(id))
+}
+
+/// 三态 → 可写路径：只有「已安装」有值。
+///
+/// 「探测中」与「确认未安装」都返回 `None`——需要区分二者时直接调
+/// [`wsl_target_state`]（保存提示按三态给不同文案：探测中不说「未安装」）。
+fn target_from_state(state: WslTargetState) -> Option<String> {
+    match state {
+        WslTargetState::Installed(path) => Some(path),
+        WslTargetState::Unknown | WslTargetState::NotInstalled => None,
     }
-    static CACHE: OnceLock<HashMap<ConfigFormat, Option<String>>> = OnceLock::new();
-    CACHE
-        .get_or_init(probe_wsl_targets)
-        .get(&id)
-        .cloned()
-        .flatten()
+}
+
+/// 从探测结果映射取某后端的状态（纯函数，便于直接断言三态判定）。
+///
+/// 「映射里没有这条」 = 探测已完成且该后端未安装：探测会为每个有默认 WSL 路径的
+/// 后端各写一条（含 `None`），所以缺条目只可能是未安装。
+fn state_from_map(map: &HashMap<ConfigFormat, Option<String>>, id: ConfigFormat) -> WslTargetState {
+    match map.get(&id).and_then(|path| path.clone()) {
+        Some(path) => WslTargetState::Installed(path),
+        None => WslTargetState::NotInstalled,
+    }
+}
+
+/// WSL 目标探测的三态结果。
+///
+/// 「未安装」与「还没结果」必须分开：勾选同步的那一帧探测刚启动，
+/// 把「未知」当成「未安装」会把用户的勾选立即弹回去。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum WslTargetState {
+    /// 探测中（或总闸关闭）。
+    Unknown,
+    /// 已安装：目标路径。
+    Installed(String),
+    /// 探测完成且确认未安装。
+    NotInstalled,
+}
+
+/// 后台探测任务的接收端载荷：`(代际号, 各后端的目标路径)`。
+type WslProbePayload = (u64, HashMap<ConfigFormat, Option<String>>);
+
+/// 后台探测任务：接收端 + 已完成结果 + 代际号。
+#[derive(Default)]
+struct WslProbeTask {
+    rx: Option<std::sync::mpsc::Receiver<WslProbePayload>>,
+    done: Option<HashMap<ConfigFormat, Option<String>>>,
+    /// 代际：总闸每次关闭都 +1。在途线程的结果代际不符就丢弃——
+    /// 否则「关闭期间的探测结果（全部 None）」会在重新开启后被当成有效结果。
+    generation: u64,
+}
+
+static WSL_PROBE: std::sync::Mutex<Option<WslProbeTask>> = std::sync::Mutex::new(None);
+
+/// 取 WSL 目标状态；必要时启动后台探测（**不阻塞**）。
+pub fn wsl_target_state(id: ConfigFormat) -> WslTargetState {
+    // 总闸关闭：丢弃缓存并换代。关闭期间的探测结果不可信（wsl 调用会被闸住，
+    // 得到一片 None），下次开启必须重新探。
+    if !crate::util::wsl_enabled() {
+        if let Ok(mut guard) = WSL_PROBE.lock() {
+            if let Some(task) = guard.as_mut() {
+                task.generation += 1;
+                task.rx = None;
+                task.done = None;
+            }
+        }
+        return WslTargetState::Unknown;
+    }
+    let Ok(mut guard) = WSL_PROBE.lock() else {
+        return WslTargetState::Unknown;
+    };
+    let task = guard.get_or_insert_with(WslProbeTask::default);
+    // 收在途结果：代际不符就丢。
+    if task.done.is_none() {
+        if let Some(rx) = &task.rx {
+            match rx.try_recv() {
+                Ok((gen, map)) => {
+                    if gen == task.generation {
+                        task.done = Some(map);
+                    }
+                    task.rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // 线程异常退出（panic 等）：不把「未知」当成「未安装」，
+                    // 但也不能每帧重开线程——清掉 rx 后由调用方决定要不要重试。
+                    task.rx = None;
+                }
+            }
+        }
+    }
+    match &task.done {
+        Some(map) => state_from_map(map, id),
+        None => {
+            if task.rx.is_none() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let generation = task.generation;
+                std::thread::spawn(move || {
+                    let map = probe_wsl_targets();
+                    let _ = tx.send((generation, map));
+                });
+                task.rx = Some(rx);
+            }
+            WslTargetState::Unknown
+        }
+    }
+}
+
+/// 后台探测是否还在进行（供 App 决定要不要请求重绘）。
+pub fn wsl_probe_pending() -> bool {
+    WSL_PROBE
+        .lock()
+        .map(|guard| {
+            guard
+                .as_ref()
+                .is_some_and(|task| task.done.is_none() && task.rx.is_some())
+        })
+        .unwrap_or(false)
 }
 
 /// 一次 `wsl` 调用探测全部后端的默认 WSL 路径，返回“已安装”后端的路径。
@@ -254,6 +362,10 @@ fn probe_wsl_targets() -> HashMap<ConfigFormat, Option<String>> {
 }
 
 /// 目标是否可用（本地或 WSL）。
+///
+/// 探测中的 WSL 不算「可用」：这里的结果用于页签排序 / 保存目标计数，
+/// 把「还没探完」算成可用会让页签先跳到已安装组再跳回来。
+/// 探测完成后下次重建目标时自然更新。
 pub fn target_available(id: ConfigFormat, local_path: &str) -> bool {
     backend(id).local_available(local_path) || wsl_target(id).is_some()
 }
@@ -264,6 +376,9 @@ pub fn resolve_local_path(id: ConfigFormat, local_path: &str) -> String {
 }
 
 /// 实际写入路径：本地优先，本地不可用回落 WSL，最后回退本地默认（新建场景）。
+///
+/// WSL 侧只认「已安装」：探测中与确认未安装都回落本地默认。
+/// 探测中写本地是安全的——不会因为探测没跑完就把用户的编辑丢进一个不存在的 WSL 路径。
 pub fn target_path(id: ConfigFormat, local_path: &str) -> String {
     let local = backend(id).resolve_local_path(local_path);
     if Path::new(&local).exists() {
@@ -303,4 +418,54 @@ pub(crate) fn load_target_root_with(
         return Ok(empty());
     }
     parse(&content).map_err(|e| format!("解析失败（{path}）: {e}"))
+}
+
+#[cfg(test)]
+mod wsl_state_tests {
+    use super::*;
+
+    /// 探测结果映射 → 三态：有条目且路径非空 = 已安装；条目为 `None` 或缺失 = 未安装。
+    ///
+    /// 「缺失」必须判成未安装而不是「未知」：探测会为每个有默认 WSL 路径的后端各写
+    /// 一条（含 `None`），所以映射建好之后就不存在「还没结果」——那是 `task.done`
+    /// 为 `None` 的情形，由 `wsl_target_state` 自己处理。
+    #[test]
+    fn map_maps_to_installed_or_not_installed() {
+        let mut map: HashMap<ConfigFormat, Option<String>> = HashMap::new();
+        map.insert(
+            ConfigFormat::Opencode,
+            Some("/home/u/.config/opencode/opencode.json".into()),
+        );
+        map.insert(ConfigFormat::Pi, None);
+
+        assert_eq!(
+            state_from_map(&map, ConfigFormat::Opencode),
+            WslTargetState::Installed("/home/u/.config/opencode/opencode.json".into())
+        );
+        assert_eq!(
+            state_from_map(&map, ConfigFormat::Pi),
+            WslTargetState::NotInstalled
+        );
+        // 映射里完全没有这条（如该后端没有默认 WSL 路径）：也是「未安装」，
+        // 不能算「未知」——否则保存会一直说「正在检测」。
+        assert_eq!(
+            state_from_map(&map, ConfigFormat::KimiCode),
+            WslTargetState::NotInstalled
+        );
+    }
+
+    /// 只有「已安装」能产出可写路径；「未知」与「未安装」都必须给 `None`。
+    ///
+    /// 这是保存路径的安全线：「探测中」若给了路径，保存会把内容写进一个
+    /// 尚不确定存在的 WSL 路径；若把「探测中」当成「未安装」，则只是跳过同步，
+    /// 不会丢数据。
+    #[test]
+    fn only_installed_yields_a_writable_path() {
+        assert_eq!(
+            target_from_state(WslTargetState::Installed("/home/u/x.json".into())),
+            Some("/home/u/x.json".to_string())
+        );
+        assert_eq!(target_from_state(WslTargetState::Unknown), None);
+        assert_eq!(target_from_state(WslTargetState::NotInstalled), None);
+    }
 }
