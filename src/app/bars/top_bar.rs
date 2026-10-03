@@ -436,18 +436,9 @@ impl App {
                             });
                             ui.add_space(crate::theme::SPACE_2);
                             // 亚克力：正交于配色与形状，对全部主题生效。
-                            // 界面名用「亚克力」——它是 Windows 官方名称 Desktop Acrylic
-                            // （桌面亚克力，DWM 的 `DWMSBT_TRANSIENTWINDOW`）的中文叫法。
-                            // 内部标识（`prefs.glass`、`GLASS_*` 常量）不改名：那会改动
-                            // settings.json 的字段名，得额外做一轮迁移。
-                            ui.checkbox(&mut self.glass, "亚克力背景")
-                                .on_hover_text(
-                                    "面板与卡片半透明，透出窗口后面的桌面。\n\
-                                     Windows 官方名称：Desktop Acrylic（桌面亚克力），\n\
-                                     即 DWM 的 DWMSBT_TRANSIENTWINDOW 背景类型。\n\
-                                     需要 Windows 11；旧系统自动降级为不透明。\n\
-                                     亚克力档会略微降低文字与底色的对比度。",
-                                );
+                            // 内部标识（`prefs.glass`、`GLASS_*` 常量）不改名：改名会动
+                            // settings.json 的字段名，需要额外一轮迁移。
+                            ui.checkbox(&mut self.glass, "亚克力背景");
                         });
                 });
             });
