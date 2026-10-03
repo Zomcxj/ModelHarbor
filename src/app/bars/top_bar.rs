@@ -264,10 +264,12 @@ impl App {
                         self.project_dsh_credentials();
                     }
                     self.sync_provider_secrets(id);
-                    // 对应 agent 未在 WSL 安装的页面：关闭并禁用 WSL 同步。
-                    // 仅在同步已开启时才探测：wsl_target 首次调用会拉起 wsl 进程
-                    // （启动 WSL 虚拟机），未开同步就探测 = 软件一开就占内存。
-                    if self.sync_wsl && backends::wsl_target(id).is_none() {
+                    // 对应 agent 未在 WSL 安装的页面：关闭 WSL 同步。
+                    // 只在探测**确认**未安装时才收回勾选：探测在后台跑，
+                    // 「还没结果」不能当成「未安装」，否则切页会把勾选弹掉。
+                    if self.sync_wsl
+                        && backends::wsl_target_state(id) == backends::WslTargetState::NotInstalled
+                    {
                         self.sync_wsl = false;
                         crate::util::wsl_set_enabled(false);
                     }
@@ -303,21 +305,33 @@ impl App {
                 ui.separator();
                 // 右侧：WSL 同步 + 主题
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // WSL 探测**按需**：只在「同步已勾选」时才检测安装状态——
-                    // wsl_target 首次调用会拉起 wsl 进程（启动 WSL 虚拟机），
-                    // 未开启同步的启动 / 切页不应付出这份内存与启动开销。
+                    // WSL 探测在**后台线程**里跑（勾选同步后才启动），界面不等它：
+                    // 冷启动 WSL 虚拟机要几秒，同步执行会冻住窗口（旧版的「卡一下」）。
                     let current = self.current_page;
+                    let probe_pending = self.sync_wsl && backends::wsl_probe_pending();
                     let (wsl_installed, wsl_tip) = if self.sync_wsl {
-                        let installed = backends::wsl_target(current).is_some();
-                        let tip = if installed {
-                            format!("保存时同步写入 WSL 侧 {} 的配置", current.label())
-                        } else {
-                            format!(
-                                "WSL 中未检测到 {} 安装（配置文件或其目录均不存在），保存仅写 Windows 本地",
-                                current.label()
-                            )
-                        };
-                        (installed, tip)
+                        match backends::wsl_target_state(current) {
+                            backends::WslTargetState::Installed(_) => (
+                                true,
+                                format!("保存时同步写入 WSL 侧 {} 的配置", current.label()),
+                            ),
+                            backends::WslTargetState::NotInstalled => (
+                                false,
+                                format!(
+                                    "WSL 中未检测到 {} 安装（配置文件或其目录均不存在），保存仅写 Windows 本地",
+                                    current.label()
+                                ),
+                            ),
+                            // 探测中：复选框保持可用（不让用户觉得卡住），
+                            // 结果到达后自动更新（见下面的重绘请求）。
+                            backends::WslTargetState::Unknown => (
+                                true,
+                                format!(
+                                    "正在检测 WSL 侧的 {} 安装状态…（检测完成前保存只写 Windows 本地）",
+                                    current.label()
+                                ),
+                            ),
+                        }
                     } else {
                         (
                             true,
@@ -337,8 +351,14 @@ impl App {
                     if wsl_cb.changed() {
                         crate::util::wsl_set_enabled(self.sync_wsl);
                     }
-                    // 勾选后探测发现未安装：自动收回勾选并提示，避免复选框停在
-                    // 「勾着但灰掉」的矛盾状态。
+                    // 探测在途：转圈提示 + 请求重绘（结果到达后立即刷新，
+                    // 否则要等用户下次交互才更新）。
+                    if probe_pending {
+                        ui.add(egui::Spinner::new().size(12.0));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(120));
+                    }
+                    // 勾选后探测**确认**未安装：自动收回勾选并提示，避免复选框停在
+                    // 「勾着但灰掉」的矛盾状态。（探测中不算，见上面的三态说明。）
                     if self.sync_wsl && !wsl_installed {
                         self.sync_wsl = false;
                         crate::util::wsl_set_enabled(false);
@@ -415,12 +435,18 @@ impl App {
                                 }
                             });
                             ui.add_space(crate::theme::SPACE_2);
-                            // 玻璃：正交于配色与形状，对全部主题生效。
-                            ui.checkbox(&mut self.glass, "玻璃背景")
+                            // 亚克力：正交于配色与形状，对全部主题生效。
+                            // 界面名用「亚克力」——它是 Windows 官方名称 Desktop Acrylic
+                            // （桌面亚克力，DWM 的 `DWMSBT_TRANSIENTWINDOW`）的中文叫法。
+                            // 内部标识（`prefs.glass`、`GLASS_*` 常量）不改名：那会改动
+                            // settings.json 的字段名，得额外做一轮迁移。
+                            ui.checkbox(&mut self.glass, "亚克力背景")
                                 .on_hover_text(
-                                    "面板与卡片半透明，透出窗口后面的桌面（DWM 亚克力模糊）。\n\
+                                    "面板与卡片半透明，透出窗口后面的桌面。\n\
+                                     Windows 官方名称：Desktop Acrylic（桌面亚克力），\n\
+                                     即 DWM 的 DWMSBT_TRANSIENTWINDOW 背景类型。\n\
                                      需要 Windows 11；旧系统自动降级为不透明。\n\
-                                     玻璃档会略微降低文字与底色的对比度。",
+                                     亚克力档会略微降低文字与底色的对比度。",
                                 );
                         });
                 });
