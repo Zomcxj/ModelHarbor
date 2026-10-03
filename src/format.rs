@@ -34,18 +34,13 @@ impl ConfigFormat {
         }
     }
 
-    /// 是否属于 **opencode 系**：opencode / kilocode / mimocode。
+    /// 是否属于 opencode 系：opencode / kilocode / mimocode。
     ///
-    /// 三者是同一份代码的后代（Kilo Code 与 MiMo Code 都是 opencode 的 fork），配置
-    /// schema 的**字段与结构一致**：顶层 `provider` map + `agent` map，provider 用
-    /// `options.baseURL` / `options.apiKey`，模型用 `models.<id>.limit.context|output`
-    /// / `tool_call` / `reasoning`。差别只有**配置目录名、主配置文件名、图标**。
+    /// 三者 schema 的字段与结构一致，解析、序列化、字段可见性、agents 支持共用一套实现；
+    /// 差别只有配置目录名、主配置文件名与图标，判别只能靠路径。
     ///
-    /// 注意「字段相同」不等于「required 相同」：mimocode 额外要求 `modalities` 成对
-    /// （见 `backends::opencode::complete_required_model_fields`），写盘时要按目标方言补齐。
-    ///
-    /// 所以解析、序列化、字段可见性、agents 支持全部共用一套实现；也正因为内容形状
-    /// 一致，**判别只能靠路径**（目录名或文件名），不能靠内容特征。
+    /// mimocode 额外要求 `modalities` 成对（见
+    /// `backends::opencode::complete_required_model_fields`）。
     pub fn is_opencode_family(&self) -> bool {
         matches!(
             self,
@@ -53,22 +48,10 @@ impl ConfigFormat {
         )
     }
 
-    /// 该后端是否有**模型级启用开关**——只剩 WorkBuddy 一家。
+    /// 该后端是否有模型级启用开关（仅 WorkBuddy）。
     ///
-    /// WorkBuddy 的选择器按裸 id **全局去重**，同名只能有一条生效，开关是去重逼出来的
-    /// 必需品；模型写 `disabled`，「生效清单只含启用条目」就是它的真实语义。
-    ///
-    /// QwenCode 与 KimiCode **都不在其中**（先后按用户指正移除）：Qwen 的 `/model` 对
-    /// 不同厂商的重复模型照列不误（判重只针对协议+id+baseUrl 完全相同的三重重复），
-    /// Kimi 的模型表按别名一一索引、根本不去重——两家的 schema 也都没有 disabled/enabled
-    /// 字段。开关在那两家是本工具发明的状态（Qwen 连带的全量副本见 `backends::qwen_code`、
-    /// Kimi 的见 `backends::kimi_code`）。
-    ///
-    /// 其余后端没有这个语义（ZCode 的 `config.enabled` 由它自己的界面维护，
-    /// ModelHarbor 只负责原样保留，不接管），凭空加一个只会被当成未知键。
-    ///
-    /// 不能改用 `page_has_model_field("disabled")` 判定：那个函数在「已加载的文件格式
-    /// 与当前页不同」时一律返回 true（为了让新页面能填所有字段），会把开关漏到每一页。
+    /// 开启时模型写 `disabled`，生效清单只含启用条目。ZCode 的 `config.enabled` 由它
+    /// 自己的界面维护，本工具只原样保留。
     pub fn has_model_enable(&self) -> bool {
         matches!(self, ConfigFormat::WorkBuddy)
     }
@@ -163,8 +146,7 @@ impl ConfigPaths {
             if overrides.get(id).trim().is_empty() {
                 continue;
             }
-            // 覆盖路径也要走候选解析：用户填 `.json`、盘上是 `.jsonc` 时，
-            // 这里若按原样判存在，覆盖就永远命中不了，表现为「填了路径却不打开」。
+            // 覆盖路径也走候选解析（`.json` / `.jsonc`）。
             let path = backends::resolve_local_path(id, &self.local_path(id));
             if Path::new(&path).exists() {
                 return Some((id, path));
@@ -175,8 +157,7 @@ impl ConfigPaths {
 
     /// 启动探测：找到第一个本地存在的默认配置。
     ///
-    /// 路径走候选解析（opencode 系的 `.json` / `.jsonc`）：只认默认名的话，
-    /// CLI 首次运行生成 `.jsonc` 的机器会一个都探测不到，启动就落在空配置上。
+    /// 路径走候选解析（opencode 系的 `.json` / `.jsonc`）。
     pub fn detect() -> Option<(ConfigFormat, String)> {
         for b in backends::BACKENDS {
             let id = b.id();
@@ -212,11 +193,10 @@ impl ConfigPaths {
         backends::target_available(format, &self.local_path(format))
     }
 
-    /// 页面在顶栏的显示顺序：**已安装在前、未安装在后**，各组内按名字首字母。
+    /// 页面在顶栏的显示顺序：已安装在前、未安装在后，各组内按名字首字母。
     ///
-    /// `saved_order` 是用户拖动过的顺序（后端标识，`ConfigFormat::label()` 的值）：
-    /// 只对已安装的那一组生效——未安装的排在哪里是推导出来的，不该被手动顺序干扰。
-    /// 拖动后新装了一个 agent 也不会打乱：它按字母序插进已安装组。
+    /// `saved_order` 是用户拖动过的顺序（后端标识，即 `ConfigFormat::label()` 的值），
+    /// 只对已安装的那一组生效。
     pub fn tab_order(
         &self,
         saved_order: &[String],
@@ -316,7 +296,7 @@ mod tests {
         );
     }
 
-    /// 拖动顺序里出现了当前未安装的项时不该出错：它被忽略，等装了再排进去。
+    /// 拖动顺序里未安装的项被忽略。
     #[test]
     fn tab_order_ignores_saved_entries_that_are_not_installed() {
         let paths = ConfigPaths::default();
@@ -369,7 +349,7 @@ mod tests {
         );
     }
 
-    /// 顺序必须是全部后端的一个排列：漏一个就等于顶栏少一个页面。
+    /// 顺序是全部后端的一个排列，且不重复。
     #[test]
     fn tab_order_covers_every_backend_exactly_once() {
         let paths = ConfigPaths::default();
@@ -428,14 +408,14 @@ mod tests {
         let file = temp_config("prefer");
         let mut paths = ConfigPaths::default();
         let mut overrides = ConfigPathPrefs::default();
-        // 只覆盖 pi，且文件确实存在 → 启动应当定位到 pi 而不是按默认顺序探测
+        // 只覆盖 pi，且文件存在 → 启动定位到 pi，不走默认顺序探测
         overrides.set(ConfigFormat::Pi, &file);
         paths.apply_overrides(&overrides);
         assert_eq!(
             paths.detect_preferring_overrides(&overrides),
             Some((ConfigFormat::Pi, file.clone()))
         );
-        // 覆盖的路径不存在 → 不再被优先选中（回落默认探测，与机器上装了哪些 agent 无关）
+        // 覆盖的路径不存在 → 不被优先选中，回落默认探测
         let mut missing = ConfigPathPrefs::default();
         missing.set(ConfigFormat::Pi, r"D:\not-exist\models.json");
         let mut fresh = ConfigPaths::default();

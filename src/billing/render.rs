@@ -1,9 +1,9 @@
 //! 汇总成 [`Billing`]，以及卡片主行与悬停详情的文案。
 use super::*;
 
-/// [`parse_token_billing`] 的输入（字段多，打包成一个结构）。
+/// [`parse_token_billing`] 的输入。
 pub struct TokenInputs<'a> {
-    /// 令牌额度接口的结果；该接口整个不存在时为 `None`（日志统计照常出）。
+    /// 令牌额度接口的结果；该接口不存在时为 `None`。
     pub usage: Option<&'a TokenUsage>,
     pub logs: &'a [LogEntry],
     pub units: &'a Units,
@@ -15,15 +15,14 @@ pub struct TokenInputs<'a> {
     pub note: Option<String>,
 }
 
-/// 汇总「令牌额度 + 调用日志 + 站点单位」→ 卡片摘要（全程无需面板 token）。
+/// 汇总「令牌额度 + 调用日志 + 站点单位」→ 卡片摘要。
 pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
     let unit = inputs.units.quota_per_unit;
     let to_money = |points: f64| points / unit;
     let today = summarize_logs(inputs.logs, Some(inputs.today_from));
     let week = summarize_logs(inputs.logs, Some(inputs.now - 7 * 86_400));
-    // 只请求首个分页，无法证明服务端没有后续页（今日 / 近 7 天统计可能偏小）。
-    // 额度接口可能整个不存在（把 baseUrl 指向中转域名的站点就没有这个面板路由）：
-    // 此时日志统计照常出，额度三项留空，绝不编数字。
+    // 只请求首个分页，今日 / 近 7 天统计可能偏小。
+    // 额度接口缺失时日志统计照常出，额度三项留空。
     let unlimited = inputs.usage.is_some_and(|usage| usage.unlimited);
     Billing {
         panel: parse_panel(inputs.status_json),
@@ -34,7 +33,7 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
             Some(_) => Shape::TokenQuota,
         },
         used_usd: inputs.usage.and_then(|usage| usage.used).map(to_money),
-        // 不限额度时没有「余额 / 上限」可言，不编数字。
+        // 不限额度时没有余额与上限。
         balance_usd: inputs
             .usage
             .filter(|usage| !usage.unlimited)
@@ -72,7 +71,7 @@ impl Billing {
 
     /// 是否一个可用数字都没有（没余额、没已用、没今日、没原值）。
     ///
-    /// 界面用它配合 [`Shape::Unknown`] 把「查不到」的站点隐掉。
+    /// 界面用它配合 [`Shape::Unknown`] 把这类站点隐掉。
     pub fn is_empty(&self) -> bool {
         self.used_usd.is_none()
             && self.balance_usd.is_none()
@@ -80,9 +79,9 @@ impl Billing {
             && self.raw_credit.is_none()
     }
 
-    /// 卡片上的一行摘要（尽量短，卡片收起时也显示）。
+    /// 卡片上的一行摘要。
     pub fn inline(&self) -> String {
-        // 账号级数据优先：它才是「我还剩多少钱」，令牌级降为补充。
+        // 账号级数据优先。
         if let Some(account) = &self.account {
             let parts = self.account_parts(account);
             return if parts.is_empty() {
@@ -94,21 +93,19 @@ impl Billing {
         self.inline_token_or_compat()
     }
 
-    /// 把签到段接到摘要行末尾（没数据就不接，绝不写占位）。
+    /// 把签到段接到摘要行末尾；没数据则不接。
     fn push_checkin(&self, parts: &mut Vec<String>) {
         if let Some(status) = &self.checkin {
             parts.push(format!("签到 {}", checkin_short(status)));
         }
     }
 
-    /// 有账号数据时的摘要各段：账号余额 + 已用（没余额时才退而单说已用 / 请求数），其次今日。
+    /// 有账号数据时的摘要各段：账号余额 + 已用（没余额时单说已用 / 请求数），其次今日。
     fn account_parts(&self, account: &AccountInfo) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
         if let Some(balance) = account.balance_usd {
             parts.push(format!("账号余额 {}", money(balance)));
-            // 已用紧跟余额：只看余额看不出「用掉多少」，而对那些令牌额度接口缺失、
-            // 调用日志又为空的中转站（如 ps.air-outer.com）来说，
-            // 这个数字是唯一拿得到的用量。
+            // 已用紧跟余额。
             if let Some(used) = account.used_usd {
                 parts.push(format!("已用 {}", money(used)));
             }
@@ -132,19 +129,18 @@ impl Billing {
 
     /// 没有账号数据时的短行（令牌额度 / 兼容账单）。
     fn inline_token_or_compat(&self) -> String {
-        // 面板账户 / 令牌额度：数字是真实的（不是占位额度），最多显示两段：
-        // 有余额就先显余额，其次今日用量（没有今日就用累计已用）。
+        // 面板账户 / 令牌额度：最多两段，有余额先显余额，其次今日用量。
         if self.source == Source::Token {
             let mut parts: Vec<String> = Vec::new();
             match (self.balance_usd, self.used_usd) {
                 (Some(balance), _) => parts.push(format!("余额 {}", money(balance))),
-                // 不限额度站：「已用」才是重点（写「余额」会让人以为里面有钱）。
+                // 不限额度站只显已用。
                 (None, Some(used)) => parts.push(format!("已用 {}", money(used))),
                 (None, None) => {}
             }
             match (self.today_usd, self.used_usd) {
                 (Some(today), _) => parts.push(format!("今日 {}", money(today))),
-                // 拿不到今日时用累计兼顾信息量（只在已有余额时补，避免重复）
+                // 拿不到今日时用累计，只在已有余额时补。
                 (None, Some(used)) if self.balance_usd.is_some() => {
                     parts.push(format!("累计 {}", money(used)))
                 }
@@ -169,16 +165,11 @@ impl Billing {
         }
     }
 
-    /// 卡片上的一行完整用量（字段多，单独占一行；悬停看详情）。
-    ///
-    /// 与 [`Billing::inline`] 的区别：这里把能拿到的字段都列出来
-    ///（余额 / 累计 / 今日 + 请求数 / 近 7 天），用于卡片正文那一行。
     /// 是否有可展示的用量结果（Unknown / 空数据隐藏）。
     ///
-    /// 账号数据（面板令牌）单独就能让卡片显示：站点未开 `/api/usage/token/` 时，
-    /// 只要拿到账号额度就不该整块隐掉。
+    /// 账号数据单独就能让卡片显示。
     pub fn is_displayable(&self) -> bool {
-        // 签到状态也算可展示数据：有些站点只有签到读得到（有就输出，没有就不输出）。
+        // 签到状态也算可展示数据。
         self.has_token_side() || self.account.is_some() || self.checkin.is_some()
     }
 
@@ -187,6 +178,7 @@ impl Billing {
         self.shape != Shape::Unknown && !self.is_empty()
     }
 
+    /// 卡片上的一行完整用量，列出能拿到的字段（余额 / 累计 / 今日 + 请求数 / 近 7 天）。
     pub fn inline_full(&self) -> String {
         let parts = self.summary_parts();
         if parts.is_empty() {
@@ -197,8 +189,7 @@ impl Billing {
 
     /// 卡片主行要突出的那一个数字（余额优先，其次已用）。
     ///
-    /// 卡片上只能有一个「第一眼看到」的数：多个数字等权并排时，
-    /// 反而哪个都记不住。取不到就返回 `None`（副行照常出）。
+    /// 取不到时返回 `None`。
     pub fn headline(&self) -> Option<String> {
         self.summary_parts().into_iter().next()
     }
@@ -212,9 +203,9 @@ impl Billing {
         parts[1..].join(" · ")
     }
 
-    /// 摘要各段（顺序即优先级：第一段会被当作主数字）。
+    /// 摘要各段，顺序即优先级（第一段作为主数字）。
     fn summary_parts(&self) -> Vec<String> {
-        // 账号级余额优先，且不再把令牌级累计挤在同一行（降到 `detail`）。
+        // 账号级余额优先。
         if let Some(account) = &self.account {
             return Self::account_parts(self, account);
         }
@@ -251,17 +242,17 @@ impl Billing {
         if !self.panel.is_empty() {
             lines.push(format!("面板：{}", self.panel));
         }
-        // 账号数据（面板令牌）与令牌数据是两套口径：同时存在时分节列出，不混在一起。
+        // 账号数据与令牌数据是两套口径，同时存在时分节列出。
         if let Some(account) = &self.account {
             lines.extend(Self::account_lines(account));
         }
-        // 签到也是账号级信息（靠同一个面板令牌读），就跟账号那节排在一起。
+        // 签到也是账号级信息，跟账号那节排在一起。
         if let Some(status) = &self.checkin {
             lines.push(format!("签到：{}", checkin_long(status)));
         }
         let has_account_side = self.account.is_some() || self.checkin.is_some();
         if has_account_side && !self.has_token_side() {
-            // 只有账号 / 签到数据：不写一个空的「本令牌」分节。
+            // 只有账号 / 签到数据：不写空的「本令牌」分节。
             return lines.join("\n");
         }
         if has_account_side {
@@ -275,9 +266,7 @@ impl Billing {
 
     /// 账号级额度（`/api/user/self`）的悬停说明。
     ///
-    /// 悬停小窗是「扫一眼」的地方：每项占一行、外加一句解释，会把数字挤到
-    /// 视线之外。这里按「额度一行、计数与分组一行」合并；但「同站点共用」
-    /// 这层含义要留个短标记——否则读者会以为这是某个 sk- 令牌的余额。
+    /// 每项合并成「额度一行、计数与分组一行」，「同站点共用」在标题里标出。
     fn account_lines(account: &AccountInfo) -> Vec<String> {
         let mut lines = vec!["账号级额度（面板访问令牌，同站点共用）".to_string()];
         let mut amounts: Vec<String> = Vec::new();
@@ -325,8 +314,7 @@ impl Billing {
 
     /// 令牌额度（`/api/usage/token/` + `/api/log/token`）的悬停详情。
     fn detail_token(&self, mut lines: Vec<String>) -> String {
-        // 额度接口缺失（`Shape::TokenLogsOnly`）时不写任何一行：
-        // 缺数据本身不产生数字，写一句解释只是噪音。
+        // 额度接口缺失（`Shape::TokenLogsOnly`）时不写额度行。
         if self.unlimited {
             lines.push("额度：不限".to_string());
         }

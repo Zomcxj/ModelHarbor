@@ -1,7 +1,6 @@
 use crate::app::preview::{find_matches, floor_char_boundary};
 
-/// 预览草稿是中文为主：过期查找偏移（帧首算的、同帧草稿又被编辑）可能落在
-/// 多字节字符中间。跳转前必须向下钳回字符边界，否则切片 panic。
+/// 过期查找偏移可能落在多字节字符中间，跳转前必须向下钳回字符边界。
 #[test]
 fn floor_char_boundary_never_lands_inside_a_multibyte_char() {
     // "ab模型cd"：a=0 b=1 | 模=2..5 | 型=5..8 | c=8 d=9，len=10。
@@ -22,8 +21,7 @@ fn floor_char_boundary_never_lands_inside_a_multibyte_char() {
     assert_eq!(floor_char_boundary(text, 999), text.len(), "超界钳到长度内");
 }
 
-/// 同帧偏移过期的高发场景：查找命中中文、编辑点在命中之前。
-/// 编辑后旧偏移指向汉字中间——这正是跳转切片与 galley 高亮会踩的输入。
+/// 查找返回的偏移始终是所匹配文本的字符边界。
 #[test]
 fn find_matches_offsets_are_always_char_boundaries_of_the_text_they_matched() {
     let text = "前缀模型后缀 模型 再一个模型";

@@ -3,39 +3,35 @@ use super::*;
 impl super::App {
     /// 站点面板令牌的悬浮窗外壳（内容见 `ui_tokens_panel`）。
     ///
-    /// 用独立窗口而不是内联面板：它只在配置令牌时用一下，没必要长期占着正文空间。
-    /// 窗口被限制在主窗口内（不允许拖出去后看不到），高度固定、内容超出用滚轮。
+    /// 窗口被限制在主窗口内，高度固定、内容超出用滚轮。
     pub(in crate::app) fn ui_tokens_window(&mut self, ctx: &egui::Context) {
         if !self.show_tokens {
             return;
         }
         // 固定高度：站点多了也不让窗口无限撑高，内容交给内部滚动区。
-        // 上限取当前窗口高度减去边距，避免在矮窗口下把按钮顶到屏幕外。
+        // 上限取当前窗口高度减去边距。
         let area = ctx.content_rect();
         let height = (area.height() - 140.0).clamp(240.0, 520.0);
-        // `.open()` 要借一个局部变量：直接传 `&mut self.show_tokens`
-        // 会与闭包里的 `&mut self` 冲突。
+        // `.open()` 要借一个局部变量。
         let mut open = true;
-        // 始终居中：`default_pos` 只在首次生效（之后记住用户拖过的位置），
-        // 要每帧都居中得用 `current_pos` 指定。窗口尺寸固定，居中可以
-        // 直接由内容区算出左上角。
+        // 每帧居中：`default_pos` 只在首次生效，每帧居中用 `current_pos`。
+        // 窗口尺寸固定，左上角由内容区算出。
         let size = egui::vec2(620.0, height);
         let centered = area.center() - size / 2.0;
         egui::Window::new("站点面板令牌")
-            // 提到 Foreground：预览分隔条在 Middle 层，窗在它上面，
-            // 分割线不会横穿悬浮窗。
+            // 提到 Foreground：预览分隔条在 Middle 层，分割线不横穿悬浮窗。
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .order(Self::TOKENS_WINDOW_ORDER)
             .fixed_size(size)
-            // 不允许拖到主窗口外：拖出去后标题栏可能落到屏幕外，窗口就找不回来了。
+            // 不允许拖到主窗口外。
             .constrain_to(area)
             .current_pos(centered)
             .frame(self.floating_window_frame(ctx))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
-                    // 撑满固定高度（不随内容缩），滚动条才是“内容超出才出现”。
+                    // 撑满固定高度，滚动条只内容超出时出现。
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         self.ui_tokens_panel(ui);
@@ -48,8 +44,7 @@ impl super::App {
 
     /// 配置体检悬浮窗：把各类检查汇总成一张清单（内容见 [`crate::app::health`]）。
     ///
-    /// 只读清单，**不提供一键修复**：这些问题的正确修法取决于用户意图
-    /// （重复的 model id 该留哪条、可疑的 baseUrl 该不该改），自动改就是替用户做决定。
+    /// 只读清单，**不提供一键修复**。
     pub(in crate::app) fn ui_health_window(&mut self, ctx: &egui::Context) {
         if !self.show_health {
             return;
@@ -80,7 +75,7 @@ impl super::App {
         }
     }
 
-    /// 悬浮窗统一的边框样式：比卡片更大的圆角与内边距，与主界面分层。
+    /// 悬浮窗统一的边框样式：比卡片更大的圆角与内边距。
     /// 圆角在形状预设基础上加一档（上限 20）。
     pub(in crate::app) fn floating_window_frame(&self, ctx: &egui::Context) -> egui::Frame {
         let mut frame = egui::Frame::window(&ctx.style());
@@ -90,8 +85,7 @@ impl super::App {
         frame
     }
 
-    /// 体检清单的内容。每帧重算：它只遍历内存里的 providers / agents，
-    /// 不读文件、不发请求，比维护一份失效逻辑更省心。
+    /// 体检清单的内容。每帧重算：只遍历内存里的 providers / agents。
     pub(in crate::app) fn ui_health_panel(&mut self, ui: &mut egui::Ui) {
         let input = health::HealthInput {
             page: self.current_page,

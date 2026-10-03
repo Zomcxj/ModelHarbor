@@ -9,9 +9,7 @@ const ICON_H: u32 = 256;
 
 /// 把 panic 的位置与消息追加到 `<配置目录>/crash.log`。
 ///
-/// release 构建是 `panic = "abort"`（无回溯、无控制台），界面又用了
-/// `windows_subsystem = "windows"`，启动即崩时用户看不到任何线索；
-/// 这条记录是唯一的事后证据。写不进去就安静放弃。
+/// 写不进去就安静放弃。
 fn install_crash_logger() {
     std::panic::set_hook(Box::new(|info| {
         let location = info
@@ -41,9 +39,8 @@ fn main() -> eframe::Result {
             .with_inner_size([1250.0, 820.0])
             .with_min_inner_size([970.0, 660.0])
             .with_title("ModelHarbor")
-            // 恒为透明窗口：玻璃档需要 alpha 通道，而 eframe 的 glow 后端
-            // **只在建窗时**读 `transparent`（运行时不重建窗口），所以这里
-            // 固定打开；关闭玻璃时靠不透明的清屏色盖满，观感与普通窗口一致。
+            // 恒为透明窗口：玻璃档需要 alpha 通道，而 eframe 的 glow 后端只在
+            // 建窗时读 `transparent`；关闭玻璃时靠不透明的清屏色盖满。
             .with_transparent(true)
             .with_icon(egui::IconData {
                 rgba: ICON_BYTES.to_vec(),
@@ -57,8 +54,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_fonts(build_cjk_fonts());
-            // 主题不在这里写死：App 第一帧会按 prefs 里保存的主题套用
-            // （这里若先套一个默认值，会和保存的主题打架，出现「按钮文字变了、界面没变」）。
+            // 主题不在这里写死，由 App 第一帧按 prefs 里保存的主题套用。
             #[cfg(target_os = "windows")]
             {
                 use raw_window_handle::HasWindowHandle;
@@ -68,7 +64,7 @@ fn main() -> eframe::Result {
                             let hwnd = w.hwnd.get() as *mut core::ffi::c_void;
                             model_harbor::cursor::init_cursors(hwnd);
                         }
-                        // 窗口外观（DWM 背景 / 圆角）需要句柄；同样在这里登记一次。
+                        // 窗口外观（DWM 背景 / 圆角）需要句柄，这里登记一次。
                         model_harbor::windowfx::set_main_hwnd(w.hwnd.get());
                         model_harbor::windowfx::set_rounded_corners();
                     }

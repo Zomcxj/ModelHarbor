@@ -24,7 +24,7 @@ fn readonly_pid_entries_are_preserved_but_not_listed() {
     let _ = placed;
 }
 
-/// 认不出来的条目（没有 id）不能被保存动作删掉。
+/// 认不出来的条目（没有 id）不被保存动作删掉。
 #[test]
 fn id_less_entries_survive_a_save() {
     let root: Value = serde_json::from_str(
@@ -129,15 +129,14 @@ fn wire_api_is_absent_for_non_openai_protocols() {
         .is_none());
 }
 
-/// 写出的条目永远不带 `disabled`（schema 没这个键，也没有停用概念；
-/// `ModelRow.disabled` 是界面共享结构上的字段，与本后端无关）。
+/// 写出的条目不带 `disabled` 键；`ModelRow.disabled` 是界面共享结构上的字段。
 #[test]
 fn written_entries_carry_no_disabled_key() {
     let mut p = ProviderRow::new();
     p.key = "m1".into();
     let mut m = ModelRow::new();
     m.id = "m1".into();
-    m.disabled = true; // 共享结构上的残留值，保存时必须视而不见
+    m.disabled = true; // 共享结构上的值，保存时视而不见
     p.models.push(m);
     let out = QwenCodeBackend.serialize_root(
         &[],
@@ -187,6 +186,6 @@ fn detect_requires_the_array_shape() {
         r#"{ "modelProviders": { "openai": [ { "name": "无 id" } ] } }"#,
         ""
     ));
-    // 路径强命中：目录对、文件名对就算，空文件也认。
+    // 路径强命中：目录与文件名对就算，空文件也认。
     assert!(QwenCodeBackend.detect("{}", r"C:\Users\me\.qwen\settings.json"));
 }

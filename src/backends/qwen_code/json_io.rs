@@ -30,8 +30,8 @@ pub(crate) fn entries_of_pid<'a>(root: &'a Value, pid: &str) -> &'a [Value] {
 
 /// 文件里的全部条目，按**文件顺序**：`(pid, 条目)`。
 ///
-/// 跳过 `qwen-oauth`（只读，不进界面）与没有 `id` 的条目（认不出来，由
-/// [`unmanaged_of`] 原样保留）。
+/// 跳过 `qwen-oauth`（只读，不进界面）与没有 `id` 的条目
+/// （后者由 [`unmanaged_of`] 原样保留）。
 pub(crate) fn entries_from(root: &Value) -> Vec<(String, Value)> {
     let mut out: Vec<(String, Value)> = Vec::new();
     let Some(m) = providers_map(root) else {
@@ -51,8 +51,6 @@ pub(crate) fn entries_from(root: &Value) -> Vec<(String, Value)> {
 }
 
 /// 能解析成整数才写入；解析不了（含空串）就删除该键。
-///
-/// 写成 `unwrap_or(0)` 会把上限归零落盘，与 zcode 的 `contextWindow` 同一条教训。
 pub(crate) fn set_num(obj: &mut Map<String, Value>, key: &str, text: &str) {
     match text.parse::<i64>() {
         Ok(n) => {

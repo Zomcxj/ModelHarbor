@@ -47,7 +47,7 @@ fn every_installed_target_is_written_to_its_own_path() {
             available: true,
             path: zcode_path.display().to_string(),
         },
-        // 未安装：本地与 WSL 都探测不到，一键保存不得凭空创建
+        // 未安装的后端：一键保存不得创建
         SaveTarget {
             backend: ConfigFormat::Opencode,
             available: false,
@@ -72,7 +72,7 @@ fn every_installed_target_is_written_to_its_own_path() {
         app.status
     );
     assert!(!skipped_start.exists(), "未安装的后端不得被创建");
-    // ZCode 那份是跨格式转换出来的：必须是 ZCode 的方言，而不是 pi 的 providers。
+    // ZCode 那份是跨格式转换结果：必须是 ZCode 方言，不是 pi 的 providers。
     let written = std::fs::read_to_string(&zcode_path).unwrap();
     assert!(written.contains("providerRules"), "{written}");
     assert!(!written.contains("\"providers\""), "{written}");
@@ -93,8 +93,8 @@ fn every_installed_target_is_written_to_its_own_path() {
 
 #[test]
 fn a_typed_path_on_the_current_page_is_still_honored() {
-    // 当前页输入框里改了路径但没回车加载：一键保存照旧按「先读后合并」写到那个路径，
-    // 只有**其他**页面必须改用各自的目标路径。
+    // 当前页输入框里改了路径但未回车加载：一键保存仍写到那个路径；
+    // 其他页面改用各自的目标路径。
     let dir = temp_dir("typed");
     let pi_path = dir.join("pi-models.json");
     let typed_path = dir.join("typed-by-hand.json");
@@ -133,12 +133,8 @@ fn a_typed_path_on_the_current_page_is_still_honored() {
 
 #[test]
 fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
-    // 本测试全程依赖**真实的 wsl.exe**（写入目标、镜像、读回校验）。
-    // CI 是干净机器：装不了 WSL，`wsl cp` 直接失败。先探可用性，
-    // 不可用就提前返回（Rust 测试没有官方 skip，约定 eprintln + return）。
-    // 显式 opt-in：本测试用真实 wsl.exe 写入 / 读回，每次运行都会拉起 WSL 虚拟机。
-    // 例行 cargo test 不该在用户机器上悄悄启动 WSL——只有设置
-    // MODELHARBOR_WSL_TEST=1 时才执行；CI 没装 WSL，同样跳过。
+    // 本测试依赖**真实的 wsl.exe**（写入目标、镜像、读回校验）。
+    // 显式 opt-in：设置 MODELHARBOR_WSL_TEST=1 才执行，否则跳过。
     if std::env::var("MODELHARBOR_WSL_TEST").as_deref() != Ok("1") {
         eprintln!("跳过：设置 MODELHARBOR_WSL_TEST=1 才运行真实 WSL 同步测试（会启动 WSL）");
         return;
@@ -147,7 +143,7 @@ fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
         eprintln!("跳过：本机没有可用的 WSL，无法做 WSL 同步测试");
         return;
     }
-    // WSL 总闸默认关闭（防误拉起虚拟机）；预置目标文件前显式开闸。
+    // 预置目标文件前显式开闸。
     crate::util::wsl_set_enabled(true);
     let dir = temp_dir("opencode_wsl");
     let local_path = dir.join("opencode.json");
@@ -186,7 +182,7 @@ fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
         current_page: ConfigFormat::Opencode,
         ..App::default()
     };
-    // App::default() 会按 prefs.sync_wsl 复位总闸；本测试验证 WSL 同步，构造后再开闸。
+    // `App::default()` 会按 `prefs.sync_wsl` 复位总闸，构造后再开一次。
     crate::util::wsl_set_enabled(true);
 
     let backup = app
@@ -218,18 +214,17 @@ fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
     crate::util::remove_config(&backup).ok();
     crate::util::remove_config(&wsl_path).ok();
     std::fs::remove_dir_all(&dir).ok();
-    // 收尾关闸：不干扰其他并行测试的 WSL 状态假设。
+    // 收尾关闸，避免影响其他并行测试。
     crate::util::wsl_set_enabled(false);
 }
 
 #[test]
 fn a_workbuddy_save_that_drops_entries_backs_up_first() {
-    // 生效清单会比界面上的条目少（同 id 只留第一条、未勾选的不写），
-    // 所以这份文件确实被「删」过东西。虽然是同格式保存，也必须先备份——
-    // 老规矩只在跨格式转换时备份，这种删得比跨格式还狠的情况反而没有后路。
+    // 生效清单比界面条目少（同 id 只留第一条、未勾选的不写），
+    // 所以同格式保存也必须先备份。
     //
-    // 注意备份和全量副本是**两件事**：备份是「上一次的 models.json 原文」，
-    // 全量副本是「ModelHarbor 维护的全部条目 + 勾选状态」。两者都要有。
+    // 备份与全量副本是两件事：备份是上一次的 models.json 原文，
+    // 全量副本是 ModelHarbor 维护的全部条目 + 勾选状态。
     let dir = temp_dir("wb_shrink");
     let wb_path = dir.join("models.json");
     let saved = serde_json::json!([
@@ -265,7 +260,7 @@ fn a_workbuddy_save_that_drops_entries_backs_up_first() {
         2,
         "备份必须是删之前的两条（含被删厂商的 key）"
     );
-    // 全量副本也必须在：它才是「取消勾选不会丢配置」的依托。
+    // 全量副本也必须在。
     let full_path = crate::backends::workbuddy::full_store_path(&wb_path.display().to_string());
     let full: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&full_path).unwrap()).unwrap();
@@ -284,8 +279,7 @@ fn a_workbuddy_save_that_drops_entries_backs_up_first() {
 
 #[test]
 fn workbuddy_reload_restores_unchecked_entries_from_the_full_store() {
-    // 端到端：保存 → 重新加载，界面上的条目数必须回到保存前。
-    // 这是用户真正在意的性质——取消勾选是「不生效」，不是「删掉」。
+    // 保存 → 重新加载后，界面上的条目数回到保存前（取消勾选只是不生效）。
     let dir = temp_dir("wb_restore");
     let wb_path = dir.join("models.json");
     let saved = serde_json::json!([
@@ -320,7 +314,7 @@ fn workbuddy_reload_restores_unchecked_entries_from_the_full_store() {
         serde_json::from_str(&std::fs::read_to_string(&wb_path).unwrap()).unwrap();
     assert_eq!(eff.as_array().unwrap().len(), 2, "生效清单 = 唯一 id 数");
 
-    // 但重新加载后条目数必须回到 3——从全量副本还原。
+    // 重新加载后条目数回到 3（从全量副本还原）。
     let reloaded = b
         .parse_at(&std::fs::read_to_string(&wb_path).unwrap(), &path)
         .unwrap();
@@ -338,7 +332,7 @@ fn workbuddy_reload_restores_unchecked_entries_from_the_full_store() {
 
 #[test]
 fn a_workbuddy_save_that_keeps_everything_writes_no_backup() {
-    // 没删东西就别产生 .bak，否则每次保存都在磁盘上堆垃圾。
+    // 没删东西就不产生 .bak。
     let dir = temp_dir("wb_keep");
     let wb_path = dir.join("models.json");
     let saved = serde_json::json!([

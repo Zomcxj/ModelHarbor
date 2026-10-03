@@ -1,13 +1,13 @@
 //! 单位与额度：`quota` ↔ 美元、令牌额度接口、站点换算比。
 use serde_json::Value;
 
-/// 额度 ≥ 该值即视为占位（公益站几乎都给 1e8）。
+/// 额度 ≥ 该值即视为占位。
 pub const PLACEHOLDER_LIMIT_USD: f64 = 1_000_000.0;
 
 /// 面板账户的额度单位：`quota` ÷ 该值 = 美元（New-API / one-api 固定 500000）。
 pub const QUOTA_PER_USD: f64 = 500_000.0;
 
-/// 站点日志接口通常最多返回这么多条（实测 1000）：到这个数就认为统计可能偏小。
+/// 站点日志接口单页最多返回的条数；达到该数认为统计可能偏小。
 pub const LOG_PAGE_LIMIT: usize = 1000;
 
 /// 站点单位设置（`/api/status`）：quota 点 ↔ 货币的换算依据。
@@ -17,7 +17,7 @@ pub struct Units {
     pub quota_per_unit: f64,
     /// 展示币种（`USD` / `CNY` / 空）。
     pub currency: String,
-    /// 站点没给换算比：按默认值假设。
+    /// 站点未给换算比时为 `true`。
     pub assumed: bool,
 }
 
@@ -55,7 +55,7 @@ pub fn parse_units(status_json: Option<&str>) -> Units {
 pub struct TokenUsage {
     /// 令牌名（面板里显示的名字）。
     pub name: String,
-    /// 不计额度（公益站常见）：只有已用有意义。
+    /// 不计额度；此时只有 `used` 有意义。
     pub unlimited: bool,
     pub granted: Option<f64>,
     pub used: Option<f64>,

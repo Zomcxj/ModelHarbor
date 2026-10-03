@@ -1,22 +1,15 @@
 //! 探测前的网络风险守卫：发现系统代理或 VPN / TUN 出口时禁止发起模型延迟探测。
 //!
-//! 中转站（API 中转）普遍带「多 IP 检测 / 测活封号」风控：同一个 key 在短时间内
-//! 从多个出口 IP 反复发探测请求，很容易被判为滥用并封号。本模块在探测前识别本机
-//! 的常见代理出口，命中即禁止探测并说明原因。
-//!
 //! **能识别**：
 //! - Windows 系统代理（注册表 `Internet Settings`：`ProxyEnable` / `AutoConfigURL`）
 //! - VPN / TUN 网卡：`IfType` 为 PPP(23) / TUNNEL(131)，或网卡名 / 描述命中 VPN 关键词，
-//!   且只统计处于 `Up` 状态的网卡（未启用的 VPN 网卡不阻止探测）
+//!   且只统计处于 `Up` 状态的网卡
 //!
 //! **识别不了**：透明代理、路由器 / 网关级代理、在协议栈下方改道的 TUN 实现。
-//! 这类改道对用户态进程完全不可见，工具无法检测——只能靠用户按文档自行判断。
 //!
-//! 另外：本工具的 HTTP 客户端（ureq）**不使用**系统代理设置，探测请求始终直连，
-//! 因此「开着 Clash 的系统代理」不会让探测走代理出口；守卫的作用是避免在
-//! 出口 IP 已经变化（VPN 生效）时继续探测。
+//! 本工具的 HTTP 客户端（ureq）不使用系统代理设置，探测请求始终直连。
 
-/// 网卡的识别信息（与平台无关，便于单测）。
+/// 网卡的识别信息。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Adapter {
     /// 连接名（如 `以太网`、`Clash`）。
@@ -33,7 +26,7 @@ pub struct Adapter {
 const IF_TYPE_PPP: u32 = 23;
 const IF_TYPE_TUNNEL: u32 = 131;
 
-/// VPN / TUN 网卡名关键词（对「连接名 + 描述」小写匹配，作为 IfType 判定的补充）。
+/// VPN / TUN 网卡名关键词（对「连接名 + 描述」小写匹配）。
 const VPN_KEYWORDS: [&str; 16] = [
     "vpn",
     "wireguard",
@@ -56,7 +49,7 @@ const VPN_KEYWORDS: [&str; 16] = [
 /// 探测被禁止的提示前缀（供 UI 复用）。
 pub const BLOCK_PREFIX: &str = "模型延迟测试已禁用";
 
-/// 由系统代理注册表值判断是否处于代理出口（纯函数，便于单测）。
+/// 由系统代理注册表值判断是否处于代理出口。
 pub fn proxy_reason(
     proxy_enable: Option<u32>,
     proxy_server: Option<&str>,
@@ -76,7 +69,7 @@ pub fn proxy_reason(
     None
 }
 
-/// 由网卡列表判断是否存在 VPN / TUN 出口（纯函数，便于单测）。
+/// 由网卡列表判断是否存在 VPN / TUN 出口。
 pub fn vpn_reason(adapters: &[Adapter]) -> Option<String> {
     let hit = adapters.iter().find(|a| {
         a.up && (a.if_type == IF_TYPE_PPP || a.if_type == IF_TYPE_TUNNEL || is_vpn_name(a))
@@ -199,7 +192,7 @@ mod platform {
         out
     }
 
-    /// `AF_UNSPEC`：不限制地址族（避免额外依赖 WinSock 常量导入）。
+    /// `AF_UNSPEC`：不限制地址族。
     const AF_UNSPEC: u32 = 0;
 
     fn query_dword(hkey: HKEY, name: &str) -> Option<u32> {
@@ -258,7 +251,7 @@ mod platform {
         if rc != ERROR_SUCCESS {
             return None;
         }
-        // REG_SZ 的字节长度恒为偶数，尾块必然为空。
+        // REG_SZ 的字节长度恒为偶数。
         let (pairs, _) = buf.as_chunks::<2>();
         let units: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
         let end = units.iter().position(|u| *u == 0).unwrap_or(units.len());
@@ -303,17 +296,13 @@ mod tests {
     #[test]
     fn proxy_reason_covers_pac_and_explicit_proxy() {
         assert!(proxy_reason(None, None, None).is_none());
-        // 关闭的代理、空字符串都不算
         assert!(proxy_reason(Some(0), Some("127.0.0.1:7890"), Some("")).is_none());
         assert!(proxy_reason(Some(0), Some("  "), None).is_none());
-        // 开启的代理：带上服务器地址
         let reason = proxy_reason(Some(1), Some("127.0.0.1:7890"), None).unwrap();
         assert!(reason.contains("127.0.0.1:7890"), "{}", reason);
-        // 开启但没有服务器地址时也要提示
         assert!(proxy_reason(Some(1), Some("   "), None)
             .unwrap()
             .contains("系统代理已开启"));
-        // PAC 优先于 ProxyEnable
         assert!(
             proxy_reason(Some(0), None, Some("http://pac.local/proxy.pac"))
                 .unwrap()
@@ -324,30 +313,28 @@ mod tests {
     #[test]
     fn vpn_reason_matches_type_and_names_but_ignores_down_adapters() {
         assert!(vpn_reason(&[]).is_none());
-        // 普通有线 / 无线网卡不误判
         assert!(vpn_reason(&[
             adapter("以太网", "Realtek PCIe GbE Family Controller", 6, true),
             adapter("WLAN", "Intel(R) Wi-Fi 6 AX201 160MHz", 71, true),
         ])
         .is_none());
-        // 描述里带 Wintun 的 TUN 网卡（Clash 的 TUN 模式）
+        // 描述里带 Wintun 的 TUN 网卡
         let reason = vpn_reason(&[adapter("Clash", "Wintun Userspace Tunnel", 6, true)]).unwrap();
         assert!(reason.contains("Clash"), "{}", reason);
-        // 名称命中
         assert!(vpn_reason(&[adapter("WireGuard Tunnel", "WireGuard", 6, true)]).is_some());
         assert!(vpn_reason(&[adapter("OpenVPN TAP-Windows6", "", 6, true)]).is_some());
         assert!(vpn_reason(&[adapter("Tailscale", "Tailscale Tunnel", 6, true)]).is_some());
-        // IfType 命中（隧道 / PPP），名称完全无关也能识别
+        // IfType 命中（隧道 / PPP）
         assert!(vpn_reason(&[adapter("本地连接* 12", "", IF_TYPE_TUNNEL, true)]).is_some());
         assert!(vpn_reason(&[adapter("宽带连接", "", IF_TYPE_PPP, true)]).is_some());
-        // 未启用的网卡不阻止探测
+        // 未启用的网卡不算
         assert!(vpn_reason(&[adapter("Clash", "Wintun Userspace Tunnel", 6, false)]).is_none());
         assert!(vpn_reason(&[adapter("WireGuard Tunnel", "", IF_TYPE_TUNNEL, false)]).is_none());
     }
 
     #[test]
     fn detect_returns_something_or_nothing_without_panicking() {
-        // 只验证真实检测路径不 panic（结果取决于本机是否开着代理 / VPN）
+        // 只验证真实检测路径不 panic（结果取决于本机）
         let _ = detect();
     }
 }

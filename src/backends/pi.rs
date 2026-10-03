@@ -31,7 +31,7 @@ impl Backend for PiBackend {
     }
 
     fn detect(&self, content: &str, _path: &str) -> bool {
-        // pi 判定：含 providers 对象且无 provider 键
+        // 含 `providers` 对象且无 `provider` 键
         parse_config_content(content)
             .map(|v| {
                 v.get("providers").and_then(|x| x.as_object()).is_some()
@@ -68,8 +68,7 @@ impl Backend for PiBackend {
     }
 
     fn load_target_root(&self, path: &str) -> Result<Value, String> {
-        // 跨格式目标保存需要目标文件完整的 providers（保守合并用），
-        // 不能只取顶层 extras，否则目标独有 provider 会被整体替换删掉。
+        // 取目标文件的完整 providers 用于保守合并，而非只取顶层 extras。
         super::load_target_root_with(path, parse_config_content, || Value::Object(Map::new()))
     }
 

@@ -4,7 +4,7 @@ use crate::app::syntax::{
 };
 use eframe::egui;
 
-/// 既有断言都按深色那套写，这里固定住配色。
+/// 既有断言都按深色配色写，这里固定住。
 fn json_tokens(text: &str) -> Vec<(usize, usize, egui::Color32)> {
     json_tokens_with(text, SYN_DARK)
 }
@@ -17,7 +17,7 @@ fn syntax_tokens(text: &str, syntax: PreviewSyntax) -> Vec<(usize, usize, egui::
     syntax_tokens_with(text, syntax, SYN_DARK)
 }
 
-/// 段落必须落在字符边界上，否则 LayoutJob 切片会 panic。
+/// 段落必须落在字符边界上。
 fn assert_boundaries(text: &str, tokens: &[(usize, usize, egui::Color32)]) {
     for &(s, e, _) in tokens {
         assert!(
@@ -93,8 +93,8 @@ fn syntax_dispatch_matches_page_kind() {
     assert!(syntax_tokens("a: 1\n", PreviewSyntax::Yaml).len() >= 3);
 }
 
-/// 两套配色都必须在自己那类底色上读得清：语法色是正文，按 WCAG 正文下限
-/// 4.5:1 卡；注释最淡，按提示下限 3.0:1 卡。
+/// 两套配色都要在自己那类底色上读得清：语法色按正文下限 4.5:1 卡，
+/// 注释按提示下限 3.0:1 卡。
 #[test]
 fn every_syntax_palette_reads_on_its_background() {
     use crate::theme::{contrast_for_tests, CONTRAST_HINT_MIN, CONTRAST_TEXT_MIN};
@@ -124,7 +124,7 @@ fn every_syntax_palette_reads_on_its_background() {
     }
 }
 
-/// 明暗两套必须真的不同，否则浅色主题还是深色配色。
+/// 明暗两套配色必须不同。
 #[test]
 fn light_and_dark_palettes_differ() {
     assert_ne!(SYN_DARK.key, SYN_LIGHT.key);
@@ -133,14 +133,14 @@ fn light_and_dark_palettes_differ() {
     assert_ne!(SYN_DARK.error, SYN_LIGHT.error);
 }
 
-/// 查找命中的底色要压得住语法色：命中区换成配好的文字色，
-/// 且底色与文字色两边都够看。
+/// 查找命中的底色与语法色都要够看：命中区换成配好的文字色，
+/// 底色与文字色、底色与面板都达到下限。
 #[test]
 fn find_highlight_is_readable_on_both_palettes() {
     use crate::app::syntax::apply_find_background;
     use crate::theme::{contrast_for_tests, distance_for_tests, CONTRAST_TEXT_MIN};
-    // 底色与面板的可见度用 RGB 距离判：琥珀黄和浅灰面板的**亮度**接近，
-    // 对比度只有 1.5:1，但肉眼分得很清，用对比度卡会误报。
+    // 底色与面板的可见度用 RGB 距离判：琥珀黄和浅灰面板的亮度接近，
+    // 对比度只有 1.5:1，用对比度卡会误报。
     let min_distance = 100.0;
     let cases = [
         (SYN_DARK, "深色", egui::Color32::from_rgb(0x1E, 0x1E, 0x1E)),
@@ -164,7 +164,7 @@ fn find_highlight_is_readable_on_both_palettes() {
             );
         }
     }
-    // 命中区的前景色真的被换掉了（不是沿用语法色）。
+    // 命中区的前景色被换成 `find_current_fg`。
     let mut job = egui::text::LayoutJob::default();
     job.append(
         "hello",

@@ -1,21 +1,7 @@
 //! 配置体检：把散落在各处的检查汇总成一张清单，保存前一次看完。
 //!
-//! ## 为什么需要
-//!
-//! 这些检查此前各自为政：key 重复只在**保存失败时**从状态栏冒一句、非法数字只在
-//! 保存**之后**说「忽略了 N 项」、baseUrl 可疑只在卡片上挂个小 ⚠、agent 的 model
-//! 指向别家网关则**切页时被静默替换**（`normalize_agent_models_for_page`）。
-//! 用户想知道「我这套配置到底有没有毛病」，得逐页逐卡片翻。
-//!
-//! 这里不新增判定口径，只把既有口径**汇总**：每一条都复用原来的实现
-//! （[`crate::util::url_suspicions`]、[`crate::opencode_models::model_is_valid_on`] 等），
-//! 避免出现「体检说没问题、保存却失败」这种两套标准。
-//!
-//! ## 只读
-//!
-//! 体检**不改任何东西**，也不提供「一键修复」：这些问题的正确修法取决于用户意图
-//! （重复的 model id 该留哪一条？可疑的 baseUrl 该不该改？），自动改就是替用户做决定。
-//! 清单只回答「哪里有疑点」，改还是不改、怎么改，由用户在表单里定。
+//! 每一条都复用原有判定口径（[`crate::util::url_suspicions`]、
+//! [`crate::opencode_models::model_is_valid_on`] 等），体检本身只读、不改任何东西。
 
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
@@ -23,11 +9,11 @@ use crate::model::{AgentRow, ProviderRow};
 /// 体检结论的严重度，决定清单里的排序与配色。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(super) enum Severity {
-    /// 保存会被拦住，必须先处理。
+    /// 保存会被拦住。
     Blocker,
     /// 保存能过，但结果可能不是用户想要的。
     Warn,
-    /// 只是提个醒（例如某些后端本就不需要密钥）。
+    /// 只是提个醒。
     Info,
 }
 
@@ -49,7 +35,7 @@ pub(super) struct Issue {
     pub title: String,
     /// 定位：出问题的 provider / agent / 条目。
     pub where_: String,
-    /// 为什么这是问题、以及怎么处理。
+    /// 问题说明与处理方式。
     pub detail: String,
 }
 
@@ -77,8 +63,7 @@ pub(super) fn collect(input: &HealthInput<'_>) -> Vec<Issue> {
     issues
 }
 
-/// 重复的 key / model id。与保存的判定**同一口径**（`find_duplicate_keys`）：
-/// 这里报了、那里就一定会拦。
+/// 重复的 key / model id。与保存的判定同一口径（`find_duplicate_keys`）。
 fn check_duplicate_keys(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     let mut seen_agents = std::collections::HashSet::new();
     for agent in input.agents {
@@ -122,7 +107,7 @@ fn check_duplicate_keys(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     }
 }
 
-/// 空 key / 空 id：这些条目保存时会被跳过，等于白填。
+/// 空 key / 空 id：这些条目保存时会被跳过。
 fn check_empty_identifiers(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     for (idx, provider) in input.providers.iter().enumerate() {
         if provider.key.trim().is_empty() {
@@ -150,7 +135,7 @@ fn check_empty_identifiers(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     }
 }
 
-/// 非法数字字段：保存时被忽略（不写坏配置，但用户以为填进去了）。
+/// 非法数字字段：保存时被忽略。
 fn check_invalid_numbers(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     let bad =
         |text: &str| !text.trim().is_empty() && crate::util::parse_number_text(text).is_none();
@@ -200,8 +185,7 @@ fn check_invalid_numbers(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
 
 /// baseUrl 可疑写法（缺协议头 / 重复斜杠 / 末尾斜杠 / 含空白）。
 ///
-/// 只提示、不自动改写：末尾斜杠是否该去掉取决于目标客户端的拼 URL 行为，
-/// 见 `docs/DETAILS.md` 里各家的 `/v1` 归一规则。
+/// 只提示、不自动改写。
 fn check_base_urls(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     for provider in input.providers {
         let suspicions = crate::util::url_suspicions(&provider.base_url);
@@ -222,10 +206,6 @@ fn check_base_urls(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
 }
 
 /// agent 的 `model` 指向本页不认的网关。
-///
-/// 这是最值得提前看见的一条：切到 opencode 系页面时这种引用会被**静默替换**成
-/// 本页网关的首选模型（`normalize_agent_models_for_page`），保存时也按目标页归一。
-/// 与其等它被换掉，不如先告诉用户「这一条在本页无效」。
 fn check_agent_models(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     if !input.page.is_opencode_family() {
         return;
@@ -237,7 +217,7 @@ fn check_agent_models(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
         .collect();
     for agent in input.agents {
         let model = agent.model.trim();
-        // 空 model 是「还没选」，不是「选错了」。
+        // 空 model 是「还没选」。
         if model.is_empty() {
             continue;
         }
@@ -259,14 +239,14 @@ fn check_agent_models(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
 
 /// 没填密钥的 provider。
 ///
-/// 定为「提示」而不是「问题」：本地推理（Ollama 等）与公开网关本就不需要密钥。
+/// 严重度为 `Info`。
 fn check_api_keys(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     for provider in input.providers {
         if provider.key.trim().is_empty() {
             continue;
         }
         let has_secret = !provider.api_key_secret.trim().is_empty();
-        // DSH 走 apiKeyEnv 引用（真实值在同级 .credentials.yaml），其余后端看 apiKey。
+        // DSH 走 apiKeyEnv 引用，其余后端看 apiKey。
         let filled = if input.page == ConfigFormat::DeepSeekHarness {
             !provider.api_key_env.trim().is_empty() || has_secret
         } else {
@@ -285,7 +265,7 @@ fn check_api_keys(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     }
 }
 
-/// 当前格式写不了 agents 时提醒一句：界面上改得好好的，保存却不会落盘。
+/// 当前格式写不了 agents 时提醒一句。
 fn check_agents_not_written(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     if input.agents.is_empty() || input.source_is_opencode {
         return;
@@ -431,7 +411,7 @@ mod tests {
     fn an_empty_number_field_is_not_reported() {
         let mut p = provider("p1");
         p.api_key = "sk-x".into();
-        // timeout / context 留空是合法状态（表示不指定），不该报。
+        // timeout / context 留空表示不指定，合法。
         p.models = vec![ModelRow::from("m", &serde_json::json!({}))];
         let providers = vec![p];
         let issues = collect(&input(ConfigFormat::Opencode, &providers, &[]));

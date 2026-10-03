@@ -1,7 +1,6 @@
 //! DeepSeek Harness（DSH）后端：`~/.dsh/settings.yaml`。
 //!
-//! 只管理 `llm-pi-ai.providers`，其他顶层配置（ui、conversation、
-//! agent-default-model、插件设置等）一律以 raw 为基底原样保留。
+//! 只管理 `llm-pi-ai.providers`，其余顶层配置以 raw 为基底原样保留。
 
 use super::{Backend, BackendLoad};
 use crate::convert;
@@ -45,8 +44,7 @@ fn model_from_dsh(v: &Value) -> ModelRow {
 }
 
 fn model_to_dsh(m: &ModelRow, preserve_raw: bool) -> Value {
-    // DSH 原生往返保留未知字段；跨格式写入使用 DSH 的固定字段顺序，
-    // 避免将 opencode/pi 的方言字段泄漏到 DSH。
+    // DSH 原生往返保留未知字段；跨格式写入用 DSH 的固定字段顺序。
     let mut obj = dsh_model_base(m, preserve_raw);
 
     dsh_set_id(m, &mut obj, preserve_raw);
@@ -153,8 +151,7 @@ fn dsh_set_number(obj: &mut Map<String, Value>, key: &str, text: &str, changed: 
     }
 }
 
-/// `reasoningEfforts`：按规范档位顺序写出；raw 中已有的映射（含非对称档位）
-/// 按键原样保留。
+/// `reasoningEfforts`：按规范档位顺序写出；raw 中已有的映射按键原样保留。
 fn dsh_set_reasoning_efforts(m: &ModelRow, obj: &mut Map<String, Value>) {
     if m.variants.trim().is_empty() {
         obj.remove("reasoningEfforts");
@@ -211,8 +208,7 @@ fn provider_from_dsh(key: &str, v: &Value, credentials_root: &Value) -> Provider
         // 切到 opencode 页时沿用 DSH 的 timeoutMs（缺省 180000）。
         timeout: timeout_text.clone(),
         original_timeout: timeout_text,
-        // DSH 无 compat 键；api 缺省或 openai-completions（chat/completions）
-        // 不支持 developer role，默认不勾选。
+        // DSH 无 compat 键：api 缺省或 openai-completions 时默认不勾选。
         compat: !api.is_empty() && api != "openai-completions",
         // DSH 无该字段：转到 pi/omp 页面时默认不勾选。
         requires_reasoning_content: false,
@@ -235,7 +231,7 @@ fn dsh_api_key_env(key: &str, v: &Value) -> String {
         .unwrap_or_else(|| credentials::default_env_name(key))
 }
 
-/// 配置文件没有 timeoutMs 时默认显示 180000ms（保存时未修改则不写回）。
+/// 没有 timeoutMs 时默认 180000ms。
 fn dsh_timeout_text(v: &Value) -> String {
     let t = crate::util::num_at(v, "timeoutMs");
     if t.is_empty() {
@@ -245,7 +241,7 @@ fn dsh_timeout_text(v: &Value) -> String {
     }
 }
 
-/// `retryPolicy.mode`：配置文件缺失时按 normal 处理。
+/// `retryPolicy.mode`：缺失时按 normal。
 fn dsh_retry_mode(v: &Value) -> String {
     v.get("retryPolicy")
         .and_then(|value| value.get("mode"))
@@ -263,8 +259,7 @@ fn dsh_max_retries(v: &Value) -> String {
 }
 
 fn dsh_api_for(p: &ProviderRow) -> String {
-    // 与 pi / omp / 延迟测试共用同一优先级；
-    // "@ai-sdk/..." 是 opencode 的 npm 名称，不是 DSH 的 api 枚举值，effective_api 已处理。
+    // 与 pi / omp / 延迟测试共用同一优先级。
     p.effective_api()
 }
 
@@ -298,7 +293,7 @@ fn yaml_scalar(value: &Value) -> String {
 }
 
 fn yaml_quoted(value: &str) -> String {
-    // JSON 字符串也是合法的 YAML 双引号字符串，并能可靠转义引号、反斜杠和换行。
+    // JSON 字符串即合法的 YAML 双引号字符串，并能转义引号、反斜杠和换行。
     serde_json::to_string(value).unwrap_or_else(|_| format!("\"{}\"", value.replace('"', "\\\"")))
 }
 
@@ -450,8 +445,7 @@ fn render_dsh_yaml(root: &Value) -> Result<String, String> {
 }
 
 fn provider_to_dsh(p: &ProviderRow) -> Value {
-    // 保存判定基于来源 agent 格式，而不是某个 provider 是否恰好有
-    // apiKeyEnv/baseURL。DSH 允许这些字段缺省，不能因此丢失未知字段。
+    // 保存判定基于来源 agent 格式。
     let preserve_raw = p.source_format == Some(ConfigFormat::DeepSeekHarness);
     let env = credentials::effective_env_name(p);
     let mut obj = if preserve_raw {
@@ -476,8 +470,7 @@ fn provider_to_dsh(p: &ProviderRow) -> Value {
         obj.insert("baseURL".into(), Value::String(base_url));
     }
     if env.is_empty() {
-        // DSH 原生 provider 未修改 apiKeyEnv 时保留原始引用名，防止
-        // 页面切换或空输入把配置中的凭据引用误删。
+        // DSH 原生 provider 未修改 apiKeyEnv 时保留原始引用名。
         if !preserve_raw {
             obj.remove("apiKeyEnv");
         }
@@ -506,8 +499,7 @@ fn provider_to_dsh(p: &ProviderRow) -> Value {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            // mode 留空但填了 maxRetries 时按 DSH 默认 normal 写入，
-            // 否则整个 retryPolicy 块被删除、maxRetries 丢失。
+            // mode 留空但填了 maxRetries 时写 DSH 默认 normal。
             let mode = if p.dsh_retry_mode.trim().is_empty() {
                 "normal"
             } else {
@@ -525,7 +517,7 @@ fn provider_to_dsh(p: &ProviderRow) -> Value {
             obj.insert("retryPolicy".into(), Value::Object(policy));
         }
     }
-    // retryPolicy 在 timeoutMs 之前写出，与 DSH 文件惯例一致（最小 diff）。
+    // retryPolicy 写在 timeoutMs 之前。
     if p.dsh_timeout_ms != p.original_dsh_timeout_ms || !preserve_raw {
         match crate::util::parse_number_text(&p.dsh_timeout_ms) {
             Some(value) => {
@@ -570,8 +562,7 @@ impl Backend for DeepSeekHarnessBackend {
         let creds = if path.is_empty() {
             Value::Object(Map::new())
         } else {
-            // 仅供展示的读取：sidecar 读不出时密钥显示为空，不拦住整份配置加载。
-            // 写入走 `credentials::save`，那边会在坏文件上报错并取消保存，不会丢数据。
+            // 仅供展示：sidecar 读不出时密钥显示为空。
             credentials::load_root(path).unwrap_or(Value::Null)
         };
         let providers = root
@@ -604,9 +595,8 @@ impl Backend for DeepSeekHarnessBackend {
             .as_object()
             .cloned()
             .unwrap_or_default();
-        // 当前文件保存以 UI 状态为准整体替换（删除即生效）；
-        // 跨格式目标保存做保守合并：同名 provider 按字段合并、目标独有 provider
-        // 保留，保证「非编辑内容不能改」。
+        // 当前文件保存以 UI 状态整体替换（删除即生效）；跨格式目标保存做保守合并：
+        // 同名 provider 按字段合并，目标独有 provider 保留。
         let cross_format = target_root.is_some();
         let existing = root
             .get("llm-pi-ai")
@@ -623,8 +613,7 @@ impl Backend for DeepSeekHarnessBackend {
             };
             provider_values.insert(p.key.clone(), entry);
         }
-        // 不 remove + insert llm-pi-ai：serde_json preserve_order 会把重新
-        // 插入的键移动到根节点末尾，导致 DSH settings 顶层顺序发生变化。
+        // 不 remove + insert llm-pi-ai：重新插入的键会被移到根节点末尾。
         if let Some(llm) = root.get_mut("llm-pi-ai").and_then(Value::as_object_mut) {
             llm.insert("providers".into(), Value::Object(provider_values));
         } else {

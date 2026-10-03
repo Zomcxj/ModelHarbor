@@ -19,10 +19,8 @@ impl super::App {
         let (variants_label, variant_names) = self.dialect_variants();
         let flags = ProviderFormFlags::new(self);
         let show_model_disabled = flags.show_model_disabled;
-        // WorkBuddy 的重复判定是**全局**的（按裸 id 去重，跨厂商也只生效一次），
-        // 所以它的「重复」提示要看所有 provider，而不是只看同一张卡片。
-        // 必须在 `p = &mut self.providers[idx]` **之前**算好：之后 self.providers
-        // 已被可变借用，再读一遍会冲突。
+        // 全局重复 id 集合：跨所有 provider 按裸 id 去重。
+        // 必须在取 `p = &mut self.providers[idx]` 之前算好。
         let global_dup_ids: HashSet<String> = if show_model_disabled {
             let mut seen: HashSet<String> = HashSet::new();
             let mut dup: HashSet<String> = HashSet::new();
@@ -76,8 +74,8 @@ impl super::App {
         let mut rm: Option<usize> = None;
         let mut model_hover_here: Option<String> = None;
         let mut model_drag_stopped = false;
-        // 本帧被勾上的启用开关，用 `(provider 下标, 模型下标)` 记录。同一模型 id
-        // 全局只能开一个，互斥在全部卡片渲染完后统一处理（见 `ui_providers_section`）。
+        // 本帧被勾上的启用开关，用 `(provider 下标, 模型下标)` 记录。
+        // 互斥在全部卡片渲染完后统一处理（见 `ui_providers_section`）。
         let mut enable_request: Option<(usize, usize)> = None;
         for j in 0..p.models.len() {
             let model_key = format!("{}\u{1f}{}", p.key, p.models[j].id);
@@ -101,7 +99,7 @@ impl super::App {
                 model_highlight,
                 egui::Id::new(("model_card", model_key.clone())),
                 |ui| {
-                    // 停用的模型整行压淡：一眼能扫出哪些不生效（选择器里也是灰的）。
+                    // 停用的模型整行压淡。
                     if show_model_disabled && p.models[j].disabled {
                         ui.set_opacity(0.45);
                     }
@@ -116,8 +114,6 @@ impl super::App {
                         }
                         // 单模型延迟测试：按钮在拖动按钮右侧，结果显示在按钮右侧。
                         let model_id = p.models[j].id.trim().to_string();
-                        // 只借两个字段（不是 `&self` 方法）：此处 `p` 还借着 providers，
-                        // 且外层闭包需要独占 `*self`，整结构借用编译不过。
                         let gate =
                             net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
                         if model_probe_button(
@@ -131,9 +127,7 @@ impl super::App {
                         }
                         let latency = self.latency.get(&p.key);
                         model_latency_label(ui, latency, &model_id);
-                        // 右对齐区放在**行尾**：`with_layout` 会吃掉本行剩余宽度，
-                        // 放在中间会把后面的探测按钮挤出可视区。
-                        // 先加的靠最右，所以「删」在右、「启用」紧贴其左（用户指定的位置）。
+                        // 右对齐区放在行尾；先加的靠最右（「删」在右、「启用」紧贴其左）。
                         let enabled_now = !p.models[j].disabled;
                         let mut enable_clicked: Option<bool> = None;
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -141,14 +135,9 @@ impl super::App {
                                 rm = Some(j);
                             }
                             if show_model_disabled {
-                                // 滑动开关代替原来的小勾选框：在密集的模型卡片里，
-                                // 勾选框太容易被当成装饰，开关的轨道与滑块一眼可辨。
                                 // 先加开关、后加文字，右对齐布局下读作「启用 [开关] 删」。
-                                //
-                                // id 用**行的稳定键**（`model_key` = provider 键 + 模型 id），
-                                // 不能用 egui 自动 id：同一行里延迟标签是条件渲染的
-                                // （只在测过之后才占位），自动 id 会随它出现而漂移，
-                                // 滑动动画就会串到别的行上。
+                                // id 用行的稳定键（`model_key` = provider 键 + 模型 id），
+                                // 不用 egui 自动 id。
                                 let mut enabled = enabled_now;
                                 let toggle = crate::ui::toggle_switch(
                                     ui,
@@ -179,9 +168,7 @@ impl super::App {
                             }
                         }
                     });
-                    // 用 `(provider key, 模型下标)` 当下拉 id 盐，而不是模型 id：
-                    // id 允许为空或重复（保存不拦），拿它做盐会让两行的下拉共用同一个
-                    // Id，展开一个另一个跟着开。
+                    // 用 `(provider key, 模型下标)` 当下拉 id 盐：模型 id 允许为空或重复。
                     model_core_fields_row(
                         ui,
                         &mut p.models[j],
@@ -214,7 +201,6 @@ impl super::App {
             let base_url = p.base_url.clone();
             let secret = credentials::effective_secret(p);
             let api = p.effective_api();
-            // 先取出门控值：`p` 还借着 providers，整结构借用的方法在这里也会冲突。
             let gate = net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
             self.status = Self::run_model_probe(
                 &mut self.probe,
@@ -228,8 +214,8 @@ impl super::App {
                 &api,
             );
         }
-        // 只登记「本 provider 内被拖到的模型」，跨卡片的聚合交给调用方
-        // （ui_providers_section 在全部卡片渲染完之后统一写入 self.model_drag_target）。
+        // 只登记本 provider 内被拖到的模型，跨卡片聚合由调用方统一写入
+        // `self.model_drag_target`。
         merge_drag_target(model_hover_target, model_hover_here);
         if let Some(picked) = enable_request {
             model_enable_target.get_or_insert(picked);
@@ -254,7 +240,7 @@ impl super::App {
         }
         if let Some(j) = rm {
             p.models.remove(j);
-            // 删除后下标错位：关闭该 provider 的档位弹窗，避免状态串到其他模型
+            // 删除后关闭该 provider 的档位弹窗。
             let prefix = format!("variant_open_{}_", p.key);
             self.variant_open.retain(|k| !k.starts_with(&prefix));
         }

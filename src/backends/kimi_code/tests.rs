@@ -69,7 +69,7 @@ max_context_size = 1
     let joined = join(&root);
     assert_eq!(joined.len(), 1);
     assert_eq!(joined[0].models.len(), 0, "孤儿模型不挂到任何 provider 上");
-    // 保存后仍在（原样带过去）
+    // 保存后仍在
     let out = KimiCodeBackend.serialize_root(&[], &[], &root, None);
     assert_eq!(out["models"]["gone/x"]["model"], "x");
 }
@@ -174,7 +174,7 @@ fn capabilities_are_only_added() {
     assert!(caps.contains(&"thinking"));
 }
 
-/// 取消「支持思考」要能真的关掉（否则开关形同虚设）。
+/// 取消「支持思考」要能真的关掉。
 #[test]
 fn unchecking_reasoning_removes_thinking_caps() {
     let entry: Value = toml::from_str(
@@ -195,8 +195,7 @@ fn unchecking_reasoning_removes_thinking_caps() {
     assert!(caps.contains(&"tool_use"), "只动思考相关标签");
 }
 
-/// 写出的模型条目**永远不带** `disabled`（Kimi 的 schema 没这个键，
-/// 也没有停用概念——`ModelRow.disabled` 是界面共享结构上的字段，与本后端无关）。
+/// 写出的模型条目永远不带 `disabled`。
 #[test]
 fn written_entries_carry_no_disabled_key() {
     let root = root_of(SAMPLE);
@@ -208,7 +207,7 @@ fn written_entries_carry_no_disabled_key() {
     }
 }
 
-/// XOR 体检：同时填 api_key 与 api_key_env 要被判成冲突。
+/// XOR 体检：同时填 api_key 与 api_key_env 判成冲突。
 #[test]
 fn credential_conflict_is_detected() {
     let mut p = ProviderRow::new();
@@ -220,7 +219,7 @@ fn credential_conflict_is_detected() {
     assert!(err.contains("mutually exclusive"), "{err}");
 }
 
-/// `api_key = ""` 与 `oauth` 并存**不是**冲突（本机真实文件就是这样）。
+/// `api_key = ""` 与 `oauth` 并存不是冲突。
 #[test]
 fn empty_api_key_does_not_conflict_with_oauth() {
     let root = root_of(SAMPLE);
@@ -266,7 +265,7 @@ fn writing_an_env_name_clears_the_key() {
     assert!(out.get("api_key").is_none(), "必须清掉密钥");
 }
 
-/// `max_context_size` 必填且 ≥1：填不出正数就不写这个键（不写 0）。
+/// `max_context_size` 必填且 ≥1：填不出正数就不写这个键。
 #[test]
 fn invalid_context_size_is_omitted_not_zeroed() {
     let mut obj = Map::new();
@@ -280,7 +279,7 @@ fn invalid_context_size_is_omitted_not_zeroed() {
     assert_eq!(obj["max_context_size"], 1024);
 }
 
-/// `default_effort` 不在 `support_efforts` 里时删掉（否则是无效配置）。
+/// `default_effort` 不在 `support_efforts` 里时删掉。
 #[test]
 fn default_effort_must_stay_within_support_efforts() {
     let entry: Value = toml::from_str(
@@ -311,7 +310,7 @@ fn top_level_extras_survive() {
     assert_eq!(out["thinking"]["enabled"], true);
 }
 
-/// `null` 不会让 TOML 序列化失败（跨格式转来的 null 要先清掉）。
+/// `null` 不会让 TOML 序列化失败。
 #[test]
 fn nulls_are_stripped_before_serializing() {
     let v: Value = serde_json::json!({"a": null, "b": {"c": null, "d": 1}, "e": [1, null]});
@@ -373,8 +372,8 @@ fn alias_key_follows_kimis_own_convention() {
     );
 }
 
-/// 新增（或跨格式复制来的）模型没有 `kimi_alias`：写出时按 Kimi 的约定
-/// 生成 `<provider>/<model>`，且 `display_name` 回落到 wire id。
+/// 新增（或跨格式复制来的）模型没有 `kimi_alias`：写出时生成 `<provider>/<model>`，
+/// `display_name` 回落到 wire id。
 #[test]
 fn a_new_model_gets_a_vendor_prefixed_alias_and_display_name() {
     let root = root_of("[providers.p]\ntype = \"openai\"\n");
@@ -410,7 +409,7 @@ fn models_without_a_wire_id_are_skipped() {
     }
 }
 
-/// 新条目的键序：`provider` 在 `model` 之前（Kimi 自己的条目顺序）。
+/// 新条目的键序：`provider` 在 `model` 之前。
 #[test]
 fn a_new_entry_puts_provider_before_model() {
     let entry: Value = toml::from_str(
@@ -426,7 +425,7 @@ max_context_size = 1
     assert_eq!(keys[1], "model");
 }
 
-/// 旧条目的键序不受影响（insert 对已存在的键只更新值、保持原位）。
+/// 旧条目的键序不受影响。
 #[test]
 fn an_existing_entry_keeps_its_file_order() {
     let entry: Value = toml::from_str(

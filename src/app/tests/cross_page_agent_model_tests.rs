@@ -35,13 +35,13 @@ fn configured_provider(key: &str, model: &str) -> ProviderRow {
     p
 }
 
-/// 端到端：opencode 页的数据写进 kilo 文件，落盘的必须是 kilo 认的引用。
+/// 端到端：opencode 页的数据写进 kilo 文件，落盘的是 kilo 认的引用。
 #[test]
 fn saving_to_another_page_writes_that_pages_gateway_model() {
     let dir = temp_dir("kilo");
     let kilo_path = dir.join("kilo.json");
     let path = kilo_path.display().to_string();
-    // 来源是 opencode 页，agents 里混着「自家网关」与「自配 provider」两类引用。
+    // 来源是 opencode 页，agents 里混着自家网关与自配 provider 两类引用。
     let mut app = App {
         agents: vec![
             agent("writing", "sensenova/sensenova-6.8-flash-lite"),
@@ -71,10 +71,7 @@ fn saving_to_another_page_writes_that_pages_gateway_model() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 端到端：从别的页存到 Kimi 文件，`managed:*` 登录态与它名下的官方模型必须活下来。
-///
-/// 界面不显示 `managed:*`，也无从重建它（凭据在 `credentials/` 里与这份声明配对）。
-/// 一旦跨格式保存把它剔掉，用户下次开 Kimi Code 就是没登录的状态。
+/// 端到端：从别的页存到 Kimi 文件，`managed:*` 登录态与它名下的官方模型都保留。
 #[test]
 fn saving_to_the_kimi_page_keeps_the_managed_provider_and_its_models() {
     let dir = temp_dir("kimi_managed");
@@ -139,12 +136,8 @@ fn saving_to_the_kimi_page_keeps_the_managed_provider_and_its_models() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 端到端：opencode 页的 provider（密钥内联、没有 env 变量名概念）跨格式存到
-/// Qwen 文件，凭据必须完整落盘——`envKey` 与 `env` 缺一不可。
-///
-/// 真实报错（用户遇到）："Missing credentials for modelProviders model
-/// 'sensenova-6.8-flash-lite'. Configure modelProviders.openai[].envKey and set
-/// that environment variable."
+/// 端到端：opencode 页的 provider（密钥内联）跨格式存到 Qwen 文件，
+/// 落盘的凭据含 `envKey` 与 `env` 两项。
 #[test]
 fn cross_format_save_writes_the_credential_for_an_env_less_provider() {
     let dir = temp_dir("qwen_env");
@@ -163,7 +156,7 @@ fn cross_format_save_writes_the_credential_for_an_env_less_provider() {
     p.key = "sensenova".into();
     p.base_url = "https://token.sensenova.cn/v1".into();
     p.pi_api = "openai-completions".into();
-    p.api_key = "sk-sensenova".into(); // opencode 的密钥是内联的，没有变量名
+    p.api_key = "sk-sensenova".into(); // opencode 的密钥是内联的
     let mut m = crate::model::ModelRow::new();
     m.id = "sensenova-6.8-flash-lite".into();
     m.name = "sensenova-6.8-flash-lite".into();
@@ -182,7 +175,7 @@ fn cross_format_save_writes_the_credential_for_an_env_less_provider() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 端到端：从别的页存到 Qwen 文件，硬编码的 `qwen-oauth` 条目必须活下来。
+/// 端到端：从别的页存到 Qwen 文件，硬编码的 `qwen-oauth` 条目保留。
 #[test]
 fn saving_to_the_qwen_page_keeps_the_oauth_entries() {
     let dir = temp_dir("qwen_oauth");
@@ -232,7 +225,7 @@ fn saving_to_the_qwen_page_keeps_the_oauth_entries() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 同一份 agents 分别写三页，各自拿到自己网关认的值（一键保存不会串台）。
+/// 同一份 agents 分别写三页，各自拿到自己网关认的值。
 #[test]
 fn each_page_gets_its_own_gateway_reference() {
     let dir = temp_dir("three");
@@ -264,8 +257,7 @@ fn each_page_gets_its_own_gateway_reference() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 界面状态本身不该被保存路径改掉：保存到别的页只是「写出去时归一」，
-/// 用户在 opencode 页看到的仍应是自己配的那串。
+/// 保存到别的页不改动界面状态：写出去时归一，`agents` 保持原值。
 #[test]
 fn saving_to_another_page_does_not_mutate_the_ui_state() {
     let dir = temp_dir("nomutate");
@@ -287,9 +279,6 @@ fn saving_to_another_page_does_not_mutate_the_ui_state() {
 
 /// 真实配置回归：把用户本机的 opencode.json 分别写向三页，逐条检查落盘的
 /// `model` 前缀是不是目标页认的。非用户机器（CI）跳过。
-///
-/// 这条测的是**端到端**结论，而不是某个函数的中间值：用户遇到的正是
-/// 「agents 里混着 opencode/ 与自配 provider 两种引用，写进 kilo 就坏掉」。
 #[test]
 fn the_real_opencode_agents_stay_valid_on_every_page() {
     let home = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default());
@@ -339,9 +328,9 @@ fn the_real_opencode_agents_stay_valid_on_every_page() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- 切页往返：用户没改任何东西，配置不能被改掉 ----
+// ---- 切页往返：用户没改任何东西，配置不被改动 ----
 
-/// 造一个只含 agents 的 App（切页归一不碰 provider）。
+/// 造一个只含 agents 的 App。
 fn app_with(agents: Vec<AgentRow>, page: ConfigFormat) -> App {
     App {
         agents,
@@ -351,12 +340,7 @@ fn app_with(agents: Vec<AgentRow>, page: ConfigFormat) -> App {
     }
 }
 
-/// **回归**：同文件重载（手动加载 / 预览应用）后，各页的 model 记忆必须还在。
-///
-/// 事故现场：切到 mimocode 再切回 opencode 的过程中发生过一次同文件重载，
-/// 旧实现在重载时整表清空 `agent_models_by_page`，切回后还原失效，内存里
-/// 指向别家网关的前缀被判无效，全部被换成网关首选（用户看到的是 big-pickle）。
-/// 记忆按 (config_id, page) 键控后，同文件重载不再清表。
+/// 同文件重载（手动加载 / 预览应用）后，各页的 model 记忆保留。
 #[test]
 fn reloading_the_same_file_keeps_the_per_page_model_memory() {
     let dir = temp_dir("reload-keeps-memory");
@@ -377,18 +361,16 @@ fn reloading_the_same_file_keeps_the_per_page_model_memory() {
     app.normalize_agent_models_for_page(ConfigFormat::Mimocode, Some(ConfigFormat::Opencode));
     assert_eq!(app.agents[0].model, "mimo/mimo-auto");
 
-    // 同文件重载（旧实现在这里整表清空记忆）
+    // 同文件重载
     app.reload_for_page(ConfigFormat::Opencode, false);
     assert_eq!(app.agents[0].model, "opencode/mimo-v2.6-flash-free");
 
-    // 切回 opencode：记忆仍在，还原用户原值而不是换成网关首选
+    // 切回 opencode：记忆仍在，还原用户原值
     app.normalize_agent_models_for_page(ConfigFormat::Opencode, Some(ConfigFormat::Mimocode));
     assert_eq!(app.agents[0].model, "opencode/mimo-v2.6-flash-free");
 }
 
-/// **回归**：opencode → kilo → opencode 走一圈，原来配好的 `opencode/…` 必须还在。
-///
-/// 这是切页归一最容易踩的坑：单向替换之后切回来，用户什么也没改却丢了配置。
+/// opencode → kilo → opencode 走一圈，原来配好的 `opencode/…` 仍在。
 #[test]
 fn switching_pages_and_back_restores_the_original_model() {
     let mut app = app_with(
@@ -399,7 +381,7 @@ fn switching_pages_and_back_restores_the_original_model() {
     app.normalize_agent_models_for_page(ConfigFormat::Kilocode, Some(ConfigFormat::Opencode));
     app.current_page = ConfigFormat::Kilocode;
     assert_eq!(app.agents[0].model, "kilo/kilo-auto/free");
-    // 切回 opencode 页：必须还原成用户原来配的那个，而不是默认值
+    // 切回 opencode 页：还原成用户原来配的那个
     app.normalize_agent_models_for_page(ConfigFormat::Opencode, Some(ConfigFormat::Kilocode));
     app.current_page = ConfigFormat::Opencode;
     assert_eq!(
@@ -408,7 +390,7 @@ fn switching_pages_and_back_restores_the_original_model() {
     );
 }
 
-/// 三页各配各的，来回切都各归各的。
+/// 三页各配各的，来回切各自保留自己的选择。
 #[test]
 fn each_page_remembers_its_own_model_choice() {
     let mut app = app_with(
@@ -441,16 +423,14 @@ fn the_first_visit_to_a_page_has_no_memory_to_restore() {
         vec![agent("a", "opencode/big-pickle")],
         ConfigFormat::Opencode,
     );
-    // 直接进 mimo 页（没有「离开 kilo」这一步）
+    // 直接进 mimo 页
     let replaced =
         app.normalize_agent_models_for_page(ConfigFormat::Mimocode, Some(ConfigFormat::Opencode));
     assert_eq!(replaced, 1);
     assert_eq!(app.agents[0].model, "mimo/mimo-auto");
 }
 
-/// 保存到某页时用的是**该页记忆里的值**，而不是当前页那份。
-///
-/// 否则用户在 kilo 页选的 `kilo-auto/balanced` 会被写成默认的 `kilo-auto/free`。
+/// 保存到某页时用的是该页记忆里的值，而不是当前页那份。
 #[test]
 fn saving_to_a_page_uses_that_pages_remembered_choice() {
     let dir = temp_dir("remember");
@@ -477,11 +457,7 @@ fn saving_to_a_page_uses_that_pages_remembered_choice() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 重新加载后：**加载页**的记忆重置为文件值（未保存的编辑随重载丢弃），
-/// **其他页**的记忆保留（同文件下切回去仍能还原各自视图）。
-///
-/// 旧语义是整表清空：同文件重载会把刚存下的记忆一起抹掉，切回原页时还原
-/// 失效，指向别家网关的引用被判无效，全部被换成网关首选（big-pickle 事故）。
+/// 重新加载后：加载页的记忆重置为文件值，其他页的记忆保留。
 #[test]
 fn reloading_reseeds_loaded_page_and_keeps_other_pages_memory() {
     let dir = temp_dir("reload-reseed");
@@ -516,7 +492,7 @@ fn reloading_reseeds_loaded_page_and_keeps_other_pages_memory() {
 
     app.reload_for_page(ConfigFormat::Opencode, false);
 
-    // 加载页记忆 = 文件值（未保存的编辑被丢弃）
+    // 加载页记忆 = 文件值
     let op = (app.config_id(), ConfigFormat::Opencode);
     assert_eq!(
         app.agent_models_by_page[&op]["a"], "opencode/big-pickle",

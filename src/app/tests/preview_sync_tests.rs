@@ -2,22 +2,19 @@ use crate::app::preview::{diff_recompute_due, diff_signature, diff_step, preview
 
 #[test]
 fn rebuild_gate_ignores_focus_but_keeps_user_text() {
-    // 没在预览里手改：始终按组件状态重建（与焦点无关）
+    // 没在预览里手改：按组件状态重建
     assert!(preview_should_rebuild(false, None, 100.0));
-    // 刚在预览里输入（2 秒内）：保留用户文本，避免打断手改
+    // 刚在预览里输入（2 秒内）：保留用户文本
     assert!(!preview_should_rebuild(false, Some(99.5), 100.0));
     assert!(!preview_should_rebuild(false, Some(100.0), 100.0));
-    // 停止输入超过 2 秒：回到组件状态（预览不会一直停在旧内容上）
+    // 停止输入超过 2 秒：回到组件状态
     assert!(preview_should_rebuild(false, Some(97.9), 100.0));
-    // 上次解析失败：保留用户文本，等用户修正或点「重新生成」
+    // 上次解析失败：保留用户文本
     assert!(!preview_should_rebuild(true, None, 100.0));
     assert!(!preview_should_rebuild(true, Some(1.0), 100.0));
 }
 
-/// 签名必须区分「草稿变了」和「写盘了」两件事。
-///
-/// 只看路径与草稿的话，保存之后（草稿与路径都没变、磁盘却已经追上来了）
-/// 缓存不会失效，界面会一直显示一份早就落盘的「改动」。
+/// 签名区分「草稿变了」与「写盘了」两件事。
 #[test]
 fn diff_signature_changes_with_draft_and_with_save_count() {
     let base = diff_signature("/tmp/a.json", "{\"a\":1}", 0);
@@ -58,18 +55,15 @@ fn diff_recompute_waits_for_the_same_signature_to_settle() {
 
 #[test]
 fn a_new_signature_restarts_the_debounce_clock() {
-    // 上一帧在给 sig 计时，这一帧草稿变了（新签名）：不能沿用旧时刻，
-    // 否则连续输入时每一帧都会「等够时间」而逐键重算。
+    // 上一帧在给 sig 计时，这一帧草稿变了（新签名）：不能沿用旧时刻。
     assert!(!diff_recompute_due(Some((1, 100.0)), 2, 100.9));
     // 新签名自己等够后照样到点。
     assert!(diff_recompute_due(Some((2, 100.0)), 2, 100.5));
 }
 
-/// 复现并锁住一个真实出现过的缺陷：防抖时钟被每帧重置，永远不到点。
+/// 防抖时钟被每帧重置时永远不到点。
 ///
-/// 只测 `diff_recompute_due` 是发现不了的——那个函数本身是对的，
-/// 错在调用方每帧把 `pending` 覆盖成 `(signature, now)`。
-/// 这里驱动 `diff_step` 走多帧，断言时刻**第一次**记下后就不再变。
+/// 驱动 `diff_step` 走多帧，断言时刻**第一次**记下后就不再变。
 #[test]
 fn the_debounce_clock_is_recorded_once_and_not_reset_every_frame() {
     let sig = 7;
@@ -78,8 +72,8 @@ fn the_debounce_clock_is_recorded_once_and_not_reset_every_frame() {
     assert!(due, "没有结果可显示时应立刻算");
     assert_eq!(pending, None);
 
-    // 之后缓存的是旧签名（模拟「结果算出来了，但草稿又变了」）：
-    // 逐帧推进，时钟必须停在第一次那一刻，而不是每帧被重置。
+    // 之后缓存的是旧签名（结果算出来了，但草稿又变了）：
+    // 逐帧推进，时钟停在第一次那一刻。
     let mut pending = None;
     for frame in 0..5 {
         let now = 100.1 + frame as f64 * 0.1;

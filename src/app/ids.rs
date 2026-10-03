@@ -1,15 +1,9 @@
 use super::*;
 
 impl super::App {
-    /// 某一页「相对默认路径」的覆盖值：与默认相同（或没改过）返回空串，
-    /// 这样 prefs 里只留真正手动指定过的路径，默认路径永远跟着自动探测走。
+    /// 某一页「相对默认路径」的覆盖值：与默认相同（或没改过）返回空串。
     ///
-    /// 比较基准接受**两种默认形态**（原始默认与解析后默认，见 [`override_or_empty`]）：
-    /// 自动落到 `.jsonc` 变体上只是探测结果，不是用户的选择，不该被当成手动覆盖记进
-    /// settings.json——否则 CLI 之后把文件改名成 `.json`，这条覆盖就指向一个不存在的
-    /// 路径了。同理，界面字段保持的原始默认 `.json` 也不算覆盖：盘上只有 `.jsonc`
-    /// 时解析后的默认是 `.jsonc`，只对解析值比较会把没改过的默认路径误判成手动覆盖，
-    /// 每次退出都把它写回 settings.json，启动就永远钉在该页。
+    /// 比较基准接受两种默认形态：原始默认与解析后默认（见 [`override_or_empty`]）。
     pub(in crate::app) fn path_override(&self, format: ConfigFormat) -> String {
         let current = self.config_paths.local_path(format);
         let raw = ConfigPaths::default_local_path(format);
@@ -48,10 +42,6 @@ impl super::App {
 }
 
 /// 判定某页路径是否算「手动覆盖」：与原始默认或解析后默认一致都算没改过。
-///
-/// 两种默认形态都要接受：盘上只有 `.jsonc` 变体时，解析后的默认是 `.jsonc`，
-/// 而界面字段保持原始默认 `.json`——只对解析值比较会把没改过的默认路径
-/// 误判成手动覆盖（每次退出都写回 settings.json，启动永远钉在该页）。
 pub(in crate::app) fn override_or_empty(
     current: &str,
     raw_default: &str,

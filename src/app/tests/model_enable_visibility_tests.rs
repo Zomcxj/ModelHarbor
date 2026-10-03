@@ -3,7 +3,7 @@ use crate::app::App;
 use crate::format::ConfigFormat;
 use crate::model::{ModelRow, ProviderRow};
 
-/// 造一个「文件来自 opencode、当前页是 `page`」的 App——正是会触发旧 bug 的形态。
+/// 造一个「文件来自 opencode、当前页是 `page`」的 App。
 fn app_loaded_from_opencode(page: ConfigFormat) -> App {
     let mut model = ModelRow::new();
     model.id = "m1".into();
@@ -47,7 +47,7 @@ fn only_workbuddy_shows_the_enable_toggle() {
     );
 }
 
-/// 即使加载的就是 WorkBuddy 自己的文件，其他页也不该跟着显示开关。
+/// 文件来自 WorkBuddy 时，其他页也不显示开关。
 #[test]
 fn a_workbuddy_file_does_not_leak_the_toggle_onto_other_pages() {
     let mut app = app_loaded_from_opencode(ConfigFormat::ZCode);

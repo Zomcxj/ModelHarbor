@@ -16,7 +16,7 @@ fn override_releases_the_model_probe_gate() {
     assert_eq!(net_guard_gate(&None, true), None);
 }
 
-/// 开关确实贯通到 App：既影响门控值，也进 `current_prefs`（才能落盘）。
+/// 开关贯通到 App：既影响门控值，也进 `current_prefs`（才能落盘）。
 #[test]
 fn app_gate_and_prefs_follow_the_switch() {
     let blocked = App {

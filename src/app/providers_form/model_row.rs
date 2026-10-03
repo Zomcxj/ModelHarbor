@@ -2,15 +2,14 @@ use super::*;
 
 /// 模型字段编辑行之一：id / name / reasoning / tool_call / store / context / output。
 ///
-/// `relaxed` = 新增表单语境：`ProviderFormFlags` 里**内容型**开关（文件里出现过该键
-/// 才显示）放宽为常显——新模型是全新条目，不该受已加载文件内容影响；
+/// `relaxed` = 新增表单语境：`ProviderFormFlags` 里内容型开关放宽为常显；
 /// 方言门控（oc / dsh）照旧保留。
 ///
-/// `dup` 给出模型 id 的重复判定集合（编辑表单）：命中时在 id 字段旁画 ⚠ 提示——
-/// 只有编辑表单有这步，新增表单传 None。
+/// `dup` 给出模型 id 的重复判定集合（编辑表单）：命中时在 id 字段旁画 ⚠ 提示；
+/// 新增表单传 `None`。
 ///
-/// `salt` 区分同一页里的多个表单实例（编辑表单用 provider key，新增表单用固定串）：
-/// 下拉的展开状态按 `Id` 记在 egui 里，两处共用同一个 id 会互相串开合状态。
+/// `salt` 区分同一页里的多个表单实例：下拉的展开状态按 `Id` 记在 egui 里，
+/// 两处共用同一个 id 会互相串开合状态。
 pub(super) fn model_core_fields_row(
     ui: &mut egui::Ui,
     m: &mut ModelRow,
@@ -27,9 +26,8 @@ pub(super) fn model_core_fields_row(
             if !m.id.trim().is_empty()
                 && (same_provider.contains(m.id.trim()) || global.contains(m.id.trim()))
             {
-                // 保存**不会**因为模型 id 重复而失败（只有 provider key 重复才拦），
-                // 所以这里不能说「保存将被阻止」。WorkBuddy 是唯一按 id 全局去重的
-                // 后端：重复的 id 里只有第一条会在它的选择器里生效。
+                // 保存不会因为模型 id 重复而失败，只有 provider key 重复才拦。
+                // WorkBuddy 是唯一按 id 全局去重的后端：重复的 id 只有第一条生效。
                 let hint = if flags.show_model_disabled {
                     "这个模型名在**全局**出现多次（含其他厂商）。\n\
                      WorkBuddy 的选择器按模型 id 全局去重，同名只会列出一行、\
@@ -122,7 +120,7 @@ pub(super) fn model_modalities_row(
 
 /// 「添加 Model」子表单（两份表单共用）：字段行 + 添加按钮。
 ///
-/// 添加后模型进入 `p.models`、子表单清空并收起（`show_key` 是展开状态的键）。
+/// 添加后模型进入 `p.models`，子表单清空并收起（`show_key` 是展开状态的键）。
 pub(super) fn new_model_subform(
     ui: &mut egui::Ui,
     p: &mut ProviderRow,
@@ -130,8 +128,7 @@ pub(super) fn new_model_subform(
     variants: &mut VariantsCtx<'_>,
     show_key: &str,
 ) {
-    // `show_key` 按构造就逐表单唯一（编辑表单带 provider key），正好当预设下拉的
-    // id 盐用——不必再单传一个参数。
+    // `show_key` 逐表单唯一（编辑表单带 provider key），用作预设下拉的 id 盐。
     model_core_fields_row(ui, &mut p.new_model, flags, true, None, show_key);
     model_modalities_row(ui, &mut p.new_model, flags, variants, true);
     ui.horizontal(|ui| {

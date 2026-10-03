@@ -46,8 +46,7 @@ pub(super) const EMPTY_API_LABEL: &str = "(空)";
 
 /// 官方预设下拉：只填 key / baseUrl / 协议（opencode 页填 npm），不写密钥、不动模型列表。
 ///
-/// 首项就是「(自定义 / 不套用)」——不选预设时表单与以前完全一样，第三方 / 中转站 / 自建
-/// 端点照旧手填；套用后所有字段仍可继续手改。
+/// 首项「(自定义 / 不套用)」不修改任何字段；套用后所有字段仍可继续手改。
 pub(super) fn provider_preset_combo(
     ui: &mut egui::Ui,
     p: &mut ProviderRow,
@@ -84,10 +83,8 @@ pub(super) fn provider_api_combo(
     page: ConfigFormat,
     id_salt: &str,
 ) {
-    // 每个后端自己的协议词表：omp 9 值 / pi 10 值 / ZCode 3 值（多一个 chat）/
-    // WorkBuddy 3 值（协议落到 URL 后缀，见 workbuddy 后端）/
-    // QwenCode 3 值（协议落到 pid + wireApi，见 qwen_code 后端）/
-    // KimiCode 6 值（逐字就是 `type` 字段，见 kimi_code 后端）。
+    // 每个后端自己的协议词表：omp 9 值 / pi 10 值 / ZCode 3 值 / WorkBuddy 3 值 /
+    // QwenCode 3 值 / KimiCode 6 值（逐字就是 `type` 字段）。
     let options: &[&str] = match page {
         ConfigFormat::OhMyPi => &convert::OMP_APIS,
         ConfigFormat::ZCode => &convert::ZCODE_APIS,
@@ -105,9 +102,8 @@ pub(super) fn provider_api_combo(
             api.to_string()
         }
     };
-    // 「(空)」= 未指定协议。协议在 opencode 系 / pi / omp / DSH 之间共用一份数据，
-    // 故以 npm / pi_api / raw.api 是否都为空判定，显示值统一走 effective_api()，
-    // 与写盘、延迟测试同口径。
+    // 「(空)」= 未指定协议。以 npm / pi_api / raw.api 是否都为空判定，
+    // 显示值统一走 effective_api()，与写盘、延迟测试同口径。
     let explicit = p.has_explicit_api();
     let current = p.effective_api();
     field_label(ui, 120.0, "api");
@@ -129,8 +125,8 @@ pub(super) fn provider_api_combo(
                 p.clear_api();
             }
             for &api in options {
-                // 选中态按「转换后」的值比较：ZCode 页存的是 openai-completions，
-                // 但选项文本是 openai-chat-completions。
+                // 选中态按转换后的值比较：ZCode 页存的是 openai-completions，
+                // 而选项文本是 openai-chat-completions。
                 let shown = to_display(api);
                 if ui
                     .selectable_label(explicit && to_display(&current) == shown, shown)
@@ -149,7 +145,7 @@ pub(super) fn provider_api_combo(
 }
 
 /// 思考档位多选：按钮展开、勾选写回逗号分隔文本。
-/// `normalize` 为 true 时按规范档位顺序写回，避免重新勾选后被追加到末尾。
+/// `normalize` 为 true 时按规范档位顺序写回。
 pub(super) fn variant_selector(
     ui: &mut egui::Ui,
     variants: &mut String,

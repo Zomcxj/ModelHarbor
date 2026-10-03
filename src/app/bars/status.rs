@@ -6,7 +6,7 @@ impl App {
         egui::TopBottomPanel::bottom("bottom")
             .exact_height(32.0)
             .show(ctx, |ui| {
-                // 底部文字：靠下（不垂直居中）且左对齐，右侧统计仍靠右。
+                // 底部文字：靠下且左对齐，右侧统计靠右。
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::BOTTOM), |ui| {
                     if let Some(err) = &self.load_error {
                         ui.label(
@@ -14,9 +14,8 @@ impl App {
                                 .color(crate::theme::semantics(ui).err),
                         );
                     }
-                    // 底部状态文字：限制在左侧约七成宽度内；超宽时向左滚动（跑马灯）——
-                    // 「一键保存」的汇总经常超出整行版面，静态显示会溢出、还会把右侧
-                    // 统计挤走。滚动循环从「起点对齐」开始（先看到消息开头），滚完再重来。
+                    // 底部状态文字限制在左侧约七成宽度内，超宽时向左滚动（跑马灯），
+                    // 循环从起点对齐开始。
                     let max_w = (ui.available_width() * 0.72).max(160.0);
                     let row_h = ui.available_height();
                     let (rect, _) =
@@ -37,15 +36,15 @@ impl App {
                         let span = text_w + 48.0; // 尾部留白，循环衔接
                         let phase = (t * 48.0) % span; // 48 px/s
                         painter.galley(egui::pos2(rect.left() - phase, y), galley, color);
-                        // 持续重绘才能动起来；仅溢出时才开动画，不空耗。
+                        // 持续重绘以驱动滚动；仅溢出时开动画。
                         ui.ctx()
                             .request_repaint_after(std::time::Duration::from_millis(32));
                     }
-                    // 右侧：当前页 + 数量统计，随时可见页面身份
+                    // 右侧：当前页 + 数量统计
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
                         ui.horizontal(|ui| {
                             let wk = ui.visuals().weak_text_color();
-                            // 当前页：后端官方图标 + 名称
+                            // 当前页：后端图标 + 名称
                             if let Some(icon) = self.icon_for(self.current_page) {
                                 ui.add(
                                     egui::Image::from_texture(icon)

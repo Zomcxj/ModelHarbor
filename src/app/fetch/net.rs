@@ -1,10 +1,8 @@
 use super::*;
 
-/// 延迟测试用的 HTTP 客户端（较短超时，避免卡住 UI 线程池）。
+/// 延迟测试用的 HTTP 客户端（较短超时）。
 ///
-/// **不要给它设置 `Proxy`**：ureq 默认不使用系统代理，探测请求始终直连，开着 Clash /
-/// VPN 时也不会从代理出口发出（中转站的「多 IP 检测」看的正是出口 IP）。
-/// 一旦在这里引入 `Proxy::try_from_env()`，探测就会改走代理口，务必保持直连。
+/// 不设置 `Proxy`：探测请求始终直连，不走系统代理。
 pub(crate) fn latency_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(5))
@@ -25,7 +23,7 @@ pub(crate) fn http_error(err: ureq::Error, elapsed: u64) -> String {
 }
 
 /// 线上协议（api）的调用形状：端点、鉴权与最小请求体各不相同。
-/// 未列出的值按 OpenAI Chat Completions 兼容层处理，与 [`crate::convert::npm_to_api`] 的口径一致。
+/// 未列出的值按 OpenAI Chat Completions 兼容层处理。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ApiWire {
     /// `openai-completions` / `mistral-conversations` / 未知值。
@@ -55,7 +53,7 @@ pub(crate) enum AuthKind {
     AnthropicKey,
     /// Azure OpenAI 的 `api-key`。
     AzureKey,
-    /// 密钥已放进 URL 查询参数（Google 系），不再加鉴权头。
+    /// 密钥已放进 URL 查询参数（Google 系），不加鉴权头。
     QueryKey,
 }
 
@@ -108,7 +106,7 @@ pub(crate) fn apply_auth(request: ureq::Request, auth: AuthKind, secret: &str) -
 /// Google 系把密钥放查询参数；其余协议原样返回。
 pub(crate) fn with_query_key(url: &str, auth: AuthKind, secret: &str) -> String {
     if auth == AuthKind::QueryKey && !secret.is_empty() {
-        // URL 里可能已经带了查询参数（Google 流式端点的 `?alt=sse`），要用 `&` 接着拼
+        // URL 里可能已经带了查询参数（Google 流式端点的 `?alt=sse`），用 `&` 接着拼
         let separator = if url.contains('?') { '&' } else { '?' };
         format!("{}{}key={}", url, separator, secret)
     } else {
@@ -118,22 +116,19 @@ pub(crate) fn with_query_key(url: &str, auth: AuthKind, secret: &str) -> String 
 
 /// 探测请求的 User-Agent：按协议伪装成主流客户端。
 ///
-/// 中转站普遍只放行白名单客户端：实测同一站点同一 key，`ureq/2.12.1`、不传 UA、
-/// `pi/0.1.0` 一律返回 `401 unauthorized client detected`（有的站点直接卡住到超时），
-/// 而 `claude-cli/*` 与 `opencode/*` 正常返回 200。版本号不被校验（`claude-cli/9.9.9`
-/// 同样放行），但写成真实存在的版本更自然（版本号取自本机安装的客户端）。
+/// 中转站只放行白名单客户端，版本号不被校验。
 pub(crate) fn probe_user_agent(wire: ApiWire) -> &'static str {
     match wire {
-        // Anthropic 系中转站本来就是给 Claude Code 用的
+        // Anthropic 系中转站本来就用 Claude Code 的身份
         ApiWire::AnthropicMessages | ApiWire::PiMessages => "claude-cli/1.18.30 (external, cli)",
-        // OpenAI 兼容 / Responses / Google 系用 opencode 的身份
+        // 其余用 opencode 的身份
         _ => "opencode/1.18.30",
     }
 }
 
 /// 三个远程测量入口共用的前置：协议支持性、URL 与密钥判空，然后解析 wire / auth。
 ///
-/// `why` 拼在「缺少 baseURL / API Key」后面区分入口（模型列表接口加「，无法获取模型」）。
+/// `why` 拼在「缺少 baseURL / API Key」后面区分入口。
 pub(crate) fn request_prelude(
     api: &str,
     url_empty: bool,
@@ -191,7 +186,7 @@ pub(crate) fn measure_provider_latency(url: &str, secret: &str, api: &str) -> Re
 /// 最小对话请求的地址：按协议决定路径（Google 系需要模型名参与路径）。
 /// Google 系的推理动作：非流式 `:generateContent`，流式 `:streamGenerateContent?alt=sse`。
 ///
-/// Google 的流式靠**换端点**区分，而不是请求体里的 `stream` 字段。
+/// Google 的流式靠换端点区分，而非请求体里的 `stream` 字段。
 pub(crate) fn google_action(stream: bool) -> &'static str {
     if stream {
         ":streamGenerateContent?alt=sse"
@@ -228,10 +223,9 @@ pub(crate) fn chat_url(base_url: &str, api: &str, model: &str, stream: bool) -> 
 
 /// 单次探测的请求体：内容是题库里的中性短问句。
 ///
-/// - **不校验答案**：目的只是让请求看起来像正常对话（规避中转站测活特征），
-///   判定只看 HTTP 是否成功与往返耗时。
-/// - token 上限给到 16：太小会让推理模型返回空内容甚至直接报错。
-/// - 不设 `temperature`：部分推理模型只接受默认值，设了反而报错。
+/// - 不校验答案，判定只看 HTTP 是否成功与往返耗时。
+/// - token 上限 16，过小会让推理模型返回空内容或报错。
+/// - 不设 `temperature`，部分推理模型只接受默认值。
 pub(crate) fn minimal_body(wire: ApiWire, model: &str, question: &str) -> Value {
     match wire {
         ApiWire::Responses | ApiWire::AzureResponses => serde_json::json!({
@@ -261,8 +255,7 @@ pub(crate) fn minimal_body(wire: ApiWire, model: &str, question: &str) -> Value 
 
 /// 判断一个 SSE 载荷是不是「第一个字」（即真的开始出内容了）。
 ///
-/// 只看内容类字段，不看 role / usage / 各种元事件：中转站常常在模型真正开始生成前
-/// 先推一个 role 块或心跳块，把它当首字，测出来的就不是用户体感的「首字延迟」。
+/// 只看内容类字段，不看 role / usage / 各种元事件。
 pub(crate) fn chunk_has_content(wire: ApiWire, chunk: &Value) -> bool {
     match wire {
         ApiWire::ChatCompletions | ApiWire::Unsupported => {
@@ -301,9 +294,8 @@ pub(crate) fn non_empty_text(value: &Value) -> bool {
 
 /// 流结束标记：OpenAI 兼容的 `[DONE]`、Anthropic 的 `message_stop`、Responses 的 `response.completed`。
 ///
-/// Anthropic 会先发一行 `event: message_stop` 再发 `data: {"type":"message_stop"}`，
-/// 两种形态都要认（裸标记行没有引号，所以按子串匹配）。
-/// 站点发完标记后未必立刻关连接，靠它提前收尾，避免一直读到读超时才结束。
+/// Anthropic 会先发一行 `event: message_stop` 再发 `data: {"type":"message_stop"}`，两种形态都认
+/// （裸标记行没有引号，所以按子串匹配）。靠它提前收尾，不必读到读超时。
 pub(crate) fn is_stream_end(line: &str) -> bool {
     line.contains("[DONE]")
         || line.contains("message_stop")
@@ -312,13 +304,12 @@ pub(crate) fn is_stream_end(line: &str) -> bool {
         || line.contains("response.failed")
 }
 
-/// 读完流式响应，返回**首字延迟**（毫秒，从请求发出算起）。
+/// 读完流式响应，返回首字延迟（毫秒，从请求发出算起）。
 ///
-/// - 边读边解析 SSE 的 `data:` 载荷，碰到第一个带内容的块立刻记下耗时；
-/// - 记下之后**继续把流读完**（`[DONE]` / `message_stop` / EOF / 64 KB 上限）再关闭连接：
-///   真实客户端不会拿到流就断，匆匆断开在中转站日志里反而像探测流量；
-/// - 全程没有数据返回时返回 `None`（调用方按超时 / 协议不支持流式处理）；
-/// - 有数据但认不出内容块（形态罕见）时退回「第一个 `data:` 包到达的时刻」。
+/// - 边读边解析 SSE 的 `data:` 载荷，碰到第一个带内容的块记下耗时；
+/// - 记下后继续把流读完（`[DONE]` / `message_stop` / EOF / 64 KB 上限）再关闭连接；
+/// - 全程没有数据时返回 `None`；
+/// - 有数据但认不出内容块时退回「第一个 `data:` 包到达的时刻」。
 pub(crate) fn read_stream_ttft(
     reader: impl std::io::Read,
     wire: ApiWire,
@@ -361,12 +352,10 @@ pub(crate) fn read_stream_ttft(
     ttft.or(first_data)
 }
 
-/// 对单个模型发一个**流式**探测请求，测量**首字延迟**（毫秒）。
+/// 对单个模型发一个流式探测请求，测量首字延迟（毫秒）。
 ///
-/// 走流式是为了不像脚本测活：主流客户端（Claude Code / opencode / pi 等）默认全部流式，
-/// 同步请求在中转站日志里会显示成「类型：同步」，反而是少数派特征。
-/// 解响应体只是为了找第一个内容块（测首字），**不校验答案**。
-/// 端点、鉴权与请求体都按所选协议构造；失败仍会报出耗时，便于判断服务是否可达。
+/// 解响应体只为找第一个内容块（测首字），不校验答案。端点、鉴权与请求体按所选协议构造；
+/// 失败仍会报出耗时。
 pub(crate) fn measure_model_latency(
     base_url: &str,
     secret: &str,
@@ -377,10 +366,10 @@ pub(crate) fn measure_model_latency(
     let (wire, auth) = request_prelude(api, base_url.trim().is_empty(), secret.is_empty(), "")?;
     let url = with_query_key(&chat_url(base_url, api, model, true), auth, secret);
     let body = minimal_body(wire, model, question).to_string();
-    // 与列表测延迟同一个 agent：连接 5s / 读 10s（见 latency_agent）。
+    // 与列表测延迟同一个 agent：连接 5s / 读 10s（见 `latency_agent`）。
     let agent = latency_agent();
     let started = std::time::Instant::now();
-    // Accept 与主流 SDK 的流式口径一致；UA 伪装成白名单客户端（见 probe_user_agent）。
+    // Accept 与主流 SDK 的流式口径一致；UA 伪装成白名单客户端（见 `probe_user_agent`）。
     let result = apply_auth(
         agent
             .post(&url)

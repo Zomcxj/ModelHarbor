@@ -1,11 +1,8 @@
 //! QwenCode 后端回归：`~/.qwen/settings.json` 的判别 / 解析 / 序列化 / 两份配置。
 //!
-//! 结构上最要紧的三点（细节见 `src/backends/qwen_code.rs` 的模块说明）：
-//! 1. `modelProviders` 的键是 provider id、值是**数组**，一条元素 = 一条完整路由
-//!    （自带 `baseUrl` / `envKey`），所以界面是「一条 = 一张卡片」；
-//! 2. 密钥在**顶层 `env[envKey]`**，不在条目里；
-//! 3. 没有 `disabled` 字段，也没有需要开关裁决的去重——`settings.json` 一份文件
-//!    承担全部条目；曾经的启用开关与 `modelProviders.full.json` 副本已移除。
+//! `modelProviders` 的键是 provider id、值是数组，一条元素 = 一条完整路由（自带
+//! `baseUrl` / `envKey`），界面一条 = 一张卡片；密钥在顶层 `env[envKey]`；没有
+//! `disabled` 字段，去重不需要开关裁决。
 
 use model_harbor::app::strip_cross_format_containers;
 use model_harbor::backends;
@@ -86,7 +83,6 @@ fn provider<'a>(load: &'a backends::BackendLoad, key: &str) -> &'a ProviderRow {
 fn detect_requires_the_array_shape() {
     let b = qwen_backend();
     assert!(b.detect(&settings_json(), ""), "真实形态应命中");
-    // 只验键名不够：同名不同形的东西多得是
     assert!(!b.detect(r#"{"modelProviders": {"openai": "x"}}"#, ""));
     assert!(!b.detect(r#"{"modelProviders": {"openai": {}}}"#, ""));
     assert!(!b.detect(r#"{"modelProviders": {"openai": [{"name": "无 id"}]}}"#, ""));
@@ -97,8 +93,7 @@ fn detect_requires_the_array_shape() {
 #[test]
 fn detect_matches_the_install_path_even_when_empty() {
     let b = qwen_backend();
-    // 首次运行后 `~/.qwen/` 存在但 settings.json 还没生成/还是空的：
-    // 路径对就该认，否则「装了却认不出来」。
+    // settings.json 尚未生成或为空时，安装路径仍应命中判别。
     assert!(b.detect("{}", r"C:\Users\me\.qwen\settings.json"));
     assert!(b.detect("{}", "/home/me/.qwen/settings.json"));
     // 同目录的别的文件不算
@@ -149,9 +144,7 @@ fn parse_joins_the_key_from_env() {
 
 #[test]
 fn a_key_without_an_env_name_gets_a_derived_env_key() {
-    // 跨格式复制来的 provider：密钥内联在 api_key 里，api_key_env 为空。
-    // 曾因此两个地方都跳过——条目上不写 envKey、env 里不写值——密钥被静默丢掉，
-    // CLI 报 "Missing credentials for modelProviders model '…'"。
+    // 跨格式复制来的 provider：密钥内联在 `api_key` 里，`api_key_env` 为空。
     let mut p = ProviderRow::new();
     p.key = "sensenova".into();
     p.base_url = "https://token.sensenova.cn/v1".into();
@@ -199,13 +192,7 @@ fn one_entry_is_one_card() {
     );
 }
 
-/// 本机实际文件的形状（Requesty 网关，三条条目共用一个 pid 与一个 `envKey`）。
-///
-/// 这不是从文档推的样本，是按用户 `~/.qwen/settings.json` 的结构复刻的：三条条目
-/// 全在 `openai` 这一个 pid 下、共用一个 `REQUESTY_API_KEY`、都带
-/// `generationConfig.customHeaders`，**都没有 `wireApi`**。Qwen Code 0.24.6 自己的
-/// `/model` 实现（`ModelDialog` → `getAllConfiguredModels`）对这份形状解析出的正是
-/// 下面这三条；本工具也必须一致，否则「打开没有模型」就真成了本工具的问题。
+/// 本机实际文件的形状：Requesty 网关，三条条目共用一个 pid 与一个 `envKey`。
 #[test]
 fn the_live_requesty_shape_parses_into_three_cards() {
     let content = r#"{
@@ -276,8 +263,7 @@ fn parse_maps_model_attributes() {
 
 #[test]
 fn parse_does_not_invent_undeclared_defaults() {
-    // 条目只写了 id 与端点：上下文/输出/模态一律留空，
-    // 否则 ModelRow::new() 的预填值会被当成用户配置写回文件。
+    // 条目只写了 id 与端点：上下文 / 输出 / 模态一律留空。
     let content = r#"{"modelProviders": {"openai": [
         {"id": "bare", "baseUrl": "https://api.openai.com/v1"}
     ]}}"#;
@@ -370,8 +356,6 @@ fn serialize_keeps_the_top_level_extras() {
 
 #[test]
 fn serialize_never_stamps_version_on_an_existing_file() {
-    // v2 文件里补 `$version: 4` 会让 Qwen Code 跳过自己的 v1→v4 迁移，
-    // 旧结构的设置被按新结构解读。
     let old = json!({"$version": 2, "general": {"vimMode": true}});
     let root = qwen_backend().serialize_root(&[], &[], &old, None);
     assert_eq!(root["$version"], 2);
@@ -386,8 +370,7 @@ fn serialize_stamps_version_only_on_a_new_file() {
 
 #[test]
 fn model_providers_values_are_arrays_of_bare_entries() {
-    // 旧预览版的 `{protocol, models[]}` 包装在 $version:4 文件里会被静默跳过，
-    // 所以写出的必须是裸数组。
+    // 写出的值必须是裸条目数组，不带 `{protocol, models[]}` 包装。
     let first = load(&settings_json());
     let root = qwen_backend().serialize_root(&[], &first.providers, &first.extras, None);
     let map = root["modelProviders"]
@@ -415,7 +398,7 @@ fn serialize_keeps_unmanaged_entry_keys() {
         gpt["generationConfig"]["samplingParams"]["temperature"], 0.2,
         "采样参数的其它键保留"
     );
-    // 自定义 pid 的 reasoning profile 是界面表达不了的能力声明，必须留着
+    // 自定义 pid 的 reasoning profile 原样保留。
     let idealab = &root["modelProviders"]["idealab"][0];
     assert_eq!(
         idealab["capabilities"]["reasoning"]["profile"],
@@ -425,7 +408,7 @@ fn serialize_keeps_unmanaged_entry_keys() {
 
 #[test]
 fn serialize_drops_wire_api_for_non_openai_protocols() {
-    // 官方明说：wireApi 写在 Anthropic / Gemini / Vertex / Qwen OAuth 上是配置错误。
+    // 非 openai 协议不写 wireApi。
     let mut p = ProviderRow::new();
     p.key = "claude".into();
     p.pi_api = "anthropic-messages".into();
@@ -442,7 +425,7 @@ fn serialize_drops_wire_api_for_non_openai_protocols() {
 
 #[test]
 fn cleared_fields_are_removed_not_written_empty() {
-    // 空 `envKey` 会被当成一个真的空变量名，必须删键而不是写空串。
+    // 清空的字段删键，不写空串。
     let first = load(&settings_json());
     let mut providers = first.providers.clone();
     for p in &mut providers {
@@ -484,7 +467,7 @@ fn deleting_the_last_entry_of_a_custom_pid_prunes_the_mapping() {
 
 #[test]
 fn unknown_custom_pid_falls_back_to_a_builtin_one() {
-    // 映射表里没有的自定义 pid，写出去只会让整条被静默跳过 —— 回落到内置 pid。
+    // 映射表里没有的自定义 pid 回落到内置 pid。
     let mut p = ProviderRow::new();
     p.key = "m1".into();
     p.pi_api = "openai-completions".into();
@@ -517,8 +500,7 @@ fn known_custom_pid_is_kept_and_refreshed() {
 #[test]
 fn there_is_no_disabled_concept_on_the_qwen_page() {
     // Qwen Code 的 schema 没有 disabled/enabled 字段，`/model` 对不同厂商的重复模型
-    // 照列不误（判重只针对协议+id+baseUrl 完全相同的三重重复）。曾经的启用开关与
-    // `modelProviders.full.json` 副本是本工具发明的状态，已按用户指正移除。
+    // 照列不误（判重只针对协议+id+baseUrl 完全相同的三重重复）。
     assert!(!ConfigFormat::QwenCode.has_model_enable());
 
     let root = qwen_backend().serialize_root(
@@ -551,7 +533,7 @@ fn no_sidecar_is_written_any_more() {
     qwen_backend()
         .save_sidecars(&path.to_string_lossy(), &first.providers)
         .ok();
-    // QwenCode 已从 sidecar 名单里摘掉：即便误调也不得产出文件
+    // 即便误调也不得产出 sidecar 文件。
     assert!(
         !dir.join("modelProviders.full.json").exists(),
         "不该再写全量副本"
@@ -562,8 +544,7 @@ fn no_sidecar_is_written_any_more() {
 
 #[test]
 fn entries_added_by_hand_to_settings_stay_visible() {
-    // Qwen Code 自己也会写 settings.json（/auth、/model）：没有副本之后主配置就是
-    // 全部状态，手加的条目自然能看见。
+    // 主配置就是全部状态，手加的条目应能看见。
     let dir = temp_dir("hand_added");
     let path = dir.join("settings.json");
     std::fs::write(&path, settings_json()).unwrap();
@@ -591,8 +572,7 @@ fn entries_added_by_hand_to_settings_stay_visible() {
 
 #[test]
 fn an_env_name_collision_is_refused() {
-    // 推导/手填的变量名撞在一起且密钥不同：sync_env 后写覆盖先写，其中一条 provider
-    // 会静默拿到别人的密钥。宁可不让存。
+    // 推导 / 手填的变量名撞在一起且密钥不同：保存失败。
     let dir = temp_dir("env_clash");
     let path = dir.join("settings.json");
     std::fs::write(&path, settings_json()).unwrap();
@@ -628,9 +608,7 @@ fn an_env_name_collision_is_refused() {
 
 #[test]
 fn env_is_never_pruned() {
-    // `env` 是共享命名空间，而且 Qwen Code 的 /auth 也往里写
-    // （例如 BAILIAN_CODING_PLAN_API_KEY）。按「有没有条目引用」修剪会把用户
-    // 刚配好的凭据静默删掉，且不可恢复。
+    // `env` 是共享命名空间，无引用的键也不修剪。
     let base = json!({
         "env": {"BAILIAN_CODING_PLAN_API_KEY": "sk-plan", "ORPHAN": "sk-orphan"},
         "modelProviders": {"openai": [{"id": "m1", "envKey": "GONE"}]}
@@ -644,8 +622,7 @@ fn env_is_never_pruned() {
 
 #[test]
 fn shared_env_key_is_written_once_for_both_entries() {
-    // 两条条目共用同一个 envKey：写入的值必须是最后一张卡片的（用户看到的那份），
-    // 且 env 里只有一个键。
+    // 两条条目共用同一个 envKey：写入最后一张卡片的值，env 里只有一个键。
     let base = json!({
         "modelProviders": {"openai": [
             {"id": "a", "envKey": "SHARED"},
@@ -719,8 +696,7 @@ fn cross_format_strip_removes_both_containers() {
 
 #[test]
 fn cross_format_strip_keeps_qwen_oauth() {
-    // `qwen-oauth` 是官方硬编码的 OAuth 条目，界面不显示也无从重建。整块剔掉就是
-    // 把用户已经登录好的 Qwen 模型删了。
+    // `qwen-oauth` 是官方硬编码的 OAuth 条目，界面不显示，整块保留。
     let mut root: Value = serde_json::from_str(&settings_json()).unwrap();
     root["modelProviders"]["qwen-oauth"] = json!([
         { "id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus",
@@ -752,7 +728,7 @@ fn cross_format_export_does_not_leak_qwen_only_keys() {
 
 #[test]
 fn shrinks_on_save_detects_deletions() {
-    // 停用没了，但删卡片仍会让条目变少——`.bak` 备份的触发条件依然需要它。
+    // 删卡片会让条目变少，`.bak` 备份的触发条件依赖它。
     use model_harbor::backends::qwen_code::shrinks_on_save;
     let before: Value = serde_json::from_str(&settings_json()).unwrap();
     let after = json!({"modelProviders": {"openai": [{"id": "gpt-4o"}]}});
@@ -765,8 +741,8 @@ fn shrinks_on_save_detects_deletions() {
 
 #[test]
 fn cross_format_strip_keeps_what_the_ui_cannot_rebuild() {
-    // 跨页保存时界面接管 `modelProviders`，但只能剔**自己认得的**条目：`unmanaged_of`
-    // 读的就是这个被剔过的 root，整表剔掉的话，下面这三类内容一次跨页保存就没了。
+    // 跨页保存只剔界面认得的条目（有 id 的）；无 id 条目、旧包装形状与
+    // 只读 pid 整块保留。
     let mut root: Value = serde_json::from_str(
         r#"{
             "modelProviders": {

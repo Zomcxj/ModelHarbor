@@ -4,23 +4,22 @@ use eframe::egui::{self, Color32};
 
 /// 界面形状预设：圆角、描边粗细、内嵌亮暗边、投影、色带的组合。
 ///
-/// 与主题正交 —— 主题管颜色，形状管「控件长什么样」。8 档各有一套
-/// **不同的机制**（描边 / 无边框 / 凸起光线 / 软投影 / 接触影 / 顶部色带），
-/// 而不是同一效果调强度。
+/// 与主题正交：主题管颜色，形状管控件外观。8 档各有一套机制
+/// （描边 / 无边框 / 凸起光线 / 软投影 / 接触影 / 顶部色带）。
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum UiStyle {
     /// 圆润：默认档，圆角 10、1px 描边。
     #[default]
     Soft,
-    /// 精致：圆角 6 + 0.5px 细边，轻量感。
+    /// 精致：圆角 6 + 0.5px 细边。
     Fine,
     /// 极简：全直角 + 0px 无边框，纯色块。
     Minimal,
-    /// 标签：胶囊 20 + 0.5px 细边，标签样式。
+    /// 标签：胶囊 20 + 0.5px 细边。
     Tag,
-    /// 云朵：大圆角 16 + 软投影，卡片浮在底上。
+    /// 云朵：大圆角 16 + 软投影。
     Cloud,
-    /// 浮雕：凸起受光线 + 接触影，卡面「立」在底上。
+    /// 浮雕：凸起受光线 + 接触影。
     Emboss,
     /// 石板：平放石板——深色描边 + 接触影，无受光线。
     Slab,
@@ -53,7 +52,7 @@ impl UiStyle {
         }
     }
 
-    /// 持久化用的稳定标识（与界面文案解耦）。
+    /// 持久化用的稳定标识，与界面文案解耦。
     pub fn key(&self) -> &'static str {
         match self {
             UiStyle::Soft => "soft",
@@ -75,7 +74,7 @@ impl UiStyle {
             .unwrap_or_default()
     }
 
-    /// 该预设的默认圆角（滑块可在此基础上继续调）。
+    /// 该预设的默认圆角。
     pub fn radius(&self) -> u8 {
         match self {
             UiStyle::Soft => RADIUS_MD,
@@ -95,7 +94,7 @@ impl UiStyle {
             UiStyle::Soft | UiStyle::Slab | UiStyle::Emboss | UiStyle::Band => 1.0,
             UiStyle::Minimal => 0.0,
             UiStyle::Fine | UiStyle::Tag => 0.5,
-            // 云朵的卡片本身不描边（靠投影成形），输入框 / 按钮仍要 1px，否则浅底上看不见框。
+            // 云朵的卡片本身不描边（靠投影成形），输入框 / 按钮仍要 1px。
             UiStyle::Cloud => 1.0,
         }
     }
@@ -105,7 +104,7 @@ impl UiStyle {
         matches!(self, UiStyle::Emboss)
     }
 
-    /// 是否画接触影（向右下偏移的整圈暗色描边，让卡片「坐」在底上）。
+    /// 是否画接触影（向右下偏移的整圈暗色描边）。
     pub fn has_contact_shadow(&self) -> bool {
         matches!(self, UiStyle::Slab | UiStyle::Emboss)
     }
@@ -122,8 +121,7 @@ impl UiStyle {
 
     /// 写进 egui `WidgetVisuals` 的描边宽度。
     ///
-    /// 浮雕的控件描边要换成内嵌暗边（1px），让整卡质感统一；石板的
-    /// 深色描边本身就是边框，直接用原宽。
+    /// 浮雕的控件描边换成内嵌暗边（1px）；石板用原宽。
     pub fn widget_stroke_width(&self) -> f32 {
         if self.has_bevel() {
             1.0
@@ -132,7 +130,7 @@ impl UiStyle {
         }
     }
 
-    /// 卡片软投影：深色用黑、浅色用更深的灰，浅底上也能看出浮起。
+    /// 卡片软投影：深色用黑、浅色用更深的灰。
     pub fn card_shadow(&self, dark: bool) -> egui::epaint::Shadow {
         let color = if dark {
             Color32::from_black_alpha(110)
@@ -149,9 +147,7 @@ impl UiStyle {
 
     /// 凸起受光线的颜色（浮雕专用），返回 `(亮边, 暗边)`。
     ///
-    /// 浅底上白高光隐形（白上白），**立体感全靠深色暗边**：浅色主题的暗边
-    /// 拉到近实色（alpha 230）——1px 的半透明线在浅底上会化掉。
-    /// 深底走反方向：亮边负责立体感。
+    /// 浅色主题的暗边近实色（alpha 230）；深色主题的亮边负责立体感。
     pub fn bevel_colors(&self, dark: bool) -> (Color32, Color32) {
         if dark {
             (
@@ -166,8 +162,7 @@ impl UiStyle {
         }
     }
 
-    /// 接触影颜色：向右下偏移的整圈暗色描边用。石板 / 浮雕共用，
-    /// 浅底更实、深底更透。
+    /// 接触影颜色：向右下偏移的整圈暗色描边用，石板 / 浮雕共用。
     pub fn contact_shadow_color(&self, dark: bool) -> Color32 {
         if dark {
             Color32::from_black_alpha(120)
@@ -180,7 +175,7 @@ impl UiStyle {
 /// 当前形状预设存在上下文里的键。
 pub(super) const ACTIVE_STYLE_ID: &str = "modelharbor_active_ui_style";
 
-/// 当前玻璃档存在上下文里的键（卡片 / 面板 Frame 读它决定底色透明度）。
+/// 当前玻璃档存在上下文里的键。
 pub(super) const GLASS_ID: &str = "modelharbor_active_glass";
 
 /// 当前生效的形状预设（还没套用样式时是默认档）。
@@ -191,10 +186,7 @@ pub fn active_style(ctx: &egui::Context) -> UiStyle {
 
 /// 主题是否需要在本次应用（`applied` 记录已应用的主题，会被就地更新）。
 ///
-/// 单独抽出来是为了能在单测里锁定「启动时必须应用一次」：
-/// egui 0.33 的 `set_style` 是**每个主题各存一份 style**（dark / light 两份，
-/// 按当前激活的主题取用），所以主题变了必须显式再调一次 `apply`，
-/// 否则界面颜色不会跟着变。
+/// egui 的 `set_style` 按当前主题各存一份 style，主题变了需显式再调一次 `apply`。
 pub fn needs_apply(applied: &mut Option<Theme>, theme: Theme) -> bool {
     if *applied == Some(theme) {
         return false;

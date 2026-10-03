@@ -1,17 +1,9 @@
 //! 卡片头部的「删除 / 复制」按钮必须始终可见。
 //!
-//! 曾经的 bug（用户报告：预览面板打开后，第 12 个 provider 起「删除」按钮消失）：
 //! 卡片头是 `ui.horizontal`（左组：拖柄、折叠钮、厂商名、baseUrl 提示、连通性结果）
-//! 里再嵌一个 `right_to_left` 放按钮组。左组内容不定长——连通性错误文本最长保留
-//! 96 字符（`short_err` 上限，约 670px）——左组一长就把卡片撑得**比组件区还宽**，
-//! 右组（贴在卡片右缘）随之落到视口之外被 ScrollArea 裁掉，整颗按钮消失。
-//!
-//! 这解释了「第 N 个起」：那些 provider 是连通性测试失败、错误文本变长之后才触发，
-//! 与名字长度无关（用户配置里第 12 个 `openai_xxs` 的名字并不突出）。
-//!
-//! 修法：`egui::Sides::new().shrink_left().truncate()`——先量右组，再把左组限制在
-//! 剩余宽度内并按需截断。这里按真实结构离屏渲染（预览侧栏 + 滚动区 + Providers 区），
-//! 断言每个 provider 的「删除」按钮都渲染出来且落在组件区内。
+//! 里再嵌一个 `right_to_left` 放按钮组，布局用 `egui::Sides::new().shrink_left().truncate()`：
+//! 先量右组，再把左组限制在剩余宽度内并按需截断。这里按真实结构离屏渲染（预览侧栏
+//! + 滚动区 + Providers 区），断言每个 provider 的「删除」按钮都落在组件区内。
 
 use crate::app::App;
 use crate::format::ConfigFormat;
@@ -138,8 +130,6 @@ fn button_on_row<'a>(texts: &'a [TextAt], name: &TextAt, label: &str) -> Option<
 }
 
 /// 核心回归：各种宽度 / 预览开关 / 长错误文本下，「删除」按钮都必须在组件区内。
-///
-/// 场景里的 96 字符正是修复前唯一能把按钮整个挤出去的条件。
 #[test]
 fn delete_button_stays_visible_in_every_layout() {
     let scenes = [
@@ -200,7 +190,7 @@ fn delete_button_stays_visible_in_every_layout() {
     }
 }
 
-/// 打印每个 provider 的「删除」按钮横向范围，便于人工核对（诊断辅助）。
+/// 打印每个 provider 的「删除」按钮横向范围（诊断辅助）。
 #[test]
 fn dump_delete_button_positions() {
     let scenes = [

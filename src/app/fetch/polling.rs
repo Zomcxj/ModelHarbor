@@ -22,7 +22,6 @@ impl super::App {
         }
     }
 
-    /// 启动后台线程获取 provider 模型列表。
     /// 启动 provider 级延迟测试（后台线程，结果经通道回传）。
     /// 接收 `&mut HashMap` 而非 `&mut self`，以便与 `providers[idx]` 借用共存。
     pub(in crate::app) fn start_provider_latency(
@@ -46,8 +45,7 @@ impl super::App {
 
     /// 单模型探测的统一入口：门控 → 选问句 → 启动后台线程 → 返回状态栏消息。
     ///
-    /// 写成关联函数（不借 `&mut self`）是为了能在 provider 卡片内部调用：
-    /// 那里 `providers` 字段已经被可变借用，只能按字段拆分借用。
+    /// 写成关联函数（不借 `&mut self`）以便在 provider 卡片内部调用。
     #[allow(clippy::too_many_arguments)]
     pub(in crate::app) fn run_model_probe(
         probe: &mut ProbeGate,
@@ -87,8 +85,7 @@ impl super::App {
 
     /// 启动单个模型的延迟探测（后台线程，结果经通道回传）。
     ///
-    /// **一次只测一个**：中转站的测活风控对「批量扫模型」最敏感，因此不再提供批量
-    /// 入口，节流与串行统一由 [`ProbeGate`] 把关。
+    /// 一次只测一个，节流与串行由 [`ProbeGate`] 把关。
     pub(in crate::app) fn start_model_latency(
         latency: &mut HashMap<String, LatencyState>,
         key: &str,
@@ -124,8 +121,7 @@ impl super::App {
             if let Some(rx) = &state.provider_rx {
                 match rx.try_recv() {
                     Ok(result) => {
-                        // 失败原因已就地显示在厂商行（红字 + 悬停详情），
-                        // 不再重复推送到页面底部状态栏。
+                        // 失败原因已就地显示在厂商行（红字 + 悬停详情），不推送到底部状态栏。
                         if let Ok(ms) = &result {
                             notices.push(format!("provider 延迟测试完成：{} ms", ms));
                         }
@@ -134,8 +130,7 @@ impl super::App {
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        // 测量线程异常退出（panic 等）时收不到结果：
-                        // 终止等待，避免 Spinner/进度永久卡死；不在底部报错。
+                        // 测量线程异常退出时收不到结果：终止等待，不在底部报错。
                         state.provider_rx = None;
                     }
                 }
@@ -199,10 +194,7 @@ impl super::App {
     }
 
     /// 后台拉取某个后端的内置网关免费模型列表（已有请求在飞时不重复发起）。
-    ///
-    /// 与 provider 的「获取模型」共用同一套「后台线程 + 通道」形状，但请求的是
-    /// 公共模型库而非某个用户 provider，因此不需要 baseURL / API Key。
-    /// 没有免费层的后端（mimocode）直接忽略。
+    /// 请求公共模型库，不需要 baseURL / API Key。
     pub(in crate::app) fn start_free_models_fetch(&mut self, format: crate::format::ConfigFormat) {
         if crate::opencode_models::source_for(format).is_none() {
             return;
@@ -219,9 +211,7 @@ impl super::App {
     }
 
     /// 每帧轮询各后端的免费模型拉取结果：成功则刷新列表并落盘缓存。
-    ///
-    /// 拉取失败**不清空**已有列表：宁可继续用旧缓存，也不要因为一次网络抖动
-    /// 让下拉变空（用户会以为配置坏了）。失败原因只在 Agents 区块旁提示。
+    /// 拉取失败不清空已有列表，只在 Agents 区块旁提示。
     pub(in crate::app) fn poll_free_models(&mut self) {
         for (format, state) in self.free_models.iter_mut() {
             let Some(rx) = &state.rx else {
@@ -232,7 +222,7 @@ impl super::App {
                     state.rx = None;
                     state.error = None;
                     if !models.is_empty() {
-                        // 缓存写失败不影响本次使用（下次启动重取即可）。
+                        // 缓存写失败不影响本次使用。
                         let _ = crate::opencode_models::save_cache(*format, &models);
                         state.models = models;
                     }
@@ -242,7 +232,7 @@ impl super::App {
                     state.error = Some(err);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                // 线程异常退出：终止等待，避免按钮永远显示「刷新中」。
+                // 线程异常退出：终止等待。
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     state.rx = None;
                 }

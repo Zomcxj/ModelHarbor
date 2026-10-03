@@ -1,7 +1,7 @@
 //! 厂商连通性与模型延迟探测，以及模型列表获取。
 //!
-//! 探测请求一律直连（不经系统代理），并按协议伪装成白名单客户端；
-//! 节流与串行由 [`ProbeGate`] 统一把关，避免触发中转站的测活风控。
+//! 探测请求直连（不经系统代理），按协议伪装成白名单客户端；节流与串行由
+//! [`ProbeGate`] 统一把关。
 
 use eframe::egui;
 use serde_json::Value;
@@ -46,12 +46,8 @@ pub(super) const NEW_PROVIDER_FETCH_KEY: &str = "__new_provider__";
 
 /// 传给延迟测试门控的守卫值：`Some(原因)` = 拦截，`None` = 放行。
 ///
-/// 用户打开 `allow_model_test_with_proxy` 后，检测到的代理不再拦截模型探测
-/// （中转站的多 IP / 测活风控风险由用户自己承担，见 `crate::netguard` 说明）。
-///
-/// 写成只吃两个字段的自由函数而不是 `&self` 方法：调用处往往正持有
-/// `&mut self.providers[idx]`（甚至在还需要独占 `*self` 的闭包里），
-/// 整结构借用会直接编译不过；只借这两个字段则不受影响。
+/// 用户打开 `allow_model_test_with_proxy` 后，检测到的代理不再拦截模型探测。
+/// 只吃两个字段的自由函数，便于在持有 `&mut self.providers[idx]` 时调用。
 pub(super) fn net_guard_gate(net_guard: &Option<String>, allow: bool) -> Option<String> {
     if allow {
         return None;
@@ -78,22 +74,18 @@ pub(super) struct LatencyState {
 /// 延迟测试的读取超时与「超时」判定阈值（毫秒）：单个读操作 / 首字的等待上限。
 pub(super) const LATENCY_TIMEOUT_MS: u64 = 10_000;
 /// 首字延迟着色阈值（毫秒）：低于此值为绿色。
-///（首字延迟量级远小于整段生成耗时，不能沿用同步请求的 5 秒口径。）
 pub(super) const LATENCY_GOOD_MS: u64 = 2_000;
 /// 首字延迟超过此值算慢（红）。
 pub(super) const LATENCY_SLOW_MS: u64 = 5_000;
 
-/// 模型延迟探测的风控节流参数（中转站的「多 IP 检测 / 测活封号」）：
-/// **同一个 provider** 的任意两次探测（同模型、不同模型都算）间隔 ≥5 秒；
-/// **不同 provider 互不牵连**（不同中转站是不同站点，各自独立计数、可并行）。
+/// 模型延迟探测的风控节流参数：**同一个 provider** 的任意两次探测（同模型、
+/// 不同模型都算）间隔 ≥5 秒；**不同 provider 互不牵连**（各自独立计数、可并行）。
 pub(super) const PROBE_PROVIDER_GAP_S: f64 = 5.0;
 
 /// 探测用的中性短问句库：跨领域的常识名词（地理 / 天文 / 生物 / 化学 / 物理 /
 /// 文学 / 艺术 / 音乐 / 历史），都是「一句话能答」的定论型题目。
 ///
-/// 目的只是让请求看起来像普通对话而不是脚本测活（**不校验答案**：判定只看 HTTP
-/// 是否成功与往返耗时），所以题目要求「短、无歧义、与政治 / 敏感话题无关」。
-/// 题目太浅（如「1 加 1 等于几」）反而不像真人在问，所以选题偏向各领域的常识名词。
+/// 不校验答案：判定只看 HTTP 是否成功与往返耗时。
 pub(super) const PROBE_QUESTIONS: [&str; 24] = [
     "世界上最长的河流是哪条？只回答河名",
     "世界上面积最大的国家是哪个？只回答国名",
@@ -121,7 +113,7 @@ pub(super) const PROBE_QUESTIONS: [&str; 24] = [
     "泰姬陵位于哪个国家？只回答国名",
 ];
 
-/// FNV-1a：给 provider key 一个稳定的起始题号偏移，避免所有 provider 都从第 1 题开始。
+/// FNV-1a：给 provider key 一个稳定的起始题号偏移。
 pub(super) fn fnv1a(value: &str) -> usize {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in value.as_bytes() {
@@ -152,8 +144,7 @@ pub(super) enum ProbeGateState {
 
 /// 模型延迟探测的节流与串行状态（按 provider 各自一份）。
 ///
-/// 纯内存、重启清零：重启后只能手动一个个点，人手点击的节奏本身不构成突发，
-/// 因此无需落盘（写盘也不增加实际安全性）。
+/// 纯内存、重启清零，不落盘。
 #[derive(Default)]
 pub(super) struct ProbeGate {
     /// provider key → 上次探测时刻（egui 秒）。
@@ -187,8 +178,7 @@ impl ProbeGate {
         if let Some(reason) = net_guard {
             return ProbeGateState::NetBlocked(reason.to_string());
         }
-        // 同一 provider 一次只允许一个探测在飞：探测最长 10 秒，可能超过 5 秒间隔，
-        // 否则会同时向同一个中转站发两个请求。
+        // 同一 provider 一次只允许一个探测在飞。
         if self.in_flight.contains(provider_key) {
             return ProbeGateState::Busy;
         }
@@ -218,7 +208,6 @@ impl ProbeGate {
 
     /// 探测状态整体被丢弃时释放串行位（重载配置 / 关闭新增表单）。
     ///
-    /// 不释放的话，被丢弃的通道不会再有结果回传，该 provider 会永久卡在 Busy。
     /// `provider_key` 为 `None` 表示全部释放。
     pub(super) fn release(&mut self, provider_key: Option<&str>) {
         match provider_key {

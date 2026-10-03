@@ -59,7 +59,7 @@ fn normalization_is_idempotent_and_keeps_a_users_choice() {
         current_page: ConfigFormat::WorkBuddy,
         ..App::default()
     };
-    // 用户明确关掉第一条、启用第二条（与「第一条生效」相反）。
+    // 用户关掉第一条、启用第二条。
     app.providers[0].models[0].disabled = true;
     app.providers[1].models[0].disabled = false;
     app.normalize_workbuddy_enable_flags();

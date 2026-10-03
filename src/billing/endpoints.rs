@@ -11,20 +11,20 @@ pub struct Endpoints {
 }
 
 impl Endpoints {
-    /// 令牌额度信息（**只需 `sk-` key**）：`total_granted` / `total_used` / `total_available`。
+    /// 令牌额度信息（只需 `sk-` key）：`total_granted` / `total_used` / `total_available`。
     pub fn token_usage(&self) -> String {
         format!("{}/api/usage/token/", self.origin)
     }
 
-    /// 签到状态（**只读**，需面板访问令牌）：`GET /api/user/checkin`。
+    /// 签到状态（只读，需面板访问令牌）：`GET /api/user/checkin`。
     ///
-    /// 只读是有意的：签到会改账号额度，本工具不代签，只把状态查回来展示。
+    /// 只读：不代签，只查回状态展示。
     pub fn checkin(&self) -> String {
         format!("{}/api/user/checkin", self.origin)
     }
 
-    /// 该令牌的调用日志（用于算今日 / 近 7 天用量，**只需 `sk-` key**）。
-    /// 显式请求首个大分页；未遍历后续页，因此展示层始终披露“统计可能不完整”。
+    /// 该令牌的调用日志（用于算今日 / 近 7 天用量，只需 `sk-` key）。
+    /// 只请求首个大分页，未遍历后续页。
     pub fn token_logs(&self) -> String {
         format!(
             "{}/api/log/token?p=0&page_size={LOG_PAGE_LIMIT}",
@@ -35,7 +35,7 @@ impl Endpoints {
 
 /// 推导端点：`base` 去掉末尾斜杠；`origin` 只保留 scheme + host。
 ///
-/// 缺少 `://` 时按整体当 origin（这类地址本身已在 baseUrl 体检里报过「缺少协议头」）。
+/// 缺少 `://` 时按整体当 origin。
 pub fn endpoints(base_url: &str) -> Endpoints {
     let base = base_url.trim().trim_end_matches('/').to_string();
     let origin = match base.split_once("://") {
@@ -53,11 +53,9 @@ pub fn endpoints(base_url: &str) -> Endpoints {
     }
 }
 
-/// 备选端点：baseUrl 只有 origin（pi 页里 anthropic 系就是这样）时，在 origin 后插一个 `/v1`。
+/// 备选端点：baseUrl 只有 origin 时，在 origin 后插一个 `/v1`。
 ///
-/// 实测：多数站点在 `/` 与 `/v1` 下都提供账单接口，但少数只在 `/v1` 下提供 ——
-/// 调用方**仅在 404 时**才回退到这里；baseUrl 已带路径（含 `/v1`）时原样返回，
-/// 避免拼出 `…/v1/v1/dashboard/…`（实测会 404）。
+/// 调用方仅在 404 时才回退到这里；baseUrl 已带路径（含 `/v1`）时原样返回。
 pub fn endpoints_v1(base_url: &str) -> Endpoints {
     let base = base_url.trim().trim_end_matches('/');
     match base.split_once("://") {

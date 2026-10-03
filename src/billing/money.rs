@@ -32,7 +32,7 @@ fn grouped(value: f64, decimals: usize) -> String {
         None => (text, None),
     };
     let mut out = String::with_capacity(int_part.len() + int_part.len() / 3);
-    // 内容来自 format!("{:.*}") 的浮点输出，必定是 ASCII，故字节下标与字符数一致。
+    // 内容来自 format!("{:.*}") 的浮点输出，必定是 ASCII。
     let total = int_part.len();
     for (idx, ch) in int_part.char_indices() {
         if idx > 0 && (total - idx) % 3 == 0 {

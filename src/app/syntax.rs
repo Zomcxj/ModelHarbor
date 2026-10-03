@@ -13,10 +13,7 @@ pub(super) enum PreviewSyntax {
     Toml,
 }
 
-/// 一套语法配色。
-///
-/// 深浅两套：同一组颜色在浅底上会糊成一片（原先是写死的 VSCode Dark+ 六色，
-/// 在浅色 / 玫瑰主题下对比度不足）。每套都按当前主题的背景亮度选。
+/// 一套语法配色（深浅两套，按当前主题的背景亮度选）。
 #[derive(Clone, Copy)]
 pub(super) struct SyntaxPalette {
     pub(super) key: egui::Color32,
@@ -50,8 +47,7 @@ pub(super) const SYN_DARK: SyntaxPalette = SyntaxPalette {
     error: egui::Color32::from_rgb(0xFF, 0x8A, 0x80),
 };
 
-/// 浅色主题用的那套（VSCode Light+ 的色相，压深到浅底上读得清）：
-/// 同样的角色，对浅色 / 玫瑰面板都 ≥4.5:1。
+/// 浅色主题用的那套（VSCode Light+ 的色相，压深到浅底上读得清）。
 pub(super) const SYN_LIGHT: SyntaxPalette = SyntaxPalette {
     key: egui::Color32::from_rgb(0x04, 0x51, 0xA5),
     string: egui::Color32::from_rgb(0xA3, 0x15, 0x15),
@@ -134,7 +130,7 @@ fn json_string_at(
         }
     }
     let end = i.min(b.len());
-    // 后面紧跟冒号则为对象键（VSCode Dark+ 用不同颜色）。
+    // 后面紧跟冒号则为对象键。
     let color = if json_followed_by_colon(b, end) {
         pal.key
     } else {
@@ -403,11 +399,7 @@ fn yaml_plain_scalar(
 
 /// TOML：`[表头]`、`[[数组表头]]`、`key = value`、注释、引号字符串、数组、数字、布尔。
 ///
-/// 与 YAML 的关键差别（不能共用一套）：
-/// - 注释符是 `#`，且**行内任意位置**都算（YAML 只在行首或空格后）；
-/// - 键值分隔符是 `=`（不是 `:`），键可以带引号、可以含点号（`a.b."c:d"`）；
-/// - 表头用方括号，`[[…]]` 是数组表头；
-/// - 没有裸标量：值要么是引号串、数字、布尔、日期，要么是 `[`/`{` 开头的集合。
+/// 注释符为 `#`（行内任意位置），键值分隔符为 `=`，表头用方括号。
 pub(super) fn toml_tokens_with(
     text: &str,
     pal: SyntaxPalette,
@@ -465,8 +457,8 @@ fn toml_indent_end(b: &[u8], line_start: usize, line_end: usize) -> usize {
 
 /// 表头 `[…]` / `[[…]]`：括号着色为标点，表名着色为键。
 ///
-/// 表名可能是裸键（`providers.sensenova`）或带引号的键（`providers."managed:kimi-code"`），
-/// 两种都要正确处理——引号内的 `]` 不结束表头，引号内的 `#` 也不是注释。
+/// 表名可以是裸键（`providers.sensenova`）或带引号的键；引号内的 `]` 不结束表头，
+/// 引号内的 `#` 也不是注释。
 fn toml_table_header(
     b: &[u8],
     start: usize,
@@ -568,7 +560,7 @@ fn toml_key_and_eq(
         i += 1;
     }
     if i >= line_end {
-        // 没有 `=` 的行（畸形输入）：整行按字符串着色，保证不越界。
+        // 没有 `=` 的行（畸形输入）：整行按字符串着色。
         out.push((start, line_end, pal.string));
         return line_end;
     }
@@ -685,8 +677,7 @@ fn toml_bare_at(
 
 /// 把查找命中的底色叠加到已按语法着色的 LayoutJob 上（按 section 拆分）。
 ///
-/// 命中处同时换掉前景色：底色一压，语法色就不一定还读得清（浅色主题的黄底上
-/// 绿色注释只剩 3.2:1）。命中区改用「底色 + 为该底色挑的文字色」。
+/// 命中区同时换成配套的前景色。
 pub(super) fn apply_find_background(
     job: &mut egui::text::LayoutJob,
     matches: &[(usize, usize)],

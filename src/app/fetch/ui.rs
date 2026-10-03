@@ -2,8 +2,7 @@ use super::*;
 
 /// 延迟配色：<2s 绿色、2~5s 黄色、≥5s 红色（超时同样显示红色错误）。
 ///
-/// 具体色值由 [`crate::theme::semantics`] 提供：全部主题共享一套语义色，
-/// 并在主题的 panel / faint / extreme 三类底色上保持可读性。
+/// 色值由 [`crate::theme::semantics`] 提供，全部主题共享一套语义色。
 pub(crate) fn latency_color(ms: u64, colors: crate::theme::Semantics) -> egui::Color32 {
     if ms < LATENCY_GOOD_MS {
         colors.ok
@@ -14,7 +13,7 @@ pub(crate) fn latency_color(ms: u64, colors: crate::theme::Semantics) -> egui::C
     }
 }
 
-/// 延迟测试进行中的「乱码」动画字符集（半角片假名 + 数字，参考 MemoPaws 密钥页）。
+/// 延迟测试进行中的「乱码」动画字符集（半角片假名 + 数字）。
 pub(crate) const MATRIX_CHARS: &str = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789";
 
 /// 乱码动画每帧时长（毫秒）与每行字符数。
@@ -22,7 +21,7 @@ pub(crate) const MATRIX_FRAME_MS: u64 = 70;
 
 pub(crate) const MATRIX_LEN: usize = 8;
 
-/// 生成一帧乱码：同一帧号 + 同一 salt 结果稳定（不保存随机状态）。
+/// 生成一帧乱码：同一帧号 + 同一 salt 结果稳定。
 pub(crate) fn matrix_glyphs(frame: u64, salt: &str, len: usize) -> String {
     let mut state = 0xcbf2_9ce4_8422_2325u64 ^ frame.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     for byte in salt.as_bytes() {
@@ -88,8 +87,7 @@ pub(crate) fn model_latency_label(ui: &mut egui::Ui, state: Option<&LatencyState
 
 /// 模型行上的单模型延迟测试按钮（位于拖动按钮右侧，结果标签就在它右侧）。
 ///
-/// 返回 `true` 表示用户点了测试；调用方负责在 UI 循环外真正发起探测
-/// （节流/串行的权威判定也在那里再做一次）。
+/// 返回 `true` 表示用户点了测试；调用方负责在 UI 循环外真正发起探测。
 pub(crate) fn model_probe_button(
     ui: &mut egui::Ui,
     gate: &ProbeGate,
@@ -98,9 +96,7 @@ pub(crate) fn model_probe_button(
     net_guard: Option<&str>,
 ) -> bool {
     let state = gate.state(provider_key, now, net_guard);
-    // 状态一律写在按钮文案里（`测试中` / `测试(5s)`），不再挂悬停提示：
-    // 「为什么点不了」的原因由别处可见文本承担（节流看倒计时、网络封锁在页头
-    // 已经有一条红字说明），按钮自己不必再复述一遍。
+    // 状态一律写在按钮文案里（`测试中` / `测试(5s)`），不挂悬停提示。
     let label = match &state {
         ProbeGateState::Ready => "测试".to_string(),
         ProbeGateState::Busy => "测试中".to_string(),

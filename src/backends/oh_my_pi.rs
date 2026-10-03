@@ -1,12 +1,8 @@
 //! oh-my-pi（omp）后端：`~/.omp/agent/models.yml`（YAML）。
 //!
-//! schema 与 pi 同族（顶层 `providers` + extras），差异：
-//! - 思考档位用 `thinking: {mode, efforts, effortMap}`（pi 用 `thinkingLevelMap`）；
-//! - provider/model 支持大量扩展字段（headers/auth/discovery/modelOverrides/cost/...），
-//!   保存时以 raw 为基底原样保留，仅重写 UI 管理的字段；
-//! - 序列化为 YAML。
-//!
-//! 加载为双方言宽容：`thinking` 与 `thinkingLevelMap` 都能读入 IR variants。
+//! schema 与 pi 同族（顶层 `providers` + extras）：思考档位用 `thinking` 块；
+//! provider/model 的扩展字段保存时以 raw 为基底原样保留，仅重写 UI 管理的字段。
+//! 加载时 `thinking` 与 `thinkingLevelMap` 都能读入 IR variants。
 
 use super::{Backend, BackendLoad};
 use crate::convert::{
@@ -31,7 +27,7 @@ fn default_local_path() -> String {
 
 /// 模型 → omp 方言对象（保留 raw 中的未知字段，思考档位输出 thinking 块）。
 pub fn model_to_omp(m: &ModelRow) -> Value {
-    // opencode 来源全新构造；pi/omp 来源以 raw 为基底保留扩展字段
+    // opencode / DSH 来源全新构造；pi/omp 来源以 raw 为基底保留扩展字段
     let mut obj: Map<String, Value> =
         if is_opencode_shaped_model(&m.raw) || is_dsh_shaped_model(&m.raw) {
             Map::new()
@@ -80,7 +76,7 @@ pub fn model_to_omp(m: &ModelRow) -> Value {
 }
 
 /// 构造 omp thinking 块（variants 非空时调用）：
-/// 1. omp 原生往返：raw.thinking 的档位值集合与当前一致 → 整块保留（含 defaultLevel 等）；
+/// 1. omp 原生往返：raw.thinking 的档位值集合与当前一致 → 整块保留；
 /// 2. pi 方言翻译：raw.thinkingLevelMap 值集合一致 → efforts=键集合，非对称时附 effortMap；
 /// 3. 新建对称块。
 fn omp_thinking(m: &ModelRow) -> Option<Value> {
@@ -153,7 +149,7 @@ pub fn provider_to_omp(p: &ProviderRow) -> Value {
     let api = p.effective_api();
 
     if !p.base_url.is_empty() {
-        // 与 pi / dsh 同一套归一化：messages 协议的 base 不带 /v1（客户端自行补 /v1/messages）。
+        // 与 pi / dsh 同一套归一化：messages 协议的 base 不带 /v1。
         let save_url = convert::without_v1_for_messages(&api, &p.base_url);
         obj.insert("baseUrl".into(), Value::String(save_url));
     } else {
@@ -166,7 +162,7 @@ pub fn provider_to_omp(p: &ProviderRow) -> Value {
     }
     obj.insert("api".into(), Value::String(api));
 
-    // compat 仅管理 supportsDeveloperRole，其余键（maxTokensField/extraBody/...）保留
+    // compat 仅管理 supportsDeveloperRole，其余键保留
     if !p.compat {
         let mut c = obj
             .get("compat")
@@ -181,8 +177,8 @@ pub fn provider_to_omp(p: &ProviderRow) -> Value {
             obj.remove("compat");
         }
     }
-    // requiresReasoningContentForAllAssistantTurns（omp 键，与 pi 键相互映射）：
-    // 同格式未修改时保留 raw 原样；跨格式或用户改动时写出当前值（缺省打勾）。
+    // requiresReasoningContentForAllAssistantTurns：同格式未修改时保留 raw 原样；
+    // 跨格式或用户改动时写出当前值。
     let native_omp = matches!(
         p.source_format,
         Some(crate::format::ConfigFormat::Pi) | Some(crate::format::ConfigFormat::OhMyPi)
@@ -267,8 +263,7 @@ impl Backend for OhMyPiBackend {
         target_root: Option<&Value>,
     ) -> Value {
         // 跨格式目标：extras 取目标文件自身的顶层字段，仅重写 providers。
-        // 目标已有同名 provider 时做保守合并（非编辑内容保留）；
-        // 目标独有 provider 一律保留。当前文件保存时 extras 不含 providers。
+        // 目标已有同名 provider 时做保守合并；目标独有 provider 一律保留。
         let base = match target_root {
             Some(target) => target,
             None => extras,
@@ -292,7 +287,7 @@ impl Backend for OhMyPiBackend {
     }
 
     fn load_target_root(&self, path: &str) -> Result<Value, String> {
-        // 跨格式目标保存需要目标文件完整的 providers（保守合并用）。
+        // 跨格式目标保存需要目标文件完整的 providers。
         super::load_target_root_with(path, parse_yaml_content, || Value::Object(Map::new()))
     }
 

@@ -47,7 +47,7 @@ impl super::App {
         }
     }
 
-    /// 卡片改名后同步折叠状态（否则改完名卡片会跳回展开）。
+    /// 卡片改名后同步折叠状态。
     pub(in crate::app) fn rename_collapsed_card(&mut self, kind: &str, old: &str, new: &str) {
         let from = self.card_id(kind, old);
         if self.collapsed.remove(&from) {

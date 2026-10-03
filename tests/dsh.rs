@@ -192,7 +192,7 @@ llm-pi-ai:
 fn dsh_cross_format_save_writes_default_timeout() {
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     // opencode 来源（缺省 npm，无 timeout 字段）保存到 DSH 时，
-    // timeoutMs 默认值也要写入目标文件。
+    // timeoutMs 默认值写入目标文件。
     let raw = json!({
         "options": {"baseURL": "https://x/v1", "apiKey": "sk-test"},
         "models": {}
@@ -210,7 +210,6 @@ fn dsh_native_model_without_optional_fields_stays_without_them() {
     provider.key = "demo".into();
     provider.source_format = Some(ConfigFormat::DeepSeekHarness);
     // 走真实加载路径构造模型（raw 无 contextWindow/maxTokens/reasoningEfforts 等可选字段）。
-    // 不用 ModelRow::new()：那是 UI 新增模型的缺省态（自带默认值）。
     let raw = json!({"id": "m1", "custom": {"keep": true}});
     let mut model = model_harbor::convert::model_from_pi(&raw);
     model.source_format = Some(ConfigFormat::DeepSeekHarness);
@@ -250,7 +249,7 @@ fn dsh_missing_timeout_defaults_to_180000_without_writeback() {
     .unwrap();
     let load = backends::load_backend(ConfigFormat::DeepSeekHarness, settings.to_str().unwrap())
         .expect("DSH 配置应可加载");
-    // 配置没有 timeoutMs 时默认显示 180000ms（DSH 页与 opencode 页一致）
+    // 配置没有 timeoutMs 时默认显示 180000ms。
     assert_eq!(load.providers[0].dsh_timeout_ms, "180000");
     assert_eq!(load.providers[0].timeout, "180000");
     // 未修改时保存不应写回 timeoutMs
@@ -263,8 +262,7 @@ fn dsh_missing_timeout_defaults_to_180000_without_writeback() {
 
 #[test]
 fn dsh_max_retries_written_even_when_mode_empty() {
-    // 只填 maxRetries、mode 留空时：mode 按 DSH 默认 normal 写出，
-    // 不能因为 mode 为空把整个 retryPolicy（含 maxRetries）删掉。
+    // 只填 maxRetries、mode 留空时：mode 按 DSH 默认 normal 写出。
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
@@ -279,7 +277,7 @@ fn dsh_max_retries_written_even_when_mode_empty() {
 
 #[test]
 fn dsh_retry_policy_removed_when_mode_and_retries_empty() {
-    // mode 与 maxRetries 都为空时仍不写 retryPolicy（跨格式也不凭空添加）。
+    // mode 与 maxRetries 都为空时仍不写 retryPolicy。
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
@@ -292,7 +290,7 @@ fn dsh_retry_policy_removed_when_mode_and_retries_empty() {
 
 #[test]
 fn dsh_writes_retry_policy_before_timeout_ms() {
-    // 字段顺序与 DSH 文件惯例一致：models → retryPolicy → timeoutMs（最小 diff）。
+    // 字段顺序：models → retryPolicy → timeoutMs。
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
@@ -317,7 +315,7 @@ fn dsh_writes_retry_policy_before_timeout_ms() {
 
 #[test]
 fn dsh_cross_format_preserves_target_only_provider() {
-    // 跨格式保存到 DSH 目标：目标文件独有的 provider 必须保留（非编辑内容不能改）。
+    // 跨格式保存到 DSH 目标：目标文件独有的 provider 保留。
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let target = json!({
         "llm-pi-ai": {
@@ -369,7 +367,7 @@ fn dsh_retry_max_retries_round_trip_from_file() {
 
 #[test]
 fn dsh_max_retries_accepts_padded_and_float_input() {
-    // UI 允许带空白/小数的数字输入（会 trim），保存时必须写入而不是静默丢弃。
+    // UI 允许带空白 / 小数的数字输入（会 trim），保存时必须写入。
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
@@ -390,8 +388,7 @@ fn dsh_max_retries_accepts_padded_and_float_input() {
     assert_eq!(demo["timeoutMs"], 180000, "timeoutMs 带空白输入应写入");
 }
 
-/// sidecar 损坏必须报错并保持原文件不变，而不是静默拿骨架当基底覆写——
-/// 那会丢掉全部 refs / records / 未知字段（load_root 旧版的行为）。
+/// sidecar 损坏必须报错并保持原文件不变，而不是拿骨架当基底覆写。
 #[test]
 fn corrupt_sidecar_is_an_error_and_never_gets_overwritten() {
     let settings = temp_path("settings.yaml");
@@ -419,7 +416,7 @@ fn corrupt_sidecar_is_an_error_and_never_gets_overwritten() {
     std::fs::remove_file(&sidecar).ok();
 }
 
-/// 根不是对象（外来工具 / 手改写成数组）同样报错，不能骨架化后覆写。
+/// 根不是对象（外来工具 / 手改写成数组）同样报错。
 #[test]
 fn non_object_sidecar_root_is_an_error() {
     let settings = temp_path("settings.yaml");
