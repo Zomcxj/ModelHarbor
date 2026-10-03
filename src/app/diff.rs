@@ -1,19 +1,7 @@
 //! 行级差异：把「磁盘上的原文件」与「待保存文档」对齐，供预览面板的对比视图使用。
 //!
-//! ## 为什么需要
-//!
-//! 保存会把目标文件的 `provider` / `agent` 容器**整体接管**（条目与顺序都来自界面），
-//! 跨格式写入还会把目标里由界面接管的容器整段丢弃后重建。用户在下手前最想知道的是
-//! 「这一下到底会改掉什么」，而在此之前只能对着两份几百行 JSON 肉眼比对。
-//!
-//! ## 算法
-//!
-//! 取最长公共子序列（LCS）做对齐，用 **Hirschberg** 分治：时间仍是 O(n·m)，
-//! 但空间降到 O(min(n,m))，不需要为了防内存爆掉而设「文件太大就不比了」的上限——
-//! 那种上限会让恰恰最需要看对比的大文件反而看不到。
-//!
-//! 结果按 **hunk** 输出（改动块 + 前后各 [`CONTEXT_LINES`] 行上下文），
-//! 而不是整份文件铺开：配置改动通常只落在几处，铺开全文会把真正的改动淹掉。
+//! 用 **Hirschberg** 分治求最长公共子序列（LCS）对齐，时间 O(n·m)、空间 O(min(n,m))。
+//! 结果按 **hunk** 输出（改动块 + 前后各 [`CONTEXT_LINES`] 行上下文）。
 
 /// 对比视图里改动块上下各保留的上下文行数。
 pub(super) const CONTEXT_LINES: usize = 3;
@@ -57,11 +45,10 @@ enum Op {
     Ins(usize),
 }
 
-/// 按行切分，忽略行尾的 `\r`：磁盘文件可能是 CRLF，而界面生成的草稿是 LF，
-/// 不归一的话每一行都会被判成「改了」，对比视图直接失去意义。
+/// 按行切分，忽略行尾的 `\r`。
 ///
 /// 行数按 `diff` 的口径：空文件是 0 行，以 `\n` 结尾的文件不把结尾那个空串算成一行
-/// （`"a\n"` 是 1 行而不是 2 行）。否则「新建文件」会凭空多出一处删除。
+/// （`"a\n"` 是 1 行而不是 2 行）。
 fn split_lines(text: &str) -> Vec<&str> {
     if text.is_empty() {
         return Vec::new();
@@ -113,14 +100,13 @@ fn lcs_suffix_row(a: &[&str], b: &[&str]) -> Vec<usize> {
 /// Hirschberg 分治求 LCS 匹配对，结果按 `(旧下标, 新下标)` 升序追加到 `out`。
 ///
 /// `a_off` / `b_off` 是当前子问题在各自全文里的起始下标，用于把递归结果还原成
-/// 全文坐标（分治只处理切片，但对外必须是绝对位置）。
+/// 全文坐标。
 fn lcs_pairs(a: &[&str], b: &[&str], a_off: usize, b_off: usize, out: &mut Vec<(usize, usize)>) {
     if a.is_empty() || b.is_empty() {
         return;
     }
     if a.len() == 1 {
-        // 单行：取 b 里第一处相同行即可（取最后一处也能构成一组 LCS，
-        // 但取第一处让「插入到前面」的改动显示得更自然）。
+        // 单行：取 b 里第一处相同行。
         if let Some(j) = b.iter().position(|line| *line == a[0]) {
             out.push((a_off, b_off + j));
         }
@@ -288,7 +274,6 @@ mod tests {
 
     #[test]
     fn crlf_and_lf_are_the_same_lines() {
-        // 磁盘上是 CRLF、草稿是 LF：不能把每一行都判成改动。
         let (lines, summary) = diff_hunks("a\r\nb\r\n", "a\nb\n", 3);
         assert!(lines.is_empty(), "行尾差异不该算改动: {lines:?}");
         assert!(summary.is_empty());
@@ -395,7 +380,7 @@ mod tests {
 
     #[test]
     fn reordering_a_block_keeps_the_diff_small() {
-        // 交换两行：LCS 只保留一条，另一条算「删+增」，不能变成整段重写。
+        // 交换两行：LCS 只保留一条，另一条算「删+增」。
         let (_, summary) = diff_hunks("a\nb\nc", "b\na\nc", 3);
         assert_eq!(
             summary,
@@ -408,7 +393,7 @@ mod tests {
 
     #[test]
     fn deep_recursion_still_finds_a_minimal_diff() {
-        // 足够长、且改动在尾部：会走多轮 Hirschberg 递归。
+        // 足够长、改动在尾部，走多轮 Hirschberg 递归。
         let old = (0..400)
             .map(|i| format!("line-{i}"))
             .collect::<Vec<_>>()
@@ -455,7 +440,6 @@ mod tests {
 
     #[test]
     fn a_trailing_newline_alone_is_not_a_change() {
-        // 磁盘文件常以换行结尾，草稿渲染也以换行结尾：不能因此多报一处改动。
         let (lines, summary) = diff_hunks("a\nb\n", "a\nb", 3);
         assert!(lines.is_empty(), "仅结尾换行差异不该算改动: {lines:?}");
         assert!(summary.is_empty());

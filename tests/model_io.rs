@@ -177,8 +177,7 @@ fn provider_row_roundtrip() {
 
 #[test]
 fn opencode_chat_completions_defaults_compat_false() {
-    // opencode 缺省 npm（等价 @ai-sdk/openai）或显式 @ai-sdk/openai(-compatible)
-    // 都是 chat/completions 风格，未声明 compat 时 supportsDeveloperRole 默认不勾选。
+    // 缺省 npm 或 @ai-sdk/openai(-compatible)：compat 默认 false。
     for npm in ["", "@ai-sdk/openai", "@ai-sdk/openai-compatible"] {
         let v = json!({
             "npm": npm,
@@ -188,7 +187,7 @@ fn opencode_chat_completions_defaults_compat_false() {
         let provider = ProviderRow::from("openai", &v);
         assert!(!provider.compat, "npm={:?} 应默认不打勾", npm);
     }
-    // 非 chat/completions（如 anthropic）保持默认勾选
+    // 非 chat/completions（如 anthropic）：compat 默认 true。
     let v = json!({
         "npm": "@ai-sdk/anthropic",
         "options": {"baseURL": "https://api.anthropic.com", "apiKey": "sk-xxx"},
@@ -353,7 +352,7 @@ fn model_variants_raw_values_preserved() {
 
 #[test]
 fn model_limit_omitted_when_empty() {
-    // 空上下文/输出限制不得写入 "limit": {} 污染配置
+    // 空上下文/输出限制不写入 limit。
     let v = json!({ "name": "m", "reasoning": false, "tool_call": false });
     let model = ModelRow::from("m", &v);
     let out = model.to_value();
@@ -362,10 +361,10 @@ fn model_limit_omitted_when_empty() {
 
 #[test]
 fn provider_options_omitted_when_empty() {
-    // 无 baseURL/apiKey/timeout 时不得写入 "options": {} 污染配置
+    // 无 baseURL/apiKey/timeout 时不写入 options。
     let v = json!({ "npm": "@ai-sdk/openai", "models": {} });
     let provider = ProviderRow::from("p", &v);
-    // 文件未写 options.timeout 时默认显示 180000（未修改不写回）
+    // 文件未写 options.timeout 时默认显示 180000，未修改不写回。
     assert_eq!(provider.timeout, "180000");
     assert_eq!(provider.original_timeout, "180000");
     let out = provider.to_value();
@@ -396,8 +395,7 @@ fn load_opencode_result_nonexistent_is_ok_empty() {
 
 #[test]
 fn new_model_writes_defaults_for_reasoning_tool_call_and_limit() {
-    // 新增模型默认勾选 reasoning/tool_call，并预填上下文/输出上限，
-    // 保存后这些字段自动写出（与 gpt-5.6-sol 的语义一致）。
+    // 新增模型默认勾选 reasoning/tool_call，并预填上下文/输出上限。
     let mut model = ModelRow::new();
     model.id = "glm-5.3".into();
     model.name = "glm-5.3".into();
@@ -414,8 +412,7 @@ fn new_model_writes_defaults_for_reasoning_tool_call_and_limit() {
 
 #[test]
 fn new_model_fields_in_canonical_opencode_order() {
-    // 新建模型按 opencode 惯例键顺序输出：name → modalities → reasoning →
-    // tool_call → limit → options → variants。
+    // 新建模型的键顺序：name → modalities → reasoning → tool_call → limit → options → variants。
     let mut model = ModelRow::new();
     model.id = "glm-5.3".into();
     model.name = "glm-5.3".into();
@@ -444,7 +441,7 @@ fn new_model_fields_in_canonical_opencode_order() {
 
 #[test]
 fn existing_model_key_order_preserved_when_unmodified() {
-    // 同格式已有 raw 的模型不重排键顺序（最小 diff），只更新实际改动字段。
+    // 已有 raw 的模型不重排键顺序，只更新实际改动字段。
     let v = json!({"variants": {"high": {}}, "name": "m", "reasoning": true});
     let model = ModelRow::from("m", &v);
     let out = model.to_value();
@@ -459,8 +456,7 @@ fn existing_model_key_order_preserved_when_unmodified() {
 
 #[test]
 fn model_variants_written_in_canonical_order() {
-    // 删除后再勾选不应把档位追加到末尾：写出时按规范顺序排序，
-    // 同时保留 raw 中各档位的原始映射内容。
+    // 写出时按规范顺序排序，并保留 raw 中各档位的原始内容。
     let raw = json!({
         "name": "m",
         "variants": {"medium": {"reasoningEffort": "medium"}, "high": {}, "max": {}, "xhigh": {}}

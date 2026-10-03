@@ -3,9 +3,7 @@ use super::*;
 impl super::App {
     /// 是否有任意拖动源正在拖拽。
     ///
-    /// 页签（后端图标）也是拖动源：它此前漏在这一组之外，于是拖卡片是抓取光标、
-    /// 拖图标却退回系统手型。自定义抓取光标是整窗生效的（子类过程拦 WM_SETCURSOR），
-    /// 只要拖拽期间置位，对所有控件一视同仁。
+    /// 页签（后端图标）也是拖动源；自定义抓取光标整窗生效。
     pub(in crate::app) fn is_dragging_anything(&self) -> bool {
         self.agent_drag_src.is_some()
             || self.provider_drag_src.is_some()

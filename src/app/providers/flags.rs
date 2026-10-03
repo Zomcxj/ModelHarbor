@@ -2,9 +2,6 @@ use crate::app::App;
 use crate::format::ConfigFormat;
 
 /// 卡片渲染时向外收集的动作与落点。
-///
-/// 打包成一个结构而不是一串 `&mut Option<_>`：出参一多，函数签名就超出
-/// clippy 的参数上限，而且调用处一长串 `&mut` 也读不出哪个对应哪个。
 #[derive(Default)]
 pub(super) struct CardActions {
     /// 要删除的 provider 下标。
@@ -30,8 +27,7 @@ pub(in crate::app) struct ProviderFormFlags {
     pub(in crate::app) show_wb: bool,
     /// QwenCode 页：密钥在顶层 `env[<envKey>]`，条目上写的是变量名（与 DSH 同形）。
     pub(in crate::app) show_qwen: bool,
-    /// KimiCode 页：`api_key` 与 `api_key_env` **互斥**（同时写会让 Kimi Code 启动
-    /// 失败），界面两个框填一个就要清掉另一个。
+    /// KimiCode 页：`api_key` 与 `api_key_env` **互斥**，两个框填一个就清掉另一个。
     pub(in crate::app) show_kimi: bool,
     pub(in crate::app) show_provider_base_url: bool,
     pub(in crate::app) show_provider_timeout: bool,
@@ -43,7 +39,7 @@ pub(in crate::app) struct ProviderFormFlags {
     pub(in crate::app) show_model_reasoning: bool,
     pub(in crate::app) show_model_tool_call: bool,
     pub(in crate::app) show_model_store: bool,
-    /// 每个模型行显示「启用/停用」开关。只有 WorkBuddy 一家（写 `disabled`），见
+    /// 每个模型行显示「启用/停用」开关（写 `disabled`），见
     /// [`ConfigFormat::has_model_enable`]。
     pub(in crate::app) show_model_disabled: bool,
     pub(in crate::app) base_label: &'static str,
@@ -55,8 +51,7 @@ pub(in crate::app) struct ProviderFormFlags {
 
 impl ProviderFormFlags {
     pub(in crate::app) fn new(app: &App) -> Self {
-        // opencode 系（opencode / kilocode / mimocode）字段口径相同：都用 npm 包名表达
-        // 协议、都有 options.baseURL / options.timeout，所以这一族共用一个开关。
+        // opencode 系（opencode / kilocode / mimocode）字段口径相同，共用一个开关。
         let show_oc = app.current_page.is_opencode_family();
         let show_dsh = app.current_page == ConfigFormat::DeepSeekHarness;
         let show_zcode = app.current_page == ConfigFormat::ZCode;
@@ -72,7 +67,7 @@ impl ProviderFormFlags {
             show_qwen,
             show_kimi,
             show_provider_base_url: app.page_has_provider_field("base_url"),
-            // opencode 的 options.timeout 始终显示（文件未写该字段时默认 180000ms）
+            // opencode 的 options.timeout 始终显示（未写该字段时默认 180000ms）
             show_provider_timeout: show_oc || app.page_has_provider_field("timeout"),
             show_model_name: app.page_has_model_field("name"),
             show_model_context: app.page_has_model_field("context"),
@@ -82,9 +77,7 @@ impl ProviderFormFlags {
             show_model_reasoning: app.page_has_model_field("reasoning"),
             show_model_tool_call: app.page_has_model_field("tool_call"),
             show_model_store: app.page_has_model_field("store"),
-            // 开关的存在性由**后端语义**决定，不看文件里有没有这个键——它的用途正是把
-            // 「没有」变成「有」。也不能用 `page_has_model_field`：那个函数在「已加载的
-            // 文件格式 ≠ 当前页」时一律返回 true，会把开关漏到每一页（曾经就是这样）。
+            // 开关的存在性由**后端语义**决定，不看文件里有没有这个键。
             show_model_disabled: app.current_page.has_model_enable(),
             base_label: if show_oc {
                 "options.baseURL"
@@ -106,7 +99,7 @@ impl ProviderFormFlags {
             } else if show_zcode {
                 "access.apiKey"
             } else if show_qwen {
-                // 不再绘制：变量名自动推导，凭据框只剩一个，标签在分支里画「API Key」。
+                // 变量名自动推导，标签在分支里画「API Key」。
                 "envKey"
             } else if show_kimi {
                 "api_key"
@@ -118,7 +111,7 @@ impl ProviderFormFlags {
             } else if show_wb {
                 "maxInputTokens"
             } else if show_qwen {
-                // 只留最后一段：整条路径太长，把模型行的标签挤变形。
+                // 只留最后一段。
                 "contextWindowSize"
             } else if show_kimi {
                 "max_context_size"
@@ -129,7 +122,7 @@ impl ProviderFormFlags {
             output_label: if show_oc {
                 "limit.output"
             } else if show_zcode || show_wb {
-                // ZCode 去掉 `optionSpecs.….max` 路径，只显示字段名（与 WorkBuddy 一致）。
+                // ZCode 去掉 `optionSpecs.….max` 路径，只显示字段名。
                 "maxOutputTokens"
             } else if show_qwen {
                 "max_tokens"

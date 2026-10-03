@@ -1,16 +1,6 @@
 //! 官方 provider 预设：新增 provider 时一键填充 key / baseUrl / 协议。
-//!
-//! 数据来源：本地 `@earendil-works/pi-ai` v0.85.1 的 `dist/providers/data/*.json`
-//! （38 个官方 provider 的权威 baseUrl 与 api 枚举）。
-//!
-//! **预设只是可选的起点**：
-//! - 下拉首项是「(自定义 / 不套用)」，不选预设就能像以前一样全部手填；
-//! - 套用之后所有字段依旧可改，第三方、中转站、自建端点不受任何限制；
-//! - 预设只写 key / baseUrl / 协议（opencode 页写 npm），
-//!   **绝不写入密钥**、也不改动已有的模型列表、超时等字段。
-//!
-//! 少数 provider 故意不收录：`azure-openai-responses` 的端点形如
-//! `https://<资源名>.openai.azure.com/...`，每个账号都不同，须手动填写。
+//! 下拉首项为「(自定义 / 不套用)」；套用后各字段仍可改，预设只写 key / baseUrl / 协议，
+//! 不写密钥、不动模型列表与超时等字段。`azure-openai-responses` 未收录（端点含账号名）。
 
 use crate::model::ProviderRow;
 
@@ -272,14 +262,10 @@ pub fn find(key: &str) -> Option<&'static ProviderPreset> {
     PRESETS.iter().find(|p| p.key == key)
 }
 
-/// 套用预设：只写 key / baseUrl / 协议，其余字段一律保持原样。
+/// 套用预设：只写 key / baseUrl / 协议，其余字段保持原样。
 ///
-/// - opencode 页：协议有对应 npm 时写 npm 并清掉可能残留的 pi api（避免同一 provider 出现
-///   两套协议写法）；没有对应 npm 的协议（如 `openai-codex-responses`）则写回 api 字段，
-///   既不丢协议信息，也不动用户已填的 npm；
-/// - pi / oh-my-pi / DSH 页：写 api。
-///
-/// 密钥、超时、模型列表、用户手填的任何内容都不会被触碰。
+/// - opencode 页：有对应 npm 时写 npm 并清空 `pi_api`，否则写 `pi_api`；
+/// - pi / oh-my-pi / DSH 页：写 `pi_api`。
 pub fn apply(row: &mut ProviderRow, preset: &ProviderPreset, dialect: PresetDialect) {
     row.key = preset.key.to_string();
     row.base_url = preset.base_url.to_string();
@@ -321,7 +307,7 @@ mod tests {
                 p.base_url
             );
             assert!(!p.api.is_empty(), "{} 缺少 api", p.key);
-            // key 里不应有空格（配置里的对象键）
+            // key 里不应有空格
             assert!(!p.key.contains(' '), "{} 的 key 含空格", p.key);
         }
     }
@@ -334,7 +320,7 @@ mod tests {
         }
     }
 
-    /// 预设的 api 必须是界面下拉里真实存在的协议，否则套用后会显示成野生值。
+    /// 预设的 api 必须存在于 pi/omp 协议列表。
     #[test]
     fn preset_apis_exist_in_dialect_lists() {
         for p in PRESETS {
@@ -347,7 +333,7 @@ mod tests {
         }
     }
 
-    /// 套用预设只动身份三件套；手填的密钥、超时、模型列表必须原样保留。
+    /// 套用预设只改 key / baseUrl / 协议；密钥、超时、模型列表保持原样。
     #[test]
     fn apply_only_touches_identity_fields() {
         let mut row = ProviderRow::new();
@@ -363,7 +349,7 @@ mod tests {
         assert_eq!(row.key, "deepseek");
         assert_eq!(row.base_url, "https://api.deepseek.com");
         assert_eq!(row.pi_api, "openai-completions");
-        // 手工内容不受影响
+        // 手工内容保持不变
         assert_eq!(row.api_key, "手填的密钥");
         assert_eq!(row.timeout, "60000");
         assert_eq!(row.models.len(), models_before);
@@ -382,7 +368,7 @@ mod tests {
         assert_eq!(row.api_key, "sk-keep");
     }
 
-    /// opencode 页遇到没有对应 npm 的协议（如 Codex）：保留 api，不动用户已填的 npm。
+    /// opencode 页遇到没有对应 npm 的协议：写 api，保留用户已填的 npm。
     #[test]
     fn apply_opencode_keeps_api_without_npm_equivalent() {
         let mut row = ProviderRow::new();
@@ -394,7 +380,7 @@ mod tests {
         assert_eq!(row.npm, "@ai-sdk/openai-compatible");
     }
 
-    /// 第三方 / 中转站 / 自建端点：不套预设时没有任何校验会拦着手填。
+    /// 自定义 key 不套预设时不被任何校验拦截。
     #[test]
     fn custom_provider_is_not_restricted() {
         let mut row = ProviderRow::new();

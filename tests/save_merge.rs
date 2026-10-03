@@ -42,8 +42,7 @@ fn merge_preserves_target_agents_and_other_fields() {
 
 #[test]
 fn current_file_save_replaces_agent_map() {
-    // 当前文件语义验证：UI 删除的 agent 不得因 upsert 复活
-    // （此语义在 App::save_opencode_to 的 is_current 分支，此处验证 merge 不适用于当前文件）
+    // 当前文件语义：UI 删除的 agent 不因 upsert 复活。
     let target = json!({ "agent": { "gone": { "mode": "subagent" } } });
     let merged = merge_opencode_root(&target, &[], &[]);
     assert!(
@@ -67,8 +66,7 @@ fn merge_upserts_ui_agent_over_target() {
 
 #[test]
 fn pi_merge_preserves_target_extras() {
-    // 模拟 save_pi_to 的跨目标合并：目标 root 取目标文件自身（含 providers），
-    // 仅重写 providers 中的条目，目标独有条目保留。
+    // 模拟 save_pi_to 的跨目标合并：目标 root 取目标文件自身，仅重写 providers 中的条目。
     let mut p = std::env::temp_dir();
     p.push("opencode_test_pi_merge.json");
     let target = json!({
@@ -100,8 +98,7 @@ fn pi_merge_preserves_target_extras() {
 
 #[test]
 fn pi_merge_preserves_target_unknown_fields_on_same_key() {
-    // 同名 provider：目标未编辑字段保留（这里 cost 是 pi 文件里的扩展字段，
-    // 来源转换结果不含它，不得被删）；来源字段（baseUrl）生效。
+    // 同名 provider：目标未编辑字段（cost）保留，来源字段（baseUrl）生效。
     let target = json!({
         "providers": {
             "demo": {
@@ -157,7 +154,7 @@ fn opencode_merge_preserves_target_model_options() {
     );
 }
 
-// ---------- 跨格式转换：目标文件的 provider/agent 容器由界面接管 ----------
+// ---------- 跨格式转换：目标文件的 provider / agent 容器由界面接管 ----------
 
 use model_harbor::app::strip_cross_format_containers;
 use model_harbor::backends;
@@ -282,8 +279,8 @@ fn cross_format_opencode_doc_takes_ui_providers_and_order() {
 
 #[test]
 fn cross_format_opencode_save_keeps_target_agents_when_ui_has_none() {
-    // 回归：加载 pi / omp / DSH 后保存到 opencode，界面没有 agents 数据，
-    // 目标文件里已有的 agents 不得被清空（修复前会被整体删除）
+    // 回归：加载 pi / omp / DSH 后保存到 opencode，界面没有 agents 数据时，
+    // 目标文件里已有的 agents 不得被清空。
     let mut target = json!({
         "provider": { "old": {} },
         "agent": { "writer": {}, "reviewer": {} },

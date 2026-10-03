@@ -2,9 +2,8 @@ use eframe::egui::{self, Color32};
 
 /// 语义色（绿 = 正常 / 黄 = 注意 / 红 = 异常 / 蓝 = 信息）。
 ///
-/// **跨主题统一**：所有主题共用同一套（黑白灰随主题变，彩色不变），
-/// 取中间调色，让同一支颜色在浅底和深底上都看得清（单测锁定对比度 ≥3:1）。
-/// 唯一的例外是「信息蓝」和主题强调色撞色时改用青蓝，见 [`semantics`]。
+/// 所有主题共用同一套（黑白灰随主题变，彩色不变），取中间调色。
+/// 例外：「信息蓝」与主题强调色撞色时改用青蓝，见 [`semantics`]。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Semantics {
     pub ok: Color32,
@@ -27,10 +26,7 @@ const SEMANTICS_INFO_ALT: Color32 = Color32::from_rgb(0x15, 0x90, 0x9A);
 /// 和强调色多近算「撞色」（RGB 空间欧氏距离）。
 const ACCENT_CLASH: f32 = 45.0;
 
-/// 取当前界面该用的语义色。
-///
-/// 正常就是 [`SEMANTICS`]（所有主题一致）；只有当前主题的强调色和信息蓝太接近时，
-/// 信息蓝换成青蓝 —— 否则用量文字会和按钮 / 链接糊成一片。
+/// 取当前界面该用的语义色：正常为 [`SEMANTICS`]，信息蓝与强调色撞色时换青蓝。
 pub fn semantics(ui: &egui::Ui) -> Semantics {
     semantics_with_accent(ui.visuals().hyperlink_color)
 }
@@ -55,7 +51,7 @@ fn distance(a: Color32, b: Color32) -> f32 {
     (d(ar, br) + d(ag, bg) + d(ab, bb)).sqrt()
 }
 
-/// 对比度（WCAG，1.0 ~ 21.0）。只在单测里用来锁定「每个主题都看得清」。
+/// 对比度（WCAG，1.0 ~ 21.0）。仅供单测使用。
 #[cfg(test)]
 fn contrast(a: Color32, b: Color32) -> f32 {
     let channel = |value: u8| {
@@ -98,7 +94,7 @@ mod semantics_tests {
 
     #[test]
     fn every_semantic_color_reads_on_every_theme() {
-        // 语义文字会同时出现在面板、展开卡片和折叠卡片上，三种真实底色都必须清楚。
+        // 语义文字在面板、展开卡片和折叠卡片三种底色上都校验对比度。
         for theme in Theme::ALL {
             let palette = theme.palette();
             for (background_name, background) in [
@@ -168,8 +164,8 @@ mod semantics_tests {
                 theme.key()
             );
         }
-        // 同一主题不重复应用（每帧重设会白白丢掉 egui 的样式缓存）。
-        // 用 `ALL` 的末项而不是写死某个主题：主题表增删时这里不该跟着改。
+        // 同一主题不重复应用。
+        // 用 `ALL` 的末项而不是写死某个主题：主题表增删时这里不跟着改。
         let last = *Theme::ALL.last().expect("主题表非空");
         assert!(!needs_apply(&mut applied, last));
         assert!(needs_apply(&mut applied, Theme::Dark));
@@ -177,9 +173,8 @@ mod semantics_tests {
 
     #[test]
     fn hint_text_is_a_real_grey_not_a_dimmed_body_color() {
-        // 要保证的性质不是「提示色比正文暗」——浅色主题的正文本来就是深色，
-        // 提示比它**浅**才对——而是「提示对背景的对比度明显低于正文」，
-        // 同时不能淡到读不清。下面按 WCAG 对比度查。
+        // 校验的性质是「提示对背景的对比度明显低于正文」，同时不能淡到读不清。
+        // 下面按 WCAG 对比度查。
         let ctx = egui::Context::default();
         let mut applied: Option<Theme> = None;
         for theme in Theme::ALL {
@@ -208,7 +203,7 @@ mod semantics_tests {
 
     #[test]
     fn every_theme_meets_the_text_and_border_contrast_floor() {
-        // 设计系统的硬指标：正文与强调色是文字（4.5:1），描边是非文字 UI（3:1）。
+        // 硬指标：正文与强调色是文字（4.5:1），描边是非文字 UI（3:1）。
         for theme in Theme::ALL {
             let palette = theme.palette();
             for (what, color, floor) in [
@@ -234,7 +229,7 @@ mod semantics_tests {
 
     #[test]
     fn accent_text_reads_on_the_accent_fill() {
-        // 强调色是选中态行与主按钮的**底色**，所以它上面的文字要单独校验。
+        // 强调色是选中态行与主按钮的底色，其上的文字单独校验。
         for theme in Theme::ALL {
             let palette = theme.palette();
             let ratio = contrast(palette.accent_text, palette.accent);
@@ -260,7 +255,7 @@ mod semantics_tests {
 
     #[test]
     fn spacing_scale_is_used_by_the_style() {
-        // 刻度常量必须真的进了 Style，否则改 token 不影响界面。
+        // 刻度常量必须真的进了 Style。
         let ctx = egui::Context::default();
         Theme::Dark.apply(&ctx);
         let spacing = ctx.style().spacing.clone();
@@ -271,7 +266,7 @@ mod semantics_tests {
 
     #[test]
     fn text_scale_is_used_by_the_style() {
-        // egui 默认 Small 是 9px，中文读不清；这条钉住它走我们的刻度。
+        // egui 默认 Small 是 9px，这条钉住它走本仓库的刻度。
         let ctx = egui::Context::default();
         Theme::Dark.apply(&ctx);
         let styles = ctx.style().text_styles.clone();
@@ -279,7 +274,7 @@ mod semantics_tests {
         assert_eq!(styles[&egui::TextStyle::Body].size, TEXT_BODY);
         assert_eq!(styles[&egui::TextStyle::Button].size, TEXT_BODY);
         assert_eq!(styles[&egui::TextStyle::Heading].size, TEXT_HEADING);
-        // 副信息字号必须明显高于 egui 默认的 9px，否则中文读不清。
+        // 副信息字号必须明显高于 egui 默认的 9px。
         let default_small = egui::TextStyle::Small.resolve(&egui::Style::default()).size;
         assert!(
             TEXT_CAPTION > default_small,
@@ -328,10 +323,7 @@ mod semantics_tests {
 
     #[test]
     fn hint_color_matches_a_disabled_widget_as_rendered() {
-        // 提示色不是拍出来的常数，而是「禁用控件文字叠出来的观感」。
-        // 那就不能只验算式：要拿 egui **真实画出来的顶点色**核对
-        // 算式踩的是不是那两层色（按钮底、文字），否则 egui 换了
-        // 禁用按钮用哪个 WidgetVisuals，算式再对也是错的。
+        // 提示色 = 禁用控件文字叠出来的观感，因此拿 egui 真实画出的顶点色核对算式。
         for theme in Theme::ALL {
             let palette = theme.palette();
             let faded = |color: Color32| color.gamma_multiply(DISABLED_ALPHA);
@@ -366,8 +358,6 @@ mod semantics_tests {
     #[test]
     fn a_text_edit_hint_actually_renders_in_the_hint_color() {
         // 钉住渲染结果：占位提示画出来的必须是提示色，不能是正文色。
-        // （纯文本取色是 `override_text_color.unwrap_or(PLACEHOLDER)`，
-        // 正文色若走 override，就会连 `hint_text` 的兜底色一起挡掉。）
         for theme in Theme::ALL {
             let palette = theme.palette();
             let colors = render_colors(theme, |ui| {

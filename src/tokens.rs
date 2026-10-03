@@ -1,39 +1,37 @@
 //! 站点面板令牌（PAT）持久化：家目录 `.modelharbor/tokens.json`。
 //!
-//! 与 `settings.json` **分开存放**：那个文件对外承诺「一个密钥都不存」，
-//! 这里只放面板访问令牌；两者都放在 [[`crate::prefs::Prefs::config_dir`]] 目录下，
+//! 与 `settings.json` 分开存放，位于 [[`crate::prefs::Prefs::config_dir`]] 目录下，
 //! 删掉本文件即清空全部令牌。
 //!
-//! 令牌是**站点 / 账号级**的，不是 provider 级：同一个中转站的多个 provider
-//! 共用同一份 PAT。因此键取**规范化 origin**（`scheme://host`，小写、无末尾斜杠），
-//! 直接复用 [`crate::billing::endpoints`] 的 origin 推导，避免出现第二套 URL 口径。
+//! 键取规范化 origin（`scheme://host`，小写、无末尾斜杠），直接复用
+//! [`crate::billing::endpoints`] 的 origin 推导。
 //!
-//! 文件含凭证，因此：不进 `settings.json`、不进 agent 配置文件、
-//! 不进日志 / 状态栏 / 错误文本；错误信息只带路径不带正文。
+//! 文件含凭证：不进 `settings.json`、不进 agent 配置文件、不进日志 / 状态栏 /
+//! 错误文本；错误信息只带路径不带正文。
 
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const FILE_NAME: &str = "tokens.json";
-/// 写盘用的 schema 版本（仅供人工核对 / 将来迁移，读取时忽略）。
+/// 写盘用的 schema 版本（读取时忽略）。
 const SCHEMA_VERSION: u64 = 2;
 
 /// 站点令牌表（键 = 规范化 origin，值 = PAT）。
 ///
-/// 用 `BTreeMap` 保证写出顺序稳定：内容没变就不产生 diff。
+/// 用 `BTreeMap` 保证写出顺序稳定。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StationTokens {
     tokens: BTreeMap<String, String>,
     /// 旧版 new-api 要求的用户 ID（`New-Api-User` 头），与 `tokens` 同键。
-    /// 新版不需要，所以大多数站点这里是空的。
+    /// 新版不需要，大多数站点这里是空的。
     user_ids: BTreeMap<String, String>,
 }
 
 /// 站点身份：把 baseUrl 归一到「站点根」，作为令牌表的键。
 ///
 /// 推导复用 [`crate::billing::endpoints`]（`https://host/v1` → `https://host`），
-/// 再统一小写（主机名大小写不敏感，避免同一个站点存成两条）。
+/// 再统一小写。
 pub fn station_key(base_url: &str) -> String {
     crate::billing::endpoints(base_url).origin.to_lowercase()
 }
@@ -65,7 +63,7 @@ impl StationTokens {
                 items
                     .iter()
                     .filter_map(|(key, value)| {
-                        // 只收非空字符串：空值等于没设置过，留着只会误导。
+                        // 只收非空字符串。
                         let token = value.as_str()?;
                         let key = key.trim();
                         if key.is_empty() || token.trim().is_empty() {
@@ -76,7 +74,7 @@ impl StationTokens {
                     .collect()
             })
             .unwrap_or_default();
-        // 用户 ID：键不存在（v1 老文件）就是空表，不影响令牌读取。
+        // 用户 ID：键不存在（v1 老文件）就是空表。
         let user_ids = root
             .get("user_ids")
             .and_then(Value::as_object)
@@ -97,7 +95,7 @@ impl StationTokens {
         StationTokens { tokens, user_ids }
     }
 
-    /// 序列化（键序固定，便于人工核对 / diff）。
+    /// 序列化（键序固定，便于 diff）。
     pub fn to_json(&self) -> String {
         let mut root = Map::new();
         root.insert("version".to_string(), Value::Number(SCHEMA_VERSION.into()));
@@ -106,8 +104,7 @@ impl StationTokens {
             tokens.insert(key.clone(), Value::String(token.clone()));
         }
         root.insert("tokens".to_string(), Value::Object(tokens));
-        // 用户 ID 单独一段，与令牌平行：老版本读这个文件时忽略未知键，
-        // 所以不需要改已有令牌的存储形态（也不需要迁移）。
+        // 用户 ID 单独一段，与令牌平行。
         let mut user_ids = Map::new();
         for (key, id) in &self.user_ids {
             user_ids.insert(key.clone(), Value::String(id.clone()));
@@ -138,7 +135,7 @@ impl StationTokens {
 
     /// 取某站点的用户 ID（旧版 new-api 的 `New-Api-User` 头，没有则空串）。
     ///
-    /// 只在站点回了「缺 `New-Api-User`」时才需要填；新版不需要它。
+    /// 只在站点回了「缺 `New-Api-User`」时才需要填。
     pub fn user_id(&self, origin: &str) -> &str {
         self.user_ids
             .get(origin.trim().to_lowercase().as_str())
@@ -174,7 +171,7 @@ impl StationTokens {
         }
     }
 
-    /// 删除某站点的令牌（连同用户 ID：两者同属一个站点的凭证）。
+    /// 删除某站点的令牌（连同用户 ID）。
     pub fn remove(&mut self, origin: &str) {
         let origin = origin.trim().to_lowercase();
         self.tokens.remove(&origin);
@@ -203,7 +200,7 @@ mod tests {
 
     #[test]
     fn station_key_normalizes_origin_to_site_root() {
-        // 同一个站点：带路径、末尾斜杠、大小写不同，都必须归到同一个键。
+        // 带路径、末尾斜杠、大小写不同，都必须归到同一个键。
         assert_eq!(
             station_key("https://gemai.huchan.cn/v1"),
             "https://gemai.huchan.cn"
@@ -212,7 +209,7 @@ mod tests {
             station_key("https://Gemai.Huchan.CN/v1/"),
             station_key("https://gemai.huchan.cn")
         );
-        // 不同站点必须分开，不能被合并成一个键。
+        // 不同站点必须分开。
         assert_ne!(
             station_key("https://a.example.com/v1"),
             station_key("https://b.example.com/v1")
@@ -229,7 +226,7 @@ mod tests {
         );
         tokens.set_user_id("  https://A.Example.com  ", " 12345 ");
         assert_eq!(tokens.user_id("https://a.example.com"), "12345");
-        // 空串 / 纯空白 = 删除（与 set 对令牌的语义一致）。
+        // 空串 / 纯空白 = 删除。
         tokens.set_user_id("https://a.example.com", "   ");
         assert_eq!(tokens.user_id("https://a.example.com"), "");
         assert!(tokens.is_empty(), "只剩空用户 ID 不该算“有配置”");
@@ -246,7 +243,7 @@ mod tests {
         assert_eq!(back.get("https://a.example.com"), "pat-value");
         assert_eq!(back.user_id("https://a.example.com"), "777");
 
-        // v1 老文件（没有 user_ids 键）必须照常读出令牌，用户 ID 为空。
+        // v1 老文件（没有 user_ids 键）照常读出令牌，用户 ID 为空。
         let legacy = r#"{"version":1,"tokens":{"https://a.example.com":"old-pat"}}"#;
         let old = StationTokens::parse(legacy);
         assert_eq!(old.get("https://a.example.com"), "old-pat");
@@ -285,7 +282,7 @@ mod tests {
         assert_eq!(tokens.get("https://a.example.com"), "pat-one");
         assert_eq!(tokens.len(), 1);
 
-        // 大小写 / 空白不敏感：同一站点覆盖而不是新增一条。
+        // 大小写 / 空白不敏感：同一站点覆盖。
         tokens.set("  https://A.Example.com  ", " pat-two ");
         assert_eq!(tokens.get("https://a.example.com"), "pat-two");
         assert_eq!(tokens.len(), 1, "同一站点不应产生第二条");
@@ -320,7 +317,7 @@ mod tests {
             let tokens = StationTokens::parse(text);
             assert!(tokens.is_empty(), "{text}");
         }
-        // 值不是字符串 / 空值：跳过而不是崩掉
+        // 值不是字符串 / 空值：跳过
         let tokens = StationTokens::parse(
             r#"{"version":1,"tokens":{"https://a.example.com":42,
                 "https://b.example.com":"","https://c.example.com":"ok"}}"#,
@@ -337,10 +334,10 @@ mod tests {
         let text = tokens.to_json();
         let back = StationTokens::parse(&text);
         assert_eq!(back, tokens);
-        // 键序稳定：再次序列化必须完全一致（内容没变就不产生 diff）
+        // 键序稳定：再次序列化必须完全一致。
         assert_eq!(back.to_json(), text);
         assert!(text.contains(r#""version": 2"#), "{text}");
-        // 没有用户 ID 时也写出空段：结构固定才好人工核对 / diff。
+        // 没有用户 ID 时也写出空段。
         assert!(text.contains(r#""user_ids": {}"#), "{text}");
     }
 
@@ -373,7 +370,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("建临时目录");
         let path = dir.join(FILE_NAME);
         std::fs::write(&path, "previous").expect("写旧内容");
-        // 用目录占住临时文件路径，让原子写无法创建临时文件。
+        // 用目录占住临时文件路径。
         std::fs::create_dir(path.with_file_name(format!("{FILE_NAME}.tmp"))).expect("占住临时路径");
 
         let mut tokens = StationTokens::default();

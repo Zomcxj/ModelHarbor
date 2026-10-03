@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// 真实响应：哈基米API站（公益站，额度是占位值 1e8，已用 $216.00）。
+/// 真实响应：哈基米API站（额度是占位值 1e8，已用 $216.00）。
 const HAJIMI_SUB: &str = r#"{"object":"billing_subscription","has_payment_method":true,
         "soft_limit_usd":100000000,"hard_limit_usd":100000000,"system_hard_limit_usd":100000000,
         "access_until":0}"#;
@@ -30,7 +30,7 @@ fn panel_name_combines_system_and_version() {
 
 #[test]
 fn placeholder_limit_shows_used_only() {
-    // 公益站额度是占位值 1e8：算出来的「余额」没意义，所以既不显示也不保留。
+    // 占位额度 1e8：不显示也不保留。
     let billing = parse(HAJIMI_SUB, Some(HAJIMI_USAGE), Some(HAJIMI_STATUS));
     assert_eq!(billing.shape, Shape::Subscription);
     assert_eq!(billing.used_usd, Some(216.0));
@@ -46,7 +46,7 @@ fn placeholder_limit_shows_used_only() {
     );
     assert_eq!(billing.inline_full(), "已用 $216.00");
     let detail = billing.detail();
-    // 占位额度只显示已用：既没有额度数字，也没有余额。
+    // 占位额度只显示已用。
     assert!(!detail.contains("占位值"), "不再解释占位：{detail}");
     assert!(!detail.contains("额度"), "占位额度下不该有额度行：{detail}");
     assert!(!detail.contains("余额"), "占位额度下不该给余额行：{detail}");
@@ -81,7 +81,7 @@ fn credit_summary_is_shown_raw() {
 
 #[test]
 fn zero_hard_limit_is_treated_as_no_limit() {
-    // 不少站用 hard_limit_usd: 0 表示「无硬上限」，直接算会得到负数余额。
+    // 部分站用 hard_limit_usd: 0 表示无硬上限。
     let sub = r#"{"object":"billing_subscription","hard_limit_usd":0,"soft_limit_usd":0}"#;
     let usage = r#"{"object":"list","total_usage":500}"#;
     let billing = parse(sub, Some(usage), None);
@@ -93,7 +93,7 @@ fn zero_hard_limit_is_treated_as_no_limit() {
 
 #[test]
 fn balance_never_shows_negative() {
-    // 额度比已用小（数据不一致 / 已超支）：只说已用，不显示负数余额。
+    // 额度比已用小（数据不一致 / 已超支）：只说已用。
     let sub = r#"{"object":"billing_subscription","hard_limit_usd":10.0}"#;
     let usage = r#"{"object":"list","total_usage":1500}"#;
     let billing = parse(sub, Some(usage), None);
@@ -106,11 +106,11 @@ fn balance_never_shows_negative() {
 const STATUS_UNITS: &str = r#"{"success":true,"data":{"system_name":"哈基米API站",
         "version":"v1.0.0-rc.19.3518","quota_per_unit":500000,"quota_display_type":"CNY",
         "display_in_currency":true,"usd_exchange_rate":7.3}}"#;
-/// 真实际形状：`/api/usage/token/`（公益站：不限额度）。
+/// 真实际形状：`/api/usage/token/`（不限额度）。
 const USAGE_TOKEN_UNLIMITED: &str = r#"{"code":true,"message":"","data":{"name":"demo",
         "unlimited_quota":true,"total_granted":0,"total_used":137000000,
         "total_available":-137000000,"expires_at":0}}"#;
-/// 真实际形状：`/api/log/token`（字段取自实测；`content` / `ip` 等隐私字段不入测试）。
+/// 真实际形状：`/api/log/token`（字段取自实测）。
 const TOKEN_LOGS: &str = r#"{"success":true,"message":"","data":[
         {"created_at":1789436810,"type":2,"model_name":"deepseek-v4-flash","quota":1000000},
         {"created_at":1789436900,"type":2,"model_name":"grok-4.6","quota":500000},
@@ -162,7 +162,7 @@ fn token_logs_summarize_by_window_and_model() {
     assert_eq!(all.quota, 3_500_000.0);
     assert_eq!(all.models[0].1, 3_000_000.0, "同模型要合并");
 
-    // 空日志 / 坏日志都不要 panic
+    // 空日志 / 坏日志都不 panic
     assert_eq!(parse_token_logs("not json").len(), 0);
     assert_eq!(parse_token_logs(r#"{"success":false}"#).len(), 0);
     assert_eq!(summarize_logs(&[], Some(1)).count, 0);
@@ -230,8 +230,7 @@ fn token_billing_shows_balance_when_quota_is_finite() {
 
 #[test]
 fn detail_keeps_numbers_and_drops_the_endpoint_footnotes() {
-    // 悬停小窗只放「数字 + 会影响读数的口径」（换算比、跳日）。
-    // 接口来源、分页上限、只读这类实现细节在卡片上只是噪音，一律不写。
+    // 悬停小窗只放数字与影响读数的口径（换算比、跳日）。
     let items: Vec<String> = (0..LOG_PAGE_LIMIT)
         .map(|i| {
             format!(
@@ -366,7 +365,7 @@ fn endpoints_derive_origin_and_base() {
         "https://kktoken.cc/dashboard/billing/subscription"
     );
 
-    // 无协议头：整体当 origin（这类地址已被 baseUrl 体检标为「缺少协议头」）
+    // 无协议头：整体当 origin。
     let ep = endpoints("api.example.com/v1");
     assert_eq!(ep.status, "api.example.com/v1/api/status");
 }
@@ -388,24 +387,24 @@ fn endpoints_v1_only_touches_origin_only_bases() {
         "https://kktoken.cc/v1/dashboard/billing/subscription"
     );
 
-    // 已带 /v1：必须原样返回，否则会拼出 /v1/v1/...（实测 404）
+    // 已带 /v1：原样返回，不拼出 /v1/v1/...
     let same = endpoints("https://gemai.huchan.cn/v1");
     let alt = endpoints_v1("https://gemai.huchan.cn/v1");
     assert_eq!(alt.subscription, same.subscription);
 
-    // 带了其他路径：不猜该插在哪里，原样返回
+    // 带了其他路径：原样返回
     let same = endpoints("https://host/api");
     let alt = endpoints_v1("https://host/api");
     assert_eq!(alt.subscription, same.subscription);
 }
 
-/// 真实响应形状：`/api/user/self`（需要面板 PAT，普通登录用户即可）。
+/// 真实响应形状：`/api/user/self`（需要面板 PAT）。
 /// 字段名取自 new-api `buildSelfUserData`（controller/user.go）。
 const ACCOUNT_SELF: &str = r#"{"success":true,"message":"","data":{
         "id":1,"username":"tester","display_name":"Tester","role":1,"status":1,
         "group":"default","quota":6150000,"used_quota":10250000,"request_count":321}}"#;
 
-/// 只有账号数据、没有令牌数据时的展示（站点未开 /api/usage/token/）。
+/// 只有账号数据、没有令牌数据时的展示。
 fn account_only_billing() -> Billing {
     let units = parse_units(Some(STATUS_UNITS));
     Billing {
@@ -448,7 +447,7 @@ fn account_self_rejects_failures_and_useless_payloads() {
 
 #[test]
 fn account_zero_quota_is_a_real_zero_balance() {
-    // 额度真为 0（用完了）必须显示 $0.00，而不是当成「没拿到数据」隐掉。
+    // 额度真为 0（用完了）显示 $0.00，不当成没数据。
     let units = parse_units(None);
     let account = parse_account_self(
         r#"{"success":true,"data":{"quota":0,"used_quota":500000,"request_count":3}}"#,
@@ -463,10 +462,8 @@ fn account_zero_quota_is_a_real_zero_balance() {
 
 #[test]
 fn account_only_result_still_shows_how_much_was_used() {
-    // 实测站点（ps.air-outer.com）：`/api/usage/token/` 是 404、
-    // `/api/log/token` 回 200 但 `data:[]`，所以令牌侧整条都是空的，
-    // 只有 `/api/user/self` 可用——它的 `used_quota` 是这一站**唯一**的
-    // 用量数字。主行只报余额的话，用户会以为连使用量都读不到了。
+    // 实测站点（ps.air-outer.com）：令牌侧整条都是空的，只有 `/api/user/self`
+    // 可用，它的 `used_quota` 是这一站唯一的用量数字。
     let info = account_only_billing();
     let line = info.inline();
     assert!(line.contains("账号余额 $12.30"), "{line}");
@@ -476,7 +473,7 @@ fn account_only_result_still_shows_how_much_was_used() {
     );
 }
 
-/// 账号数据 + 签到状态同一条结果（「查询用户数据」的正常形态）。
+/// 账号数据 + 签到状态同一条结果。
 fn account_with_checkin_billing() -> Billing {
     let units = parse_units(Some(STATUS_UNITS));
     Billing {
@@ -508,8 +505,7 @@ fn checkin_state_gets_its_own_detail_line() {
 
 #[test]
 fn checkin_alone_counts_as_displayable_data() {
-    // 账号接口挂了（要 New-Api-User 的站点很常见）、只有签到读得到：
-    // 「有就输出」——这一项也要能显示出来。
+    // 账号接口挂了、只有签到读得到时也要能显示。
     let units = parse_units(Some(STATUS_UNITS));
     let info = Billing {
         source: Source::Token,
@@ -523,7 +519,7 @@ fn checkin_alone_counts_as_displayable_data() {
         !line.contains("未返回额度信息"),
         "有签到就不该说没数据：{line}"
     );
-    // 签到是账号级信息（同一个面板令牌读的），不能被塞进「本令牌」分节。
+    // 签到是账号级信息，不进「本令牌」分节。
     let text = info.detail();
     assert!(text.contains("签到：今日已签"), "{text}");
     assert!(!text.contains("本令牌"), "{text}");
@@ -531,8 +527,7 @@ fn checkin_alone_counts_as_displayable_data() {
 
 #[test]
 fn no_checkin_data_means_no_checkin_word() {
-    // 站点没开签到、或用户没填面板令牌：卡片上不该出现「签到」这两个字。
-    // 「有就输出，没有就不输出」——不写死占位。
+    // 站点没开签到、或用户没填面板令牌：卡片上不出现「签到」这两个字。
     let info = account_only_billing();
     assert!(!info.inline().contains("签到"), "{}", info.inline());
     assert!(!info.detail().contains("签到"), "{}", info.detail());
@@ -567,8 +562,7 @@ fn account_balance_leads_the_summary_line() {
     );
 
     let detail = info.detail();
-    // 悬停小窗求紧凑：解释长句去掉、数字合并成行，但「同站点共用」这层
-    // 含义要留一个短标记（否则读者会以为这是某个 sk- 令牌的余额）。
+    // 悬停小窗求紧凑：数字合并成行，但「同站点共用」这层含义留一个短标记。
     assert!(
         detail.contains("账号级额度（面板访问令牌，同站点共用）"),
         "{detail}"
@@ -599,7 +593,7 @@ fn the_card_has_one_headline_number_and_a_quieter_rest() {
     let info = account_only_billing();
     assert_eq!(info.headline().as_deref(), Some("账号余额 $12.30"));
     assert_eq!(info.inline_rest(), "已用 $20.50");
-    // 两段拼起来仍等于完整摘要（层级只是显示方式，不丢信息）。
+    // 两段拼起来等于完整摘要。
     assert_eq!(
         format!("{} · {}", info.headline().unwrap(), info.inline_rest()),
         info.inline_full()
@@ -608,7 +602,7 @@ fn the_card_has_one_headline_number_and_a_quieter_rest() {
 
 #[test]
 fn headline_falls_back_to_used_when_there_is_no_balance() {
-    // 不限额度站 / 公益站拿不到余额时，已用就是那个主数字。
+    // 不限额度站 / 拿不到余额时，已用就是那个主数字。
     let billing = Billing {
         source: Source::Token,
         used_usd: Some(3.0),
@@ -621,7 +615,7 @@ fn headline_falls_back_to_used_when_there_is_no_balance() {
 
 #[test]
 fn headline_is_none_when_there_is_nothing_to_show() {
-    // 查不到就什么都不突出，绝不编一个数字。
+    // 查不到就什么都不突出。
     let empty = Billing::default();
     assert_eq!(empty.headline(), None);
     assert_eq!(empty.inline_rest(), "");
@@ -629,8 +623,7 @@ fn headline_is_none_when_there_is_nothing_to_show() {
 
 #[test]
 fn account_detail_is_disclosed_as_account_level() {
-    // 小窗不写接口路径，但「账号级」与「面板访问令牌」两项口径披露必须留住：
-    // 否则会被读成某个 sk- 令牌的余额。
+    // 小窗不写接口路径，但「账号级」与「面板访问令牌」两项口径披露必须留住。
     let info = account_only_billing();
     let detail = info.detail();
     assert!(
@@ -642,9 +635,7 @@ fn account_detail_is_disclosed_as_account_level() {
 
 #[test]
 fn logs_only_result_still_reports_today_and_week() {
-    // 部分站点（如把 baseUrl 指向中转域名）没有 /api/usage/token/ 这个面板路由，
-    // 但 /api/log/token 仍可用：今日 / 近 7 天用量必须单独拿出来，
-    // 不能因为额度接口缺失就把日志统计一起丢掉。
+    // 部分站点没有 /api/usage/token/ 这个面板路由，但 /api/log/token 仍可用。
     let units = parse_units(Some(STATUS_UNITS));
     let logs = parse_token_logs(TOKEN_LOGS);
     let info = parse_token_billing(TokenInputs {
@@ -680,7 +671,7 @@ fn logs_only_result_still_reports_today_and_week() {
 
 #[test]
 fn logs_only_result_without_logs_is_not_displayable() {
-    // 两边都没拿到：保持“无数据”，不要凭空造出一个空结果。
+    // 两边都没拿到：保持“无数据”。
     let units = parse_units(None);
     let info = parse_token_billing(TokenInputs {
         usage: None,
@@ -695,7 +686,7 @@ fn logs_only_result_without_logs_is_not_displayable() {
     assert!(!info.is_displayable(), "没有任何数据就不该显示");
 }
 
-/// 真实际形状：`GET /api/user/checkin`（字段取自实测；records 只留两条）。
+/// 真实际形状：`GET /api/user/checkin`（字段取自实测）。
 const CHECKIN_STATUS: &str = r#"{"success":true,"data":{"enabled":true,
         "max_quota":250000,"min_quota":50000,"stats":{"checked_in_today":true,
         "checkin_count":14,"total_checkins":45,"total_quota":6500000,
@@ -767,7 +758,7 @@ fn checkin_descriptions_omit_numbers_the_site_did_not_give() {
     let text = checkin_long(&bare);
     assert_eq!(text, "未签", "没给本月 / 累计就不提：{text}");
 
-    // 今天签了但站点没给金额：不能编一个 $0.00。
+    // 今天签了但站点没给金额：不编 $0.00。
     let no_amount = CheckinStatus {
         enabled: true,
         today: true,
@@ -776,7 +767,7 @@ fn checkin_descriptions_omit_numbers_the_site_did_not_give() {
     assert_eq!(checkin_short(&no_amount), "今日已签");
     assert!(!checkin_long(&no_amount).contains('$'), "没给就不编金额");
 
-    // 站点没开签到：明确说未启用，不显示成「未签」（那是两件事）。
+    // 站点没开签到：明确说未启用。
     let disabled = CheckinStatus::default();
     assert_eq!(checkin_short(&disabled), "未启用");
     assert_eq!(checkin_long(&disabled), "该站点未启用签到");
@@ -795,7 +786,7 @@ fn checkin_status_reports_todays_amount_from_the_records() {
 #[test]
 fn checkin_status_has_no_today_amount_when_not_signed_today() {
     let units = parse_units(Some(STATUS_UNITS));
-    // 今天没签：即使有历史记录，也不能把昨天/上一条的金额当成今天。
+    // 今天没签：即使有历史记录，也不把昨天/上一条的金额当成今天。
     let not_today = parse_checkin_status(
             r#"{"success":true,"data":{"enabled":true,"stats":{"checked_in_today":false,
                 "checkin_count":3,"records":[{"checkin_date":"2026-09-16","quota_awarded":150000}]}}}"#,
@@ -816,7 +807,7 @@ fn checkin_status_has_no_today_amount_when_not_signed_today() {
     assert_eq!(no_records.today_usd, None);
     assert_eq!(checkin_short(&no_records), "今日已签", "只有标记、没金额");
 
-    // 记录顺序被打乱时按最大日期取，不依赖站点给的先后。
+    // 记录顺序被打乱时按最大日期取。
     let shuffled = parse_checkin_status(
         r#"{"success":true,"data":{"enabled":true,"stats":{"checked_in_today":true,
                 "checkin_count":2,"records":[{"checkin_date":"2026-09-10","quota_awarded":50000},

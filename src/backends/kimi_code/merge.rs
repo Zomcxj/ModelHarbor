@@ -11,10 +11,8 @@ pub(crate) struct Joined {
 
 /// 按 `provider` 字段把顶层 `[models.*]` 挂到 `[providers.*]` 上。
 ///
-/// 挂不上的（`provider` 缺失、指向不存在的键、或指向 `managed:*`）不进任何 provider，
-/// 也就不进界面——但**不丢弃**：保存时由 [`unmanaged_models`] 原样带过去。
-/// 曾经把这份孤儿清单从 `join` 一路传到 `build_load`，可没人用它（保存时的保留是
-/// `unmanaged_models` 独立算的），于是留了个永远为空的形参，已删。
+/// `provider` 缺失、指向不存在的键或指向 `managed:*` 的模型不挂到任何 provider，
+/// 因此不进界面；它们由 [`unmanaged_models`] 原样写回。
 pub(crate) fn join(root: &Value) -> Vec<Joined> {
     let mut joined: Vec<Joined> = Vec::new();
     let empty = Map::new();
@@ -59,8 +57,8 @@ pub(crate) fn provider_from_entry(
         .unwrap_or("")
         .to_string();
     row.original_api_key_env = row.api_key_env.clone();
-    // `type` 逐字进 pi_api：它既是界面下拉的当前值，也是写回时的原值。
-    // 空 type 留给 `effective_api()` 回落，不在这里编造一个。
+    // `type` 逐字进 `pi_api`：它既是界面下拉的当前值，也是写回时的原值。
+    // 空 type 留给 `effective_api()` 回落。
     row.pi_api = provider_type(provider).to_string();
     row.models = models
         .iter()
@@ -73,19 +71,17 @@ pub(crate) fn provider_from_entry(
 
 /// 界面状态 → 全部模型条目。
 pub(crate) fn all_models(providers: &[ProviderRow], base: &Value) -> Vec<(String, String, Value)> {
-    // 旧条目按 alias 建索引：界面没接管的键要从这里继承。
+    // 旧条目按 alias 建索引：界面没接管的键从这里继承。
     let old: Map<String, Value> = models_map(base).cloned().unwrap_or_default();
     let mut out: Vec<(String, String, Value)> = Vec::new();
     for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
         let provider = p.key.trim().to_string();
-        // 没有模型的 provider 也要留一条？——不。Kimi 的模型必须挂在 provider 下，
-        // 而 provider 本身没有模型是合法的（本机 `sensenova` 就有模型，但一个 provider
-        // 完全没模型也不会让文件非法）。写一条空模型反而会产出缺 `model` 的非法条目。
+        // 没有模型的 provider 不写条目：Kimi 的模型必须挂在 provider 下，
+        // 但 provider 本身没有模型是合法的，写空模型会产出缺 `model` 的非法条目。
         for m in &p.models {
             let wire = m.id.trim();
             if wire.is_empty() {
-                // 没有 wire id 的模型行写出去就是非法条目（`model` 必填）。
-                // 界面允许这种中间态（刚点「新增模型」），保存时跳过它。
+                // 没有 wire id 的模型行写出去就是非法条目（`model` 必填），保存时跳过。
                 continue;
             }
             let alias = effective_alias(&provider, m);
@@ -98,8 +94,7 @@ pub(crate) fn all_models(providers: &[ProviderRow], base: &Value) -> Vec<(String
 
 /// `[models.*]`：全部条目。
 ///
-/// Kimi 没有「停用」概念（schema 无 `disabled`，见模块说明），所以只有这一张表，
-/// 没有「生效清单 / 全量副本」之分。
+/// Kimi 没有「停用」概念，只有这一张表，没有「生效清单 / 全量副本」之分。
 pub(crate) fn model_table(providers: &[ProviderRow], base: &Value) -> Map<String, Value> {
     let mut out: Map<String, Value> = Map::new();
     for (_, alias, entry) in all_models(providers, base) {
@@ -137,14 +132,9 @@ pub(crate) fn all_providers(providers: &[ProviderRow], base: &Value) -> Map<Stri
     out
 }
 
-/// 基座里**不归界面管**的 provider：只有 `managed:*`（OAuth 登录态）。
+/// 基座里不归界面管的 provider：只有 `managed:*`（OAuth 登录态），原样带过。
 ///
-/// `managed:*` 必须原样带过去：它的 `oauth` 子表与 `credentials/` 里的凭据配对，
-/// 改写会破坏登录态。
-///
-/// 除此之外**不能**再保留基座里的条目：[`join`] 把 `[providers.*]` 全量建成卡片，
-/// 所以「基座里有、界面里没有」只可能是用户把卡片删了或改了名——那正是「删除」的意思，
-/// 再补回去就等于删不掉。
+/// 除 `managed:*` 外不再保留基座里的条目：用户删掉或改名的卡片不补回去。
 pub(crate) fn unmanaged_providers(base: &Value) -> Vec<(String, Value)> {
     providers_map(base)
         .map(|m| {
@@ -156,9 +146,9 @@ pub(crate) fn unmanaged_providers(base: &Value) -> Vec<(String, Value)> {
         .unwrap_or_default()
 }
 
-/// 基座里**认不出来**的模型条目：孤儿（`provider` 指向不存在的键）与 `managed:*` 名下的。
+/// 基座里认不出来的模型条目：孤儿（`provider` 指向不存在的键）与 `managed:*` 名下的。
 ///
-/// 返回 `alias → 条目`。它们不进界面，但必须原样写回（见模块说明末节）。
+/// 返回 `alias → 条目`；它们不进界面，但原样写回。
 pub(crate) fn unmanaged_models(base: &Value, ui_providers: &[ProviderRow]) -> Map<String, Value> {
     let providers = providers_map(base).cloned().unwrap_or_default();
     let mut out: Map<String, Value> = Map::new();
@@ -178,12 +168,11 @@ pub(crate) fn unmanaged_models(base: &Value, ui_providers: &[ProviderRow]) -> Ma
 
 /// 按 alias 逐条判断勾选状态。
 ///
-/// Kimi 没有「停用」概念，模型的 `disabled` 一律为 `false`（界面也不会显示开关）。
+/// Kimi 没有「停用」概念，模型的 `disabled` 一律为 `false`。
 pub(crate) fn build_load(joined: Vec<Joined>) -> BackendLoad {
     let mut providers: Vec<ProviderRow> = Vec::new();
     for j in &joined {
-        // `managed:*` 不进界面：它由 OAuth 维护，界面无从编辑，显示出来只会让人
-        // 以为能改。模型也一样（它们是登录时自动写入的）。
+        // `managed:*` 不进界面：它由 OAuth 维护，其模型也是登录时自动写入的。
         if is_managed_provider(&j.name) {
             continue;
         }

@@ -3,16 +3,13 @@ use super::*;
 /// 编辑表单（`render_provider_form`）与新增表单（`ui_new_provider_form`）共用的
 /// provider 头部字段：key / 协议下拉 / timeout / compat / DSH 重试 / baseURL / 密钥。
 ///
-/// 两份表单曾逐行抄写并各自漂移——新增表单漏了 DSH 的 timeoutMs 与 retryPolicy，
-/// baseURL 的显隐也和编辑表单不一致。统一走这里的同一套门控后，差异只剩三件事，
-/// 全由 [`ProviderHeaderCtx`] 表达：占位提示与 key 重复检查（新增表单在「确认」时才查）、
-/// npm 空选项的标签、以及 `relaxed` 门控。
+/// 两份表单的差异由 [`ProviderHeaderCtx`] 表达：占位提示与 key 重复检查、
+/// npm 空选项的标签、`relaxed` 门控。
 pub(super) struct ProviderHeaderCtx<'a> {
     pub(super) page: ConfigFormat,
     pub(super) npm_salt: String,
     pub(super) api_salt: String,
-    /// 新增表单 = true：字段是给**全新** provider 填的，不受「已加载文件里有没有
-    /// 这个键」的影响（`show_provider_base_url` 这类内容型开关放宽为常显）。
+    /// 新增表单 = true：字段是给全新 provider 填的，内容型开关放宽为常显。
     pub(super) relaxed: bool,
     pub(super) npm_empty_label: bool,
     pub(super) show_api_keys: bool,
@@ -102,11 +99,9 @@ pub(super) fn provider_header_fields(
             };
             ui.add(url_edit);
         }
-        // WorkBuddy 的协议由 URL 后缀表达（文件里没有协议字段），**不给手动开关**：
-        // 上面选的协议决定保存时补什么后缀，选非 chat/completions 就是自定义协议。
-        // 曾经有个「自定义协议」勾选框，但它与协议选择表达同一件事，两个控件可以
-        // 互相矛盾（勾了却选着 chat、或没勾却选了 messages），保存时还得强制对齐一次。
-        // Qwen 的凭据框自己画标签（它只剩一个密钥框，变量名自动推导）。
+        // WorkBuddy 的协议由 URL 后缀表达（文件里没有协议字段），不给手动开关：
+        // 上面选的协议决定保存时补什么后缀。
+        // Qwen 的凭据框自己画标签（只剩一个密钥框）。
         if !flags.show_qwen {
             field_label(ui, 120.0, flags.api_key_label);
         }
@@ -122,25 +117,20 @@ pub(super) fn provider_header_fields(
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
             secret_text_edit(ui, &mut p.api_key_secret, ctx.show_api_keys, 408.0, hint);
         } else if flags.show_qwen {
-            // QwenCode 的密钥存在顶层 `env[<envKey>]` 里：条目上写变量名、`env` 里写
-            // 值。变量名**不单独给框**——留空就按 provider key 自动推导（见后端
-            // `env_key_name`），文件里已有的变量名原样沿用；界面上只填密钥值本身。
+            // QwenCode 的密钥存在顶层 `env[<envKey>]` 里：条目上写变量名、`env` 里写值。
+            // 变量名不单独给框，留空就按 provider key 自动推导（见后端 `env_key_name`）。
             field_label(ui, 120.0, "API Key");
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
             secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
         } else if flags.show_kimi {
-            // KimiCode 的 `api_key`（内联密钥）与 `api_key_env`（环境变量名）**互斥**：
-            // 同时写两个会让 Kimi Code **启动失败**。曾经在这里摆一个 `api_key_env`
-            // 勾选框切换两种模式，但那个勾选框读起来像一个「是否启用 api_key_env」的
-            // 开关、右边的框又没有标签，用户看不出它在干什么；而且它占掉一整格，
-            // 密钥框只能缩到 200（其它后端都是 408）。改成与其它后端完全同形的一个框：
-            // 文件里已有的 `api_key_env` 原样沿用（`api_key` 留空就照写它，见后端
-            // `provider_entry_from_row`），填了密钥就写 `api_key` 并清掉变量名。
+            // KimiCode 的 `api_key`（内联密钥）与 `api_key_env`（环境变量名）互斥，
+            // 同时写两个会让 Kimi Code 启动失败。文件里已有的 `api_key_env` 原样沿用
+            // （`api_key` 留空就照写它，见后端 `provider_entry_from_row`），
+            // 填了密钥就写 `api_key` 并清掉变量名。
             let hint = if ctx.relaxed {
                 "sk-xxx"
             } else if !p.api_key_env.trim().is_empty() {
-                // 密钥在环境变量里，框里没有值可显示：把变量名当占位符写出来，
-                // 免得看起来像「这里漏填了密钥」。
+                // 密钥在环境变量里：把变量名当占位符写出来。
                 p.api_key_env.trim()
             } else {
                 ""
@@ -155,8 +145,7 @@ pub(super) fn provider_header_fields(
 
 /// 「获取模型」区块（两份表单共用）：按钮行、后台拉取与弹层。
 ///
-/// 拆字段传参而不是拿 `&mut App`：编辑表单里 `p = &mut self.providers[idx]` 还借着一角，
-/// `model_fetch` 等字段必须拆开借才能与它共存（与 `start_provider_latency` 同理）。
+/// 拆字段传参而不是拿 `&mut App`：调用方此时还借着 `self.providers[idx]`。
 pub(super) struct FetchSectionCtx<'a> {
     pub(super) model_fetch: &'a mut HashMap<String, ModelFetchState>,
     pub(super) model_fetch_open: &'a mut HashSet<String>,
@@ -185,8 +174,8 @@ pub(super) fn models_fetch_section(
         if ctx.model_fetch_open.contains(ctx.fetch_key) && ui.button("关闭").clicked() {
             close_fetch = true;
         }
-        // 模型延迟已无批量入口：每个模型行右侧各有一个「测试」按钮，
-        // 一次只测一个（同模型 60s、同厂商 10s 节流，规避测活风控）。
+        // 模型延迟无批量入口：每个模型行右侧各有一个「测试」按钮，一次只测一个
+        // （同模型 60s、同厂商 10s 节流）。
         if ctx
             .latency
             .get(ctx.fetch_key)

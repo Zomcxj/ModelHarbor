@@ -59,11 +59,11 @@ fn detect_yml_files_as_oh_my_pi() {
     let b = backends::backend(ConfigFormat::OhMyPi);
     // .yml + YAML 语法
     assert!(b.detect("providers:\n  a:\n", "models.yml"));
-    // .yml + JSON 语法（JSON 是 YAML 子集，扩展名优先归 omp）
+    // .yml + JSON 语法
     assert!(b.detect("{\"providers\": {}}", "models.yml"));
     // .json 归 pi
     assert!(!b.detect("{\"providers\": {}}", "models.json"));
-    // 无扩展名：JSON 语法让位 pi，纯 YAML 归 omp
+    // 无扩展名：JSON 语法归 pi，纯 YAML 归 omp
     assert!(!b.detect("{\"providers\": {}}", ""));
     assert!(b.detect("providers:\n  a:\n", ""));
     // 无 providers 键
@@ -72,7 +72,7 @@ fn detect_yml_files_as_oh_my_pi() {
 
 #[test]
 fn detect_format_registry_order() {
-    // 注册表顺序：omp 在 pi 前，.yml 优先命中 omp
+    // 注册表顺序：omp 在 pi 前，.yml 命中 omp
     assert_eq!(
         backends::detect_format("{\"providers\": {}}", "models.yml"),
         ConfigFormat::OhMyPi
@@ -101,7 +101,7 @@ fn parse_omp_thinking_block_into_variants() {
 
 #[test]
 fn parse_pi_dialect_thinking_level_map_in_yaml() {
-    // 加载器双方言：YAML 中的 pi 风格 thinkingLevelMap 也能读
+    // YAML 中的 pi 风格 thinkingLevelMap 也能读
     let content = "providers:\n  p:\n    baseUrl: https://x/v1\n    api: openai-completions\n    apiKey: k\n    models:\n    - id: m\n      reasoning: true\n      thinkingLevelMap:\n        high: max\n";
     let load = load_omp(content);
     let m = &load.providers[0].models[0];
@@ -152,7 +152,7 @@ fn omp_asymmetric_effort_map_translates_back_to_pi() {
 
 #[test]
 fn omp_symmetric_map_omits_effort_map() {
-    // 对称 thinkingLevelMap {medium: medium} → efforts: [medium]，无需 effortMap
+    // 对称 thinkingLevelMap {medium: medium} → efforts: [medium]
     let mut m = ModelRow::new();
     m.id = "m".into();
     m.variants = "medium".into();
@@ -174,7 +174,7 @@ fn provider_raw_fields_preserved_on_save() {
     assert_eq!(out["authHeader"], json!(true));
     assert_eq!(out["headers"]["X-Team"], json!("platform"));
     assert_eq!(out["discovery"]["type"], json!("openai-models-list"));
-    // compat：false 时写入，且保留其他 compat 键
+    // compat：false 时写入，保留其他 compat 键
     assert_eq!(out["compat"]["supportsDeveloperRole"], json!(false));
     assert_eq!(out["compat"]["maxTokensField"], json!("max_tokens"));
     // 模型扩展字段（cost）保留
@@ -247,7 +247,7 @@ fn opencode_source_builds_fresh_omp_objects() {
         "models": {"m": {}}
     });
     let out = provider_to_omp(&p);
-    // npm @ai-sdk/anthropic → api anthropic-messages；无 opencode 特征键泄漏
+    // npm @ai-sdk/anthropic → api anthropic-messages
     assert_eq!(out["api"], json!("anthropic-messages"));
     assert!(out.get("options").is_none());
     let mo = &out["models"][0];
@@ -265,7 +265,7 @@ fn yaml_render_round_trip_with_special_ids() {
     let load = load_omp(&omp_yaml());
     let b = backends::backend(ConfigFormat::OhMyPi);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
-    // 注入需要引号的 id（裸 [ 开头会被 YAML 解析为流序列）
+    // 注入需要引号的 id（裸 [ 开头是 YAML 流序列）
     let mut root2 = root;
     root2["providers"]["gw"]["models"][0]["id"] = json!("[次]m1");
     let yaml_text = b.render(&root2, false).expect("YAML 渲染失败");
@@ -355,7 +355,7 @@ fn real_user_models_yml_round_trip() {
 
 #[test]
 fn provider_to_omp_places_compat_between_api_and_models() {
-    // 与 pi 一致：compat 固定跟在 api 之后、models 之前。
+    // 与 pi 一致：compat 跟在 api 之后、models 之前。
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
     provider.base_url = "https://example.com/v1".into();

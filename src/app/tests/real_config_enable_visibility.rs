@@ -10,7 +10,7 @@ fn only_the_workbuddy_page_offers_the_enable_toggle() {
     if !opencode.exists() {
         return; // 非用户机器（CI）跳过
     }
-    // 先加载 opencode 的文件——正是触发旧 bug 的形态（source ≠ 当前页）。
+    // 先加载 opencode 的文件（source ≠ 当前页）。
     let mut app = App {
         config_path: opencode.display().to_string(),
         ..App::default()

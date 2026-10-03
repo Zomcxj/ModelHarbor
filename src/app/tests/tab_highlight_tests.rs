@@ -2,7 +2,7 @@ use crate::app::App;
 use crate::format::ConfigFormat;
 use eframe::egui;
 
-/// 用户实际使用的页签顺序（见其 settings.json 的 tab_order）。
+/// 页签顺序（settings.json 的 `tab_order`）。
 const TAB_ORDER: [&str; 6] = [
     "opencode",
     "pi",
@@ -23,17 +23,14 @@ type IconBox = (egui::Rect, egui::Color32);
 type RawRect = (egui::Rect, egui::Color32, egui::Color32, bool, f32, u8);
 
 /// `tab_shapes_at` 的三段结果：按钮本体 / 图标 / 每个槽位的落点绿环。
-/// 绿环那一段带上矩形与圆角，用来断言它和按钮本体同几何（只换颜色、不改形状）。
+/// 绿环那一段带上矩形与圆角。
 type TabShapes = (
     Vec<TabBox>,
     Vec<IconBox>,
     Vec<Option<(egui::Rect, egui::Color32, u8)>>,
 );
 
-/// 与 `tab_shapes` 同一个主题下的「悬浮底色 / 悬浮描边色」。
-///
-/// 选中态定义为「悬浮的加重版」，所以断言必须拿这两个值来比，
-/// 而不是在测试里再写一份颜色常量——那样改了主题也照样通过。
+/// 当前主题下的悬浮底色与悬浮描边色。
 fn hover_visuals() -> (egui::Color32, egui::Color32) {
     let ctx = egui::Context::default();
     crate::theme::Theme::from_key("dark").apply_style(
@@ -45,27 +42,20 @@ fn hover_visuals() -> (egui::Color32, egui::Color32) {
     (hovered.bg_fill, hovered.bg_stroke.color)
 }
 
-/// 离屏跑一遍顶部栏，收集页签条区域内的**按钮底色**与**图标 tint**。
+/// 离屏跑一遍顶部栏，收集页签条区域内的按钮底色与图标 tint。
 ///
-/// egui 0.33 把图片画成带 `brush` 的 `RectShape`（贴图与 `fill` 相乘），**不是**
-/// `Shape::Mesh`，所以图标靠 `brush.is_some()` 认，tint 就是它的 `fill`。
-/// 一个页签因此贡献两个矩形：按钮底色（无 brush、约 44px 宽）与图标（有 brush、16px）。
-/// 两者都落在页签条区域内，所以先按区域筛、再按左边缘排序，下标才对得上页签序号。
+/// egui 把图片画成带 `brush` 的 `RectShape`（贴图与 `fill` 相乘），图标靠 `brush.is_some()`
+/// 认，tint 就是它的 `fill`。一个页签贡献两个矩形：按钮底色（无 brush、约 44px 宽）与
+/// 图标（有 brush、16px）。先按区域筛、再按左边缘排序，下标即页签序号。
 ///
-/// `pointer` 给出时，本帧把指针放在该位置（用来触发 hover，验证换位绿环）。
+/// `pointer` 给出时，本帧把指针放在该位置。
 fn tab_shapes_at(app: &mut App, pointer: Option<egui::Pos2>) -> TabShapes {
     tab_shapes_at_with(app, pointer, None)
 }
 
-/// `press_at` 给出时，第一帧在该处**按下主键并保持**，第二帧把指针移到 `pointer`。
+/// `press_at` 给出时，第一帧在该处按下主键并保持，第二帧把指针移到 `pointer`。
 ///
-/// 这才是真实拖拽的形态，也是换位绿环回归的关键：egui 在
-/// 「有键按下且按下的不是本控件」时会强制清掉 HOVERED
-/// （`context.rs`：`if input.pointer.any_down() && !is_interacted_with`）。
-/// 拖动时按键落在**源**页签上，指针移到**目标**页签——目标既不是被按下的控件、
-/// 也没被点击，于是 `hovered()` 恒为 false，绿环永远画不出来（落点也算不出）。
-/// 若按键直接落在目标上，目标自己就是被按下的控件，`hovered()` 反而正常为真——
-/// 那样测等于没测，所以必须分两处。
+/// 拖动时按键落在源页签上，指针移到目标页签。
 fn tab_shapes_at_with(
     app: &mut App,
     pointer: Option<egui::Pos2>,
@@ -77,8 +67,7 @@ fn tab_shapes_at_with(
         crate::theme::UiStyle::from_key("cloud"),
         false,
     );
-    // 图标是 `update()` 里惰性加载的；测试直接调 `ui_top_bar` 不经过 `update`，
-    // 不先加载就没有贴图网格，tint 也就无从断言。
+    // 图标由 `update()` 惰性加载，测试直接调 `ui_top_bar`，需先手动加载贴图。
     app.load_backend_icons(&ctx);
     let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
     let moved = |p: egui::Pos2| vec![egui::Event::PointerMoved(p)];
@@ -93,8 +82,8 @@ fn tab_shapes_at_with(
             },
         ]
     };
-    // 帧序列：按下那一帧 → 指针移到目标那一帧。egui 的交互判定用的是**上一帧**
-    // 登记的控件矩形，所以每个位置都要跑够帧数才生效。
+    // 帧序列：按下那一帧 → 指针移到目标那一帧。egui 的交互判定用上一帧登记的控件矩形，
+    // 每个位置跑两帧才生效。
     let frames: Vec<Vec<egui::Event>> = match (press_at, pointer) {
         (Some(from), Some(to)) => vec![press(from), press(from), moved(to), moved(to)],
         (None, Some(to)) => vec![moved(to), moved(to)],
@@ -132,20 +121,15 @@ fn tab_shapes_at_with(
     for cs in &out.shapes {
         collect(&cs.shape, &mut rects);
     }
-    // 页签条的横向范围必须**按页签数量算**，不能写死。每个页签占 48px
-    // （44 宽 + 4 间距），写死 `left < 400` 时第 9 个页签（left=392，图标在 406）
-    // 会被整条滤掉，表现为「少了一个图标 tint」。
+    // 页签条的横向范围按页签数量算：每个页签占 48px（44 宽 + 4 间距）。
     let strip_right = 48.0 * crate::backends::BACKENDS.len() as f32 + 8.0;
-    // top 上界必须落在**两行之间**：页签本体在第 1 行（top=2、bottom=24），
-    // 而第 2 行（路径行）的「浏览」按钮 left≈459 < strip_right、top=35，
-    // 旧上界 40 会把它当成第 11 个页签算进来（「每个后端图标各一个按钮」11≠10）。
+    // top 上界落在两行之间：页签本体在第 1 行（top=2、bottom=24），路径行按钮 top=35。
     let in_strip = |r: &egui::Rect| {
         r.top() < 28.0 && r.left() < strip_right && r.width() < 60.0 && r.height() < 40.0
     };
-    // 悬停时同一个页签会画出**两个**矩形：egui 的 hover 框（外扩 1px、底色
-    // `#383838`、描边强调色）与我们补画的落点绿环（无填充）。非悬停时只有一个本体。
-    // 直接按「有没有填充」筛会在悬停那一帧错位，所以**按 x 中心聚类**：
-    // 同一个页签的所有矩形共享中心，取其中填充非透明（或最宽）的那个当本体。
+    // 悬停时同一个页签画两个矩形：egui 的 hover 框（外扩 1px、底色 `#383838`、
+    // 描边强调色）与落点绿环（无填充）；非悬停时只有一个本体。按 x 中心聚类，
+    // 取其中填充非透明（或最宽）的那个当本体。
     let is_ring = |fill: &egui::Color32, stroke: &egui::Color32, textured: bool, w: f32| {
         !textured
             && w > 0.0
@@ -219,14 +203,13 @@ fn tab_rings_with_pointer_on(
     app: &mut App,
     slot: usize,
 ) -> Vec<Option<(egui::Rect, egui::Color32, u8)>> {
-    // 先跑一帧拿到稳定的几何（布局由页签数量决定，不随指针变），
-    // 再按目标槽位的中心点跑第二帧，让 hover 真正命中。
+    // 先跑一帧拿到几何，再按目标槽位的中心点跑第二帧。
     let boxes = tab_fills(app);
     let center = boxes[slot].0.center();
     tab_shapes_at(app, Some(center)).2
 }
 
-/// 同上，但模拟**真实拖拽**：先在第 `from` 个页签按下主键，再把指针移到第 `to` 个。
+/// 同上，但模拟真实拖拽：先在第 `from` 个页签按下主键，再把指针移到第 `to` 个。
 fn tab_rings_while_dragging(
     app: &mut App,
     from: usize,
@@ -238,16 +221,13 @@ fn tab_rings_while_dragging(
     tab_shapes_at_with(app, Some(end), Some(start)).2
 }
 
-/// 让全部后端都算「已安装」，页签顺序才与跑测试这台机器无关。
+/// 让全部后端都算「已安装」，页签顺序与跑测试这台机器无关。
 ///
-/// 槽位由 `ConfigPaths::validate_target`（配置文件**是否真实存在**）决定：
-/// 已安装的排在前面、顺序取 `tab_order`，未安装的按名字排在后面。在开发机上
-/// 恰好装了那几个后端，写死的槽位下标（第 3 个是 ZCode）就对得上；CI 是干净机器、
-/// 一个都没装，顺序退化成全字母序，下标全部错位，整批测试在 CI 上挂掉而本地一直绿。
-/// 所以这里给每个后端在临时目录里造一份真实存在的配置文件，把顺序钉死：
-/// 全部「已安装」后，顺序只由 `TAB_ORDER` 决定，未列进去的几家按字母序补在其后。
+/// 槽位由 `ConfigPaths::validate_target`（配置文件是否真实存在）决定：已安装的排在前面、
+/// 顺序取 `tab_order`，未安装的按名字排在后面。这里给每个后端在临时目录里造一份配置文件，
+/// 全部「已安装」后顺序只由 `TAB_ORDER` 决定，未列进去的几家按字母序补在其后。
 fn install_every_backend(app: &mut App) {
-    // 全进程共用一份：路径只要存在即可，各测试各建一份只会往临时目录里堆垃圾。
+    // 全进程共用一份临时目录。
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     let root = DIR.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("model-harbor-tabs-{}", std::process::id()));
@@ -273,7 +253,7 @@ fn app_with_tabs() -> App {
     app
 }
 
-/// 选中页签的底色 = 悬浮色（`widgets.hovered.bg_fill`），不是另起一套颜色。
+/// 选中页签的底色 = 悬浮色（`widgets.hovered.bg_fill`）。
 #[test]
 fn the_selected_tab_uses_the_hover_fill_with_a_bold_ring() {
     let mut app = app_with_tabs();
@@ -322,8 +302,7 @@ fn highlight_follows_the_current_page() {
 
 #[test]
 fn the_grabbed_tab_is_orange_and_differs_from_the_selected_one() {
-    // 「我正抓着这页」（橙，拖动源色）与「我在这页」（悬浮加重）刻意不同色，
-    // 两者才不会看混。
+    // 拖动源色（橙）与选中色（悬浮加重）不同色。
     let mut app = app_with_tabs();
     app.current_page = ConfigFormat::Opencode;
     app.tab_drag_src = Some(ConfigFormat::ZCode);
@@ -343,10 +322,8 @@ fn the_grabbed_tab_is_orange_and_differs_from_the_selected_one() {
 
 #[test]
 fn the_icon_tint_does_not_depend_on_which_tab_is_selected() {
-    // 曾经把选中页签的图标 tint 成 `selection.stroke.color`，深色主题下那正好是
-    // 黑色，图标整个变黑。状态只能靠底色/描边表达，图标 tint 只能是白（已安装）
-    // 或压淡色（未安装）——**逐槽位比对**才真的锁住这一点：换个选中页，同一个槽位
-    // 的 tint 必须一模一样。只断言「不是黑色」会漏掉「换成任意别的颜色」的回归。
+    // 图标 tint 只能是白（已安装）或压淡色（未安装），逐槽位比对：换个选中页，
+    // 同一个槽位的 tint 必须一模一样。
     let tints_for = |page| {
         let mut app = app_with_tabs();
         app.current_page = page;
@@ -380,8 +357,7 @@ fn the_icon_tint_does_not_depend_on_which_tab_is_selected() {
 
 #[test]
 fn the_swap_target_is_marked_green_and_the_source_is_not() {
-    // 拖动中：指针所在的**别的**页签画绿环（换位目标），被拖的那个自己用橙。
-    // 绿色只给落点——拖动源不能同时是绿色，否则「要换到哪」看不出来。
+    // 拖动中：指针所在的别的页签画绿环（换位目标），拖动源用橙。
     let mut app = app_with_tabs();
     app.current_page = ConfigFormat::Opencode;
     app.tab_drag_src = Some(ConfigFormat::Opencode);
@@ -403,7 +379,7 @@ fn the_swap_target_is_marked_green_and_the_source_is_not() {
             "第 {i} 个不是落点，不该有绿色环"
         );
     }
-    // 拖动源自己不能是绿色落点：源用橙色底色，绿环只属于落点。
+    // 拖动源用橙色底色，不是绿环。
     let tabs = tab_fills(&mut app);
     assert_eq!(
         tabs[0].1,
@@ -414,8 +390,7 @@ fn the_swap_target_is_marked_green_and_the_source_is_not() {
 
 #[test]
 fn no_green_ring_appears_when_nothing_is_being_dragged() {
-    // 绿环是「拖动中的落点」专用提示；不在拖动时不该出现，
-    // 否则悬停就变绿，和「选中」的观感混在一起。
+    // 绿环只属于拖动中的落点；不在拖动时不该出现。
     let mut app = app_with_tabs();
     app.current_page = ConfigFormat::Opencode;
     let rings = tab_rings_with_pointer_on(&mut app, 2);
@@ -430,11 +405,7 @@ fn no_green_ring_appears_when_nothing_is_being_dragged() {
 
 #[test]
 fn the_green_ring_shows_up_while_the_button_is_actually_held() {
-    // 回归：真实拖拽时键按在**源**页签上、指针移到**目标**页签上，而 egui 会在
-    // 「有键按下且按下的不是本控件」时强制清掉 HOVERED，所以用 `hovered()` 判断落点
-    // 的话绿环永远画不出来（`drop_on` 也永远是 None，换位功能整个是坏的）。
-    // 上面那个测试没按键，`hovered()` 正常为真，于是「看起来是对的」——
-    // 正是这个假象让 bug 一直没被测出来。
+    // 真实拖拽：键按在源页签上、指针移到目标页签上。
     let mut app = app_with_tabs();
     app.current_page = ConfigFormat::Opencode;
     app.tab_drag_src = Some(ConfigFormat::Opencode);
@@ -458,11 +429,7 @@ fn the_green_ring_shows_up_while_the_button_is_actually_held() {
     }
 }
 
-/// 换位绿环必须与按钮**同圆角**，只换颜色、不改形状。
-///
-/// 用户报的「被选中图标按钮绿色对了，不要变圆角啊，我只是让你改边框颜色」：
-/// 绿环曾经写死圆角 3.0，而云朵档的按钮圆角是 16——于是绿环成了套在圆角按钮上的
-/// 一个方框，看着像另画了个矩形。这里钉住两者取同一个值。
+/// 换位绿环与按钮同圆角，只换颜色、不改形状。
 #[test]
 fn the_green_ring_shares_the_buttons_corner_radius() {
     let mut app = app_with_tabs();
@@ -477,14 +444,14 @@ fn the_green_ring_shares_the_buttons_corner_radius() {
     };
     let (bodies, _, rings) = shapes;
     let (_, _, radius) = rings[to].expect("目标槽位必须有绿环");
-    // 按钮本体的圆角：取本体矩形的圆角（`TabBox` 只带颜色，所以用主题值核对）。
+    // 按钮本体的圆角用主题值核对（`TabBox` 只带颜色）。
     let expected = crate::theme::UiStyle::from_key("cloud").radius();
     assert_eq!(
         radius, expected,
         "绿环圆角必须等于按钮圆角（云朵档 = {expected}），不能写死"
     );
     assert_ne!(radius, 3, "曾经写死 3.0，正是「变圆角了」的根因");
-    // 绿环与按钮本体几何一致（矩形完全相同），说明只换了描边颜色、没改形状。
+    // 绿环与按钮本体几何一致（矩形完全相同）。
     assert_eq!(
         rings[to].map(|(r, _, _)| r),
         Some(bodies[to].0),

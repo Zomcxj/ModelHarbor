@@ -3,7 +3,7 @@
 mod combo;
 mod view;
 
-// 扁平门面（仅测试）：让 `use super::*` 的单测直接看到跨子模块项。
+// 扁平门面：让 `use super::*` 的单测直接看到跨子模块项。
 use combo::*;
 #[cfg(test)]
 use view::*;
@@ -63,7 +63,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.strong(egui::RichText::new("Agents").size(crate::theme::TEXT_HEADING));
                 // agents 只属于 opencode 页：来源不是 opencode 时界面没有 agents 数据，
-                // 跨格式保存不会接管目标文件的 agent 容器（避免静默清空）。
+                // 跨格式保存不接管目标文件的 agent 容器。
                 if !self.source_format.is_opencode_family() {
                     let src = self.source_format.label();
                     ui.label(
@@ -105,10 +105,8 @@ impl App {
                         }
                     }
                 }
-                // 免费模型的状态与「刷新」**统一放在标题行**（展开按钮右侧），
-                // 不再每个 agent 的 model 下拉旁各放一份：刷新的是本页后端的内置
-                // 免费模型清单，与具体哪个 agent 无关。只对有免费层的后端显示
-                // （mimocode 没有，不占位置）。
+                // 免费模型的状态与「刷新」统一放在标题行（展开按钮右侧）。
+                // 只对有免费层的后端显示。
                 let (free_prefix, free_list) =
                     current_free_models(self.current_page, &self.free_models);
                 if free_prefix.is_some() {
@@ -148,7 +146,7 @@ impl App {
         let card_id = egui::Id::new(("agent_card", key.clone()));
         let resp = card_frame(ui, open, highlight, card_id, |ui| {
             // 同 Provider 卡片头：左组内容不定长，用 `Sides::shrink_left().truncate()`
-            // 先量右组，保证「删除 / 复制」永远贴在卡片右缘、不被裁剪。
+            // 先量右组，保证「删除 / 复制」贴在卡片右缘。
             let _ = egui::Sides::new().shrink_left().truncate().show(
                 ui,
                 |ui| {
@@ -192,7 +190,7 @@ impl App {
                     }
                 },
             );
-            // 折叠 / 展开带高度动画；动画 id 按 key 派生，改名即换 id（状态不串卡）。
+            // 折叠 / 展开带高度动画；动画 id 按 key 派生，改名即换 id。
             crate::motion::animated_collapse(ui, card_id, open, |ui| {
                 self.render_agent_form(ui, idx);
             });
@@ -252,7 +250,7 @@ impl App {
             field_label(ui, 120.0, "system");
             ui.add(egui::TextEdit::singleline(&mut a.system).desired_width(450.0));
         });
-        // key 重命名后同步展开状态（避免改名导致卡片收起）
+        // key 重命名后同步展开状态。
         let new_key = self.agents[idx].key.clone();
         if new_key != prev_key {
             self.sync_agent_rename(&prev_key, &new_key);
@@ -335,7 +333,7 @@ impl App {
         });
     }
 
-    /// agent key 重命名后同步 UI 状态（卡片折叠集合），避免改名后卡片收起。
+    /// agent key 重命名后同步 UI 状态（卡片折叠集合）。
     pub(super) fn sync_agent_rename(&mut self, old: &str, new: &str) {
         if old == new || new.is_empty() {
             return;
@@ -392,8 +390,7 @@ mod model_options_tests {
         );
     }
 
-    /// 网关段内部的顺序由调用方给定（首选在最前），**不能再被字典序打乱**。
-    /// 旧实现整体 `sort()`，`kilo/kilo-auto/free` 会被 `kilo/~anthropic/…` 挤到后面。
+    /// 网关段内部的顺序由调用方给定（首选在最前），不被字典序打乱。
     #[test]
     fn the_gateway_segment_keeps_its_given_order() {
         let gateway = vec![
@@ -413,7 +410,7 @@ mod model_options_tests {
         assert_eq!(options, vec!["zeta/m2", "zeta/m1", "alpha/m"]);
     }
 
-    /// 关键行为：远程列表变了也不能把已配置的当前值弄丢，否则用户会以为配置坏了。
+    /// 关键行为：远程列表变了也不能把已配置的当前值弄丢。
     #[test]
     fn keeps_current_value_even_when_absent_from_the_list() {
         let gateway = vec!["opencode/big-pickle".to_string()];
@@ -490,8 +487,7 @@ mod model_options_tests {
         assert_eq!(out[1].model, "   ");
     }
 
-    /// 同一份 agents 数据在三个页面上各自归一成**不同**的值——这是「一键保存
-    /// 不会把同一串引用写进所有文件」的保证。
+    /// 同一份 agents 数据在三个页面上各自归一成不同的值。
     #[test]
     fn the_same_agents_normalize_differently_per_page() {
         let agents = vec![agent("a", "opencode/ling-3.0-flash-fin-free")];
@@ -507,7 +503,7 @@ mod model_options_tests {
     /// 动态列表拿到后用它的第一个（而不是写死的兜底）。
     #[test]
     fn the_live_list_decides_the_replacement_target() {
-        // 引用必须来自**别家**网关才会被替换，否则测不出替换目标
+        // 引用必须来自别家网关才会被替换。
         let agents = vec![agent("a", "kilo/kilo-auto/free")];
         let live = vec!["big-pickle".to_string(), "zzz-free".to_string()];
         let (out, replaced) = agents_for_page(&agents, ConfigFormat::Opencode, &[], &live);
@@ -525,7 +521,7 @@ mod model_options_tests {
         assert_eq!(out[0].model, "opencode/x");
     }
 
-    /// 没斜杠的引用在任何页都解析不了，换成自家网关模型是修正。
+    /// 没斜杠的引用在任何页都解析不了，换成自家网关模型。
     #[test]
     fn malformed_references_are_replaced() {
         let agents = vec![agent("a", "no-slash")];

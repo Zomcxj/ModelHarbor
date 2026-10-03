@@ -17,7 +17,7 @@ fn short_err_keeps_status_code_with_reason() {
             short_err("HTTP 404 接口或模型不存在：Not Found\nBase URL 路径或模型名写错；检查接口地址与模型 id"),
             "HTTP 404 接口或模型不存在"
         );
-    // 未收录的状态码：只给数字，不猜原因
+    // 未收录的状态码：只给数字。
     assert_eq!(short_err("HTTP 599（200 ms）"), "HTTP 599");
     // 非 HTTP 错误：原样短文本（超长才截断）
     assert_eq!(
@@ -29,7 +29,7 @@ fn short_err_keeps_status_code_with_reason() {
 
 #[test]
 fn fetch_grid_columns_never_exceed_available_width() {
-    // 总宽 = 列数 * 列宽 + 间距 * (列数 - 1)，任何宽度下都不得超过可用宽度。
+    // 总宽 = 列数 * 列宽 + 间距 * (列数 - 1)，不得超过可用宽度。
     let total =
         |(cols, col_w): (usize, f32)| cols as f32 * col_w + FETCH_GRID_GAP_X * (cols - 1) as f32;
     // 宽窗口：取满 5 列并把宽度均分（5 * 217.6 + 4 * 28 = 1200）。
@@ -41,13 +41,13 @@ fn fetch_grid_columns_never_exceed_available_width() {
     let mid = fetch_grid_columns(50, 400.0);
     assert_eq!(mid.0, 2);
     assert!(total(mid) <= 400.5);
-    // 极窄窗口：退化为单列，宽度不超过可用宽度。
+    // 极窄窗口：退化为单列。
     let narrow = fetch_grid_columns(50, 120.0);
     assert_eq!(narrow.0, 1);
     assert!(narrow.1 <= 120.0);
     // 模型很少时不空出多余列。
     assert_eq!(fetch_grid_columns(3, 1200.0).0, 3);
-    // 空列表（防御性）不 panic，也不返回 0 列。
+    // 空列表不 panic，也不返回 0 列。
     assert_eq!(fetch_grid_columns(0, 300.0).0, 1);
 }
 
@@ -183,7 +183,7 @@ fn query_key_appends_after_existing_query() {
         with_query_key("https://gw.example.com/models", AuthKind::QueryKey, "sk-1"),
         "https://gw.example.com/models?key=sk-1"
     );
-    // Google 流式端点已经带了 ?alt=sse，密钥要用 & 接着拼
+    // Google 流式端点已带 ?alt=sse，密钥用 & 接着拼
     assert_eq!(
         with_query_key(
             "https://gw.example.com/models/m:streamGenerateContent?alt=sse",
@@ -240,7 +240,7 @@ fn chat_url_follows_selected_protocol() {
 #[test]
 fn api_wire_classifies_and_flags_unsupported() {
     use crate::app::fetch::{api_wire, auth_kind, unsupported_reason, ApiWire, AuthKind};
-    // 未知值与空值都归到兼容层，不会漏掉协议分支
+    // 未知值与空值都归到兼容层。
     assert_eq!(api_wire("openai-completions"), ApiWire::ChatCompletions);
     assert_eq!(api_wire("unknown-api"), ApiWire::ChatCompletions);
     assert_eq!(api_wire(""), ApiWire::ChatCompletions);
@@ -261,7 +261,7 @@ fn api_wire_classifies_and_flags_unsupported() {
         AuthKind::QueryKey
     );
     assert_eq!(auth_kind(api_wire("openai-responses")), AuthKind::Bearer);
-    // 需要专有鉴权的协议提前报错，不发无意义的请求
+    // 需要专有鉴权的协议提前报错。
     assert!(unsupported_reason("google-gemini-cli").is_some());
     assert!(unsupported_reason("bedrock-converse-stream").is_some());
     assert!(unsupported_reason("openai-completions").is_none());
@@ -295,8 +295,7 @@ fn minimal_body_matches_protocol() {
 #[test]
 fn probe_user_agent_matches_whitelisted_clients() {
     use crate::app::fetch::{api_wire, probe_user_agent};
-    // Anthropic 系用 Claude Code 的身份，其余用 opencode 的身份
-    // （中转站只放行这两种；ureq 默认 UA / 无 UA / pi 的 UA 都会 401）
+    // Anthropic 系用 Claude Code 的身份，其余用 opencode 的身份。
     assert!(probe_user_agent(api_wire("anthropic-messages")).starts_with("claude-cli/"));
     assert!(probe_user_agent(api_wire("pi-messages")).starts_with("claude-cli/"));
     assert!(probe_user_agent(api_wire("openai-completions")).starts_with("opencode/"));
@@ -386,7 +385,7 @@ fn stream_ttft_reads_first_content_and_drains() {
         started,
     );
     assert!(fallback.is_some());
-    // 空流（连数据包都没有）才算失败
+    // 空流（连数据包都没有）算失败
     let empty: &[u8] = b"";
     assert!(read_stream_ttft(
         std::io::Cursor::new(empty),
@@ -418,8 +417,7 @@ fn probe_gate_throttles_per_provider() {
     let mut gate = ProbeGate::default();
     assert_eq!(gate.state("a", 100.0, None), ProbeGateState::Ready);
     gate.start("a", 100.0);
-    // 同一 provider 在飞期间 Busy（探测最长 10s，可能超过 5s 间隔，
-    // 否则会同时向同一中转站发两个请求）
+    // 同一 provider 在飞期间 Busy（探测最长 10s，可能超过 5s 间隔）
     assert_eq!(gate.state("a", 101.0, None), ProbeGateState::Busy);
     // 不同 provider 互不牵连：另一个厂商立即可测（可并行）
     assert_eq!(gate.state("b", 100.0, None), ProbeGateState::Ready);
@@ -441,7 +439,7 @@ fn probe_gate_throttles_per_provider() {
         gate.state("a", 200.0, Some("检测到系统代理")),
         ProbeGateState::NetBlocked(_)
     ));
-    // 释放：重载 / 关闭表单时不能把某个 provider 永久卡在 Busy
+    // 释放：重载 / 关闭表单时解除某个 provider 的占用
     gate.start("c", 300.0);
     gate.release(Some("a"));
     assert_eq!(gate.state("c", 400.0, None), ProbeGateState::Busy);
@@ -452,7 +450,7 @@ fn probe_gate_throttles_per_provider() {
 #[test]
 fn probe_questions_rotate_per_provider() {
     use crate::app::fetch::{probe_question, ProbeGate, PROBE_QUESTIONS};
-    // 同一 provider 连续取题不重复（避免每次都问同一句）
+    // 同一 provider 连续取题不重复
     let mut gate = ProbeGate::default();
     let first = gate.next_question("relay-a");
     let second = gate.next_question("relay-a");

@@ -5,15 +5,13 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// 缓存有效期（秒）：超过则在后台重新拉取。24 小时。
-///
-/// 免费模型上下架不是分钟级事件，一天一次足够；界面上的「刷新」按钮可随时强制重取。
+/// 缓存有效期（秒）：24 小时；超过则在后台重新拉取。
 pub const CACHE_TTL_SECS: i64 = 24 * 60 * 60;
 
 /// 落盘缓存的内容（`fetched_at` + 模型 id 列表）。
 pub struct Cache {
     pub models: Vec<String>,
-    /// 是否仍在有效期内（过期也照样返回 `models`，由调用方决定要不要后台刷新）。
+    /// 是否仍在有效期内；过期也照样返回 `models`。
     pub fresh: bool,
 }
 
@@ -25,9 +23,7 @@ pub(super) fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// 缓存文件名：按后端区分，避免两个页面的列表互相覆盖。
-///
-/// 用 `label()` 作标识（它同时是页签顺序等持久化状态用的稳定 key）。
+/// 缓存文件名：按后端 `label()` 区分。
 pub(super) fn cache_file(format: ConfigFormat) -> String {
     format!("free-models-{}.json", format.label())
 }
@@ -61,21 +57,19 @@ fn get_text(url: &str, read_secs: u64) -> Result<String, String> {
     response.into_string().map_err(|err| err.to_string())
 }
 
-/// 后台线程内执行：按后端拉取免费模型列表。
-///
-/// 没有免费层的后端直接返回空列表（不是错误）。
+/// 后台线程内执行：按后端拉取免费模型列表；没有免费层的后端返回空列表。
 pub fn fetch_remote(format: ConfigFormat) -> Result<Vec<String>, String> {
     match format {
         // opencode：models.dev 的价格 + Zen 网关的可用性，两者求交。
         ConfigFormat::Opencode => {
             let free = parse_models_dev_free(&get_text(SOURCE_URL, 60)?, "opencode")?;
-            // 网关列表很小（几 KB），拉不到就回退，不让整个流程失败。
+            // 网关列表拉不到就回退。
             let live = get_text(OPENCODE_LIVE_URL, 15)
                 .ok()
                 .and_then(|text| parse_live_models(&text).ok());
             Ok(combine(free, live.as_deref()))
         }
-        // Kilo：网关响应自带 isFree，一个请求即可。
+        // Kilo：网关响应自带 isFree。
         ConfigFormat::Kilocode => parse_kilo_free(&get_text(KILO_LIVE_URL, 60)?),
         // 其余后端没有免费层。
         _ => Ok(Vec::new()),
@@ -101,12 +95,12 @@ pub(super) fn load_cache_at(path: &Path) -> Option<Cache> {
     let age = unix_now().saturating_sub(fetched_at);
     Some(Cache {
         models,
-        // 时间戳落在未来（改过系统时间）时按「刚取过」处理，不必重取。
+        // 时间戳落在未来时按「刚取过」处理。
         fresh: age < CACHE_TTL_SECS,
     })
 }
 
-/// 从指定路径写入缓存（原子写，失败只返回错误文本，不影响界面）。
+/// 从指定路径写入缓存（原子写）。
 pub(super) fn save_cache_at(path: &Path, models: &[String]) -> Result<(), String> {
     let payload = serde_json::json!({
         "fetched_at": unix_now(),

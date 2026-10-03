@@ -16,9 +16,7 @@ fn missing_json_on_pi_page_does_not_overwrite_opencode_path() {
     let opencode_path = r"D:\existing-opencode\opencode.json";
     app.config_paths
         .set_local_path(ConfigFormat::Opencode, opencode_path);
-    // 本机 settings.json 可能给 pi 页留过覆盖路径（例如误填的 opencode 文件）；
-    // 这条测试断言的是「不存在的路径不该记进 pi 覆盖」，与既有覆盖无关，
-    // 先清掉才能独立成立。
+    // 先清掉本机可能给 pi 页留的覆盖路径，使断言独立成立。
     app.config_paths.set_local_path(
         ConfigFormat::Pi,
         &ConfigPaths::default_local_path(ConfigFormat::Pi),
@@ -69,8 +67,7 @@ fn existing_pi_file_is_remembered_only_by_detected_page() {
     let _ = std::fs::remove_file(app.config_path);
 }
 
-/// 启动方言判定必须以文件内容为准：把 opencode.json 填到 pi 页时，
-/// 按页面推断会解析出 0 条 provider（「写了路径却不自动加载」）。
+/// 启动方言判定以文件内容为准，而非当前页面。
 #[test]
 fn startup_format_follows_file_content_not_the_page() {
     use crate::app::startup_format;
@@ -90,18 +87,18 @@ fn startup_format_follows_file_content_not_the_page() {
     std::fs::write(&pi, r#"{"providers": {"a": {"models": []}}}"#).expect("写 pi 临时配置");
     let pi = pi.to_string_lossy().into_owned();
 
-    // 关键场景：pi 页填了 opencode 文件 → 必须纠正成 opencode
+    // 关键场景：pi 页填了 opencode 文件，应按内容纠正为 opencode
     assert_eq!(
         startup_format(ConfigFormat::Pi, &oc),
         ConfigFormat::Opencode,
         "opencode 文件被填到 pi 页时应按内容纠正为 opencode"
     );
-    // 反向同理
+    // 反向同理。
     assert_eq!(
         startup_format(ConfigFormat::Opencode, &pi),
         ConfigFormat::Pi
     );
-    // 路径为空 / 不存在：保持页面推断（不猜）
+    // 路径为空 / 不存在：保持页面推断。
     assert_eq!(startup_format(ConfigFormat::Pi, "   "), ConfigFormat::Pi);
     let missing = std::env::temp_dir()
         .join("model-harbor-definitely-missing.json")

@@ -1,7 +1,6 @@
-//! 主题菜单的交互回归：点菜单项必须**真的应用主题**（只换按钮文字 = bug）。
-//!
-//! 复刻 `src/app/bars.rs` 里顶栏「主题」按钮 + `Popup::menu` 的结构，
-//! 用 headless 的 `egui::Context` 喂指针事件，检查点击后 `Context` 的样式是否真的换了。
+//! 主题菜单的交互回归：用 headless 的 `egui::Context` 喂指针事件，
+//! 复刻 `src/app/bars.rs` 顶栏「主题」按钮 + `Popup::menu` 的结构，
+//! 检查点击后 `Context` 的样式是否真的换了。
 
 use eframe::egui;
 use model_harbor::theme::Theme;
@@ -39,12 +38,12 @@ fn frame(
             let look_btn = ui.button("外观");
             *btn_rect = look_btn.rect;
             egui::Popup::menu(&look_btn)
-                // 与 bars.rs 一致：菜单默认 top_down_justified 会让填充撑满宽度。
+                // 与 bars.rs 一致。
                 .layout(egui::Layout::top_down(egui::Align::LEFT))
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show(|ui| {
                     ui.set_min_width(200.0);
-                    // 与 bars.rs 一致：九个主题排在自动换行的横向布局里。
+                    // 九个主题排在自动换行的横向布局里。
                     ui.horizontal_wrapped(|ui| {
                         for t in Theme::ALL {
                             let resp = ui.selectable_label(*theme == t, t.label());
@@ -125,8 +124,7 @@ fn clicking_a_theme_menu_item_applies_the_theme() {
 
     assert_eq!(theme.key(), target.key(), "点击菜单项应切换主题");
 
-    // 关键：不只是按钮文字变了，**实际样式**也要换
-    // （egui 0.33 每个主题各存一份 style，主题变了必须显式再 apply 一次）
+    // 除了按钮文字，实际样式也要换。
     let reference = egui::Context::default();
     Theme::Light.apply(&reference);
     assert_eq!(
@@ -168,13 +166,12 @@ fn menu_items_hug_their_text_instead_of_filling_the_popup() {
 
     let items = frame(&ctx, &mut theme, vec![], &mut btn_rect);
     assert!(!items.is_empty(), "菜单应已展开");
-    // 同一行的项左边缘对齐。
-    // 同一行内按左到右排列：后续项不回到行首。
+    // 同一行内从左到右排列，换行后左边缘回到行首。
     let mut last_row_top = items[0].1.top();
     let mut last_left = f32::NEG_INFINITY;
     for (t, rect) in &items {
         if (rect.top() - last_row_top).abs() > 1.0 {
-            // 换行了：左边缘回到行首，应该比上一行最后一个更靠左。
+            // 换行了：左边缘回到行首，应比上一行最后一个更靠左。
             assert!(
                 rect.left() < last_left,
                 "{} 换行后没回到行首：{:?}",
@@ -192,8 +189,7 @@ fn menu_items_hug_their_text_instead_of_filling_the_popup() {
         }
         last_left = rect.left();
     }
-    // 主题名都是两个汉字，宽度本来就一样；能区分「贴文字」与「撑满」的是
-    // **绝对宽度**：撑满时每项会等于弹出宽度（200），贴文字时只有三十几像素。
+    // 用绝对宽度区分「贴文字」与「撑满」：撑满时每项约等于弹出宽度。
     let widths: Vec<f32> = items.iter().map(|(_, r)| r.width()).collect();
     let max = widths.iter().cloned().fold(0.0_f32, f32::max);
     assert!(

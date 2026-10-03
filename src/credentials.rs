@@ -15,9 +15,7 @@ pub fn sidecar_path(config_path: &str) -> String {
 
 /// 读取凭据文件的完整 root。
 ///
-/// 文件不存在（新建场景）返回骨架；**文件存在但读不出 / 解析不了 / 根不是对象
-/// 返回 Err**——静默回落骨架会让下一次保存把原文件整个换掉：refs、records、
-/// 未知字段全部丢失且无备份。宁可让保存报错，让用户先修好或备份这个文件。
+/// 文件不存在（新建场景）返回骨架；文件存在但读不出 / 解析不了 / 根不是对象返回 `Err`。
 pub fn load_root(config_path: &str) -> Result<Value, String> {
     let path = sidecar_path(config_path);
     let content = read_config_content(&path).map_err(|e| format!("读取失败（{path}）: {e}"))?;
@@ -52,7 +50,7 @@ pub fn secret_for(root: &Value, env_name: &str) -> String {
 }
 
 /// 将 provider 的实际密钥更新到同级凭据文件。
-/// 空密钥删除对应 ref；其余 refs/records/未知字段完全保留。
+/// 空密钥删除对应 ref；其余 refs / records / 未知字段保留。
 pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> {
     if !providers.iter().any(|provider| {
         !effective_env_name(provider).is_empty() || !provider.original_api_key_env.trim().is_empty()
@@ -79,8 +77,7 @@ pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> 
     for provider in providers {
         let env_name = effective_env_name(provider);
         let old_name = provider.original_api_key_env.trim();
-        // 重命名/清空引用时，只清理本次加载且已不再使用的旧 ref；
-        // 不触碰凭据文件中与本配置无关的 refs。
+        // 重命名/清空引用时，只清理本次加载且已不再使用的旧 ref。
         if !old_name.is_empty() && old_name != env_name && !current_names.contains(old_name) {
             refs.remove(old_name);
         }
@@ -100,7 +97,7 @@ pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> 
 }
 
 /// 根据 provider key 生成 DSH 默认凭据引用名。
-/// 非 ASCII 字母数字统一转为下划线，避免生成不可移植的环境变量名。
+/// 非 ASCII 字母数字统一转为下划线。
 pub fn default_env_name(provider_key: &str) -> String {
     let stem: String = provider_key
         .trim()
@@ -121,8 +118,8 @@ pub fn default_env_name(provider_key: &str) -> String {
     }
 }
 
-/// DSH 需要写入 settings.yaml 的引用名。加载其他 agent 或旧 DSH
-/// 配置缺少 apiKeyEnv 时，按 provider key 自动生成稳定的默认值。
+/// DSH 需要写入 `settings.yaml` 的引用名。
+/// `apiKeyEnv` 为空时按 provider key 生成默认值。
 pub fn effective_env_name(provider: &ProviderRow) -> String {
     let explicit = provider.api_key_env.trim();
     if explicit.is_empty() {
@@ -132,8 +129,7 @@ pub fn effective_env_name(provider: &ProviderRow) -> String {
     }
 }
 
-/// DSH sidecar 中的实际密钥。优先使用 DSH 编辑框；从其他 agent
-/// 转换且该框尚未编辑时，复用来源 provider 的 apiKey。
+/// DSH sidecar 中的实际密钥：优先 DSH 编辑框，其次来源 provider 的 `apiKey`。
 pub fn effective_secret(provider: &ProviderRow) -> String {
     if !provider.api_key_secret.is_empty() {
         provider.api_key_secret.clone()

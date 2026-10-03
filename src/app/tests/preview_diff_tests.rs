@@ -1,10 +1,8 @@
 use crate::app::diff::{diff_hunks, DiffSummary, LineKind};
 use crate::app::preview::diff_signature;
 
-/// 对比视图的核心语义：显示的就是「按一下保存会改掉什么」。
-///
-/// 这里用一份 opencode 配置走完「原文件 → 改过的草稿」的完整链路，
-/// 断言新增/删除的行数落在用户真正改过的那几处，而不是整份文件。
+/// 对比视图显示的就是「按一下保存会改掉什么」：
+/// 用一份 opencode 配置走完「原文件 → 改过的草稿」的链路。
 #[test]
 fn a_one_line_change_shows_up_as_one_add_and_one_remove() {
     let original = r#"{
@@ -33,8 +31,8 @@ fn a_one_line_change_shows_up_as_one_add_and_one_remove() {
     );
 }
 
-/// 跨格式保存会把目标文件的 provider 容器整段换成界面里的那份：
-/// 对比必须把「旧容器消失、新容器出现」如实显示出来，不能只说一句「有改动」。
+/// 跨格式保存会整段替换目标文件的 provider 容器，对比要如实显示
+/// 「旧容器消失、新容器出现」。
 #[test]
 fn replacing_a_container_shows_both_the_old_and_the_new_entries() {
     let on_disk = r#"{
@@ -81,7 +79,7 @@ fn replacing_a_container_shows_both_the_old_and_the_new_entries() {
     );
 }
 
-/// 新建文件（目标不存在 → 磁盘侧为空）时，整份文档都是新增。
+/// 目标文件不存在（磁盘侧为空）时，整份文档都是新增。
 #[test]
 fn a_file_that_does_not_exist_yet_reads_as_all_new() {
     let pending = "{\n  \"provider\": {}\n}";
@@ -90,8 +88,7 @@ fn a_file_that_does_not_exist_yet_reads_as_all_new() {
     assert_eq!(summary.added, 3, "整份文档都算新增");
 }
 
-/// 对比缓存签名必须把路径也算进去：切页会换目标文件，不同文件的同名草稿
-/// 不能共用一份缓存结果。
+/// 对比缓存签名包含路径：不同文件的同名草稿不共用缓存结果。
 #[test]
 fn switching_pages_invalidates_the_cache_via_the_path() {
     let draft = "{\n  \"provider\": {}\n}";

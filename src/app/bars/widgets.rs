@@ -12,7 +12,7 @@ pub(in crate::app) fn toolbar_icon_button(
     let pressed = response.is_pointer_button_down_on();
     let hovered = response.hovered();
     let visuals = ui.visuals();
-    // 圆角跟随当前主题形状（与其它控件一致），不再写死 3。
+    // 圆角跟随当前主题形状（与其它控件一致）。
     let corner = visuals.widgets.inactive.corner_radius;
     let fill = if active {
         visuals.selection.bg_fill

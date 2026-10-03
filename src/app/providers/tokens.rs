@@ -4,11 +4,11 @@ use eframe::egui;
 impl App {
     /// 令牌面板内容：列出当前页面所有站点（按 origin 归并），填 / 改 / 删面板访问令牌。
     ///
-    /// 令牌是**站点级**的：同一站点的多个 provider 共用一份，所以这里按站点一行，
-    /// 并标注哪些 provider 在用。只用于只读查询，不写进任何 agent 配置文件。
-    /// 由 [`super::App::ui_tokens_window`] 装进悬浮窗渲染，不再占正文布局。
+    /// 令牌是**站点级**的：同一站点的多个 provider 共用一份，这里按站点一行并标注
+    /// 哪些 provider 在用。只用于只读查询，不写进任何 agent 配置文件。
+    /// 由 [`super::App::ui_tokens_window`] 装进悬浮窗渲染。
     pub(in crate::app) fn ui_tokens_panel(&mut self, ui: &mut egui::Ui) {
-        // 站点 → 使用它的 provider key（按首次出现顺序，保持与卡片列表一致）。
+        // 站点 → 使用它的 provider key（按首次出现顺序）。
         let mut stations: Vec<(String, Vec<String>)> = Vec::new();
         for provider in &self.providers {
             let origin = crate::tokens::station_key(&provider.base_url);
@@ -21,7 +21,7 @@ impl App {
             }
         }
 
-        // 标题由悬浮窗提供，此处不再重复。
+        // 标题由悬浮窗提供，此处不重复。
         ui.label(
             egui::RichText::new(
                 "在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成；\
@@ -58,7 +58,7 @@ impl App {
             }
         }
 
-        // 按钮动作先收集、循环后统一写入 self（避免渲染中的借用冲突）。
+        // 按钮动作先收集、循环后统一写入 self。
         let mut save: Option<String> = None;
         let mut remove: Option<String> = None;
         let mut toggle_reveal: Option<String> = None;
@@ -87,8 +87,7 @@ impl App {
                 }
             });
             ui.horizontal(|ui| {
-                // 提示文字颜色由主题统一给定（见 `theme::Palette::hint_color`），
-                // 不再在这里逐个控件覆盖：一处改、全应用一致。
+                // 提示文字颜色由主题统一给定（见 `theme::Palette::hint_color`）。
                 if let Some(draft) = self.token_draft.get_mut(origin) {
                     ui.add(
                         egui::TextEdit::singleline(draft)
@@ -114,10 +113,8 @@ impl App {
                     remove = Some(origin.clone());
                 }
             });
-            // 用户 ID：只有部分站点（部署的是旧版 new-api）需要它，
-            // 所以放在令牌下一行，并说明什么情况下才填。
-            // 先算好再进闭包：`station_needs_user_id` 借整个 self，
-            // 不能在已经借了 `token_uid_draft` 的闭包里调用。
+            // 用户 ID：只有部分站点（旧版 new-api）需要它，所以放在令牌下一行。
+            // 先算好再进闭包：`station_needs_user_id` 借整个 self。
             let needs_id = self.station_needs_user_id(keys);
             ui.horizontal(|ui| {
                 ui.add_space(crate::theme::SPACE_2);
@@ -150,7 +147,7 @@ impl App {
             ui.add_space(crate::theme::SPACE_1);
         }
 
-        // 单条显隐：与全局「显示密钥」是「或」的关系，互不干扰。
+        // 单条显隐：与全局「显示密钥」是「或」的关系。
         if let Some(origin) = toggle_reveal {
             if !self.token_reveal.remove(&origin) {
                 self.token_reveal.insert(origin);
@@ -167,7 +164,7 @@ impl App {
                 self.status = format!("{} 的令牌为空：要清除请点「删除」", origin);
             } else {
                 self.tokens.set(&origin, &token);
-                // 用户 ID 是可选项：空串 = 不发 New-Api-User（新版站点不需要）。
+                // 用户 ID 是可选项：空串 = 不发 New-Api-User。
                 self.tokens.set_user_id(&origin, &uid);
                 let with_uid = !uid.trim().is_empty();
                 match self.tokens.save() {
@@ -200,8 +197,7 @@ impl App {
 
     /// 该站点的上次查询是否回了「缺 New-Api-User」。
     ///
-    /// 从已有的用量结果推导，不额外记状态：错误可能落在 `Err`（令牌侧也失败）
-    /// 或成功结果的 `note`（令牌侧成功、只有账号部分失败）两处，两边都要看。
+    /// 从已有的用量结果推导：错误可能落在 `Err` 或成功结果的 `note` 两处。
     pub(in crate::app) fn station_needs_user_id(&self, provider_keys: &[String]) -> bool {
         provider_keys.iter().any(|key| {
             self.balance
@@ -217,8 +213,7 @@ impl App {
         })
     }
 
-    /// 令牌变更后丢弃该站点各 provider 的用量缓存：下次查询重新取账号数据，
-    /// 避免换了令牌还继续显示旧账号余额。
+    /// 令牌变更后丢弃该站点各 provider 的用量缓存。
     fn forget_station_balance(&mut self, origin: &str) {
         let affected: Vec<String> = self
             .providers

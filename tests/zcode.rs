@@ -1,7 +1,7 @@
 //! ZCode 后端回归：`~/.zcode/v2/provider_config.json` 的判别 / 解析 / 序列化。
 //!
-//! 结构特殊之处：provider 与模型级属性分两处存放（`providerRules` 只列模型 id，
-//! 元数据在 `modelConfigRules.providerModelRules`），序列化时两边必须同步。
+//! provider 与模型级属性分两处存放（`providerRules` 只列模型 id，
+//! 元数据在 `modelConfigRules.providerModelRules`），序列化时两边同步。
 
 use model_harbor::backends;
 use model_harbor::convert;
@@ -57,9 +57,8 @@ fn load_zcode(content: &str) -> backends::BackendLoad {
 fn detect_requires_provider_rules_or_order() {
     let b = backends::backend(ConfigFormat::ZCode);
     assert!(b.detect(&zcode_json(), ""), "providerRules 数组应命中");
-    // 只有 providerOrder 也认
     assert!(b.detect(r#"{"config":{"providerOrder":[]}}"#, ""));
-    // 反例：pi 的 providers、opencode 的 provider、空对象都不该命中
+    // 反例：pi 的 providers、opencode 的 provider、空对象都不命中
     assert!(!b.detect(r#"{"providers":{}}"#, ""));
     assert!(!b.detect(r#"{"provider":{}}"#, ""));
     assert!(!b.detect("{}", ""));
@@ -67,7 +66,7 @@ fn detect_requires_provider_rules_or_order() {
 
 #[test]
 fn detect_does_not_steal_sibling_formats() {
-    // 判别优先级：ZCode 排在 pi 系之前，但不能把它们的配置抢走。
+    // 判别优先级：ZCode 排在 pi 系之前，但不抢它们的配置。
     assert_eq!(
         backends::detect_format(r#"{"providers":{"a":{}}}"#, ""),
         ConfigFormat::Pi
@@ -91,7 +90,7 @@ fn parse_maps_provider_and_model_fields() {
     assert_eq!(p.description, "workbuddy");
     assert_eq!(p.base_url, "http://127.0.0.1:3065/v1");
     assert_eq!(p.api_key, "sk-test");
-    // ZCode 的 openai-chat-completions 必须映射成内部的 openai-completions。
+    // ZCode 的 openai-chat-completions 映射成内部的 openai-completions。
     assert_eq!(p.pi_api, "openai-completions");
 
     assert_eq!(p.models.len(), 1);
@@ -131,7 +130,7 @@ fn current_file_save_preserves_unknown_keys_and_map_expression() {
     let cfg = &root["config"]["providerConfigRules"]["providerRules"][0]["config"];
     assert_eq!(cfg["group"], json!("standard-personal"));
     assert_eq!(cfg["customExt"]["keep"], json!(1), "未知扩展键必须保留");
-    // map 表达式原样保留（我们只同步档位清单，不解析这段 JS）
+    // map 表达式原样保留（只同步档位清单，不解析这段 JS）
     let specs =
         &root["config"]["modelConfigRules"]["providerModelRules"][0]["config"]["optionSpecs"];
     assert_eq!(
@@ -149,7 +148,6 @@ fn current_file_save_preserves_unknown_keys_and_map_expression() {
 
 #[test]
 fn enabled_is_a_sibling_of_properties_not_a_member() {
-    // 曾经的 bug：把 enabled 写进 properties，ZCode 读不到还留下同名垃圾键。
     let load = load_zcode(&zcode_json());
     let b = backends::backend(ConfigFormat::ZCode);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
@@ -163,8 +161,7 @@ fn enabled_is_a_sibling_of_properties_not_a_member() {
 
 #[test]
 fn does_not_invent_capability_flags() {
-    // 原文件没写 supports* 时，保存不得凭空补 false——
-    // 那会把「未声明」变成「明确不支持」，反而关掉 ZCode 的能力推断。
+    // 原文件没写 supports* 时，保存不补 false。
     let content = r#"{
       "config": {
         "providerOrder": ["p1"],
@@ -193,8 +190,7 @@ fn does_not_invent_capability_flags() {
 
 #[test]
 fn modalities_live_under_properties_input_format() {
-    // 内置模型库把模态布尔嵌在 properties.inputFormat（inputFormat/outputFormat
-    // 两个子块），不是 properties 直接子键。读入按嵌套取，写出按嵌套落。
+    // 模态布尔嵌在 properties.inputFormat 下，读入按嵌套取，写出按嵌套落。
     let content = r#"{
       "config": {
         "providerOrder": ["p1"],
@@ -214,7 +210,7 @@ fn modalities_live_under_properties_input_format() {
     let m = &load.providers[0].models[0];
     assert_eq!(m.modalities_input, "text, image", "模态应从 inputFormat 取");
 
-    // 写出：模态回落到 properties.inputFormat，不平铺到 properties。
+    // 写出：模态回落到 properties.inputFormat。
     let b = backends::backend(ConfigFormat::ZCode);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
     let props =
@@ -231,9 +227,7 @@ fn modalities_live_under_properties_input_format() {
 
 #[test]
 fn does_not_expand_declared_modalities_into_false_flags() {
-    // 模型只声明了 inputFormat.supportsImage，保存不得把它展开成五个 flag
-    // （supportsText:false 等）——那是「凭空发明字段」，supportsText:false 会让
-    // ZCode 隐藏/拒绝该模型（保存后软件里不显示的根因）。
+    // 模型只声明了 inputFormat.supportsImage 时，保存不展开成其它 flag。
     let content = r#"{
       "config": {
         "providerOrder": ["p1"],
@@ -274,8 +268,7 @@ fn does_not_expand_declared_modalities_into_false_flags() {
 
 #[test]
 fn provider_always_gets_standard_personal_group() {
-    // ZCode 要求 provider.config.group 必填，个人 provider 缺它会被整份拒绝
-    // （从 WorkBuddy 转过来的 provider 没有 group，就是保存后 ZCode 里不显示的根因）。
+    // ZCode 要求 provider.config.group 必填，缺失时补 standard-personal。
     let mut p = ProviderRow::new();
     p.key = "wb1".into();
     p.base_url = "https://api.example.com".into();
@@ -298,7 +291,7 @@ fn provider_always_gets_standard_personal_group() {
 
 #[test]
 fn existing_group_is_preserved() {
-    // ZCode 源自带的 group（如 zai-family）不能被覆盖成 standard-personal。
+    // ZCode 源自带的 group（如 zai-family）不被覆盖。
     let content = r#"{
       "config": {
         "providerOrder": ["p1"],
@@ -318,7 +311,7 @@ fn existing_group_is_preserved() {
 
 #[test]
 fn cross_format_save_does_not_leak_foreign_keys() {
-    // 从 WorkBuddy 形状的 raw 转存到 ZCode：对方的 id/vendor/url 不得进 config。
+    // 从 WorkBuddy 形状的 raw 转存到 ZCode：对方的 id/vendor/url 不进 config。
     let mut p = ProviderRow::new();
     p.key = "wb1".into();
     p.base_url = "https://api.example.com".into();
@@ -414,9 +407,7 @@ fn zcode_anthropic(base_url: &str) -> String {
 
 #[test]
 fn anthropic_base_url_drops_v1_like_pi() {
-    // ZCode 请求时按 kind 先剥后缀再拼 `/v1/messages`，但它只剥完整端点后缀，
-    // 不认光秃秃的 `/v1`：baseUrl 留 `/v1` 会被拼成 `/v1/v1/messages`，服务端直接拒
-    // （ZCode 里报 "Provider rejected the model request"）。与 pi 一致：进出都不带 `/v1`。
+    // ZCode 只剥完整端点后缀，不认光秃秃的 `/v1`，所以 baseUrl 进出都不带 `/v1`。
     let load = load_zcode(&zcode_anthropic("https://api.justwoker.icu/v1"));
     assert_eq!(
         load.providers[0].base_url, "https://api.justwoker.icu",
@@ -436,8 +427,7 @@ fn anthropic_base_url_drops_v1_like_pi() {
 
 #[test]
 fn anthropic_base_url_collapses_a_full_endpoint_path() {
-    // 手填整段端点（WorkBuddy 那边就是这么存的）也要收敛回基址：
-    // ZCode 自己会剥 `/v1/messages` / `/messages` 再拼回去，留着就等于两份后缀。
+    // 手填整段端点也收敛回基址：ZCode 自己会剥 `/v1/messages` / `/messages` 再拼回去。
     let load = load_zcode(&zcode_anthropic("https://api.justwoker.icu/v1/messages"));
     assert_eq!(load.providers[0].base_url, "https://api.justwoker.icu");
 
@@ -445,7 +435,7 @@ fn anthropic_base_url_collapses_a_full_endpoint_path() {
     let load = load_zcode(&zcode_anthropic("https://api.justwoker.icu"));
     assert_eq!(load.providers[0].base_url, "https://api.justwoker.icu");
 
-    // 带子路径的基址只剥到路径边界，不吞掉 host 后面的前缀。
+    // 带子路径的基址只剥到路径边界。
     let load = load_zcode(&zcode_anthropic("https://host.example/anthropic/v1"));
     assert_eq!(load.providers[0].base_url, "https://host.example/anthropic");
 }
@@ -453,7 +443,7 @@ fn anthropic_base_url_collapses_a_full_endpoint_path() {
 #[test]
 fn chat_completions_base_url_keeps_its_v1() {
     // Chat Completions 相反：ZCode 拼的是 `/chat/completions`，
-    // `https://host/v1` 正是它的正确基址，剥掉就会请求到 `/chat/completions` 而 404。
+    // `https://host/v1` 正是它的基址。
     let load = load_zcode(&zcode_json());
     assert_eq!(load.providers[0].base_url, "http://127.0.0.1:3065/v1");
 
@@ -498,10 +488,8 @@ fn zcode_base_url_normalization_is_idempotent() {
 
 /// 序列化后 `config` 内键序必须恒定：providerOrder → providerConfigRules → modelConfigRules。
 ///
-/// 背景：`serde_json` 开了 `preserve_order`（IndexMap），它的 `remove` 是 swap_remove，
-/// 删键会把最后一个键搬到空位。跨格式保存先经 `strip_cross_format_containers` 删掉
-/// providerOrder / providerRules / providerModelRules，键序因此被搅乱成
-/// modelConfigRules → providerConfigRules → providerOrder，与 ZCode 自己的写法不一致。
+/// `serde_json` 开了 `preserve_order`（IndexMap），它的 `remove` 是 swap_remove，
+/// 删键会把最后一个键搬到空位。
 fn config_keys_of(root: &serde_json::Value) -> Vec<String> {
     root.get("config")
         .and_then(|c| c.as_object())
@@ -532,7 +520,7 @@ fn serialize_keeps_zcode_native_key_order() {
 
 #[test]
 fn cross_format_strip_does_not_reorder_config_keys() {
-    // 模拟跨格式保存的真实路径：先剔除界面接管的容器，再序列化。
+    // 模拟跨格式保存路径：先剔除界面接管的容器，再序列化。
     let load = load_zcode(&zcode_json());
     let mut target = load.root.clone();
     model_harbor::app::strip_cross_format_containers(ConfigFormat::ZCode, &mut target, false);
@@ -557,7 +545,7 @@ fn cross_format_strip_does_not_reorder_config_keys() {
     );
 }
 
-/// 内层容器的键序也要固定，且缺 `manualProviderModelRules` 时补空数组。
+/// 内层容器的键序也固定，且缺 `manualProviderModelRules` 时补空数组。
 #[test]
 fn nested_containers_keep_their_key_order() {
     let src = r#"{
@@ -589,10 +577,9 @@ fn nested_containers_keep_their_key_order() {
     assert_eq!(provider_keys, vec!["providerRules"]);
 }
 
-/// `config.enabled` 是 ZCode 自己的模型开关，ModelHarbor **不接管**它。
+/// `config.enabled` 是 ZCode 自己的模型开关，ModelHarbor 不接管它。
 ///
-/// 曾经的 bug：序列化时无条件写 `enabled: true`，于是用户在 ZCode 界面里关掉的模型，
-/// 只要用 ModelHarbor 存一次就被重新打开。现在只补缺失的键，已有值原样保留。
+/// 只补缺失的键，已有值原样保留。
 #[test]
 fn a_model_disabled_in_zcode_stays_disabled() {
     let src = r#"{
@@ -637,9 +624,7 @@ fn a_model_disabled_in_zcode_stays_disabled() {
     assert_eq!(enabled_of("unset"), Some(true), "原文件没写该键时才补 true");
 }
 
-/// 非法数字**不能**被写成 0：界面与保存状态栏都告诉用户「该字段将被忽略」，
-/// 写成 `contextWindow: 0` / `maxOutputTokens.max: 0` 是另一回事——ZCode 会照单全收，
-/// 那个模型的上下文直接归零。曾经两处都用的 `unwrap_or(0)`。
+/// 非法数字不写成 0：只跳过对应键的写入。
 #[test]
 fn invalid_numbers_are_skipped_not_written_as_zero() {
     let src = r#"{

@@ -37,7 +37,7 @@ impl App {
         let (variants_label, variant_names) = self.dialect_variants();
         let flags = ProviderFormFlags::new(self);
         ui.group(|ui| {
-            // 官方预设（可选）：一键填 key / baseUrl / 协议；不套用则完全手填。
+            // 官方预设（可选）：一键填 key / baseUrl / 协议，不套用则手填。
             ui.horizontal_wrapped(|ui| {
                 let dialect = if flags.show_oc {
                     crate::presets::PresetDialect::Opencode
@@ -78,7 +78,7 @@ impl App {
             );
             let mut rm_new: Option<usize> = None;
             let mut move_new_request: Option<(usize, usize)> = None;
-            // 本帧用户点下的探测请求（新 provider 固定用 NEW_PROVIDER_FETCH_KEY 做节流键）。
+            // 本帧用户点下的探测请求。
             let mut probe_request: Option<(String, String)> = None;
             for j in 0..self.new_provider.models.len() {
                 let model_count = self.new_provider.models.len();
@@ -214,12 +214,12 @@ impl App {
         });
     }
 
-    /// 关闭新增 provider 表单时清理其测试/获取状态，避免下次打开残留旧结果。
+    /// 关闭新增 provider 表单时清理其测试/获取状态。
     pub(super) fn clear_new_provider_state(&mut self) {
         self.latency.remove(NEW_PROVIDER_FETCH_KEY);
         self.model_fetch.remove(NEW_PROVIDER_FETCH_KEY);
         self.model_fetch_open.remove(NEW_PROVIDER_FETCH_KEY);
-        // 表单关掉后探测结果无处显示：释放它的串行位。
+        // 释放探测的串行位。
         self.probe.release(Some(NEW_PROVIDER_FETCH_KEY));
     }
 }

@@ -18,8 +18,7 @@ impl super::App {
         let glass = self.glass;
         if crate::theme::needs_apply_style(&mut self.applied_theme, self.theme, shape, glass) {
             self.theme.apply_style(ctx, shape, glass);
-            // 窗口层：DWM 背景与圆角。窗口本身恒为透明窗口（见 main.rs），
-            // 这里只切「DWM 画不画模糊」——切档无需重建窗口。
+            // 窗口层：DWM 背景与圆角，只切换「DWM 画不画模糊」。
             crate::windowfx::set_backdrop(if glass {
                 crate::windowfx::Backdrop::Acrylic
             } else {
@@ -34,19 +33,17 @@ impl super::App {
         if current == self.prefs_saved {
             return;
         }
-        // 即使写失败也更新快照：否则每帧重试会刷屏（状态栏已提示一次）。
+        // 写失败也更新快照。
         if let Err(err) = current.save() {
             self.status = format!("界面偏好保存失败：{err}");
         }
         self.prefs_saved = current;
     }
 
-    /// 解析各保存目标的可用性与实际路径（避免在渲染循环中频繁拉起 wsl 进程）。
+    /// 解析各保存目标的可用性与实际路径。
     pub(in crate::app) fn refresh_targets(&mut self) {
-        // 默认目标固定为 Windows 本地路径；WSL 侧仅通过“WSL同步”勾选写入，
-        // 且写入前按页面检测对应 agent 是否已安装。
-        // 路径走 `resolve_local_path`：默认名不存在但等价的 `.jsonc` 存在时，
-        // 用后者——否则「已安装」判成 false，保存还会另建一个 `.json`。
+        // 默认目标为 Windows 本地路径；WSL 侧仅通过「WSL同步」勾选写入。
+        // 路径走 `resolve_local_path`：默认名不存在但等价的 `.jsonc` 存在时用后者。
         self.targets = backends::BACKENDS
             .iter()
             .map(|b| {
@@ -76,9 +73,8 @@ impl super::App {
                 self.providers = load.providers;
                 self.pi_extras = load.extras;
                 self.load_error = None;
-                // 把「文件里这一页的 agent model 视图」播种进记忆：重载 = 文件为准，
-                // 该页未保存的编辑随重载丢弃；其他页的记忆不受影响（它们按
-                // (config_id, page) 键控，仍能还原各自视图）。
+                // 把文件里这一页的 agent model 视图播种进记忆；其他页的记忆按
+                // (config_id, page) 键控，不受影响。
                 if self.source_format.is_opencode_family() {
                     let view = self
                         .agents
@@ -104,13 +100,13 @@ impl super::App {
                 self.status = format!("加载失败: {}", e);
             }
         }
-        // WorkBuddy 页：同一 id 多条启用收敛成「只启用第一条」（为什么见
-        // `normalize_workbuddy_enable_flags`）；加载后立刻收敛，显示的状态才真实。
+        // WorkBuddy 页：同一 id 多条启用收敛成「只启用第一条」
+        //（见 `normalize_workbuddy_enable_flags`）。
         if self.source_format == ConfigFormat::WorkBuddy {
             self.normalize_workbuddy_enable_flags();
         }
-        // baseUrl 体检：加载后统计可疑 URL（如 `//v1` 重复斜杠），在状态栏提示，
-        // 详情看 provider 卡片上的 ⚠ 标签（仅提示，不自动改写）。
+        // baseUrl 体检：统计可疑 URL（如 `//v1` 重复斜杠）并在状态栏提示，
+        // 详情见卡片上的 ⚠ 标签。
         let suspicious = self
             .providers
             .iter()
@@ -124,19 +120,16 @@ impl super::App {
         self.model_fetch.clear();
         self.model_fetch_open.clear();
         self.latency.clear();
-        // 各页的 agent model 视图记忆**不清**：它按 (config_id, page) 键控，
-        // 同文件重载后依然有效（还原切页视图靠它），换文件后旧键自然失配。
-        // （曾在这里整表清空：同文件重载会把刚存下的记忆一起抹掉，切回原页
-        // 时还原失效，指向别家网关的引用被判无效，全部被换成网关首选。）
+        // 各页的 agent model 视图记忆不清：它按 (config_id, page) 键控，
+        // 同文件重载后依然有效。
         // 用户数据查询结果同样跟着配置走，重新加载后重查。
         self.balance.clear();
         self.balance_batch = false;
-        // 被丢弃的探测不会再回传结果：释放全局串行位，否则门控会一直卡在 Busy。
+        // 被丢弃的探测不会再回传结果：释放全局串行位。
         self.probe.release(None);
         // 加载后跳转到来源格式对应的页面
         self.current_page = self.source_format;
-        // 只在加载成功时清理折叠记录：读不到文件（路径写错 / 临时不可用）时
-        // providers/agents 是空的，照常清理会把用户存好的卡片状态抹掉。
+        // 只在加载成功时清理折叠记录：读不到文件时 providers/agents 为空。
         if self.load_error.is_none() {
             self.migrate_legacy_collapsed();
             self.prune_collapsed();
@@ -149,17 +142,15 @@ impl super::App {
         self.reload_for_page(self.current_page, true);
     }
 
-    /// 重新加载路径，同时把“路径属于哪个页面”和“文件实际是什么格式”分开。
+    /// 重新加载路径，同时把「路径属于哪个页面」和「文件实际是什么格式」分开。
     ///
-    /// 只有成功读出并解析文件后才记住路径；不存在的 `.json` 即使探测回落到
-    /// opencode，也不会污染任何页面的持久化覆盖。实际格式与发起页面不同时，
-    /// 页面跟随文件格式切换，路径只记到检测出的格式。
+    /// 只有成功读出并解析文件后才记住路径；实际格式与发起页面不同时，页面跟随
+    /// 文件格式切换，路径只记到检测出的格式。
     pub(in crate::app) fn reload_for_page(&mut self, owner: ConfigFormat, remember: bool) {
         if !crate::util::config_exists(&self.config_path) {
             self.source_format = owner;
             self.apply_load();
-            // 空内容在各后端可用于新建配置，因此 apply_load 会成功；但路径不存在时
-            // 没有格式证据，也绝不能据此新增或改写任何持久化覆盖。
+            // 路径不存在时没有格式证据，不据此新增或改写任何持久化覆盖。
             self.current_page = owner;
             self.load_error = Some("配置文件不存在".into());
             self.status = format!("加载失败: 配置文件不存在 ({})", self.config_path);
@@ -171,7 +162,7 @@ impl super::App {
         self.apply_load();
 
         if self.load_error.is_some() {
-            // apply_load 会在成功时跟随来源切页；失败时没有可信的格式证据，留在用户页面。
+            // 失败时没有可信的格式证据，留在用户页面。
             self.current_page = owner;
             return;
         }

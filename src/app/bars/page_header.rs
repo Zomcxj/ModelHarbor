@@ -16,10 +16,8 @@ impl App {
                     (p.clone(), ok)
                 }
             };
-            // 一键保存：把同一份界面状态写到每个已安装后端的目标路径，
-            // 免去逐页切换逐个点保存。放在「保存」左侧（先全局后本页）。
-            // 按钮直接带目标数量：一次会写几个文件必须点之前就看得见——
-            // 本页的 provider 集合与别的 agent 不一致时，这一下会把它们一起改掉。
+            // 一键保存：把同一份界面状态写到每个已安装后端的目标路径。
+            // 按钮带目标数量，点击前即可见本次会写几个文件。
             let installed: Vec<(String, String)> = self
                 .targets
                 .iter()
@@ -65,11 +63,11 @@ impl App {
             if let Some(icon) = self.icon_for(fmt) {
                 ui.add(egui::Image::from_texture(icon).fit_to_exact_size(egui::vec2(12.0, 12.0)));
             }
-            // 路径可能很长（吸顶区是固定高度，不能换行）：截断显示，全文放悬停。
+            // 路径可能很长（吸顶区固定高度，不能换行）：截断显示，全文放悬停。
             ui.add(
                 egui::Label::new(egui::RichText::new(format!("写入: {path}")).weak()).truncate(),
             );
-            // 该格式不支持的区块提前提示，避免保存后才发现数据没写入
+            // 该格式不支持的区块提前提示。
             if !fmt.is_opencode_family() && !self.agents.is_empty() {
                 ui.label(
                     egui::RichText::new(format!(

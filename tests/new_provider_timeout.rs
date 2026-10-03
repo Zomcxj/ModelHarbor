@@ -12,7 +12,7 @@ fn new_provider_default_timeout_is_saved() {
         .and_then(|o| o.get("timeout"))
         .and_then(|t| t.as_u64());
 
-    // 新建 provider 默认 timeout 180000 也应写入配置文件
+    // 新建 provider 默认 timeout 180000 写入配置文件
     assert_eq!(timeout_in_json, Some(180000));
 }
 
@@ -27,6 +27,6 @@ fn new_provider_modified_timeout_is_saved() {
         .and_then(|o| o.get("timeout"))
         .and_then(|t| t.as_u64());
 
-    // 修改过的 timeout 应该写入
+    // 修改过的 timeout 写入
     assert_eq!(timeout_in_json, Some(60000));
 }

@@ -8,12 +8,11 @@ pub enum Shape {
     Subscription,
     /// 非标准 `credit_summary`：三个原值字段，单位未标注。
     CreditSummary,
-    /// 令牌额度（`/api/usage/token/`）：该令牌不限额度（公益站常见）。
+    /// 令牌额度（`/api/usage/token/`）：该令牌不限额度。
     TokenUnlimited,
     /// 令牌额度（`/api/usage/token/`）：有具体额度与余额。
     TokenQuota,
-    /// 只有调用日志（站点未提供 `/api/usage/token/`，如把 baseUrl 指向中转域名）。
-    /// 今日 / 近 7 天仍可用；额度三项为空，不编数字。
+    /// 只有调用日志（站点未提供 `/api/usage/token/`）：今日 / 近 7 天可用，额度三项为空。
     TokenLogsOnly,
     /// 无法识别（站点不支持，或返回了别的结构）。
     #[default]
@@ -30,11 +29,9 @@ pub enum Source {
     Token,
 }
 
-/// 面板账号额度（`/api/user/self`，填了面板访问令牌才有）：**账号级**，不是令牌级。
+/// 面板账号额度（`/api/user/self`，填了面板访问令牌才有）：账号级，不是令牌级。
 ///
-/// 与令牌额度（`/api/usage/token/`）的区别：这里的数字属于**整个账号**，
-/// 同一个站点下的所有 `sk-` 令牌共用一份。因此它回答「我还剩多少钱」，
-/// 而令牌额度回答「这个 key 还能用多少」。
+/// 同一个站点下的所有 `sk-` 令牌共用一份；令牌额度见 [`Source::Token`]。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AccountInfo {
     /// 账号剩余额度（美元）。
@@ -59,11 +56,11 @@ pub struct Billing {
     pub limit_usd: Option<f64>,
     /// 余额（美元）= 额度 − 已用。
     pub balance_usd: Option<f64>,
-    /// 额度是占位值（公益站常见 1e8）：**不算、不显示余额**，只说清已用。
+    /// 额度是占位值：不算、不显示余额，只说清已用。
     ///
-    /// 界面据此只显示「已用」；标记本身是解析结果的一部分，供调用方与测试判断。
+    /// 界面据此只显示「已用」。
     pub placeholder_limit: bool,
-    /// 该令牌是「不计额度」的（公益站常见）：只有已用有意义，没有余额概念。
+    /// 该令牌是「不计额度」的：只有已用有意义，没有余额概念。
     pub unlimited: bool,
     /// `credit_summary` 的原值说明（单位未标注）。
     pub raw_credit: Option<String>,
@@ -83,13 +80,11 @@ pub struct Billing {
     pub unit_assumed: bool,
     /// 签到状态（`GET /api/user/checkin`，只读，需面板令牌）。
     ///
-    /// 与额度无关，是「今天领没领」这类信息：站点没开签到、没填面板令牌、
-    /// 或接口读不到时都是 `None`——卡片上就**不写这一项**（有就输出，没有就不输出）。
+    /// 与额度无关；站点没开签到、没填面板令牌或接口读不到时都是 `None`，卡片上不写这一项。
     pub checkin: Option<CheckinStatus>,
     /// 降级 / 缺数据时的原因（调用日志不可用、面板令牌失效等）。
     ///
-    /// 卡片小窗只显示数字，不渲染这一项；原因本身是解析结果的一部分，
-    /// 供调用方与测试判断某次查询为什么少了数据。
+    /// 卡片小窗不渲染这一项。
     pub note: Option<String>,
     /// 面板账号额度（`/api/user/self`）：填了面板访问令牌才有；有它时余额以它为准。
     pub account: Option<AccountInfo>,
