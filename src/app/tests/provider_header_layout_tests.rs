@@ -82,6 +82,9 @@ fn render(scene: &Scene) -> (egui::Rect, Vec<TextAt>) {
         show_preview: scene.preview_open,
         ..App::default()
     };
+    // 全部折叠：只留卡片头（本测试针对头部布局），同时不依赖用户 prefs 里的
+    // 折叠状态，避免展开态下卡片过高、尾部卡片被 ScrollArea 纵向裁掉。
+    app.set_all_providers_collapsed(true);
     if scene.err_len > 0 {
         let state = app.latency.entry(PROVIDERS[0].to_string()).or_default();
         state.provider = Some(Err("e".repeat(scene.err_len)));
