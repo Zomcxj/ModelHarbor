@@ -94,7 +94,7 @@ fn omp_thinking(m: &ModelRow) -> Option<Value> {
         let raw_vals = t
             .get("effortMap")
             .and_then(|v| v.as_object())
-            .map(&vals_of)
+            .map(vals_of)
             .unwrap_or_else(|| {
                 t.get("efforts")
                     .and_then(|v| v.as_array())
