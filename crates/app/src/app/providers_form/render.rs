@@ -62,15 +62,19 @@ impl super::App {
             fetch_key: &p.key,
             popup_salt: "model_fetch",
             scroll_salt: egui::Id::new(("model_fetch_scroll", p.key.clone())),
+            discovery: &mut self.discovery,
+            discovery_cache: &mut self.discovery_cache,
         };
-        models_fetch_section(
+        if let Some(msg) = models_fetch_section(
             ui,
             &mut fetch_ctx,
             &p.base_url,
             &fetch_secret,
             &fetch_api,
             &mut p.models,
-        );
+        ) {
+            self.status = msg;
+        }
         let mut rm: Option<usize> = None;
         let mut model_hover_here: Option<String> = None;
         let mut model_drag_stopped = false;
