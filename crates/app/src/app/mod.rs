@@ -112,6 +112,10 @@ pub struct App {
     model_fetch: HashMap<String, ModelFetchState>,
     /// 已展开的模型获取面板（provider key）。
     model_fetch_open: HashSet<String>,
+    /// 每个 provider 的「探测模型」状态（key → 状态；存在即结果面板开着）。
+    discovery: HashMap<String, fetch::DiscoveryState>,
+    /// 探测结果缓存：24 小时内同 base_url 直接命中，不再发请求（不含任何凭据）。
+    discovery_cache: model_harbor_core::discovery::DiscoveryCache,
     /// 各后端内置网关的免费模型（后端 → 状态）。
     ///
     /// opencode 与 kilocode 各有自己的网关与列表，mimocode 没有免费层（不进这张表）。
@@ -301,6 +305,8 @@ impl Default for App {
             model_drag_target: None,
             model_fetch: HashMap::new(),
             model_fetch_open: HashSet::new(),
+            discovery: HashMap::new(),
+            discovery_cache: model_harbor_core::discovery::DiscoveryCache::default(),
             // 免费模型：先用落盘缓存，缺失 / 过期由第一帧的后台刷新补上。
             free_models,
             free_models_auto,
@@ -398,6 +404,7 @@ impl eframe::App for App {
         self.load_backend_icons(ctx);
         self.load_toolbar_icons(ctx);
         self.poll_model_fetch();
+        self.poll_discovery();
         self.poll_latency();
         self.poll_balance();
         self.poll_free_models();

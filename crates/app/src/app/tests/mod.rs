@@ -9,6 +9,9 @@ mod compact_tests;
 /// `provider/model`，保存路径逐页归一。
 #[cfg(test)]
 mod cross_page_agent_model_tests;
+/// 模型探测（A-2）：候选文案、勾选种子、只填空新增、状态栏文案与缓存调度。
+#[cfg(test)]
+mod discovery_tests;
 /// 拖动光标：任一拖动源（含页签/后端图标）都必须点亮自定义抓取光标。
 #[cfg(all(test, target_os = "windows"))]
 mod drag_cursor_tests;

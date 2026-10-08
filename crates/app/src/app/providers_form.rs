@@ -1,8 +1,9 @@
 //! Provider 编辑 / 新增表单、模型获取弹层与表单字段控件。
 use super::App;
 use crate::app::fetch::{
-    fetch_models_remote, model_latency_label, model_probe_button, net_guard_gate, LatencyState,
-    ModelFetchState, NEW_PROVIDER_FETCH_KEY,
+    cancel_discovery, discovery_panel, fetch_models_remote, model_latency_label,
+    model_probe_button, net_guard_gate, probe_candidates_label, start_discovery, DiscoveryState,
+    LatencyState, ModelFetchState, NEW_PROVIDER_FETCH_KEY,
 };
 use crate::app::providers::ProviderFormFlags;
 use crate::convert;
@@ -14,6 +15,7 @@ use crate::ui::{
     DragHandle,
 };
 use eframe::egui;
+use model_harbor_core::discovery::DiscoveryCache;
 use std::collections::{HashMap, HashSet};
 
 /// 「获取模型」面板的分栏参数：列间水平间距、单列最小宽度、最大列数。
@@ -65,17 +67,21 @@ impl App {
                 fetch_key: NEW_PROVIDER_FETCH_KEY,
                 popup_salt: "new_provider_fetch",
                 scroll_salt: egui::Id::new("new_provider_fetch_scroll"),
+                discovery: &mut self.discovery,
+                discovery_cache: &mut self.discovery_cache,
             };
             let fetch_api = self.new_provider.effective_api();
             let fetch_secret = credentials::effective_secret(&self.new_provider);
-            models_fetch_section(
+            if let Some(msg) = models_fetch_section(
                 ui,
                 &mut fetch_ctx,
                 &self.new_provider.base_url,
                 &fetch_secret,
                 &fetch_api,
                 &mut self.new_provider.models,
-            );
+            ) {
+                self.status = msg;
+            }
             let mut rm_new: Option<usize> = None;
             let mut move_new_request: Option<(usize, usize)> = None;
             // 本帧用户点下的探测请求。
@@ -219,6 +225,8 @@ impl App {
         self.latency.remove(NEW_PROVIDER_FETCH_KEY);
         self.model_fetch.remove(NEW_PROVIDER_FETCH_KEY);
         self.model_fetch_open.remove(NEW_PROVIDER_FETCH_KEY);
+        // 探测状态一并清掉（在飞线程的回包因接收端被丢而作废）。
+        self.discovery.remove(NEW_PROVIDER_FETCH_KEY);
         // 释放探测的串行位。
         self.probe.release(Some(NEW_PROVIDER_FETCH_KEY));
     }

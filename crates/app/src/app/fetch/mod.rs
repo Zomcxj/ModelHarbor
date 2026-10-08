@@ -10,10 +10,13 @@ use std::collections::{HashMap, HashSet};
 use super::App;
 use crate::app::bars::{sanitize_network_error, short_err};
 
+/// 模型探测（「探测模型」按钮）：后台线程 + 通道 + generation 取消。
+mod discovery;
 /// 单个 provider 的模型获取状态（后台线程 + 通道）。
 mod net;
 mod polling;
 mod ui;
+pub(crate) use discovery::*;
 pub(crate) use net::*;
 pub(crate) use ui::*;
 
