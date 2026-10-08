@@ -1,49 +1,44 @@
-[package]
-name = "model-harbor"
+# 虚拟 workspace：core（纯逻辑库）+ app（egui/eframe GUI）。
+# 发布升版只改这里 [workspace.package] version 一处，各 crate 继承。
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
 version = "0.0.13"
 edition = "2021"
 # 解析图中依赖声明的最高 MSRV：image 0.25.10 / eframe 0.33.3 / egui 0.33.3
 rust-version = "1.88"
-build = "build.rs"
 
-[[bin]]
-name = "ModelHarbor"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
 serde_json = { version = "1.0", features = ["preserve_order"] }
-raw-window-handle = "0.6"
 serde_yaml_ng = "0.10.0"
+toml = { version = "1.1.6", features = ["preserve_order"] }
 # 停在 2.x：3.x 是 breaking 变更（API 与错误类型都改了），当前用法完全够用。
 ureq = { version = "2", default-features = true }
-
+raw-window-handle = "0.6"
+rfd = "0.17"
+resvg = "0.45.1"
 # 停在 0.33：0.34 起是 egui 1.0 级重构（SidePanel/TopBottomPanel 被删除、
 # App::update 改为 App::ui），迁移需要重写面板挂载与全部 `ui_*` 入口。
 # 默认特性已含 glow，不含 wgpu。
 eframe = { version = "0.33", features = ["default"] }
 egui_extras = { version = "0.33", features = ["svg"] }
-resvg = "0.45.1"
-toml = { version = "1.1.6", features = ["preserve_order"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
     "Win32_Graphics_Gdi",
     "Win32_Foundation",
-    # 模型延迟探测前的代理/VPN 守卫：读系统代理注册表 + 枚举网卡
+    # 模型延迟探测前的代理/VPN 守卫：读系统代理注册表 + 枚举网卡（core::netguard）
     "Win32_System_Registry",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
-    # 用量查询的「今日」区间要本地时区 0 点：GetLocalTime
+    # 用量查询的「今日」区间要本地时区 0 点：GetLocalTime（core::billing）
     "Win32_System_SystemInformation",
-    # 玻璃背景：DWM 亚克力 / 圆角（windowfx 模块）
+    # 玻璃背景：DWM 亚克力 / 圆角（app::windowfx）
     "Win32_Graphics_Dwm",
-]}
-rfd = "0.17"
-
-[build-dependencies]
+] }
 winresource = "0.1"
 
 [profile.release]

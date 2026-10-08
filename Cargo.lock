@@ -1892,11 +1892,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "model-harbor"
+name = "model_harbor_app"
 version = "0.0.13"
 dependencies = [
  "eframe",
  "egui_extras",
+ "model_harbor_core",
  "raw-window-handle",
  "resvg",
  "rfd",
@@ -1906,6 +1907,17 @@ dependencies = [
  "ureq",
  "windows-sys 0.61.2",
  "winresource",
+]
+
+[[package]]
+name = "model_harbor_core"
+version = "0.0.13"
+dependencies = [
+ "serde_json",
+ "serde_yaml_ng",
+ "toml",
+ "ureq",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
