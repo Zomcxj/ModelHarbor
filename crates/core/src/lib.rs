@@ -9,6 +9,7 @@ pub mod netguard;
 pub mod opencode_models;
 pub mod prefs;
 pub mod presets;
+pub mod profiles;
 pub mod serialize;
 pub mod tokens;
 pub mod util;
