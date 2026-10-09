@@ -10,12 +10,21 @@ use model_harbor_core::model::{ModelRow, ProviderRow};
 use serde_json::json;
 
 fn temp_path(name: &str) -> std::path::PathBuf {
+    // 目录名必须全局唯一：Windows 时钟粒度粗（毫秒级），并行测试只靠
+    // pid + 纳秒会撞进同一 tick 共用目录、互相覆盖文件（曾导致
+    // duplicate_ids 测试在全量并行时偶挂）。原子计数器消除该碰撞类。
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir =
-        std::env::temp_dir().join(format!("model_harbor_wb_{}_{}", std::process::id(), nonce));
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "model_harbor_wb_{}_{}_{}",
+        std::process::id(),
+        nonce,
+        seq
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name)
 }
