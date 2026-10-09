@@ -94,12 +94,10 @@ pub(crate) fn is_existing_model(existing: &[String], id: &str) -> bool {
             .any(|known| known.trim().eq_ignore_ascii_case(trimmed))
 }
 
-/// 默认勾选：新增项全选，已有项不勾（界面里已有项也画成禁用勾选框）。
+/// 默认勾选：全部不勾，由用户手动挑选（已有项画成禁用勾选框，本就不可勾）。
 pub(crate) fn seed_checked(discovered: &[String], existing: &[String]) -> Vec<bool> {
-    discovered
-        .iter()
-        .map(|id| !is_existing_model(existing, id))
-        .collect()
+    let _ = existing;
+    vec![false; discovered.len()]
 }
 
 /// 结果 → 将新增的模型列表：只取勾选项，交给 [`merge_missing`] 只填空。

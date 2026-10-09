@@ -38,16 +38,16 @@ fn candidates_label_lists_fallback_endpoints() {
 }
 
 #[test]
-fn seed_checked_selects_new_models_only() {
+fn seed_checked_defaults_to_unchecked() {
     let existing = vec!["GPT-4o".to_string()];
     let discovered = vec![
-        "gpt-4o".to_string(),   // 已有（大小写不敏感）→ 不勾
-        "o4-mini".to_string(),  // 新增 → 勾
-        "claude-x".to_string(), // 新增 → 勾
+        "gpt-4o".to_string(),   // 已有（大小写不敏感）→ 不勾（面板里禁用）
+        "o4-mini".to_string(),  // 新增 → 默认不勾，用户手动选
+        "claude-x".to_string(), // 新增 → 默认不勾，用户手动选
     ];
     assert_eq!(
         seed_checked(&discovered, &existing),
-        vec![false, true, true]
+        vec![false, false, false]
     );
 }
 
@@ -158,8 +158,8 @@ fn cache_hit_opens_panel_without_network() {
     assert!(!state.in_flight());
     let found = state.found.as_ref().unwrap();
     assert_eq!(found.models, ["m-1".to_string(), "m-2".to_string()]);
-    // 默认全选新增项：已有的 m-2 不勾。
-    assert_eq!(found.checked, [true, false]);
+    // 默认全部不勾：新增项由用户手动挑选（m-2 已有，面板里禁用）。
+    assert_eq!(found.checked, [false, false]);
     // 面板开着 = 用户想刷新：不再查缓存，直接起后台线程
     // （本地非法 URL 在解析阶段即失败，无网络 IO）。
     let msg = start_discovery(&mut states, &mut cache, "k", "not-a-url", "", &existing);
