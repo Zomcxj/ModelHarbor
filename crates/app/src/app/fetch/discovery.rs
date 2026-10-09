@@ -142,6 +142,11 @@ pub(crate) fn format_hhmm(hour: i64, minute: i64) -> String {
 }
 
 /// Unix 秒 → 当日 HH:MM（UTC）。
+///
+/// 仅在非 Windows 运行分支（`probe_clock_hhmm` 的回退路径）与测试中编译：
+/// Windows 走 GetLocalTime 本地时间，不需要它，不加 `cfg` 会在 Windows
+/// 非 test 构建下触发 dead_code（`-D warnings` 直接拦）。
+#[cfg(any(not(windows), test))]
 pub(crate) fn hhmm_from_unix_utc(secs: i64) -> String {
     let rem = secs.rem_euclid(86_400);
     format_hhmm(rem / 3_600, rem % 3_600 / 60)

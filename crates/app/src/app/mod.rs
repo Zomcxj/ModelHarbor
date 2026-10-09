@@ -17,6 +17,7 @@ mod health;
 mod ids;
 mod lifecycle;
 mod preview;
+mod profiles;
 mod providers;
 mod providers_form;
 mod save;
@@ -220,6 +221,12 @@ pub struct App {
     backend_icons: Vec<Option<egui::TextureHandle>>,
     /// 顶部工具栏图标纹理（Lucide SVG 栅格化，首帧惰性加载）。
     toolbar_icons: ToolbarIcons,
+    /// Profile / 备份管理的界面状态（见 [`crate::app::profiles`]）。
+    profiles: profiles::ProfilesUi,
+    /// 各目标文件最近一次自动快照的内容 hash（路径 → hash），供「外部改动」判定。
+    snapshot_hashes: HashMap<String, String>,
+    /// 自动快照目录覆盖（单测注入 tempdir 用；None = 配置目录下的 backups/）。
+    snapshots_root: Option<std::path::PathBuf>,
 }
 
 /// 启动时的方言判定：以**文件内容**为准，路径所属页面只作回退。
@@ -363,6 +370,9 @@ impl Default for App {
             pi_extras: Value::Object(Map::new()),
             backend_icons: Vec::new(),
             toolbar_icons: ToolbarIcons::default(),
+            profiles: profiles::ProfilesUi::default(),
+            snapshot_hashes: HashMap::new(),
+            snapshots_root: None,
         };
         // WSL 总闸与同步勾选同步初始化。
         crate::util::wsl_set_enabled(prefs.sync_wsl);
@@ -454,6 +464,8 @@ impl eframe::App for App {
         self.ui_tokens_window(ctx);
         // 配置体检：同样是独立悬浮窗，保存前想核对一遍时打开。
         self.ui_health_window(ctx);
+        // 配置方案与备份管理：切换确认 / 新建 / 删除 / 备份列表（含恢复确认）。
+        self.ui_profiles_windows(ctx);
         self.paint_drag_ghost(ctx);
         // 抓取光标：控件绘制时只提出请求，这里帧末统一提交。
         //

@@ -295,6 +295,8 @@ impl App {
         ) {
             backend.save_sidecars(path, &self.providers)?;
         }
+        // 写盘前的自动快照（Auto tag）：磁盘内容与上次快照不同才备份（见 app::profiles）。
+        self.auto_snapshot_before_save(path);
         if let Err(error) = backends::write_config(path, &content) {
             if let Some((sidecar, old_content)) = dsh_sidecar_backup {
                 let restore = if old_content.is_empty() {
@@ -318,6 +320,10 @@ impl App {
         }
         // 磁盘内容变了：对比视图的缓存作废。计数只增不减，回绕只多算一次差异。
         self.save_serial = self.save_serial.wrapping_add(1);
+        // 记录刚写入内容的 hash（下次保存判定「外部改动」用），并按默认保留
+        // 策略清理备份目录；两者失败都不影响保存结果。
+        self.note_snapshot_hash(path);
+        self.prune_backups_after_save();
         Ok(backup)
     }
 

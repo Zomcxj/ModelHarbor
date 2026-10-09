@@ -483,6 +483,9 @@ impl App {
                     self.save_format = self.save_format.toggled();
                 }
 
+                // 配置方案：列出 / 切换 / 新建 / 删除 + 备份管理入口（悬浮窗见 app::profiles）。
+                self.ui_profile_button(ui);
+
                 // 顶部工具组：体检、令牌、密钥显隐和右侧预览面板开关。
                 // 右对齐后越晚添加的控件越靠左，保持侧边栏图标贴近工具组外侧。
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
