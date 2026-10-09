@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "model_harbor_app"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "eframe",
  "egui_extras",
@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "model_harbor_core"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "serde_json",
  "serde_yaml_ng",
