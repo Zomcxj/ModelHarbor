@@ -52,16 +52,11 @@ impl super::App {
         ui.add_space(crate::theme::SPACE_2);
         // 本帧用户点下的探测请求（provider key, model id），UI 循环外统一发起。
         let mut probe_request: Option<(String, String)> = None;
-        let fetch_api = p.effective_api();
         let fetch_secret = credentials::effective_secret(p);
         let mut fetch_ctx = FetchSectionCtx {
-            model_fetch: &mut self.model_fetch,
-            model_fetch_open: &mut self.model_fetch_open,
             latency: &self.latency,
             current_page: self.current_page,
             fetch_key: &p.key,
-            popup_salt: "model_fetch",
-            scroll_salt: egui::Id::new(("model_fetch_scroll", p.key.clone())),
             discovery: &mut self.discovery,
             discovery_cache: &mut self.discovery_cache,
         };
@@ -70,7 +65,6 @@ impl super::App {
             &mut fetch_ctx,
             &p.base_url,
             &fetch_secret,
-            &fetch_api,
             &mut p.models,
         ) {
             self.status = msg;

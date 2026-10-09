@@ -17,14 +17,13 @@ mod health;
 mod ids;
 mod lifecycle;
 mod preview;
-mod profiles;
 mod providers;
 mod providers_form;
 mod save;
 mod syntax;
 mod windows;
 
-use fetch::{FreeModelsState, LatencyState, ModelFetchState, ProbeGate};
+use fetch::{FreeModelsState, LatencyState, ProbeGate};
 use save::SaveTarget;
 
 pub use save::{load_opencode_result, load_or_empty, strip_cross_format_containers};
@@ -109,10 +108,6 @@ pub struct App {
     model_drag_target: Option<String>,
     /// 正在拖动的顶栏页面（已安装的那一段内换位）。
     tab_drag_src: Option<ConfigFormat>,
-    /// 每个 provider 的模型获取状态（key → 状态）。
-    model_fetch: HashMap<String, ModelFetchState>,
-    /// 已展开的模型获取面板（provider key）。
-    model_fetch_open: HashSet<String>,
     /// 每个 provider 的「探测模型」状态（key → 状态；存在即结果面板开着）。
     discovery: HashMap<String, fetch::DiscoveryState>,
     /// 探测结果缓存：24 小时内同 base_url 直接命中，不再发请求（不含任何凭据）。
@@ -221,8 +216,6 @@ pub struct App {
     backend_icons: Vec<Option<egui::TextureHandle>>,
     /// 顶部工具栏图标纹理（Lucide SVG 栅格化，首帧惰性加载）。
     toolbar_icons: ToolbarIcons,
-    /// Profile / 备份管理的界面状态（见 [`crate::app::profiles`]）。
-    profiles: profiles::ProfilesUi,
     /// 各目标文件最近一次自动快照的内容 hash（路径 → hash），供「外部改动」判定。
     snapshot_hashes: HashMap<String, String>,
     /// 自动快照目录覆盖（单测注入 tempdir 用；None = 配置目录下的 backups/）。
@@ -310,8 +303,6 @@ impl Default for App {
             provider_drag_target: None,
             model_drag_src: None,
             model_drag_target: None,
-            model_fetch: HashMap::new(),
-            model_fetch_open: HashSet::new(),
             discovery: HashMap::new(),
             discovery_cache: model_harbor_core::discovery::DiscoveryCache::default(),
             // 免费模型：先用落盘缓存，缺失 / 过期由第一帧的后台刷新补上。
@@ -370,7 +361,6 @@ impl Default for App {
             pi_extras: Value::Object(Map::new()),
             backend_icons: Vec::new(),
             toolbar_icons: ToolbarIcons::default(),
-            profiles: profiles::ProfilesUi::default(),
             snapshot_hashes: HashMap::new(),
             snapshots_root: None,
         };
@@ -413,7 +403,6 @@ impl eframe::App for App {
         // 首帧惰性加载各后端官方图标和顶部工具栏图标
         self.load_backend_icons(ctx);
         self.load_toolbar_icons(ctx);
-        self.poll_model_fetch();
         self.poll_discovery();
         self.poll_latency();
         self.poll_balance();
@@ -464,8 +453,6 @@ impl eframe::App for App {
         self.ui_tokens_window(ctx);
         // 配置体检：同样是独立悬浮窗，保存前想核对一遍时打开。
         self.ui_health_window(ctx);
-        // 配置方案与备份管理：切换确认 / 新建 / 删除 / 备份列表（含恢复确认）。
-        self.ui_profiles_windows(ctx);
         self.paint_drag_ghost(ctx);
         // 抓取光标：控件绘制时只提出请求，这里帧末统一提交。
         //

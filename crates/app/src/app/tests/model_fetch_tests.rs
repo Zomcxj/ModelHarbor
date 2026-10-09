@@ -1,5 +1,5 @@
 use crate::app::bars::{sanitize_network_error, short_err};
-use crate::app::fetch::{chat_url, parse_models_response};
+use crate::app::fetch::chat_url;
 use crate::app::providers_form::{fetch_grid_columns, FETCH_GRID_GAP_X};
 use crate::app::App;
 
@@ -49,43 +49,6 @@ fn fetch_grid_columns_never_exceed_available_width() {
     assert_eq!(fetch_grid_columns(3, 1200.0).0, 3);
     // 空列表不 panic，也不返回 0 列。
     assert_eq!(fetch_grid_columns(0, 300.0).0, 1);
-}
-
-#[test]
-fn parse_openai_style_models() {
-    let text = r#"{"object":"list","data":[{"id":"gpt-4o","object":"model"},{"id":"gpt-4o-mini","object":"model"}]}"#;
-    let ids = parse_models_response(text).unwrap();
-    assert_eq!(ids, vec!["gpt-4o", "gpt-4o-mini"]);
-}
-
-#[test]
-fn parse_anthropic_style_models() {
-    let text = r#"{"data":[{"type":"model","id":"claude-3-7-sonnet-20250219"},{"type":"model","id":"claude-sonnet-4-20250514"}]}"#;
-    let ids = parse_models_response(text).unwrap();
-    assert_eq!(ids.len(), 2);
-    assert!(ids.contains(&"claude-sonnet-4-20250514".to_string()));
-}
-
-#[test]
-fn parse_gemini_style_models() {
-    let text =
-        r#"{"models":[{"name":"models/gemini-2.0-flash"},{"name":"models/gemini-2.5-pro"}]}"#;
-    let ids = parse_models_response(text).unwrap();
-    assert_eq!(ids, vec!["gemini-2.0-flash", "gemini-2.5-pro"]);
-}
-
-#[test]
-fn parse_error_message() {
-    let text = r#"{"error":{"message":"Invalid API key"}}"#;
-    let err = parse_models_response(text).unwrap_err();
-    assert!(err.contains("Invalid API key"));
-}
-
-#[test]
-fn parse_dedupes_ids_and_ignores_missing() {
-    let text = r#"{"data":[{"id":"a"},{"id":"a"},{"name":"b"},{"foo":"c"}]}"#;
-    let ids = parse_models_response(text).unwrap();
-    assert_eq!(ids, vec!["a", "b"]);
 }
 
 #[test]

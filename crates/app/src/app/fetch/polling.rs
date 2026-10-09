@@ -168,31 +168,6 @@ impl super::App {
         }
     }
 
-    /// 每帧轮询后台线程的模型获取结果，并更新状态栏。
-    pub(in crate::app) fn poll_model_fetch(&mut self) {
-        let mut finished: Vec<String> = Vec::new();
-        for (key, state) in self.model_fetch.iter_mut() {
-            if let Some(rx) = &state.rx {
-                if let Ok(result) = rx.try_recv() {
-                    state.result = Some(result);
-                    state.rx = None;
-                    finished.push(key.clone());
-                }
-            }
-        }
-        for key in finished {
-            let msg = match &self.model_fetch[&key].result {
-                Some(Ok(models)) if models.is_empty() => {
-                    format!("接口未返回任何模型（{}）", key)
-                }
-                Some(Ok(models)) => format!("已获取 {} 个模型（{}）", models.len(), key),
-                Some(Err(err)) => format!("获取模型失败（{}）: {}", key, err),
-                _ => continue,
-            };
-            self.status = msg;
-        }
-    }
-
     /// 后台拉取某个后端的内置网关免费模型列表（已有请求在飞时不重复发起）。
     /// 请求公共模型库，不需要 baseURL / API Key。
     pub(in crate::app) fn start_free_models_fetch(&mut self, format: crate::format::ConfigFormat) {

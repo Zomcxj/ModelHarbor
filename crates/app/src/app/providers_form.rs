@@ -1,9 +1,8 @@
 //! Provider 编辑 / 新增表单、模型获取弹层与表单字段控件。
 use super::App;
 use crate::app::fetch::{
-    cancel_discovery, discovery_panel, fetch_models_remote, model_latency_label,
-    model_probe_button, net_guard_gate, probe_candidates_label, start_discovery, DiscoveryState,
-    LatencyState, ModelFetchState, NEW_PROVIDER_FETCH_KEY,
+    cancel_discovery, discovery_panel, model_latency_label, model_probe_button, net_guard_gate,
+    probe_candidates_label, start_discovery, DiscoveryState, LatencyState, NEW_PROVIDER_FETCH_KEY,
 };
 use crate::app::providers::ProviderFormFlags;
 use crate::convert;
@@ -60,24 +59,18 @@ impl App {
             provider_header_fields(ui, &mut self.new_provider, &flags, &header_ctx);
             ui.add_space(crate::theme::SPACE_2);
             let mut fetch_ctx = FetchSectionCtx {
-                model_fetch: &mut self.model_fetch,
-                model_fetch_open: &mut self.model_fetch_open,
                 latency: &self.latency,
                 current_page: self.current_page,
                 fetch_key: NEW_PROVIDER_FETCH_KEY,
-                popup_salt: "new_provider_fetch",
-                scroll_salt: egui::Id::new("new_provider_fetch_scroll"),
                 discovery: &mut self.discovery,
                 discovery_cache: &mut self.discovery_cache,
             };
-            let fetch_api = self.new_provider.effective_api();
             let fetch_secret = credentials::effective_secret(&self.new_provider);
             if let Some(msg) = models_fetch_section(
                 ui,
                 &mut fetch_ctx,
                 &self.new_provider.base_url,
                 &fetch_secret,
-                &fetch_api,
                 &mut self.new_provider.models,
             ) {
                 self.status = msg;
@@ -223,8 +216,6 @@ impl App {
     /// 关闭新增 provider 表单时清理其测试/获取状态。
     pub(super) fn clear_new_provider_state(&mut self) {
         self.latency.remove(NEW_PROVIDER_FETCH_KEY);
-        self.model_fetch.remove(NEW_PROVIDER_FETCH_KEY);
-        self.model_fetch_open.remove(NEW_PROVIDER_FETCH_KEY);
         // 探测状态一并清掉（在飞线程的回包因接收端被丢而作废）。
         self.discovery.remove(NEW_PROVIDER_FETCH_KEY);
         // 释放探测的串行位。

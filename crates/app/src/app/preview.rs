@@ -480,8 +480,6 @@ impl App {
                 self.preview_parse_error = None;
                 // 存活卡片保留原折叠状态；新卡片不在集合中，天然展开。
                 self.prune_collapsed();
-                self.model_fetch.clear();
-                self.model_fetch_open.clear();
                 self.latency.clear();
                 // agent 的 key 集合可能被预览内容换掉，各页的 model 记忆保留。
                 self.probe.release(None);

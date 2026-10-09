@@ -295,7 +295,7 @@ impl App {
         ) {
             backend.save_sidecars(path, &self.providers)?;
         }
-        // 写盘前的自动快照（Auto tag）：磁盘内容与上次快照不同才备份（见 app::profiles）。
+        // 写盘前的自动快照（Auto tag）：磁盘内容与上次快照不同才备份（见 save::auto_snapshot_before_save）。
         self.auto_snapshot_before_save(path);
         if let Err(error) = backends::write_config(path, &content) {
             if let Some((sidecar, old_content)) = dsh_sidecar_backup {
@@ -362,6 +362,52 @@ fn wsl_skip_note(fmt: ConfigFormat, state: &backends::WslTargetState) -> String 
     }
 }
 
+// ---------- 自动快照挂点（原 app::profiles 的保存侧方法，UI 摘除后迁入） ----------
+
+impl App {
+    /// 自动快照目录：单测可注入 tempdir，生产用配置目录下的 backups/。
+    pub(in crate::app) fn backups_root(&self) -> std::path::PathBuf {
+        self.snapshots_root
+            .clone()
+            .unwrap_or_else(crate::profiles::default_backups_root)
+    }
+
+    /// 保存写盘前的自动快照（Auto tag）。
+    ///
+    /// 走 core 的外部修改检测：磁盘内容与上次记录的 hash 不同（或本会话从没
+    /// 快照过）才备份——我们自己刚写入的内容不重复留底，只有被外部改过的
+    /// 文件才在被覆盖前备份一份。快照失败一律静默：备份是保险措施，不能挡住
+    /// 保存主流程。WSL 路径由 wsl 命令读写、core 快照只走本地 fs，直接跳过。
+    pub(in crate::app) fn auto_snapshot_before_save(&mut self, path: &str) {
+        if path.trim().is_empty() || crate::util::is_wsl_path(path) {
+            return;
+        }
+        let target = std::path::Path::new(path);
+        let last_hash = self.snapshot_hashes.get(path).cloned().unwrap_or_default();
+        let backups_root = self.backups_root();
+        if crate::profiles::snapshot_if_changed_into(&backups_root, target, &last_hash).is_some() {
+            self.note_snapshot_hash(path);
+        }
+    }
+
+    /// 记录目标文件当前内容的 hash（写盘成功后调用），供下次保存判定「外部改动」。
+    pub(in crate::app) fn note_snapshot_hash(&mut self, path: &str) {
+        if path.trim().is_empty() || crate::util::is_wsl_path(path) {
+            return;
+        }
+        if let Some(hash) = crate::profiles::content_hash(std::path::Path::new(path)) {
+            self.snapshot_hashes.insert(path.to_string(), hash);
+        }
+    }
+
+    /// 保存成功后的备份清理：按默认保留策略（Auto 留最近 20 条等）。失败静默。
+    pub(in crate::app) fn prune_backups_after_save(&self) {
+        let _ = crate::profiles::prune(
+            &self.backups_root(),
+            crate::profiles::PrunePolicy::default(),
+        );
+    }
+}
 #[cfg(test)]
 mod wsl_skip_note_tests {
     use super::*;

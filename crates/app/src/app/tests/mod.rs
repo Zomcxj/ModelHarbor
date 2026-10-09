@@ -37,9 +37,6 @@ mod preview_diff_tests;
 mod preview_find_boundary_tests;
 #[cfg(test)]
 mod preview_sync_tests;
-/// 保存写盘前的自动快照与写盘后的保留策略清理（见 app::profiles）。
-#[cfg(test)]
-mod profiles_tests;
 #[cfg(test)]
 mod provider_header_layout_tests;
 /// 用真实配置文件确认「启用」开关只在 WorkBuddy 页出现。

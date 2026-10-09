@@ -20,11 +20,6 @@ pub(crate) use discovery::*;
 pub(crate) use net::*;
 pub(crate) use ui::*;
 
-pub(super) struct ModelFetchState {
-    pub(super) rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
-    pub(super) result: Option<Result<Vec<String>, String>>,
-}
-
 /// 单个后端的「内置网关免费模型」状态（列表 + 拉取通道 + 失败原因）。
 ///
 /// 裸 id 存这里，界面显示时再拼 `provider_id/` 前缀（见 [`crate::opencode_models`]）。

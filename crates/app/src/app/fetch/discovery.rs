@@ -77,10 +77,10 @@ pub(crate) fn should_use_cache(in_flight: bool, panel_open: bool) -> bool {
 pub(crate) fn probe_candidates_label(base_url: &str) -> String {
     let candidates = models_endpoint_candidates(base_url, None);
     if candidates.is_empty() {
-        return "先填写 Base URL 再探测模型".to_string();
+        return "先填写 Base URL 再获取模型".to_string();
     }
     format!(
-        "将依次探测候选端点（404 / 405 自动回退）：{}",
+        "将依次尝试候选端点（404 / 405 自动回退）：{}",
         candidates.join(" → ")
     )
 }
@@ -131,8 +131,8 @@ pub(crate) enum ProbeSummary {
 /// 底部状态栏的「最近探测」文案。
 pub(crate) fn probe_status_text(hhmm: &str, summary: &ProbeSummary) -> String {
     match summary {
-        ProbeSummary::Success(count) => format!("最近探测：{hhmm}（成功 {count} 个）"),
-        ProbeSummary::Failure(reason) => format!("最近探测：{hhmm}（失败：{reason}）"),
+        ProbeSummary::Success(count) => format!("最近获取：{hhmm}（成功 {count} 个）"),
+        ProbeSummary::Failure(reason) => format!("最近获取：{hhmm}（失败：{reason}）"),
     }
 }
 
@@ -209,7 +209,7 @@ pub(crate) fn start_discovery(
                 models,
             });
             state.error = None;
-            return Some(format!("命中 24 小时内的探测缓存：{count} 个模型"));
+            return Some(format!("命中 24 小时内的获取缓存：{count} 个模型"));
         }
     }
     // 走网络重新探测：gen 自增让旧回包作废，清掉上一轮的面板内容。
@@ -245,7 +245,7 @@ pub(crate) fn cancel_discovery(
     }
     state.generation += 1;
     state.rx = None;
-    Some("已取消模型探测".to_string())
+    Some("已取消模型获取".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +350,7 @@ pub(crate) fn discovery_panel(
     let mut close = false;
     let mut status = None;
     ui.horizontal(|ui| {
-        ui.strong("探测结果");
+        ui.strong("获取结果");
         if let Some(found) = &state.found {
             let additions = planned_additions(existing, &found.models, &found.checked).len();
             ui.label(
@@ -372,7 +372,7 @@ pub(crate) fn discovery_panel(
         ui.horizontal(|ui| {
             ui.add(egui::Spinner::new().size(16.0));
             ui.label(
-                egui::RichText::new("正在探测模型列表…（404 / 405 会自动换下一个候选端点）").weak(),
+                egui::RichText::new("正在获取模型列表…（404 / 405 会自动换下一个候选端点）").weak(),
             );
         });
     } else if let Some(reason) = &state.error {

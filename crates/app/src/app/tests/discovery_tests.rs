@@ -99,14 +99,14 @@ fn planned_additions_equals_merge_missing_tail() {
 fn status_text_reports_success_count_or_failure_reason() {
     assert_eq!(
         probe_status_text("14:23", &ProbeSummary::Success(5)),
-        "最近探测：14:23（成功 5 个）"
+        "最近获取：14:23（成功 5 个）"
     );
     assert_eq!(
         probe_status_text(
             "09:05",
             &ProbeSummary::Failure("未配置 API Key".to_string())
         ),
-        "最近探测：09:05（失败：未配置 API Key）"
+        "最近获取：09:05（失败：未配置 API Key）"
     );
 }
 
@@ -184,7 +184,7 @@ fn start_and_cancel_bump_generation_to_invalidate_replies() {
     // 取消：gen 自增 + 丢弃通道；之后回传的 gen=1 会被轮询整体丢弃。
     assert_eq!(
         cancel_discovery(&mut states, "k").as_deref(),
-        Some("已取消模型探测")
+        Some("已取消模型获取")
     );
     {
         let state = states.get("k").unwrap();

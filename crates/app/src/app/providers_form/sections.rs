@@ -143,19 +143,16 @@ pub(super) fn provider_header_fields(
     });
 }
 
-/// 「获取模型」区块（两份表单共用）：按钮行、后台拉取与弹层，
-/// 以及「探测模型」按钮与结果面板。
+/// 「获取模型」区块（两份表单共用）：按钮行 + 后台探测（连通/鉴权/列表/延迟
+/// 四合一，候选端点 404/405 自动回退）+ 结果勾选面板。
 ///
 /// 拆字段传参而不是拿 `&mut App`：调用方此时还借着 `self.providers[idx]`。
 /// 返回需要写入底部状态栏的消息（缓存命中 / 已添加模型 / 已取消）。
 pub(super) struct FetchSectionCtx<'a> {
-    pub(super) model_fetch: &'a mut HashMap<String, ModelFetchState>,
-    pub(super) model_fetch_open: &'a mut HashSet<String>,
     pub(super) latency: &'a HashMap<String, LatencyState>,
     pub(super) current_page: ConfigFormat,
     pub(super) fetch_key: &'a str,
-    pub(super) popup_salt: &'a str,
-    pub(super) scroll_salt: egui::Id,
+    /// 「探测模型」的状态（key → 状态；存在即结果面板开着）。
     /// 「探测模型」的状态（key → 状态；存在即结果面板开着）。
     pub(super) discovery: &'a mut HashMap<String, DiscoveryState>,
     /// 探测结果缓存（24 小时，键为 base_url；不含任何凭据）。
@@ -167,31 +164,21 @@ pub(super) fn models_fetch_section(
     ctx: &mut FetchSectionCtx<'_>,
     base_url: &str,
     secret: &str,
-    api: &str,
     models: &mut Vec<ModelRow>,
 ) -> Option<String> {
-    let mut fetch_request: Option<(String, String, String)> = None;
-    // 本帧用户点下的「探测模型」发起 / 取消。
     let mut probe_request: Option<(String, String)> = None;
     let mut cancel_probe = false;
-    let mut close_fetch = false;
     let mut status: Option<String> = None;
     ui.horizontal(|ui| {
         ui.strong("Models");
-        if ui.button("获取模型").clicked() {
-            fetch_request = Some((base_url.to_string(), secret.to_string(), api.to_string()));
-        }
-        if ctx.model_fetch_open.contains(ctx.fetch_key) && ui.button("关闭").clicked() {
-            close_fetch = true;
-        }
         // 模型探测：后台线程跑 core::discovery 的 probe（候选端点 404/405 自动回退），
-        // 结果在下方面板勾选新增。
+        // 结果在下方面板勾选新增。旧「拉列表」入口已由它取代（超集：连通+鉴权+延迟+只补空）。
         let probing = ctx
             .discovery
             .get(ctx.fetch_key)
             .is_some_and(|state| state.in_flight());
         if probing {
-            ui.add_enabled(false, egui::Button::new("探测中…"));
+            ui.add_enabled(false, egui::Button::new("获取中…"));
             if ui.button("取消").clicked() {
                 cancel_probe = true;
             }
@@ -199,7 +186,7 @@ pub(super) fn models_fetch_section(
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         } else if ui
-            .button("探测模型")
+            .button("获取模型")
             .on_hover_text(probe_candidates_label(base_url))
             .clicked()
         {
@@ -215,27 +202,7 @@ pub(super) fn models_fetch_section(
             ui.label(egui::RichText::new("延迟测试中…").small());
         }
     });
-    if let Some((base, secret, api)) = fetch_request {
-        let url = App::models_url(&base, &api);
-        let secret = secret.trim().to_string();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = fetch_models_remote(&url, &secret, &api);
-            let _ = tx.send(result);
-        });
-        ctx.model_fetch.insert(
-            ctx.fetch_key.to_string(),
-            ModelFetchState {
-                rx: Some(rx),
-                result: None,
-            },
-        );
-        ctx.model_fetch_open.insert(ctx.fetch_key.to_string());
-    }
-    if close_fetch {
-        ctx.model_fetch_open.remove(ctx.fetch_key);
-    }
-    // 「探测模型」的发起 / 取消：只填空合并等逻辑见 fetch::discovery。
+    // 发起 / 取消：只填空合并等逻辑见 fetch::discovery。
     let existing_ids: Vec<String> = models.iter().map(|m| m.id.trim().to_string()).collect();
     if let Some((base, secret)) = probe_request {
         if let Some(msg) = start_discovery(
@@ -253,24 +220,6 @@ pub(super) fn models_fetch_section(
         if let Some(msg) = cancel_discovery(ctx.discovery, ctx.fetch_key) {
             status = Some(msg);
         }
-    }
-    if ctx.model_fetch_open.contains(ctx.fetch_key) {
-        let fetch_key = ctx.fetch_key.to_string();
-        card_frame(
-            ui,
-            false,
-            0,
-            egui::Id::new((ctx.popup_salt, fetch_key.clone())),
-            |ui| {
-                model_fetch_popup(
-                    ui,
-                    ctx.model_fetch.get(&fetch_key),
-                    models,
-                    ctx.current_page,
-                    ctx.scroll_salt,
-                );
-            },
-        );
     }
     // 探测结果面板：状态存在即开着（探测中 / 失败 / 成功列表）。
     if let Some(state) = ctx.discovery.get_mut(ctx.fetch_key) {

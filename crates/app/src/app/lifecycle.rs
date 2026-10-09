@@ -116,9 +116,7 @@ impl super::App {
             self.status
                 .push_str(&format!("（{} 个 baseUrl 可疑，见卡片提示）", suspicious));
         }
-        // 重新加载后丢弃旧的模型获取状态
-        self.model_fetch.clear();
-        self.model_fetch_open.clear();
+        // 重新加载后丢弃旧的测试状态
         self.latency.clear();
         // 各页的 agent model 视图记忆不清：它按 (config_id, page) 键控，
         // 同文件重载后依然有效。
