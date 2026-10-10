@@ -40,10 +40,24 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Dwm",
 ] }
 winresource = "0.1"
+# 本机用量统计的扫描内核：56 个 agent 的会话解析（pi / opencode / workbuddy / dsh
+# 等），MIT。未发布 crates.io，只能钉 git tag。
+#
+# 注意 profile 里的 `[profile.release.package.tokscale-core]`：它吃 `opt-level = "z"`
+# 会慢 20%（全量扫描 2.5s → 3.0s），单包提到 `3` 换回速度。
+tokscale-core = { git = "https://github.com/junhoyeo/tokscale", tag = "v4.18.0" }
 
 [profile.release]
 opt-level = "z"
-lto = true
-codegen-units = 1
+# 停在 `thin`：`true`（fat LTO）与下面 `codegen-units = 1` 一起会把「改一个叶子
+# crate」的增量重编译从 21s 拉到 2m15s —— 每次改界面都要等两分多钟。thin 换来
+# 的扫描耗时与体积差异可以忽略（实测 2.5s / 5.2MB）。
+lto = "thin"
+codegen-units = 16
 panic = "abort"
 strip = true
+
+# 扫描内核单独提速：体积换速度。
+[profile.release.package.tokscale-core]
+opt-level = 3
+codegen-units = 16

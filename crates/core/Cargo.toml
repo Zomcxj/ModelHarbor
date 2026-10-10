@@ -10,6 +10,8 @@ serde_json.workspace = true
 serde_yaml_ng.workspace = true
 toml.workspace = true
 ureq.workspace = true
+# 本机用量统计（`usage` 模块）的扫描内核。
+tokscale-core.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys.workspace = true
