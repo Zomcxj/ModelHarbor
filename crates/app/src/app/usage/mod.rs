@@ -26,7 +26,8 @@ mod scan_sources;
 mod view;
 
 use crate::app::App;
-use crate::usage::{DailyMap, Ledger, SessionSnapshot};
+use crate::format::ConfigFormat;
+use crate::usage::{DailyBucket, DailyMap, Ledger, SessionSnapshot};
 use eframe::egui;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -74,6 +75,10 @@ pub(in crate::app) struct UsageReport {
 
 impl UsageReport {
     /// 合计 token。
+    ///
+    /// 只用于测试：生产路径的合计走按天分桶（`range::range_stats`），
+    /// 那里能按区间筛选，而会话级汇总做不到。
+    #[cfg(test)]
     pub(in crate::app) fn total(&self) -> i64 {
         self.sessions.iter().map(SessionSnapshot::total).sum()
     }
@@ -358,6 +363,30 @@ impl App {
             .map(|report| &report.daily)
     }
 
+    /// 按当前 agent 筛选过滤后的按天分桶。
+    ///
+    /// 筛选方式是**只保留该 agent 的分解，并把合计换成它**：桶里的
+    /// `by_client` 是现成的（按 label 分），拿它替掉 `totals` 即可，
+    /// 不用重新扫一遍。热力图、区间统计、四个维度全都读这个结果，
+    /// 所以「看单个 agent」和「看全部」走的是同一条代码路径。
+    ///
+    /// 模型与来源 agent 也跟着收窄：只看 pi 时，模型表里不该出现
+    /// 只有 opencode 用过的模型。
+    pub(in crate::app) fn usage_daily_filtered(&self) -> DailyMap {
+        let Some(daily) = self.usage_daily() else {
+            return DailyMap::new();
+        };
+        filter_daily_by_client(daily, self.usage_filter)
+    }
+
+    /// 当前筛选的 agent 名；未筛选时给「全部 agent」。
+    pub(in crate::app) fn usage_filter_label(&self) -> String {
+        match self.usage_filter {
+            Some(client) => client.label().to_string(),
+            None => "全部 agent".to_string(),
+        }
+    }
+
     /// 今天（本地日索引）。
     ///
     /// 区间边界都相对它算，所以集中在这里读一次系统时间，而不是每个函数各读一次
@@ -377,6 +406,50 @@ pub(in crate::app) fn unix_now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// 按 agent 筛选按天分桶：只保留该 agent 的用量，并把它当成这一天的新合计。
+///
+/// 筛选方式是**用现成的分解换掉合计**，不重新扫一遍：`by_client` 本来就是按
+/// agent 分好的，拿它替掉 `totals` 即可。于是热力图、区间统计、四个维度表
+/// 全都读同一份结果，「看单个 agent」与「看全部」走完全相同的代码路径。
+///
+/// 模型与会话也跟着收窄：只看 pi 时，模型表里不该出现只有 opencode 用过的模型。
+/// 某天该 agent 没有用量就不生成空桶 —— 热力图靠「桶存不存在」区分
+/// 「那天没用过」与「那天用了但为 0」。
+fn filter_daily_by_client(daily: &DailyMap, filter: Option<ConfigFormat>) -> DailyMap {
+    let Some(filter) = filter else {
+        return daily.clone();
+    };
+    let label = filter.label();
+    let mut out = DailyMap::new();
+    for (date, bucket) in daily {
+        let Some(totals) = bucket.by_client.get(label) else {
+            continue;
+        };
+        let mut narrowed = DailyBucket::new(date);
+        narrowed.totals = *totals;
+        narrowed.by_client.insert(label.to_string(), *totals);
+        // 交叉分解的键就是 agent label：拿它同时填 `by_model`，
+        // 这样模型表天然只含该 agent 用过的模型。
+        if let Some(models) = bucket.by_client_model.get(label) {
+            narrowed
+                .by_client_model
+                .insert(label.to_string(), models.clone());
+            for (model, model_totals) in models {
+                narrowed.by_model.insert(model.clone(), *model_totals);
+            }
+        }
+        // 会话键是 `"{client}:{session_id}"`（见 `SessionSnapshot::key`）。
+        let prefix = format!("{label}:");
+        for (session, session_totals) in &bucket.by_session {
+            if session.starts_with(&prefix) {
+                narrowed.by_session.insert(session.clone(), *session_totals);
+            }
+        }
+        out.insert(date.clone(), narrowed);
+    }
+    out
 }
 
 /// 把扫描结果并进账本并产出展示视图。
@@ -405,6 +478,150 @@ pub(in crate::app) fn merge_into_ledger(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::usage::range::Range;
+    use crate::usage::DayTotals;
+    use std::collections::BTreeMap;
+
+    /// 无筛选：原样返回（不做无谓的深拷贝）。
+    #[test]
+    fn filter_without_client_keeps_everything() {
+        let mut daily = DailyMap::new();
+        daily.insert("2026-01-01".into(), bucket_with_two_clients());
+        let filtered = filter_daily_by_client(&daily, None);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered["2026-01-01"].totals.total(), 300);
+    }
+
+    /// 筛到单个 agent 时：合计换成该 agent 的，分解也跟着收窄。
+    #[test]
+    fn filter_narrows_totals_models_and_sessions() {
+        let mut daily = DailyMap::new();
+        daily.insert("2026-01-01".into(), bucket_with_two_clients());
+        let filtered = filter_daily_by_client(&daily, Some(ConfigFormat::Pi));
+        let bucket = &filtered["2026-01-01"];
+        // 合计 = pi 自己的 200，不是全部的 300。
+        assert_eq!(bucket.totals.total(), 200);
+        assert_eq!(bucket.by_client.len(), 1, "只剩 pi 一项");
+        assert!(bucket.by_client.contains_key(&pi_label()));
+        // 模型表不能出现只有 opencode 用过的模型。
+        assert!(bucket.by_model.contains_key("claude-opus-5"));
+        assert!(
+            !bucket.by_model.contains_key("gpt-5"),
+            "别的 agent 的模型不该混进来"
+        );
+        // 会话按 `"{label}:"` 前缀收窄。
+        assert_eq!(bucket.by_session.len(), 1);
+        assert!(bucket.by_session.contains_key(&pi_session("session-a")));
+    }
+
+    /// 某天该 agent 没有用量：整桶不生成（热力图靠它区分「没用过」与「用了 0」）。
+    #[test]
+    fn filter_drops_days_without_that_client() {
+        let mut daily = DailyMap::new();
+        daily.insert("2026-01-01".into(), bucket_with_two_clients());
+        daily.insert("2026-01-02".into(), bucket_with_one_client());
+        // 两天都碰过 opencode → 两天都留下，但合计各自只剩 opencode 那份。
+        let filtered = filter_daily_by_client(&daily, Some(ConfigFormat::Opencode));
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered["2026-01-01"].totals.total(), 100, "不含 pi 的 200");
+        assert_eq!(filtered["2026-01-02"].totals.total(), 100);
+
+        // 完全没用过的 agent：一天都不留。
+        let none = filter_daily_by_client(&daily, Some(ConfigFormat::KimiCode));
+        assert!(none.is_empty(), "没用过的 agent 不该生成空桶");
+    }
+
+    /// 筛选后逐日合计 == 筛选后区间合计（不丢不重）。
+    #[test]
+    fn filter_keeps_per_day_sum_consistent() {
+        let mut daily = DailyMap::new();
+        daily.insert("2026-01-01".into(), bucket_with_two_clients());
+        daily.insert("2026-01-02".into(), bucket_with_one_client());
+        let filtered = filter_daily_by_client(&daily, Some(ConfigFormat::Opencode));
+        // `today` 要晚于桶里的日期：`Range::All` 会排除未来日期（防脏账本）。
+        let today = aggregate::days_from_civil(2026, 1, 3);
+        let summed: i64 = filtered.values().map(|bucket| bucket.totals.total()).sum();
+        let from_range =
+            crate::app::usage::range::totals_in_range(&filtered, Range::All, today).total();
+        assert_eq!(summed, from_range);
+        assert_eq!(summed, 200, "两天各 100 的 opencode 用量");
+        // 逐日合计 == 各天 by_client 之和（分解与合计口径一致）。
+        for bucket in filtered.values() {
+            let per_client: i64 = bucket.by_client.values().map(|t| t.total()).sum();
+            assert_eq!(bucket.totals.total(), per_client, "{}", bucket.date);
+        }
+    }
+
+    /// 造一个含两个 agent 的桶：pi 200 + opencode 100，各自有模型与会话。
+    ///
+    /// 键一律走 [`ConfigFormat::label`]，不硬编码字符串：分解表的键就是
+    /// label（见 `DailyBucket::add_message`），写错大小写会让筛选静默落空。
+    fn bucket_with_two_clients() -> DailyBucket {
+        let mut bucket = DailyBucket::new("2026-01-01");
+        let pi = day_totals(200, 1);
+        let opencode = day_totals(100, 1);
+        bucket.totals = day_totals(300, 2);
+        bucket.by_client.insert(pi_label(), pi);
+        bucket.by_client.insert(opencode_label(), opencode);
+        bucket.by_client_model.insert(
+            pi_label(),
+            BTreeMap::from([("claude-opus-5".to_string(), pi)]),
+        );
+        bucket.by_client_model.insert(
+            opencode_label(),
+            BTreeMap::from([("gpt-5".to_string(), opencode)]),
+        );
+        bucket.by_model.insert("claude-opus-5".into(), pi);
+        bucket.by_model.insert("gpt-5".into(), opencode);
+        bucket.by_session.insert(pi_session("session-a"), pi);
+        bucket
+            .by_session
+            .insert(opencode_session("session-b"), opencode);
+        bucket
+    }
+
+    /// 造一个只有 opencode 的桶。
+    fn bucket_with_one_client() -> DailyBucket {
+        let mut bucket = DailyBucket::new("2026-01-02");
+        let opencode = day_totals(100, 1);
+        bucket.totals = opencode;
+        bucket.by_client.insert(opencode_label(), opencode);
+        bucket.by_client_model.insert(
+            opencode_label(),
+            BTreeMap::from([("gpt-5".to_string(), opencode)]),
+        );
+        bucket.by_model.insert("gpt-5".into(), opencode);
+        bucket
+            .by_session
+            .insert(opencode_session("session-b"), opencode);
+        bucket
+    }
+
+    fn pi_label() -> String {
+        ConfigFormat::Pi.label().to_string()
+    }
+
+    fn opencode_label() -> String {
+        ConfigFormat::Opencode.label().to_string()
+    }
+
+    /// 会话键与 [`SessionSnapshot::key`] 同构：`client:session_id`。
+    fn pi_session(id: &str) -> String {
+        SessionSnapshot::key(ConfigFormat::Pi, id)
+    }
+
+    fn opencode_session(id: &str) -> String {
+        SessionSnapshot::key(ConfigFormat::Opencode, id)
+    }
+
+    /// 输入 `input`，消息 `messages` 条，其余为 0。
+    fn day_totals(input: i64, messages: i64) -> DayTotals {
+        DayTotals {
+            input,
+            messages,
+            ..DayTotals::default()
+        }
+    }
 
     #[test]
     fn poll_due_throttles_to_the_interval() {
