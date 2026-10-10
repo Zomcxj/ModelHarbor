@@ -180,6 +180,11 @@ pub struct App {
     usage_dimension: usage::aggregate::Dimension,
     /// 用量视图的时间区间（今日 / 本周 / 本月 / 全部）。
     usage_range: usage::range::Range,
+    /// 用量视图的 agent 筛选：`None` = 全部 agent。
+    ///
+    /// 与 `current_page` 分开存：用量视图下点页签是筛选，不该改动配置页状态
+    /// （切回提供商管理时用户应看到原来那一页）。
+    usage_filter: Option<ConfigFormat>,
     /// 本机用量扫描状态（见 [`crate::app::usage`]）。
     usage: usage::UsageState,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
@@ -356,6 +361,7 @@ impl Default for App {
             main_view: MainView::default(),
             usage_dimension: usage::aggregate::Dimension::default(),
             usage_range: usage::range::Range::default(),
+            usage_filter: None,
             usage: usage::UsageState::default(),
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
             glass: prefs.glass,
@@ -468,8 +474,6 @@ impl eframe::App for App {
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             self.ui_page_header(ui);
-            // 视图切换（用量 / 提供商管理）：两个视图二选一显示在同一位置。
-            self.ui_view_switch(ui);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)

@@ -6,8 +6,8 @@
 //! 切维度按钮照顶栏页签的选中样式（`widgets.hovered.bg_fill` + 2px 描边），
 //! 配色一律走 `crate::theme::semantics(ui)`，不硬编码颜色。
 
-use super::aggregate::{self, AgentUsage, DayUsage, Dimension, ModelUsage, Totals};
-use super::range::{self, Range};
+use super::aggregate::{self, AgentUsage, DayUsage, Dimension, ModelUsage};
+use super::range::Range;
 use crate::app::App;
 use crate::usage::SessionSnapshot;
 use eframe::egui;
@@ -19,21 +19,21 @@ const DIM_BUTTON_WIDTH: f32 = 68.0;
 const SESSION_ID_CHARS: usize = 20;
 
 impl App {
-    /// 中央区域顶部的视图切换：`[用量] [提供商管理]` 二选一。
+    /// 视图切换：`[用量] [提供商管理]` 二选一。
     ///
-    /// 放在页头下方、内容区上方 —— 它决定下面显示哪一块，位置必须在两者之间。
+    /// 画在**顶栏第一行、agent 页签右侧**：它决定下面显示哪一块，与页签同层
+    /// 但语义不同 —— 页签选 agent，这里选视图。
+    ///
+    /// 尺寸照页签（高 22），不另起一行、不加间距，避免把顶栏撑高。
     pub(in crate::app) fn ui_view_switch(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            for view in [
-                super::super::MainView::Usage,
-                super::super::MainView::Providers,
-            ] {
-                if self.view_switch_button(ui, view) {
-                    self.main_view = view;
-                }
+        for view in [
+            super::super::MainView::Usage,
+            super::super::MainView::Providers,
+        ] {
+            if self.view_switch_button(ui, view) {
+                self.main_view = view;
             }
-        });
-        ui.add_space(crate::theme::SPACE_2);
+        }
     }
 
     /// 单个视图切换按钮：选中态 = 悬浮色底 + 2px 描边（与顶栏页签同一套）。
@@ -54,23 +54,24 @@ impl App {
             egui::Button::new(text)
                 .fill(fill)
                 .stroke(stroke)
-                .min_size(egui::vec2(88.0, 24.0)),
+                .min_size(egui::vec2(72.0, 22.0)),
         )
         .clicked()
     }
 
-    /// 用量视图主体：状态行 + 区间总览（含热力图）+ 维度切换 + 表格。
+    /// 用量视图主体：状态行 + 控件行 + 总览（含热力图）+ 表格。
     pub(in crate::app) fn ui_usage_section(&mut self, ui: &mut egui::Ui) {
         self.ui_usage_status(ui);
         ui.add_space(crate::theme::SPACE_3);
         self.ui_usage_overview(ui);
-        ui.add_space(crate::theme::SPACE_4);
-        self.ui_usage_dimensions(ui);
-        ui.add_space(crate::theme::SPACE_2);
+        ui.add_space(crate::theme::SPACE_5);
         self.ui_usage_table(ui);
     }
 
     /// 顶部状态行：合计、扫描进度、数据新鲜度与错误。
+    /// 顶部状态行：筛选、扫描进度、数据新鲜度与错误。
+    ///
+    /// 压成两行（原本三行）：用量视图下面是表格，上面多占一行就少一行数据。
     fn ui_usage_status(&mut self, ui: &mut egui::Ui) {
         let semantics = crate::theme::semantics(ui);
         let scanning = self.usage.scanning();
@@ -81,7 +82,6 @@ impl App {
         let report = match self.usage.result.as_ref() {
             Some(Ok(report)) => Some((
                 report.sessions.len(),
-                report.total(),
                 report.message_count,
                 report.scan_ms,
                 report.scanned_at,
@@ -93,54 +93,45 @@ impl App {
             _ => None,
         };
         let ledger_len = self.usage.ledger_len();
-        let watched = super::scan_sources::watched_agent_count();
+        let filter = self.usage_filter_label();
+        let weak = ui.visuals().weak_text_color();
 
         ui.horizontal_wrapped(|ui| {
-            ui.strong("本机用量");
             ui.label(
-                egui::RichText::new(format!(
-                    "监视 {watched} 个 agent 的本地会话账本，每 3 秒检测一次变化"
-                ))
-                .small()
-                .weak(),
+                egui::RichText::new(&filter)
+                    .size(crate::theme::TEXT_BODY)
+                    .strong(),
             );
-        });
-        ui.horizontal_wrapped(|ui| {
             match &report {
-                Some((sessions, total, messages, scan_ms, scanned_at)) => {
-                    ui.label(format!("合计 {}", aggregate::format_tokens(*total)));
-                    ui.label(egui::RichText::new("·").weak());
-                    ui.label(format!("{} 个会话", sessions));
-                    ui.label(egui::RichText::new("·").weak());
-                    ui.label(format!("{} 条消息", messages));
-                    ui.label(egui::RichText::new("·").weak());
+                Some((sessions, messages, scan_ms, scanned_at)) => {
                     // 「更新于 N 秒前」：把 egui 时间轴上的扫描时刻换算成距今多久。
                     let age_ms = ((frame_time - scanned_at).max(0.0) * 1_000.0) as i64;
                     ui.label(
                         egui::RichText::new(format!(
-                            "更新于 {}",
+                            "{} 个会话 · {} 条消息 · 更新于 {} · 内核 {scan_ms} ms",
+                            sessions,
+                            messages,
                             aggregate::relative_time(now_ms - age_ms, now_ms)
                         ))
-                        .small()
-                        .weak(),
-                    );
-                    ui.label(
-                        egui::RichText::new(format!("（内核耗时 {scan_ms} ms）"))
-                            .small()
-                            .weak(),
+                        .size(crate::theme::TEXT_CAPTION)
+                        .color(weak),
                     );
                 }
                 None => {
                     ui.label(
                         egui::RichText::new("还没有扫描结果")
-                            .small()
+                            .size(crate::theme::TEXT_CAPTION)
                             .color(semantics.warn),
                     );
                 }
             }
             if scanning {
                 ui.spinner();
-                ui.label(egui::RichText::new("扫描中…").small().weak());
+                ui.label(
+                    egui::RichText::new("扫描中…")
+                        .size(crate::theme::TEXT_CAPTION)
+                        .color(weak),
+                );
             }
         });
         if let Some(err) = error {
@@ -148,44 +139,42 @@ impl App {
         }
         ui.label(
             egui::RichText::new(format!("账本保留已删除会话的用量（共 {ledger_len} 条）"))
-                .small()
-                .weak(),
+                .size(crate::theme::TEXT_CAPTION)
+                .color(weak),
         );
     }
 
     /// 四个维度的切换按钮。
-    fn ui_usage_dimensions(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            for dimension in Dimension::ALL {
-                let selected = self.usage_dimension == dimension;
-                let visuals = ui.visuals();
-                let (fill, stroke) = if selected {
-                    (
-                        visuals.widgets.hovered.bg_fill,
-                        egui::Stroke::new(2.0f32, visuals.widgets.hovered.bg_stroke.color),
-                    )
-                } else {
-                    (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
-                };
-                let text = egui::RichText::new(dimension.label());
-                let text = if selected { text.strong() } else { text };
-                let response = ui.add(
-                    egui::Button::new(text)
-                        .fill(fill)
-                        .stroke(stroke)
-                        .min_size(egui::vec2(DIM_BUTTON_WIDTH, 24.0)),
-                );
-                if response.clicked() {
-                    self.usage_dimension = dimension;
-                }
+    pub(in crate::app) fn dimension_buttons(&mut self, ui: &mut egui::Ui) {
+        for dimension in Dimension::ALL {
+            let selected = self.usage_dimension == dimension;
+            let visuals = ui.visuals();
+            let (fill, stroke) = if selected {
+                (
+                    visuals.widgets.hovered.bg_fill,
+                    egui::Stroke::new(2.0f32, visuals.widgets.hovered.bg_stroke.color),
+                )
+            } else {
+                (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
+            };
+            let text = egui::RichText::new(dimension.label());
+            let text = if selected { text.strong() } else { text };
+            let response = ui.add(
+                egui::Button::new(text)
+                    .fill(fill)
+                    .stroke(stroke)
+                    .min_size(egui::vec2(DIM_BUTTON_WIDTH, 22.0)),
+            );
+            if response.clicked() {
+                self.usage_dimension = dimension;
             }
-        });
+        }
     }
 
     /// 当前维度的表格。
     fn ui_usage_table(&mut self, ui: &mut egui::Ui) {
         let sessions: Vec<SessionSnapshot> = self.usage_sessions().to_vec();
-        let daily = self.usage_daily().cloned().unwrap_or_default();
+        let daily = self.usage_daily_filtered();
         if sessions.is_empty() && daily.is_empty() {
             let semantics = crate::theme::semantics(ui);
             ui.label(egui::RichText::new("没有找到本机用量数据。").color(semantics.warn));
@@ -241,106 +230,263 @@ fn usage_table_shell(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
-/// 首列表头：区间不是「全部」时带上区间名，让数字的归属一目了然。
-fn range_header(range: Range) -> &'static str {
-    match range {
-        Range::All => "Agent",
-        Range::Today => "Agent（今日）",
-        Range::Week => "Agent（本周）",
-        Range::Month => "Agent（本月）",
+// ---------------------------------------------------------------------------
+// 表格：列对齐的排版基元
+// ---------------------------------------------------------------------------
+//
+// 排版照参考实现（tokscale 的 `tui-daily.png`）：表头弱化、**数字右对齐**、
+// 列宽固定。不用 `egui::Grid` 是因为它不支持逐列对齐（`grid.rs` 里明确写了
+// "Grid not yet available for right-to-left layouts"），数字只能左对齐，
+// 位数不同的数就排成参差的 —— 正是「丑」的来源。
+//
+// 做法：每个单元格用 `allocate_ui_with_layout` 分配固定宽度的子区域，
+// 文字列左对齐、数字列右对齐，于是每一列的字形起点/终点都对齐。
+
+/// 表头行高（也是每个单元格的高度）。
+const CELL_HEIGHT: f32 = 16.0;
+
+/// 数值列的常用宽度：`123.4M` 这类最长 6-7 字符。
+const NUM_W: f32 = 68.0;
+
+/// 一列的定义。
+#[derive(Clone, Copy)]
+struct Column {
+    /// 表头文字。
+    header: &'static str,
+    /// 列宽（点）。
+    width: f32,
+    /// 数字列：右对齐 + 等宽字体。
+    numeric: bool,
+}
+
+impl Column {
+    /// 文本列（左对齐）。
+    const fn text(header: &'static str, width: f32) -> Self {
+        Self {
+            header,
+            width,
+            numeric: false,
+        }
+    }
+
+    /// 数字列（右对齐 + 等宽）。
+    const fn number(header: &'static str, width: f32) -> Self {
+        Self {
+            header,
+            width,
+            numeric: true,
+        }
     }
 }
 
-/// 表头一行：列名弱化显示。
-fn table_header(ui: &mut egui::Ui, columns: &[&str]) {
+/// 表格：表头 + 逐行。
+///
+/// 每行是一个闭包，负责往当前行里塞单元格（用 [`cell_text`] / [`cell_number`]）；
+/// 这样四个维度共用一套列宽与对齐规则，不用各写一遍排版。
+fn table<F>(ui: &mut egui::Ui, columns: &[Column], rows: impl IntoIterator<Item = F>)
+where
+    F: FnOnce(&mut egui::Ui),
+{
+    table_header(ui, columns);
+    ui.add_space(crate::theme::SPACE_2);
+    for row in rows {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = crate::theme::SPACE_2;
+            row(ui);
+        });
+        ui.add_space(crate::theme::SPACE_1);
+    }
+}
+
+/// 表头：弱化 + 与数据列同宽同对齐，于是表头正好落在数字上方。
+fn table_header(ui: &mut egui::Ui, columns: &[Column]) {
     ui.horizontal(|ui| {
-        let mut first = true;
+        ui.spacing_mut().item_spacing.x = crate::theme::SPACE_2;
         for column in columns {
-            if !first {
-                ui.label(egui::RichText::new("·").weak());
-            }
-            first = false;
-            ui.label(egui::RichText::new(*column).small().weak());
+            ui.allocate_ui_with_layout(
+                egui::vec2(column.width, CELL_HEIGHT),
+                align_layout(column.numeric),
+                |ui| {
+                    ui.label(
+                        egui::RichText::new(column.header)
+                            .size(crate::theme::TEXT_CAPTION)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                },
+            );
         }
     });
 }
 
-/// 用量数字块：合计 + 输入/输出/缓存读 明细。四维表格共用这一段。
-fn usage_numbers(ui: &mut egui::Ui, totals: &Totals) {
-    ui.label(
-        egui::RichText::new(aggregate::format_tokens(totals.total()))
-            .strong()
-            .monospace(),
-    );
-    ui.label(
-        egui::RichText::new(format!(
-            "输入 {} · 输出 {} · 缓存读 {}",
-            aggregate::format_tokens(totals.input),
-            aggregate::format_tokens(totals.output),
-            aggregate::format_tokens(totals.cache_read)
-        ))
-        .small()
-        .weak(),
+/// 数字列右对齐、文本列左对齐。
+fn align_layout(numeric: bool) -> egui::Layout {
+    if numeric {
+        egui::Layout::right_to_left(egui::Align::Center)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Center)
+    }
+}
+
+/// 文本单元格（左对齐，过长截断 + 悬停看全文）。
+fn cell_text(ui: &mut egui::Ui, column: &Column, text: &str, strong: bool, weak: bool) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(column.width, CELL_HEIGHT),
+        align_layout(false),
+        |ui| {
+            let mut rich = egui::RichText::new(text);
+            if strong {
+                rich = rich.strong();
+            }
+            if weak {
+                rich = rich.small().color(ui.visuals().weak_text_color());
+            }
+            ui.add(egui::Label::new(rich).truncate())
+                .on_hover_text(text);
+        },
     );
 }
 
-/// Agent 维度表：agent 名 / 用量 / 最近活动。
+/// 数字单元格（右对齐 + 等宽，位数不同的数也能对齐）。
+fn cell_number(ui: &mut egui::Ui, column: &Column, text: &str, strong: bool, weak: bool) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(column.width, CELL_HEIGHT),
+        align_layout(true),
+        |ui| {
+            let mut rich = egui::RichText::new(text).monospace();
+            if strong {
+                rich = rich.strong();
+            }
+            if weak {
+                rich = rich.small().color(ui.visuals().weak_text_color());
+            }
+            ui.label(rich);
+        },
+    );
+}
+
+/// Agent 维度表：agent / 合计 / 输入 / 输出 / 缓存读 / 最近活动。
 ///
-/// 区间统计下不显示会话数：一个会话可以横跨多天，按区间求和时「会话数」相加
-/// 会重复计数，列出来反而误导。想看会话数切到「会话」维度。
-fn agent_table(ui: &mut egui::Ui, rows: &[AgentUsage], now_ms: i64, range: Range, today: i64) {
-    table_header(ui, &[range_header(range), "用量（输入 · 输出 · 缓存读）"]);
-    for row in rows {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(row.client.label()).strong());
-            usage_numbers(ui, &row.totals);
-            if range == Range::All && row.last_seen_ms > 0 {
-                ui.label(
-                    egui::RichText::new(aggregate::relative_time(row.last_seen_ms, now_ms))
-                        .small()
-                        .weak(),
+/// 不列会话数：一个会话可以横跨多天，按区间求和时「会话数」相加会重复计数。
+fn agent_table(ui: &mut egui::Ui, rows: &[AgentUsage], now_ms: i64, range: Range, _today: i64) {
+    let columns = [
+        Column::text("Agent", 130.0),
+        Column::number("合计", NUM_W),
+        Column::number("输入", NUM_W),
+        Column::number("输出", NUM_W),
+        Column::number("缓存读", NUM_W),
+        Column::text("最近活动", 90.0),
+    ];
+    let rows: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            let client = row.client;
+            let totals = row.totals;
+            let last_seen_ms = row.last_seen_ms;
+            move |ui: &mut egui::Ui| {
+                cell_text(ui, &columns[0], client.label(), true, false);
+                cell_number(
+                    ui,
+                    &columns[1],
+                    &aggregate::format_tokens(totals.total()),
+                    true,
+                    false,
                 );
-            } else if range != Range::All {
-                let _ = today;
-                ui.label(
-                    egui::RichText::new(range::totals_label(range).trim_end_matches("用量"))
-                        .small()
-                        .weak(),
+                cell_number(
+                    ui,
+                    &columns[2],
+                    &aggregate::format_tokens(totals.input),
+                    false,
+                    true,
                 );
+                cell_number(
+                    ui,
+                    &columns[3],
+                    &aggregate::format_tokens(totals.output),
+                    false,
+                    true,
+                );
+                cell_number(
+                    ui,
+                    &columns[4],
+                    &aggregate::format_tokens(totals.cache_read),
+                    false,
+                    true,
+                );
+                let when = if range == Range::All && last_seen_ms > 0 {
+                    aggregate::relative_time(last_seen_ms, now_ms)
+                } else {
+                    String::new()
+                };
+                cell_text(ui, &columns[5], &when, false, true);
             }
-        });
-        ui.add_space(crate::theme::SPACE_1);
-    }
+        })
+        .collect();
+    table(ui, &columns, rows);
 }
 
-/// 模型维度表：模型名 / 用量 / 来源 agent。
+/// 模型维度表：模型 / 合计 / 输入 / 输出 / 缓存读 / 来源 agent。
 fn model_table(ui: &mut egui::Ui, rows: &[ModelUsage], now_ms: i64, range: Range, _today: i64) {
-    table_header(
-        ui,
-        &[
-            range_header(range),
-            "用量（输入 · 输出 · 缓存读）",
-            "来源 agent",
-        ],
-    );
-    for row in rows {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(&row.model_id).strong().monospace());
-            usage_numbers(ui, &row.totals);
-            ui.label(egui::RichText::new(row.agents.join(" / ")).small().weak());
-            if range == Range::All && row.last_seen_ms > 0 {
-                ui.label(
-                    egui::RichText::new(aggregate::relative_time(row.last_seen_ms, now_ms))
-                        .small()
-                        .weak(),
+    let columns = [
+        Column::text("模型", 210.0),
+        Column::number("合计", NUM_W),
+        Column::number("输入", NUM_W),
+        Column::number("输出", NUM_W),
+        Column::number("缓存读", NUM_W),
+        Column::text("来源 agent", 150.0),
+    ];
+    let rows: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            let model_id = row.model_id.clone();
+            let totals = row.totals;
+            let agents = row.agents.join(" / ");
+            let last_seen_ms = row.last_seen_ms;
+            move |ui: &mut egui::Ui| {
+                cell_text(ui, &columns[0], &model_id, true, false);
+                cell_number(
+                    ui,
+                    &columns[1],
+                    &aggregate::format_tokens(totals.total()),
+                    true,
+                    false,
                 );
+                cell_number(
+                    ui,
+                    &columns[2],
+                    &aggregate::format_tokens(totals.input),
+                    false,
+                    true,
+                );
+                cell_number(
+                    ui,
+                    &columns[3],
+                    &aggregate::format_tokens(totals.output),
+                    false,
+                    true,
+                );
+                cell_number(
+                    ui,
+                    &columns[4],
+                    &aggregate::format_tokens(totals.cache_read),
+                    false,
+                    true,
+                );
+                let source = if range == Range::All && last_seen_ms > 0 {
+                    format!(
+                        "{agents} · {}",
+                        aggregate::relative_time(last_seen_ms, now_ms)
+                    )
+                } else {
+                    agents.clone()
+                };
+                cell_text(ui, &columns[5], &source, false, true);
             }
-        });
-        ui.add_space(crate::theme::SPACE_1);
-    }
+        })
+        .collect();
+    table(ui, &columns, rows);
 }
 
-/// 会话维度表：会话 id / agent / 模型 / 区间内用量；归档的加标记。
+/// 会话维度表：会话 / Agent / 模型 / 区间内用量 / 最近活动。
 ///
 /// 区间不是「全部」时，用量列是该会话在区间内的部分，不是它的一生总量。
 fn session_table(
@@ -350,60 +496,103 @@ fn session_table(
     range: Range,
     _today: i64,
 ) {
-    let semantics = crate::theme::semantics(ui);
-    let total_header = if range == Range::All {
-        "合计"
+    // 表头是 `&'static str`：按区间二选一，不动态拼字符串。
+    let total_column = if range == Range::All {
+        Column::number("合计", NUM_W)
     } else {
-        "区间内"
+        Column::number("区间内", NUM_W)
     };
-    table_header(ui, &["会话", "Agent", "模型", total_header, "最近活动"]);
-    for row in rows {
-        ui.horizontal(|ui| {
-            // 会话 id 很长（UUID），截断中间显示；全文放悬停。
+    let columns = [
+        Column::text("会话", 180.0),
+        Column::text("Agent", 120.0),
+        Column::text("模型", 210.0),
+        total_column,
+        Column::text("状态", 90.0),
+    ];
+    let rows: Vec<_> = rows
+        .iter()
+        .map(|row| {
             let short = aggregate::short_session_id(&row.session_id, SESSION_ID_CHARS);
-            ui.label(egui::RichText::new(short).monospace())
-                .on_hover_text(&row.session_id);
-            ui.label(egui::RichText::new(row.client.label()).small());
-            // 模型名可能很长，弱化并截断，免得把合计挤出去。
-            ui.add(egui::Label::new(egui::RichText::new(&row.model_id).small().weak()).truncate())
-                .on_hover_text(&row.model_id);
-            ui.label(
-                egui::RichText::new(aggregate::format_tokens(row.total()))
-                    .strong()
-                    .monospace(),
-            );
-            ui.label(
-                egui::RichText::new(aggregate::relative_time(row.last_seen_ms, now_ms))
-                    .small()
-                    .weak(),
-            );
-            if row.archived {
-                // 已从源里消失、用量由账本保留：用「注意」色标出来，
-                // 免得用户以为统计读错了。
-                ui.label(egui::RichText::new("已归档").small().color(semantics.warn))
-                    .on_hover_text("该会话已从源文件里删除，用量由本地账本保留");
+            let client = row.client;
+            let model_id = row.model_id.clone();
+            let total = row.total();
+            let last_seen_ms = row.last_seen_ms;
+            let archived = row.archived;
+            move |ui: &mut egui::Ui| {
+                cell_text(ui, &columns[0], &short, false, false);
+                cell_text(ui, &columns[1], client.label(), false, false);
+                cell_text(ui, &columns[2], &model_id, false, true);
+                cell_number(
+                    ui,
+                    &columns[3],
+                    &aggregate::format_tokens(total),
+                    true,
+                    false,
+                );
+                // 归档会话优先标状态（它比「最近活动」更值得注意：
+                // 用户可能以为统计读错了，得说清用量来自账本）。
+                if archived {
+                    cell_text(ui, &columns[4], "已归档", false, false);
+                } else {
+                    let when = aggregate::relative_time(last_seen_ms, now_ms);
+                    cell_text(ui, &columns[4], &when, false, true);
+                }
             }
-        });
-        ui.add_space(crate::theme::SPACE_1);
-    }
+        })
+        .collect();
+    table(ui, &columns, rows);
 }
 
-/// 时间维度表：一天一行，日期 / 当天用量 / 当天消息数。
+/// 时间维度表：日期 / 合计 / 输入 / 输出 / 缓存读 / 消息。
 ///
 /// 不列会话数：跨天会话会在多天各计一次，列出来会让人以为总量对不上。
-fn day_table(ui: &mut egui::Ui, rows: &[DayUsage], today: i64, now_ms: i64) {
-    let _ = now_ms;
-    table_header(ui, &["日期", "用量（输入 · 输出 · 缓存读）", "消息"]);
-    for row in rows {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(aggregate::day_label(row.day, today)).strong());
-            usage_numbers(ui, &row.totals);
-            ui.label(
-                egui::RichText::new(format!("{} 条", row.totals.sessions))
-                    .small()
-                    .weak(),
-            );
-        });
-        ui.add_space(crate::theme::SPACE_1);
-    }
+fn day_table(ui: &mut egui::Ui, rows: &[DayUsage], today: i64, _now_ms: i64) {
+    let columns = [
+        Column::text("日期", 120.0),
+        Column::number("合计", NUM_W),
+        Column::number("输入", NUM_W),
+        Column::number("输出", NUM_W),
+        Column::number("缓存读", NUM_W),
+        Column::number("消息", 56.0),
+    ];
+    let rows: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            let label = aggregate::day_label(row.day, today);
+            let totals = row.totals;
+            move |ui: &mut egui::Ui| {
+                cell_text(ui, &columns[0], &label, true, false);
+                cell_number(
+                    ui,
+                    &columns[1],
+                    &aggregate::format_tokens(totals.total()),
+                    true,
+                    false,
+                );
+                cell_number(
+                    ui,
+                    &columns[2],
+                    &aggregate::format_tokens(totals.input),
+                    false,
+                    true,
+                );
+                cell_number(
+                    ui,
+                    &columns[3],
+                    &aggregate::format_tokens(totals.output),
+                    false,
+                    true,
+                );
+                cell_number(
+                    ui,
+                    &columns[4],
+                    &aggregate::format_tokens(totals.cache_read),
+                    false,
+                    true,
+                );
+                cell_number(ui, &columns[5], &totals.sessions.to_string(), false, true);
+            }
+        })
+        .collect();
+    table(ui, &columns, rows);
 }

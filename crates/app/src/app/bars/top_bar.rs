@@ -1,8 +1,5 @@
 use super::toolbar_icon_button;
-use crate::app::health;
-use crate::app::preview::PREVIEW_EDITOR_ID;
-use crate::app::show_file_dialog;
-use crate::app::App;
+use crate::app::{health, preview::PREVIEW_EDITOR_ID, show_file_dialog, App, MainView};
 use crate::backends;
 use crate::format::ConfigFormat;
 use crate::theme::Theme;
@@ -84,6 +81,49 @@ fn shape_button(
 }
 
 impl App {
+    /// 切换到某个 agent 配置页。
+    ///
+    /// 从 `ui_top_bar` 的页签点击里抽出来：那里原本是一大段内联逻辑，加了
+    /// 「用量视图下页签当筛选器用」的分支后两条路径混在一起更难读。
+    fn switch_to_page(&mut self, id: ConfigFormat, ctx: &egui::Context) {
+        // 离开的是哪一页：切页归一需要传入刚离开的页面。
+        let previous_page = self.current_page;
+        if id == ConfigFormat::DeepSeekHarness && self.current_page != ConfigFormat::DeepSeekHarness
+        {
+            self.project_dsh_credentials();
+        }
+        self.sync_provider_secrets(id);
+        // 对应 agent 未在 WSL 安装的页面：关闭 WSL 同步。
+        // 只在探测**确认**未安装时收回勾选，`Unknown` 不算。
+        if self.sync_wsl && backends::wsl_target_state(id) == backends::WslTargetState::NotInstalled
+        {
+            self.sync_wsl = false;
+            crate::util::wsl_set_enabled(false);
+        }
+        self.current_page = id;
+        // WorkBuddy 页：进页时收敛成「每个 id 只启用第一条」。
+        if id == ConfigFormat::WorkBuddy {
+            self.normalize_workbuddy_enable_flags();
+        }
+        // opencode 系三页共用同一份 agent 数据，但每页网关不同：进页即把 agent 的
+        // `model` 换成目标页自家网关的首选模型。传入「刚离开的页面」，先把它的
+        // model 视图存下来。
+        if id.is_opencode_family() {
+            let leaving = (previous_page != id).then_some(previous_page);
+            let replaced = self.normalize_agent_models_for_page(id, leaving);
+            if replaced > 0 {
+                self.status = format!(
+                    "已把 {} 个指向其他网关的 agent model 换为 {} 自家模型",
+                    replaced,
+                    id.label()
+                );
+            }
+        }
+        // 切换页面后重建预览草稿。
+        self.reset_preview_draft();
+        ctx.memory_mut(|m| m.surrender_focus(egui::Id::new(PREVIEW_EDITOR_ID)));
+    }
+
     pub(in crate::app) fn ui_top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.style_mut().spacing.interact_size.y = 18.0;
@@ -228,44 +268,44 @@ impl App {
                 }
 
                 if let Some(id) = clicked_page {
-                    // 离开的是哪一页：切页归一需要传入刚离开的页面。
-                    let previous_page = self.current_page;
-                    if id == ConfigFormat::DeepSeekHarness
-                        && self.current_page != ConfigFormat::DeepSeekHarness
+                    // 用量视图下，页签是**筛选器**而不是页面切换：点哪个 agent 就看哪个
+                    // agent 的用量，不动配置页状态（切回提供商管理时用户应看到原页）。
+                    if self.main_view == MainView::Usage {
+                        self.usage_filter = Some(id);
+                    } else {
+                        self.switch_to_page(id, ctx);
+                    }
+                }
+                // 视图切换条：紧接 agent 页签右侧（用户要求的位位置）。
+                ui.separator();
+                self.ui_view_switch(ui);
+                // 「全部」：用量视图下的筛选器回到不筛选状态。
+                // 只在用量视图显示 —— 提供商管理没有「全部」这个概念。
+                if self.main_view == MainView::Usage {
+                    let all_selected = self.usage_filter.is_none();
+                    let text = egui::RichText::new("全部");
+                    let text = if all_selected { text.strong() } else { text };
+                    let visuals = ui.visuals();
+                    let (fill, stroke) = if all_selected {
+                        (
+                            visuals.widgets.hovered.bg_fill,
+                            egui::Stroke::new(2.0f32, visuals.widgets.hovered.bg_stroke.color),
+                        )
+                    } else {
+                        (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(text)
+                                .fill(fill)
+                                .stroke(stroke)
+                                .min_size(egui::vec2(48.0, 22.0)),
+                        )
+                        .on_hover_text("显示全部 agent 的用量")
+                        .clicked()
                     {
-                        self.project_dsh_credentials();
+                        self.usage_filter = None;
                     }
-                    self.sync_provider_secrets(id);
-                    // 对应 agent 未在 WSL 安装的页面：关闭 WSL 同步。
-                    // 只在探测**确认**未安装时收回勾选，`Unknown` 不算。
-                    if self.sync_wsl
-                        && backends::wsl_target_state(id) == backends::WslTargetState::NotInstalled
-                    {
-                        self.sync_wsl = false;
-                        crate::util::wsl_set_enabled(false);
-                    }
-                    self.current_page = id;
-                    // WorkBuddy 页：进页时收敛成「每个 id 只启用第一条」。
-                    if id == ConfigFormat::WorkBuddy {
-                        self.normalize_workbuddy_enable_flags();
-                    }
-                    // opencode 系三页共用同一份 agent 数据，但每页网关不同：进页即把 agent 的
-                    // `model` 换成目标页自家网关的首选模型。传入「刚离开的页面」，先把它的
-                    // model 视图存下来。
-                    if id.is_opencode_family() {
-                        let leaving = (previous_page != id).then_some(previous_page);
-                        let replaced = self.normalize_agent_models_for_page(id, leaving);
-                        if replaced > 0 {
-                            self.status = format!(
-                                "已把 {} 个指向其他网关的 agent model 换为 {} 自家模型",
-                                replaced,
-                                id.label()
-                            );
-                        }
-                    }
-                    // 切换页面后重建预览草稿。
-                    self.reset_preview_draft();
-                    ctx.memory_mut(|m| m.surrender_focus(egui::Id::new(PREVIEW_EDITOR_ID)));
                 }
                 ui.separator();
                 // 右侧：WSL 同步 + 主题

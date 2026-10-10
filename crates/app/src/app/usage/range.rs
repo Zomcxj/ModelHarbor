@@ -145,6 +145,50 @@ pub(in crate::app) fn totals_in_range(daily: &DailyMap, range: Range, today: i64
     out
 }
 
+/// 区间内的汇总事实（总览卡用）。
+///
+/// 跟参考实现（tokscale 的 Token Usage 面板）一样把「总量」与「日均 / 活跃天数 /
+/// 最高一天」分开：单看总量看不出频率 —— 一天猛跑 10 亿和一个月每天跑一点，
+/// 总量可能一样，但使用习惯完全不同。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::app) struct RangeStats {
+    /// 区间内合计。
+    pub totals: DayTotals,
+    /// 有量的天数（0 用量的日子不算）。
+    pub active_days: usize,
+    /// 最高的一天：`(日索引, 当天合计)`。区间内没有量时为 `None`。
+    pub best_day: Option<(i64, i64)>,
+}
+
+impl RangeStats {
+    /// 日均（按活跃天数算，不是按自然天数）。
+    ///
+    /// 用活跃天数而不是区间长度：后者会把没用的日子也算进去，
+    /// 得到一个偏小、没有意义的平均数。
+    pub(in crate::app) fn average_per_active_day(&self) -> i64 {
+        if self.active_days == 0 {
+            return 0;
+        }
+        self.totals.total() / self.active_days as i64
+    }
+}
+
+/// 统计区间内的汇总事实。
+pub(in crate::app) fn range_stats(daily: &DailyMap, range: Range, today: i64) -> RangeStats {
+    let mut stats = RangeStats::default();
+    for (day, bucket) in buckets_in_range(daily, range, today) {
+        let total = bucket.totals.total();
+        stats.totals.add_assign(&bucket.totals);
+        if total > 0 {
+            stats.active_days += 1;
+            if stats.best_day.is_none_or(|(_, best)| total > best) {
+                stats.best_day = Some((day, total));
+            }
+        }
+    }
+    stats
+}
+
 /// 区间内按某个分解维度汇总（agent / 模型 / 会话）。
 ///
 /// 分解表在 [`DailyBucket`] 里，键的含义由 `pick` 决定；跨天求和即可得到
@@ -514,5 +558,56 @@ mod tests {
         assert_eq!(totals_label(Range::Week), "本周用量");
         assert_eq!(totals_label(Range::Month), "本月用量");
         assert_eq!(totals_label(Range::All), "总计用量");
+    }
+
+    // ---- 汇总事实 ----
+
+    /// 活跃天数只数有量的天，最高一天取最大。
+    #[test]
+    fn range_stats_counts_only_active_days() {
+        let today = today();
+        let daily = daily_with(&[
+            ("2026-03-15", 100),
+            ("2026-03-14", 300),
+            ("2026-03-13", 0),
+            ("2026-03-12", 50),
+        ]);
+        let stats = range_stats(&daily, Range::All, today);
+        assert_eq!(stats.totals.input, 450);
+        assert_eq!(stats.active_days, 3, "0 用量的那天不算活跃");
+        assert_eq!(stats.best_day.map(|(_, total)| total), Some(300));
+        assert_eq!(
+            stats.best_day.unwrap().0,
+            aggregate::days_from_civil(2026, 3, 14)
+        );
+    }
+
+    /// 日均按活跃天数算，不是按区间长度。
+    #[test]
+    fn average_divides_by_active_days() {
+        let today = today();
+        let daily = daily_with(&[("2026-03-15", 300), ("2026-03-14", 100)]);
+        let stats = range_stats(&daily, Range::All, today);
+        assert_eq!(stats.average_per_active_day(), 200, "400 / 2 天");
+    }
+
+    /// 区间内没有任何量时：活跃 0 天、没有最高一天、日均 0（不除零）。
+    #[test]
+    fn empty_range_stats_are_zero() {
+        let stats = range_stats(&DailyMap::new(), Range::Month, today());
+        assert_eq!(stats.active_days, 0);
+        assert_eq!(stats.best_day, None);
+        assert_eq!(stats.average_per_active_day(), 0);
+    }
+
+    /// 汇总事实也受区间限制。
+    #[test]
+    fn range_stats_respect_the_range() {
+        let today = today();
+        let daily = daily_with(&[("2026-03-15", 100), ("2026-02-20", 999)]);
+        let stats = range_stats(&daily, Range::Today, today);
+        assert_eq!(stats.totals.input, 100, "上月的不算进来");
+        assert_eq!(stats.active_days, 1);
+        assert_eq!(stats.best_day.map(|(_, t)| t), Some(100));
     }
 }

@@ -280,6 +280,7 @@ fn push_unique(roots: &mut Vec<(ConfigFormat, PathBuf)>, client: ConfigFormat, p
 }
 
 /// 正在监视的 agent 个数（按 agent 去重；界面状态行用）。
+#[cfg(test)]
 pub(in crate::app) fn watched_agent_count() -> usize {
     let mut seen: Vec<ConfigFormat> = Vec::new();
     for (client, _) in source_roots() {
