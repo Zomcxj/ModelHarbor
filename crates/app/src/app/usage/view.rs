@@ -239,14 +239,21 @@ fn usage_table_shell(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
 // "Grid not yet available for right-to-left layouts"），数字只能左对齐，
 // 位数不同的数就排成参差的 —— 正是「丑」的来源。
 //
-// 做法：每个单元格用 `allocate_ui_with_layout` 分配固定宽度的子区域，
-// 文字列左对齐、数字列右对齐，于是每一列的字形起点/终点都对齐。
+// 关键在**每列都要精确占掉声明的宽度**。`allocate_ui_with_layout` 做不到：
+// 它只把实际用掉的宽度（`min_rect`）还给父 `Ui`（见 egui `ui.rs` 的
+// `allocate_ui_with_layout_dyn`："the amount of space actually used (min_rect)
+// will be allocated"），于是窄内容后面的列整体左移，列与列对不上。
+// 这里改用 `allocate_exact_size`：它按请求的尺寸预留空间，列宽是死的。
 
-/// 表头行高（也是每个单元格的高度）。
+/// 行高（也是每个单元格的高度）。
 const CELL_HEIGHT: f32 = 16.0;
 
 /// 数值列的常用宽度：`123.4M` 这类最长 6-7 字符。
 const NUM_W: f32 = 68.0;
+
+/// 单元格左右内边距：列宽固定，内容两侧各留这么多，
+/// 否则数字会顶到下一列的表头上（列宽是死的，贴边看起来像连在一起）。
+const CELL_PAD_X: f32 = 6.0;
 
 /// 一列的定义。
 #[derive(Clone, Copy)]
@@ -279,7 +286,7 @@ impl Column {
     }
 }
 
-/// 表格：表头 + 逐行。
+/// 表格：表头 + 逐行，列按固定宽度排。
 ///
 /// 每行是一个闭包，负责往当前行里塞单元格（用 [`cell_text`] / [`cell_number`]）；
 /// 这样四个维度共用一套列宽与对齐规则，不用各写一遍排版。
@@ -291,7 +298,9 @@ where
     ui.add_space(crate::theme::SPACE_2);
     for row in rows {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = crate::theme::SPACE_2;
+            // 列间距由列宽自己承担（数字列内右侧留白），这里不留额外间距，
+            // 否则列起点会随 `item_spacing` 漂移。
+            ui.spacing_mut().item_spacing.x = 0.0;
             row(ui);
         });
         ui.add_space(crate::theme::SPACE_1);
@@ -301,67 +310,82 @@ where
 /// 表头：弱化 + 与数据列同宽同对齐，于是表头正好落在数字上方。
 fn table_header(ui: &mut egui::Ui, columns: &[Column]) {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = crate::theme::SPACE_2;
+        ui.spacing_mut().item_spacing.x = 0.0;
         for column in columns {
-            ui.allocate_ui_with_layout(
-                egui::vec2(column.width, CELL_HEIGHT),
-                align_layout(column.numeric),
-                |ui| {
-                    ui.label(
-                        egui::RichText::new(column.header)
-                            .size(crate::theme::TEXT_CAPTION)
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                },
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(column.width, CELL_HEIGHT), egui::Sense::hover());
+            let galley = ui.painter().layout_no_wrap(
+                column.header.to_string(),
+                egui::FontId::proportional(crate::theme::TEXT_CAPTION),
+                ui.visuals().weak_text_color(),
             );
+            paint_in_cell(ui, rect, galley, column.numeric);
         }
     });
 }
 
-/// 数字列右对齐、文本列左对齐。
-fn align_layout(numeric: bool) -> egui::Layout {
-    if numeric {
-        egui::Layout::right_to_left(egui::Align::Center)
+/// 把 galley 按列的对齐方式放进单元格：数字贴右内边距、文本贴左内边距，纵向居中。
+fn paint_in_cell(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    galley: std::sync::Arc<egui::Galley>,
+    right: bool,
+) {
+    let x = if right {
+        rect.right() - CELL_PAD_X - galley.size().x
     } else {
-        egui::Layout::left_to_right(egui::Align::Center)
-    }
+        rect.left() + CELL_PAD_X
+    };
+    let y = rect.center().y - galley.size().y / 2.0;
+    ui.painter()
+        .galley(egui::pos2(x, y), galley, egui::Color32::PLACEHOLDER);
 }
 
 /// 文本单元格（左对齐，过长截断 + 悬停看全文）。
-fn cell_text(ui: &mut egui::Ui, column: &Column, text: &str, strong: bool, weak: bool) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(column.width, CELL_HEIGHT),
-        align_layout(false),
-        |ui| {
-            let mut rich = egui::RichText::new(text);
-            if strong {
-                rich = rich.strong();
-            }
-            if weak {
-                rich = rich.small().color(ui.visuals().weak_text_color());
-            }
-            ui.add(egui::Label::new(rich).truncate())
-                .on_hover_text(text);
-        },
+fn cell_text(ui: &mut egui::Ui, columns: &[Column], index: usize, text: &str, strong: bool) {
+    let column = columns[index];
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(column.width, CELL_HEIGHT), egui::Sense::hover());
+    let color = if strong {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color()
+    };
+    // 超宽就省略号截断（`max_rows = 1`），全文走悬停。
+    let mut job = egui::text::LayoutJob::simple(
+        text.to_string(),
+        egui::FontId::proportional(crate::theme::TEXT_SMALL),
+        color,
+        column.width - CELL_PAD_X * 2.0,
     );
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.painter().layout_job(job);
+    let elided = galley.elided;
+    paint_in_cell(ui, rect, galley, false);
+    if elided || strong {
+        response.on_hover_text(text);
+    }
 }
 
 /// 数字单元格（右对齐 + 等宽，位数不同的数也能对齐）。
-fn cell_number(ui: &mut egui::Ui, column: &Column, text: &str, strong: bool, weak: bool) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(column.width, CELL_HEIGHT),
-        align_layout(true),
-        |ui| {
-            let mut rich = egui::RichText::new(text).monospace();
-            if strong {
-                rich = rich.strong();
-            }
-            if weak {
-                rich = rich.small().color(ui.visuals().weak_text_color());
-            }
-            ui.label(rich);
-        },
+fn cell_number(ui: &mut egui::Ui, columns: &[Column], index: usize, text: &str, strong: bool) {
+    let column = columns[index];
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(column.width, CELL_HEIGHT), egui::Sense::hover());
+    // 强调态换个颜色区分「合计」列，**不加粗**：等宽体加粗会改变字宽，
+    // 同一列里粗体与常规体的数字右边缘就不齐了。
+    let color = if strong {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color()
+    };
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        egui::FontId::monospace(crate::theme::TEXT_SMALL),
+        color,
     );
+    paint_in_cell(ui, rect, galley, true);
 }
 
 /// Agent 维度表：agent / 合计 / 输入 / 输出 / 缓存读 / 最近活动。
@@ -383,41 +407,41 @@ fn agent_table(ui: &mut egui::Ui, rows: &[AgentUsage], now_ms: i64, range: Range
             let totals = row.totals;
             let last_seen_ms = row.last_seen_ms;
             move |ui: &mut egui::Ui| {
-                cell_text(ui, &columns[0], client.label(), true, false);
+                cell_text(ui, &columns, 0, client.label(), true);
                 cell_number(
                     ui,
-                    &columns[1],
+                    &columns,
+                    1,
                     &aggregate::format_tokens(totals.total()),
                     true,
-                    false,
                 );
                 cell_number(
                     ui,
-                    &columns[2],
+                    &columns,
+                    2,
                     &aggregate::format_tokens(totals.input),
                     false,
-                    true,
                 );
                 cell_number(
                     ui,
-                    &columns[3],
+                    &columns,
+                    3,
                     &aggregate::format_tokens(totals.output),
                     false,
-                    true,
                 );
                 cell_number(
                     ui,
-                    &columns[4],
+                    &columns,
+                    4,
                     &aggregate::format_tokens(totals.cache_read),
                     false,
-                    true,
                 );
                 let when = if range == Range::All && last_seen_ms > 0 {
                     aggregate::relative_time(last_seen_ms, now_ms)
                 } else {
                     String::new()
                 };
-                cell_text(ui, &columns[5], &when, false, true);
+                cell_text(ui, &columns, 5, &when, false);
             }
         })
         .collect();
@@ -442,34 +466,34 @@ fn model_table(ui: &mut egui::Ui, rows: &[ModelUsage], now_ms: i64, range: Range
             let agents = row.agents.join(" / ");
             let last_seen_ms = row.last_seen_ms;
             move |ui: &mut egui::Ui| {
-                cell_text(ui, &columns[0], &model_id, true, false);
+                cell_text(ui, &columns, 0, &model_id, true);
                 cell_number(
                     ui,
-                    &columns[1],
+                    &columns,
+                    1,
                     &aggregate::format_tokens(totals.total()),
                     true,
-                    false,
                 );
                 cell_number(
                     ui,
-                    &columns[2],
+                    &columns,
+                    2,
                     &aggregate::format_tokens(totals.input),
                     false,
-                    true,
                 );
                 cell_number(
                     ui,
-                    &columns[3],
+                    &columns,
+                    3,
                     &aggregate::format_tokens(totals.output),
                     false,
-                    true,
                 );
                 cell_number(
                     ui,
-                    &columns[4],
+                    &columns,
+                    4,
                     &aggregate::format_tokens(totals.cache_read),
                     false,
-                    true,
                 );
                 let source = if range == Range::All && last_seen_ms > 0 {
                     format!(
@@ -479,14 +503,14 @@ fn model_table(ui: &mut egui::Ui, rows: &[ModelUsage], now_ms: i64, range: Range
                 } else {
                     agents.clone()
                 };
-                cell_text(ui, &columns[5], &source, false, true);
+                cell_text(ui, &columns, 5, &source, false);
             }
         })
         .collect();
     table(ui, &columns, rows);
 }
 
-/// 会话维度表：会话 / Agent / 模型 / 区间内用量 / 最近活动。
+/// 会话维度表：会话 / Agent / 模型 / 区间内用量 / 状态。
 ///
 /// 区间不是「全部」时，用量列是该会话在区间内的部分，不是它的一生总量。
 fn session_table(
@@ -519,23 +543,17 @@ fn session_table(
             let last_seen_ms = row.last_seen_ms;
             let archived = row.archived;
             move |ui: &mut egui::Ui| {
-                cell_text(ui, &columns[0], &short, false, false);
-                cell_text(ui, &columns[1], client.label(), false, false);
-                cell_text(ui, &columns[2], &model_id, false, true);
-                cell_number(
-                    ui,
-                    &columns[3],
-                    &aggregate::format_tokens(total),
-                    true,
-                    false,
-                );
+                cell_text(ui, &columns, 0, &short, false);
+                cell_text(ui, &columns, 1, client.label(), false);
+                cell_text(ui, &columns, 2, &model_id, false);
+                cell_number(ui, &columns, 3, &aggregate::format_tokens(total), true);
                 // 归档会话优先标状态（它比「最近活动」更值得注意：
                 // 用户可能以为统计读错了，得说清用量来自账本）。
                 if archived {
-                    cell_text(ui, &columns[4], "已归档", false, false);
+                    cell_text(ui, &columns, 4, "已归档", false);
                 } else {
                     let when = aggregate::relative_time(last_seen_ms, now_ms);
-                    cell_text(ui, &columns[4], &when, false, true);
+                    cell_text(ui, &columns, 4, &when, false);
                 }
             }
         })
@@ -561,36 +579,36 @@ fn day_table(ui: &mut egui::Ui, rows: &[DayUsage], today: i64, _now_ms: i64) {
             let label = aggregate::day_label(row.day, today);
             let totals = row.totals;
             move |ui: &mut egui::Ui| {
-                cell_text(ui, &columns[0], &label, true, false);
+                cell_text(ui, &columns, 0, &label, true);
                 cell_number(
                     ui,
-                    &columns[1],
+                    &columns,
+                    1,
                     &aggregate::format_tokens(totals.total()),
                     true,
-                    false,
                 );
                 cell_number(
                     ui,
-                    &columns[2],
+                    &columns,
+                    2,
                     &aggregate::format_tokens(totals.input),
                     false,
-                    true,
                 );
                 cell_number(
                     ui,
-                    &columns[3],
+                    &columns,
+                    3,
                     &aggregate::format_tokens(totals.output),
                     false,
-                    true,
                 );
                 cell_number(
                     ui,
-                    &columns[4],
+                    &columns,
+                    4,
                     &aggregate::format_tokens(totals.cache_read),
                     false,
-                    true,
                 );
-                cell_number(ui, &columns[5], &totals.sessions.to_string(), false, true);
+                cell_number(ui, &columns, 5, &totals.sessions.to_string(), false);
             }
         })
         .collect();

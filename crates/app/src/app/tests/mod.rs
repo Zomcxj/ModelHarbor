@@ -57,6 +57,9 @@ mod syntax_highlight_tests;
 /// 之间选。这里用离屏渲染把实际颜色钉住。
 #[cfg(test)]
 mod tab_highlight_tests;
+/// 用量表格的排版（数字右对齐、表头对齐）与 agent 筛选真的接到渲染路径上。
+#[cfg(test)]
+mod usage_table_layout_tests;
 /// 进 WorkBuddy 页时，同一 id 多条启用收敛成「只启用第一条」。
 #[cfg(test)]
 mod workbuddy_enable_normalization_tests;

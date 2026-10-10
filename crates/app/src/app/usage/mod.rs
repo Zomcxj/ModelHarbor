@@ -318,6 +318,35 @@ impl App {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(SCAN_POLL_REPAINT_SECS));
     }
 
+    /// 注入一次「扫描完成」的结果（仅测试用）。
+    ///
+    /// 排版测试只关心表格怎么画，不想真去扫盘（2.4 秒起、且依赖本机数据）。
+    /// 走 `merge_into_ledger` 而不是直接塞 `result`：与生产路径同构，
+    /// 这样测试里的 `daily` 与 `sessions` 会经过同一套账本合并逻辑。
+    #[cfg(test)]
+    pub(in crate::app) fn set_usage_result_for_test(
+        &mut self,
+        sessions: Vec<SessionSnapshot>,
+        daily: DailyMap,
+    ) {
+        // 用内存账本：否则会读用户真实账本，行数不定、断言不稳。
+        self.usage.ledger = Ledger::in_memory();
+        let scanned: HashMap<String, SessionSnapshot> = sessions
+            .into_iter()
+            .map(|s| (SessionSnapshot::key(s.client, &s.session_id), s))
+            .collect();
+        let message_count = scanned.values().map(|s| s.message_count).sum::<i64>() as usize;
+        let report = merge_into_ledger(
+            &mut self.usage.ledger,
+            scanned,
+            daily,
+            0.0,
+            message_count,
+            0,
+        );
+        self.usage.result = Some(Ok(report));
+    }
+
     /// 账本落盘（按 [`SAVE_INTERVAL_SECS`] 节流）。
     ///
     /// 落盘失败不影响功能：账本留在内存里，本次会话的数字照样正确。

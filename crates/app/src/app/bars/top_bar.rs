@@ -276,12 +276,13 @@ impl App {
                         self.switch_to_page(id, ctx);
                     }
                 }
-                // 视图切换条：紧接 agent 页签右侧（用户要求的位位置）。
+                // 视图切换条：紧接 agent 页签右侧（用户要求的位置）。
                 ui.separator();
                 self.ui_view_switch(ui);
                 // 「全部」：用量视图下的筛选器回到不筛选状态。
                 // 只在用量视图显示 —— 提供商管理没有「全部」这个概念。
                 if self.main_view == MainView::Usage {
+                    ui.separator();
                     let all_selected = self.usage_filter.is_none();
                     let text = egui::RichText::new("全部");
                     let text = if all_selected { text.strong() } else { text };
@@ -308,6 +309,7 @@ impl App {
                     }
                 }
                 ui.separator();
+
                 // 右侧：WSL 同步 + 主题
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // WSL 探测在**后台线程**里跑（勾选同步后才启动），界面不等它。
