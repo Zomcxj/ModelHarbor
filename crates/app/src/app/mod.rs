@@ -21,6 +21,7 @@ mod providers;
 mod providers_form;
 mod save;
 mod syntax;
+pub(in crate::app) mod usage;
 mod windows;
 
 use fetch::{FreeModelsState, LatencyState, ProbeGate};
@@ -80,6 +81,28 @@ impl SaveFormat {
         match key {
             "current" => Self::Current,
             _ => Self::default(),
+        }
+    }
+}
+
+/// 中央区域显示哪一块：用量统计还是提供商管理。
+///
+/// 这是**视图**切换，与顶栏的 `current_page`（agent 页签）正交：
+/// 换页签不改变当前视图，换视图也不改变当前页签。
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub(in crate::app) enum MainView {
+    /// 提供商管理（既有界面，默认）。
+    #[default]
+    Providers,
+    /// 本机用量四维统计。
+    Usage,
+}
+
+impl MainView {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Providers => "提供商管理",
+            Self::Usage => "用量",
         }
     }
 }
@@ -151,6 +174,12 @@ pub struct App {
     guide_dismissed: bool,
     /// 配置体检悬浮窗是否打开（见 [`crate::app::health`]）。
     show_health: bool,
+    /// 中央区域当前显示哪一块（用量 / 提供商管理）。
+    main_view: MainView,
+    /// 用量视图内的维度页签（Agent / 模型 / 会话 / 时间）。
+    usage_dimension: usage::aggregate::Dimension,
+    /// 本机用量扫描状态（见 [`crate::app::usage`]）。
+    usage: usage::UsageState,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
     ui_style: crate::theme::UiStyle,
     /// 亚克力：面板 / 卡片半透明 + DWM 亚克力模糊（正交于主题与形状）。
@@ -322,6 +351,9 @@ impl Default for App {
             allow_model_test_with_proxy: prefs.allow_model_test_with_proxy,
             guide_dismissed: prefs.guide_dismissed,
             show_health: false,
+            main_view: MainView::default(),
+            usage_dimension: usage::aggregate::Dimension::default(),
+            usage: usage::UsageState::default(),
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
             glass: prefs.glass,
             tab_order: prefs.tab_order.clone(),
@@ -406,6 +438,8 @@ impl eframe::App for App {
         self.poll_discovery();
         self.poll_latency();
         self.poll_balance();
+        // 本机用量：后台扫描 + 3 秒增量检测（空闲时不扫）。
+        self.poll_usage(ctx);
         self.poll_free_models();
         // 首次启动 / 缓存过期：只自动拉一次（拉过即清空），用户可手动重取。
         for format in std::mem::take(&mut self.free_models_auto) {
@@ -431,6 +465,8 @@ impl eframe::App for App {
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             self.ui_page_header(ui);
+            // 视图切换（用量 / 提供商管理）：两个视图二选一显示在同一位置。
+            self.ui_view_switch(ui);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
@@ -438,15 +474,19 @@ impl eframe::App for App {
                     drag: false,
                     ..egui::scroll_area::ScrollSource::ALL
                 })
-                .show(ui, |ui| {
-                    // 顶部不留空白。Providers 在上、Agents 在下；Agents 只属于 opencode
-                    // 页面，且只影响界面顺序。
-                    self.ui_providers_section(ui);
-                    ui.add_space(crate::theme::SPACE_2);
-                    if self.current_page.is_opencode_family() {
-                        self.ui_agents_section(ui);
+                .show(ui, |ui| match self.main_view {
+                    MainView::Providers => {
+                        // Providers 在上、Agents 在下；Agents 只属于 opencode
+                        // 页面，且只影响界面顺序。
+                        self.ui_providers_section(ui);
                         ui.add_space(crate::theme::SPACE_2);
+                        if self.current_page.is_opencode_family() {
+                            self.ui_agents_section(ui);
+                            ui.add_space(crate::theme::SPACE_2);
+                        }
                     }
+                    // 用量视图与当前页签无关：它统计的是本机全部 agent。
+                    MainView::Usage => self.ui_usage_section(ui),
                 });
         });
         // 令牌管理：独立悬浮窗（可拖动 / 可关闭），不占正文布局。

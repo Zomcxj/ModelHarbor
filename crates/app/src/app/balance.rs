@@ -400,11 +400,43 @@ fn http_get(url: &str, secret: Option<&str>) -> Result<String, String> {
 }
 
 /// 当前时间（秒级 Unix 时间戳）。
-fn unix_now() -> i64 {
+pub(super) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// 本地时区相对 UTC 的偏移（秒，东八区 = 28800）。
+///
+/// 取本地墙上时间与 UTC 之差。`usage` 的「时间」维度要用它把时间戳落到本地日历日
+/// （见 `crate::app::usage::aggregate::local_day_index`）。
+///
+/// 局限：读的是**此刻**的偏移，所以跨夏令时的历史时间戳会差一小时。
+/// 与 [`local_midnight_unix`] 同一个取舍 —— 不值得为此引入时区数据库。
+#[cfg(windows)]
+pub(super) fn local_utc_offset_secs() -> i64 {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+
+    let mut local = SYSTEMTIME::default();
+    // SAFETY: `GetLocalTime` 只写这一个结构体。
+    unsafe { GetLocalTime(&mut local) };
+    let wall_now = wall_clock_unix(
+        i64::from(local.wYear),
+        i64::from(local.wMonth),
+        i64::from(local.wDay),
+        i64::from(local.wHour),
+        i64::from(local.wMinute),
+        i64::from(local.wSecond),
+    );
+    wall_now - unix_now()
+}
+
+/// 非 Windows：拿不到本地时区，按 UTC 处理。
+#[cfg(not(windows))]
+pub(super) fn local_utc_offset_secs() -> i64 {
+    0
 }
 
 /// 本地时区「今天 0 点」的秒级 Unix 时间戳。
@@ -447,7 +479,14 @@ pub(super) fn local_midnight_unix() -> Option<i64> {
 /// 把年月日时分秒（按 UTC 理解）换算成秒级 Unix 时间戳。
 ///
 /// 用 Howard Hinnant 的 `days_from_civil` 算法。
-fn wall_clock_unix(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> i64 {
+pub(super) fn wall_clock_unix(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = if year >= 0 { year } else { year - 399 } / 400;
     let year_of_era = year - era * 400;
