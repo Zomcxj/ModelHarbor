@@ -187,6 +187,20 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    /// 账本文件名（放在 [`crate::prefs::Prefs::config_dir`] 下，与 settings.json /
+    /// tokens.json 同目录）。
+    pub const FILE_NAME: &'static str = "usage-ledger.json";
+
+    /// 默认账本路径：`~/.modelharbor/usage-ledger.json`。
+    pub fn default_path() -> PathBuf {
+        crate::prefs::Prefs::config_dir().join(Self::FILE_NAME)
+    }
+
+    /// 打开默认位置的账本。
+    pub fn open_default() -> Self {
+        Self::open(Self::default_path())
+    }
+
     /// 打开账本：读取落盘文件，损坏 / 版本不符时按空账本重建。
     pub fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
