@@ -14,9 +14,11 @@
 //! - `cache_write_1h` 是 `cache_write` 的子集，**不参与合计**。
 
 pub mod agents;
+pub mod daily;
 pub mod ledger;
 
 pub use agents::{config_format_for_client, tokscale_client_for};
+pub use daily::{DailyBucket, DailyMap, DayTotals, UNKNOWN_MODEL};
 pub use ledger::{Ledger, SessionSnapshot};
 
 use std::collections::HashMap;
@@ -35,6 +37,11 @@ pub fn tokscale_clients() -> Vec<String> {
 pub struct ScanResult {
     /// 按 `client:session_id` 归并后的会话快照。
     pub sessions: HashMap<String, SessionSnapshot>,
+    /// 按本地日历日分桶的用量（热力图与「今日 / 本月 / 总计」的基础）。
+    ///
+    /// 会话级汇总做不到这件事：一个会话可以横跨几十天（本机实测最长 31 天），
+    /// 按它的 `last_seen_ms` 归日会把整月的量堆到最后一天。
+    pub daily: DailyMap,
     /// 消息条数（tokscale 的 `ParsedMessage` 计数）。
     pub message_count: usize,
     /// 内核自报的扫描耗时（毫秒）。
@@ -58,6 +65,7 @@ pub fn scan() -> Result<ScanResult, String> {
     let parsed = tokscale_core::parse_local_clients(options)?;
     let message_count = parsed.messages.len();
     let mut sessions: HashMap<String, SessionSnapshot> = HashMap::new();
+    let mut daily = DailyMap::new();
     for message in &parsed.messages {
         let Some(client) = config_format_for_client(&message.client) else {
             // tokscale 支持的 agent 比 ModelHarbor 多（56 个）：不在映射表里的
@@ -69,9 +77,17 @@ pub fn scan() -> Result<ScanResult, String> {
             SessionSnapshot::new(client, &message.session_id, &message.model_id)
         });
         entry.absorb(message);
+        // 同一条消息同时进会话汇总与按天分桶：两者服务于不同视图，不能互相推导。
+        if !message.date.is_empty() {
+            daily
+                .entry(message.date.clone())
+                .or_insert_with(|| DailyBucket::new(&message.date))
+                .add_message(client, message);
+        }
     }
     Ok(ScanResult {
         sessions,
+        daily,
         message_count,
         processing_time_ms: parsed.processing_time_ms,
     })
