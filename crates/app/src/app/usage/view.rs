@@ -7,6 +7,7 @@
 //! 配色一律走 `crate::theme::semantics(ui)`，不硬编码颜色。
 
 use super::aggregate::{self, AgentUsage, DayUsage, Dimension, ModelUsage, Totals};
+use super::range::{self, Range};
 use crate::app::App;
 use crate::usage::SessionSnapshot;
 use eframe::egui;
@@ -58,10 +59,12 @@ impl App {
         .clicked()
     }
 
-    /// 用量视图主体：状态行 + 维度切换 + 表格。
+    /// 用量视图主体：状态行 + 区间总览（含热力图）+ 维度切换 + 表格。
     pub(in crate::app) fn ui_usage_section(&mut self, ui: &mut egui::Ui) {
         self.ui_usage_status(ui);
         ui.add_space(crate::theme::SPACE_3);
+        self.ui_usage_overview(ui);
+        ui.add_space(crate::theme::SPACE_4);
         self.ui_usage_dimensions(ui);
         ui.add_space(crate::theme::SPACE_2);
         self.ui_usage_table(ui);
@@ -181,9 +184,9 @@ impl App {
 
     /// 当前维度的表格。
     fn ui_usage_table(&mut self, ui: &mut egui::Ui) {
-        // 会话维度需要 `archived` 标记，所以直接用快照切片；其余维度在这里现算聚合。
         let sessions: Vec<SessionSnapshot> = self.usage_sessions().to_vec();
-        if sessions.is_empty() {
+        let daily = self.usage_daily().cloned().unwrap_or_default();
+        if sessions.is_empty() && daily.is_empty() {
             let semantics = crate::theme::semantics(ui);
             ui.label(egui::RichText::new("没有找到本机用量数据。").color(semantics.warn));
             ui.label(
@@ -196,24 +199,27 @@ impl App {
             );
             return;
         }
-        let offset = crate::app::balance::local_utc_offset_secs();
+        let _offset = crate::app::balance::local_utc_offset_secs();
         let now_ms = unix_now_ms();
+        let today = self.usage_today();
+        let range = self.usage_range;
         match self.usage_dimension {
             Dimension::Agent => {
-                let rows = aggregate::by_agent(&sessions);
-                usage_table_shell(ui, |ui| agent_table(ui, &rows, now_ms));
+                let rows = aggregate::by_agent_in_range(&daily, range, today);
+                usage_table_shell(ui, |ui| agent_table(ui, &rows, now_ms, range, today));
             }
             Dimension::Model => {
-                let rows = aggregate::by_model(&sessions);
-                usage_table_shell(ui, |ui| model_table(ui, &rows, now_ms));
+                let rows = aggregate::by_model_in_range(&daily, range, today);
+                usage_table_shell(ui, |ui| model_table(ui, &rows, now_ms, range, today));
             }
             Dimension::Session => {
-                let rows = aggregate::session_rows(&sessions);
-                usage_table_shell(ui, |ui| session_table(ui, &rows, now_ms));
+                // 会话维度也必须走区间：拿会话总量当「本月」会虚高
+                // （一个会话可以横跨几十天）。
+                let rows = aggregate::session_rows_in_range(&sessions, &daily, range, today);
+                usage_table_shell(ui, |ui| session_table(ui, &rows, now_ms, range, today));
             }
             Dimension::Day => {
-                let rows = aggregate::by_day(&sessions, offset);
-                let today = aggregate::local_day_index(unix_now_secs(), offset);
+                let rows = aggregate::by_day_in_range(&daily, range, today);
                 usage_table_shell(ui, |ui| day_table(ui, &rows, today, now_ms));
             }
         }
@@ -222,15 +228,7 @@ impl App {
 
 /// 当前时间（Unix 毫秒）。
 fn unix_now_ms() -> i64 {
-    unix_now_secs().saturating_mul(1_000)
-}
-
-/// 当前时间（Unix 秒）。
-fn unix_now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() as i64)
-        .unwrap_or(0)
+    super::unix_now_secs().saturating_mul(1_000)
 }
 
 /// 表格外壳：统一内边距，并撑满可用宽度。
@@ -241,6 +239,16 @@ fn usage_table_shell(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
             ui.set_width(ui.available_width());
             body(ui);
         });
+}
+
+/// 首列表头：区间不是「全部」时带上区间名，让数字的归属一目了然。
+fn range_header(range: Range) -> &'static str {
+    match range {
+        Range::All => "Agent",
+        Range::Today => "Agent（今日）",
+        Range::Week => "Agent（本周）",
+        Range::Month => "Agent（本月）",
+    }
 }
 
 /// 表头一行：列名弱化显示。
@@ -276,61 +284,79 @@ fn usage_numbers(ui: &mut egui::Ui, totals: &Totals) {
     );
 }
 
-/// Agent 维度表：agent 名 / 用量 / 会话数 / 最近活动。
-fn agent_table(ui: &mut egui::Ui, rows: &[AgentUsage], now_ms: i64) {
-    table_header(
-        ui,
-        &["Agent", "用量（输入 · 输出 · 缓存读）", "会话", "最近活动"],
-    );
+/// Agent 维度表：agent 名 / 用量 / 最近活动。
+///
+/// 区间统计下不显示会话数：一个会话可以横跨多天，按区间求和时「会话数」相加
+/// 会重复计数，列出来反而误导。想看会话数切到「会话」维度。
+fn agent_table(ui: &mut egui::Ui, rows: &[AgentUsage], now_ms: i64, range: Range, today: i64) {
+    table_header(ui, &[range_header(range), "用量（输入 · 输出 · 缓存读）"]);
     for row in rows {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(row.client.label()).strong());
             usage_numbers(ui, &row.totals);
-            ui.label(
-                egui::RichText::new(format!("{} 个会话", row.totals.sessions))
-                    .small()
-                    .weak(),
-            );
-            ui.label(
-                egui::RichText::new(aggregate::relative_time(row.last_seen_ms, now_ms))
-                    .small()
-                    .weak(),
-            );
+            if range == Range::All && row.last_seen_ms > 0 {
+                ui.label(
+                    egui::RichText::new(aggregate::relative_time(row.last_seen_ms, now_ms))
+                        .small()
+                        .weak(),
+                );
+            } else if range != Range::All {
+                let _ = today;
+                ui.label(
+                    egui::RichText::new(range::totals_label(range).trim_end_matches("用量"))
+                        .small()
+                        .weak(),
+                );
+            }
         });
         ui.add_space(crate::theme::SPACE_1);
     }
 }
 
-/// 模型维度表：模型名 / 用量 / 会话数 / 用到它的 agent。
-fn model_table(ui: &mut egui::Ui, rows: &[ModelUsage], now_ms: i64) {
+/// 模型维度表：模型名 / 用量 / 来源 agent。
+fn model_table(ui: &mut egui::Ui, rows: &[ModelUsage], now_ms: i64, range: Range, _today: i64) {
     table_header(
         ui,
-        &["模型", "用量（输入 · 输出 · 缓存读）", "会话", "来源 agent"],
+        &[
+            range_header(range),
+            "用量（输入 · 输出 · 缓存读）",
+            "来源 agent",
+        ],
     );
     for row in rows {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(&row.model_id).strong().monospace());
             usage_numbers(ui, &row.totals);
-            ui.label(
-                egui::RichText::new(format!("{} 个会话", row.totals.sessions))
-                    .small()
-                    .weak(),
-            );
             ui.label(egui::RichText::new(row.agents.join(" / ")).small().weak());
-            ui.label(
-                egui::RichText::new(aggregate::relative_time(row.last_seen_ms, now_ms))
-                    .small()
-                    .weak(),
-            );
+            if range == Range::All && row.last_seen_ms > 0 {
+                ui.label(
+                    egui::RichText::new(aggregate::relative_time(row.last_seen_ms, now_ms))
+                        .small()
+                        .weak(),
+                );
+            }
         });
         ui.add_space(crate::theme::SPACE_1);
     }
 }
 
-/// 会话维度表：会话 id / agent / 模型 / 合计 / 最近活动；归档的加标记。
-fn session_table(ui: &mut egui::Ui, rows: &[SessionSnapshot], now_ms: i64) {
+/// 会话维度表：会话 id / agent / 模型 / 区间内用量；归档的加标记。
+///
+/// 区间不是「全部」时，用量列是该会话在区间内的部分，不是它的一生总量。
+fn session_table(
+    ui: &mut egui::Ui,
+    rows: &[SessionSnapshot],
+    now_ms: i64,
+    range: Range,
+    _today: i64,
+) {
     let semantics = crate::theme::semantics(ui);
-    table_header(ui, &["会话", "Agent", "模型", "合计", "最近活动"]);
+    let total_header = if range == Range::All {
+        "合计"
+    } else {
+        "区间内"
+    };
+    table_header(ui, &["会话", "Agent", "模型", total_header, "最近活动"]);
     for row in rows {
         ui.horizontal(|ui| {
             // 会话 id 很长（UUID），截断中间显示；全文放悬停。
@@ -362,23 +388,18 @@ fn session_table(ui: &mut egui::Ui, rows: &[SessionSnapshot], now_ms: i64) {
     }
 }
 
-/// 时间维度表：日期 / 当天合计 / 当天会话数。
+/// 时间维度表：一天一行，日期 / 当天用量 / 当天消息数。
+///
+/// 不列会话数：跨天会话会在多天各计一次，列出来会让人以为总量对不上。
 fn day_table(ui: &mut egui::Ui, rows: &[DayUsage], today: i64, now_ms: i64) {
-    table_header(
-        ui,
-        &["日期", "用量（输入 · 输出 · 缓存读）", "会话", "最近活动"],
-    );
+    let _ = now_ms;
+    table_header(ui, &["日期", "用量（输入 · 输出 · 缓存读）", "消息"]);
     for row in rows {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(aggregate::day_label(row.day, today)).strong());
             usage_numbers(ui, &row.totals);
             ui.label(
-                egui::RichText::new(format!("{} 个会话", row.totals.sessions))
-                    .small()
-                    .weak(),
-            );
-            ui.label(
-                egui::RichText::new(aggregate::relative_time(row.last_seen_ms, now_ms))
+                egui::RichText::new(format!("{} 条", row.totals.sessions))
                     .small()
                     .weak(),
             );

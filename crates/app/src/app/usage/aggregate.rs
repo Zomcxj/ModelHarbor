@@ -4,7 +4,7 @@
 //! 直接单测 —— 界面代码只负责把这里算出来的行画到表里。
 
 use crate::format::ConfigFormat;
-use crate::usage::SessionSnapshot;
+use crate::usage::{DailyMap, DayTotals, SessionSnapshot};
 
 // ---------------------------------------------------------------------------
 // 数字格式化
@@ -116,6 +116,30 @@ pub(in crate::app) fn day_label(day_index: i64, today_index: i64) -> String {
     }
 }
 
+/// 公历年月日 → 日索引（1970-01-01 为 0）。[`civil_from_days`] 的逆运算。
+///
+/// 区间筛选（今日 / 本周 / 本月）要算月初和周一，都是「某个年月日」→
+/// 「第几天」的方向。与 `core::profiles` 里那份同源，但那个是私有函数，
+/// 而 usage 视图不该为一个 5 行的纯算术把 `profiles` 的接口撬开。
+pub(in crate::app) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    // 以 0000-03-01 为纪元：闰日落在年末，月份长度只跟 month_prime 有关。
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = (month + 9) % 12;
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// 日索引 → 星期几，**周一为 0**、周日为 6。
+///
+/// 1970-01-01 是周四，所以偏移量是 3（`(0 + 3) % 7 == 3` → 周四）。
+/// 用 `div_euclid` 而不是 `%`：负数日索引下 `%` 会返回负值。
+pub(in crate::app) fn weekday_mon0(day_index: i64) -> u8 {
+    (day_index + 3).rem_euclid(7) as u8
+}
+
 // ---------------------------------------------------------------------------
 // 四维切换
 // ---------------------------------------------------------------------------
@@ -180,6 +204,10 @@ impl Totals {
     }
 
     /// 并入一个会话。
+    ///
+    /// 只用于测试：生产路径走按天分桶（[`totals_from_day`]），那里没有
+    /// 「会话数」可加 —— 按天分解时一个会话会落进多天，相加会重复计数。
+    #[cfg(test)]
     pub(in crate::app) fn add(&mut self, snapshot: &SessionSnapshot) {
         self.input = self.input.saturating_add(snapshot.input);
         self.output = self.output.saturating_add(snapshot.output);
@@ -225,122 +253,6 @@ where
     rows.sort_by(|a, b| total(b).cmp(&total(a)).then_with(|| name(a).cmp(name(b))));
 }
 
-/// Agent 维度：按 `snapshot.client` 分组。
-pub(in crate::app) fn by_agent(sessions: &[SessionSnapshot]) -> Vec<AgentUsage> {
-    let mut rows: Vec<AgentUsage> = Vec::new();
-    for snapshot in sessions {
-        match rows.iter_mut().find(|row| row.client == snapshot.client) {
-            Some(row) => {
-                row.totals.add(snapshot);
-                row.last_seen_ms = row.last_seen_ms.max(snapshot.last_seen_ms);
-            }
-            None => {
-                let mut totals = Totals::default();
-                totals.add(snapshot);
-                rows.push(AgentUsage {
-                    client: snapshot.client,
-                    totals,
-                    last_seen_ms: snapshot.last_seen_ms,
-                });
-            }
-        }
-    }
-    sort_by_total(
-        &mut rows,
-        |row| row.totals.total(),
-        |row| row.client.label(),
-    );
-    rows
-}
-
-/// 模型维度：按 `snapshot.model_id` 分组。
-///
-/// 同一个模型可能被多个 agent 用到，所以每行额外记下「用到它的 agent」。
-/// 模型名为空（源里没写）时归到 [`UNKNOWN_MODEL`]。
-pub(in crate::app) fn by_model(sessions: &[SessionSnapshot]) -> Vec<ModelUsage> {
-    /// 源里读不到模型名时的占位。
-    const UNKNOWN_MODEL: &str = "(未知模型)";
-    let mut rows: Vec<ModelUsage> = Vec::new();
-    for snapshot in sessions {
-        let model = if snapshot.model_id.trim().is_empty() {
-            UNKNOWN_MODEL
-        } else {
-            snapshot.model_id.as_str()
-        };
-        match rows.iter_mut().find(|row| row.model_id == model) {
-            Some(row) => {
-                row.totals.add(snapshot);
-                row.last_seen_ms = row.last_seen_ms.max(snapshot.last_seen_ms);
-                let agent = snapshot.client.label();
-                if !row.agents.iter().any(|name| name == agent) {
-                    row.agents.push(agent.to_string());
-                }
-            }
-            None => {
-                let mut totals = Totals::default();
-                totals.add(snapshot);
-                rows.push(ModelUsage {
-                    model_id: model.to_string(),
-                    totals,
-                    last_seen_ms: snapshot.last_seen_ms,
-                    agents: vec![snapshot.client.label().to_string()],
-                });
-            }
-        }
-    }
-    for row in &mut rows {
-        row.agents.sort();
-    }
-    sort_by_total(
-        &mut rows,
-        |row| row.totals.total(),
-        |row| row.model_id.as_str(),
-    );
-    rows
-}
-
-/// 时间维度：按 `last_seen_ms` 的本地日期分组。
-///
-/// `offset_secs` 是本地时区相对 UTC 的偏移（见 [`local_day_index`]）。
-pub(in crate::app) fn by_day(sessions: &[SessionSnapshot], offset_secs: i64) -> Vec<DayUsage> {
-    let mut rows: Vec<DayUsage> = Vec::new();
-    for snapshot in sessions {
-        let day = local_day_index(snapshot.last_seen_ms / 1_000, offset_secs);
-        match rows.iter_mut().find(|row| row.day == day) {
-            Some(row) => {
-                row.totals.add(snapshot);
-                row.last_seen_ms = row.last_seen_ms.max(snapshot.last_seen_ms);
-            }
-            None => {
-                let mut totals = Totals::default();
-                totals.add(snapshot);
-                rows.push(DayUsage {
-                    day,
-                    totals,
-                    last_seen_ms: snapshot.last_seen_ms,
-                });
-            }
-        }
-    }
-    // 日期倒序：最近的在前，不按 token 多少排（时间轴读起来才顺）。
-    rows.sort_by_key(|row| std::cmp::Reverse(row.day));
-    rows
-}
-
-/// 会话维度：一条会话一行。
-///
-/// 直接用快照本身（`archived` 标记随行带到界面）。账本已经按最近活动排好序，
-/// 这里再排一次，让「手工构造的输入」也有确定顺序。
-pub(in crate::app) fn session_rows(sessions: &[SessionSnapshot]) -> Vec<SessionSnapshot> {
-    let mut rows = sessions.to_vec();
-    rows.sort_by(|a, b| {
-        b.last_seen_ms
-            .cmp(&a.last_seen_ms)
-            .then_with(|| a.session_id.cmp(&b.session_id))
-    });
-    rows
-}
-
 /// 会话 id 的展示写法：太长时截断中间，保留头尾便于辨认。
 pub(in crate::app) fn short_session_id(session_id: &str, max_chars: usize) -> String {
     let chars: Vec<char> = session_id.chars().collect();
@@ -357,9 +269,168 @@ pub(in crate::app) fn short_session_id(session_id: &str, max_chars: usize) -> St
     format!("{prefix}…{suffix}")
 }
 
+// ---------------------------------------------------------------------------
+// 按区间聚合
+// ---------------------------------------------------------------------------
+//
+// 上面四个维度都吃 `&[SessionSnapshot]`（全量、不分时间）；下面这四个吃
+// `&DailyMap` + 区间，是时间筛选下的正确算法。两套并存是有意的：
+// 「全部」区间下两者结果一致，但会话级汇总做不到「本月 × 某 agent」——
+// 一个会话可以横跨几十天，它的总量不属于任何单独一个月。
+
+/// [`DayTotals`] → [`Totals`]。
+///
+/// 两个类型分属 core 与 app：core 的按天桶只关心 token 计数，app 的 `Totals`
+/// 还带一个「会话条数」字段（按天分解时一个会话会落进多天，不能相加），
+/// 所以这里会话数留 0，由调用方按需填。
+fn totals_from_day(day: &DayTotals) -> Totals {
+    Totals {
+        input: day.input,
+        output: day.output,
+        cache_read: day.cache_read,
+        cache_write: day.cache_write,
+        reasoning: day.reasoning,
+        sessions: 0,
+    }
+}
+
+/// 把 `label` 映射回 [`ConfigFormat`]（账本里 agent 分解用 label 做键）。
+fn format_from_label(label: &str) -> Option<ConfigFormat> {
+    crate::backends::BACKENDS
+        .iter()
+        .map(|backend| backend.id())
+        .find(|format| format.label() == label)
+}
+
+/// Agent 维度（区间内）。
+pub(in crate::app) fn by_agent_in_range(
+    daily: &DailyMap,
+    range: super::range::Range,
+    today: i64,
+) -> Vec<AgentUsage> {
+    let rows = super::range::breakdown_in_range(daily, range, today, |bucket| &bucket.by_client);
+    let mut out: Vec<AgentUsage> = rows
+        .iter()
+        .filter_map(|(label, totals)| {
+            // 账本里的 label 来自 ConfigFormat::label()，理论上一定能映射回来；
+            // 万一模型/agent 改名导致对不上，宁可丢掉这一行也不要瞎猜。
+            let client = format_from_label(label)?;
+            Some(AgentUsage {
+                client,
+                totals: totals_from_day(totals),
+                last_seen_ms: 0,
+            })
+        })
+        .collect();
+    sort_by_total(&mut out, |row| row.totals.total(), |row| row.client.label());
+    out
+}
+
+/// 模型维度（区间内）。
+pub(in crate::app) fn by_model_in_range(
+    daily: &DailyMap,
+    range: super::range::Range,
+    today: i64,
+) -> Vec<ModelUsage> {
+    // 用到每个模型的 agent：读 agent × 模型交叉分解。
+    // 不能拿「当天的 agent 集合」去配「当天的模型集合」—— 那会把只在
+    // agent A 用过的模型也算到同一天用过的 agent B 头上。
+    let mut agents: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for bucket in super::range::buckets_in_range(daily, range, today).values() {
+        for (client, models) in &bucket.by_client_model {
+            for model in models.keys() {
+                agents
+                    .entry(model.clone())
+                    .or_default()
+                    .insert(client.clone());
+            }
+        }
+    }
+
+    let rows = super::range::breakdown_in_range(daily, range, today, |bucket| &bucket.by_model);
+    let mut out: Vec<ModelUsage> = rows
+        .into_iter()
+        .map(|(model_id, totals)| ModelUsage {
+            agents: agents
+                .get(&model_id)
+                .map(|set| set.iter().cloned().collect())
+                .unwrap_or_default(),
+            model_id,
+            totals: totals_from_day(&totals),
+            last_seen_ms: 0,
+        })
+        .collect();
+    sort_by_total(&mut out, |row| row.totals.total(), |row| &row.model_id);
+    out
+}
+
+/// 会话维度（区间内）：只列在区间内有活动的会话，用量取区间内的部分。
+pub(in crate::app) fn session_rows_in_range(
+    sessions: &[SessionSnapshot],
+    daily: &DailyMap,
+    range: super::range::Range,
+    today: i64,
+) -> Vec<SessionSnapshot> {
+    let rows = super::range::breakdown_in_range(daily, range, today, |bucket| &bucket.by_session);
+    // 以账本里的快照为模板（带 archived 标记、模型名、最近活动），
+    // 但用量换成区间内的 —— 这正是不能直接用会话总量的原因。
+    let by_key: std::collections::HashMap<String, &SessionSnapshot> = sessions
+        .iter()
+        .map(|snapshot| {
+            (
+                SessionSnapshot::key(snapshot.client, &snapshot.session_id),
+                snapshot,
+            )
+        })
+        .collect();
+
+    let mut out: Vec<SessionSnapshot> = rows
+        .into_iter()
+        .filter_map(|(key, totals)| {
+            let template = by_key.get(&key)?;
+            let mut snapshot = (*template).clone();
+            snapshot.input = totals.input;
+            snapshot.output = totals.output;
+            snapshot.cache_read = totals.cache_read;
+            snapshot.cache_write = totals.cache_write;
+            snapshot.reasoning = totals.reasoning;
+            snapshot.message_count = totals.messages;
+            Some(snapshot)
+        })
+        .collect();
+    // 按区间内用量倒序（不是最近活动）：时间筛选下用户关心的是「这段时间用了多少」。
+    out.sort_by(|a, b| {
+        b.total()
+            .cmp(&a.total())
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    out
+}
+
+/// 时间维度（区间内）：一天一行。
+pub(in crate::app) fn by_day_in_range(
+    daily: &DailyMap,
+    range: super::range::Range,
+    today: i64,
+) -> Vec<DayUsage> {
+    // 日期倒序：最近的在前（时间轴读起来才顺，不按 token 多少排）。
+    super::range::buckets_in_range(daily, range, today)
+        .into_iter()
+        .rev()
+        .map(|(day, bucket)| DayUsage {
+            day,
+            totals: totals_from_day(&bucket.totals),
+            last_seen_ms: 0,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::usage::range::Range;
+    use crate::usage::DailyBucket;
 
     fn snapshot(session: &str, model: &str, input: i64, output: i64) -> SessionSnapshot {
         SessionSnapshot {
@@ -467,54 +538,101 @@ mod tests {
         assert_eq!(day_label(19_781, 19_783), "2024-02-28");
     }
 
-    // ---- 聚合 ----
+    // ---- 按区间聚合 ----
 
-    /// 三个 agent、两个模型、两天的一组会话。
-    fn sample() -> Vec<SessionSnapshot> {
-        let mut pi_a = snapshot("pi-a", "gpt-5", 1_000, 100);
-        pi_a.client = ConfigFormat::Pi;
-        pi_a.last_seen_ms = 1_700_000_000_000;
-        let mut pi_b = snapshot("pi-b", "gpt-5", 500, 50);
-        pi_b.client = ConfigFormat::Pi;
-        pi_b.last_seen_ms = 1_700_000_000_000;
-        let mut oc = snapshot("oc-a", "claude-4", 2_000, 200);
-        oc.client = ConfigFormat::Opencode;
-        oc.cache_read = 300;
-        oc.last_seen_ms = 1_700_000_100_000;
-        let mut archived = snapshot("gone", "gpt-5", 7, 3);
-        archived.client = ConfigFormat::WorkBuddy;
-        archived.archived = true;
-        archived.last_seen_ms = 1_600_000_000_000;
-        vec![pi_a, pi_b, oc, archived]
+    /// 造一个桶：`(client, session, model, input, output, cache_read)`。
+    ///
+    /// 四个分解表都填上（与 core 的 `DailyBucket::add_message` 保持一致），
+    /// 这样测的是「读分解表」的逻辑而不是我自己手搓的假数据形状。
+    fn bucket_of(date: &str, rows: &[(ConfigFormat, &str, &str, i64, i64, i64)]) -> DailyBucket {
+        let mut bucket = DailyBucket::new(date);
+        for (client, session, model, input, output, cache_read) in rows {
+            let totals = DayTotals {
+                input: *input,
+                output: *output,
+                cache_read: *cache_read,
+                messages: 1,
+                ..Default::default()
+            };
+            bucket.totals.add_assign(&totals);
+            bucket
+                .by_client
+                .entry(client.label().to_string())
+                .or_default()
+                .add_assign(&totals);
+            bucket
+                .by_model
+                .entry((*model).to_string())
+                .or_default()
+                .add_assign(&totals);
+            bucket
+                .by_session
+                .entry(SessionSnapshot::key(*client, session))
+                .or_default()
+                .add_assign(&totals);
+            bucket
+                .by_client_model
+                .entry(client.label().to_string())
+                .or_default()
+                .entry((*model).to_string())
+                .or_default()
+                .add_assign(&totals);
+        }
+        bucket
+    }
+
+    /// 与旧 `sample()` 等价的数据，但按天分桶：三个 agent、两个模型、两天。
+    ///
+    /// 2026-03-15 是「今天」，2026-03-14 是「昨天」。
+    fn daily_sample() -> DailyMap {
+        let today = bucket_of(
+            "2026-03-15",
+            &[
+                (ConfigFormat::Pi, "pi-a", "gpt-5", 1_000, 100, 0),
+                (ConfigFormat::Pi, "pi-b", "gpt-5", 500, 50, 0),
+                (ConfigFormat::Opencode, "oc-a", "claude-4", 2_000, 200, 300),
+            ],
+        );
+        let yesterday = bucket_of(
+            "2026-03-14",
+            &[(ConfigFormat::WorkBuddy, "gone", "gpt-5", 7, 3, 0)],
+        );
+        [
+            ("2026-03-15".to_string(), today),
+            ("2026-03-14".to_string(), yesterday),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// 今天 = 2026-03-15，与 `daily_sample` 对齐。
+    fn sample_today() -> i64 {
+        days_from_civil(2026, 3, 15)
     }
 
     #[test]
     fn by_agent_groups_and_sorts_by_total() {
-        let rows = by_agent(&sample());
+        let rows = by_agent_in_range(&daily_sample(), Range::All, sample_today());
         assert_eq!(rows.len(), 3, "三个 agent 各一行");
         // opencode 合计 2500 最大，排第一。
         assert_eq!(rows[0].client, ConfigFormat::Opencode);
         assert_eq!(rows[0].totals.total(), 2_500);
-        assert_eq!(rows[0].totals.sessions, 1);
         assert_eq!(rows[0].totals.cache_read, 300);
         // pi 两个会话合并成一行。
         assert_eq!(rows[1].client, ConfigFormat::Pi);
-        assert_eq!(rows[1].totals.sessions, 2);
         assert_eq!(rows[1].totals.total(), 1_650);
-        assert_eq!(rows[1].last_seen_ms, 1_700_000_000_000);
         assert_eq!(rows[2].client, ConfigFormat::WorkBuddy);
         assert_eq!(rows[2].totals.total(), 10);
     }
 
     #[test]
     fn by_model_merges_the_same_model_across_agents() {
-        let rows = by_model(&sample());
+        let rows = by_model_in_range(&daily_sample(), Range::All, sample_today());
         let gpt = rows
             .iter()
             .find(|row| row.model_id == "gpt-5")
             .expect("gpt-5 应有一行");
-        // pi 的两个会话 + workbuddy 的归档会话都算进来。
-        assert_eq!(gpt.totals.sessions, 3);
+        // pi 的两个会话 + workbuddy 的会话都算进来。
         assert_eq!(gpt.totals.total(), 1_660);
         assert_eq!(gpt.agents, vec!["pi".to_string(), "workbuddy".to_string()]);
         // claude-4 只有 opencode 用到。
@@ -525,54 +643,103 @@ mod tests {
         assert_eq!(claude.agents, vec!["opencode".to_string()]);
     }
 
+    /// 模型维度的来源 agent 取自交叉分解，不是「当天所有 agent」。
+    ///
+    /// 这一天 pi 用 gpt-5、opencode 用 claude-4：gpt-5 的来源只能是 pi。
+    /// 用「当天的 agent 集合」去配会得到 pi + opencode，那是错的。
     #[test]
-    fn by_model_falls_back_to_a_placeholder_for_a_blank_name() {
-        let mut s = snapshot("x", "   ", 10, 1);
-        s.model_id = String::new();
-        let rows = by_model(&[s]);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].model_id, "(未知模型)");
-    }
-
-    #[test]
-    fn by_day_groups_on_the_local_calendar_day() {
-        let utc = by_day(&sample(), 0);
-        assert_eq!(utc.len(), 2, "两组时间戳在 UTC 下是两天");
-        // 最近的一天排前面，三个实时会话都在这一天。
-        assert!(utc[0].day > utc[1].day);
-        assert_eq!(utc[0].totals.sessions, 3);
-        assert_eq!(utc[0].totals.total(), 4_150);
-        // 归档的那个会话落在更早的一天。
-        assert_eq!(utc[1].totals.sessions, 1);
-        assert_eq!(utc[1].totals.total(), 10);
-    }
-
-    #[test]
-    fn by_day_uses_the_offset_to_split_days() {
-        // UTC 22:00：UTC 下仍是当天，东八区（+28800）已是次日 06:00。
-        let mut s = snapshot("s", "m", 100, 0);
-        s.last_seen_ms = 1_699_999_200_000;
-        let utc = by_day(&[s.clone()], 0);
-        let east8 = by_day(&[s], 8 * 3_600);
-        assert_eq!(utc[0].day, local_day_index(1_699_999_200, 0));
-        assert_eq!(east8[0].day, local_day_index(1_699_999_200, 8 * 3_600));
+    fn by_model_does_not_attribute_a_model_to_unrelated_agents() {
+        let rows = by_model_in_range(&daily_sample(), Range::Today, sample_today());
+        let gpt = rows.iter().find(|row| row.model_id == "gpt-5").unwrap();
         assert_eq!(
-            east8[0].day,
-            utc[0].day + 1,
-            "同一时间戳在东八区应落到后一天"
+            gpt.agents,
+            vec!["pi".to_string()],
+            "opencode 当天没用 gpt-5"
         );
     }
 
     #[test]
-    fn session_rows_keep_the_archived_mark_and_sort_by_recency() {
-        let rows = session_rows(&sample());
-        assert_eq!(rows.len(), 4);
-        assert_eq!(rows[0].session_id, "oc-a", "最近的排最前");
-        let archived = rows
-            .iter()
-            .find(|row| row.session_id == "gone")
-            .expect("归档会话必须出现在会话维度里");
-        assert!(archived.archived, "archived 标记要带出来给界面画角标");
+    fn by_day_groups_on_the_calendar_day() {
+        let rows = by_day_in_range(&daily_sample(), Range::All, sample_today());
+        assert_eq!(rows.len(), 2, "两天各一行");
+        // 最近的一天排前面。
+        assert!(rows[0].day > rows[1].day);
+        assert_eq!(rows[0].totals.total(), 4_150);
+        assert_eq!(rows[1].totals.total(), 10);
+    }
+
+    /// 区间筛选真的把范围外的天排除了。
+    #[test]
+    fn by_day_respects_the_range() {
+        let today = sample_today();
+        let today_only = by_day_in_range(&daily_sample(), Range::Today, today);
+        assert_eq!(today_only.len(), 1);
+        assert_eq!(today_only[0].day, today);
+        assert_eq!(today_only[0].totals.total(), 4_150, "昨天那 10 不算进来");
+    }
+
+    /// 会话维度：只列区间内有活动的会话，用量取区间内的部分。
+    #[test]
+    fn session_rows_in_range_scopes_usage_to_the_range() {
+        // 今天有活动的是 pi-a / pi-b / oc-a（见 `daily_sample`）。
+        // 会话键含 client，所以这里必须用与桶一致的 client。
+        let mut oc = snapshot("oc-a", "claude-4", 2_000, 200);
+        oc.client = ConfigFormat::Opencode;
+        let sessions = vec![
+            snapshot("pi-a", "gpt-5", 1_000, 100),
+            snapshot("pi-b", "gpt-5", 500, 50),
+            oc,
+        ];
+        let rows = session_rows_in_range(&sessions, &daily_sample(), Range::Today, sample_today());
+        assert_eq!(rows.len(), 3, "今天三个会话都有活动");
+        let pi_a = rows.iter().find(|r| r.session_id == "pi-a").unwrap();
+        assert_eq!(pi_a.total(), 1_100, "区间内用量");
+        let oc = rows.iter().find(|r| r.session_id == "oc-a").unwrap();
+        assert_eq!(oc.total(), 2_500, "opencode 的 cache_read 也算进去");
+        // 按区间内用量倒序：opencode 2500 > pi-a 1100 > pi-b 550。
+        assert_eq!(rows[0].session_id, "oc-a");
+    }
+
+    /// 跨天会话在区间内只算区间那部分 —— 这是不能直接用会话总量的原因。
+    #[test]
+    fn session_usage_is_clipped_to_the_range() {
+        // 同一个会话在两天都有活动：今天 100，昨天 900。
+        let today = bucket_of("2026-03-15", &[(ConfigFormat::Pi, "long", "m", 100, 0, 0)]);
+        let yesterday = bucket_of("2026-03-14", &[(ConfigFormat::Pi, "long", "m", 900, 0, 0)]);
+        let daily: DailyMap = [
+            ("2026-03-15".to_string(), today),
+            ("2026-03-14".to_string(), yesterday),
+        ]
+        .into_iter()
+        .collect();
+        // 账本里的快照记的是这个会话的一生总量（1000）。
+        let sessions = vec![snapshot("long", "m", 1_000, 0)];
+
+        let rows = session_rows_in_range(&sessions, &daily, Range::Today, sample_today());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].total(), 100, "只算今天的部分，不是一生的 1000");
+    }
+
+    /// 归档会话的标记要带出来给界面画角标。
+    #[test]
+    fn session_rows_in_range_keep_the_archived_mark() {
+        let mut archived = snapshot("gone", "gpt-5", 7, 3);
+        archived.client = ConfigFormat::WorkBuddy;
+        archived.archived = true;
+        let rows = session_rows_in_range(&[archived], &daily_sample(), Range::All, sample_today());
+        let row = rows.iter().find(|r| r.session_id == "gone").unwrap();
+        assert!(row.archived, "archived 标记要带出来");
+    }
+
+    /// 区间内没有活动的会话不出现在列表里。
+    #[test]
+    fn session_rows_in_range_hides_sessions_outside_the_range() {
+        let sessions = vec![snapshot("gone", "gpt-5", 7, 3)];
+        let rows = session_rows_in_range(&sessions, &daily_sample(), Range::Today, sample_today());
+        assert!(
+            rows.iter().all(|r| r.session_id != "gone"),
+            "昨天才有活动的会话不该出现在「今日」里"
+        );
     }
 
     #[test]
@@ -600,10 +767,10 @@ mod tests {
 
     #[test]
     fn empty_input_produces_no_rows() {
-        assert!(by_agent(&[]).is_empty());
-        assert!(by_model(&[]).is_empty());
-        assert!(by_day(&[], 0).is_empty());
-        assert!(session_rows(&[]).is_empty());
+        assert!(by_agent_in_range(&DailyMap::new(), Range::All, 0).is_empty());
+        assert!(by_model_in_range(&DailyMap::new(), Range::All, 0).is_empty());
+        assert!(by_day_in_range(&DailyMap::new(), Range::All, 0).is_empty());
+        assert!(session_rows_in_range(&[], &DailyMap::new(), Range::All, 0).is_empty());
     }
 
     #[test]

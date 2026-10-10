@@ -114,6 +114,12 @@ pub struct DailyBucket {
     /// 会话维度在时间筛选下必须用这个：一个会话可以横跨几十天，拿它的总量
     /// 当成「本月用量」会虚高。
     pub by_session: BTreeMap<String, DayTotals>,
+    /// 当天按「agent × 模型」交叉分解（外层键是 agent label，内层是模型 id）。
+    ///
+    /// 模型维度在时间筛选下需要它：`by_client` 与 `by_model` 是两个独立维度，
+    /// 交叉不出「这个模型是哪个 agent 用的」。用嵌套 map 而不是拼字符串键，
+    /// 避免模型名里含分隔符时的歧义。
+    pub by_client_model: BTreeMap<String, BTreeMap<String, DayTotals>>,
 }
 
 /// 模型名为空时的占位，与 app 层的展示保持一致。
@@ -140,12 +146,22 @@ impl DailyBucket {
         } else {
             message.model_id.clone()
         };
-        self.by_model.entry(model).or_default().add_message(message);
+        self.by_model
+            .entry(model.clone())
+            .or_default()
+            .add_message(message);
         self.by_session
             .entry(crate::usage::SessionSnapshot::key(
                 client,
                 &message.session_id,
             ))
+            .or_default()
+            .add_message(message);
+        // 交叉分解：模型维度要靠它才能说出「这个模型是哪个 agent 用的」。
+        self.by_client_model
+            .entry(label.to_string())
+            .or_default()
+            .entry(model)
             .or_default()
             .add_message(message);
     }
@@ -159,6 +175,10 @@ impl DailyBucket {
         merge_breakdown(&mut self.by_client, &other.by_client);
         merge_breakdown(&mut self.by_model, &other.by_model);
         merge_breakdown(&mut self.by_session, &other.by_session);
+        for (client, models) in &other.by_client_model {
+            let target = self.by_client_model.entry(client.clone()).or_default();
+            merge_breakdown(target, models);
+        }
     }
 
     pub fn to_json(&self) -> Value {
@@ -167,6 +187,11 @@ impl DailyBucket {
             "by_client": breakdown_to_json(&self.by_client),
             "by_model": breakdown_to_json(&self.by_model),
             "by_session": breakdown_to_json(&self.by_session),
+            "by_client_model": self
+                .by_client_model
+                .iter()
+                .map(|(client, models)| (client.clone(), Value::Object(breakdown_to_json(models))))
+                .collect::<serde_json::Map<_, _>>(),
         })
     }
 
@@ -180,6 +205,15 @@ impl DailyBucket {
             by_client: breakdown_from_json(value, "by_client"),
             by_model: breakdown_from_json(value, "by_model"),
             by_session: breakdown_from_json(value, "by_session"),
+            by_client_model: value
+                .get("by_client_model")
+                .and_then(Value::as_object)
+                .map(|obj| {
+                    obj.iter()
+                        .map(|(client, models)| (client.clone(), breakdown_from_value(models)))
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }
@@ -196,9 +230,12 @@ fn breakdown_to_json(map: &BTreeMap<String, DayTotals>) -> serde_json::Map<Strin
 }
 
 fn breakdown_from_json(value: &Value, key: &str) -> BTreeMap<String, DayTotals> {
+    value.get(key).map(breakdown_from_value).unwrap_or_default()
+}
+
+fn breakdown_from_value(value: &Value) -> BTreeMap<String, DayTotals> {
     value
-        .get(key)
-        .and_then(Value::as_object)
+        .as_object()
         .map(|obj| {
             obj.iter()
                 .map(|(k, v)| (k.clone(), DayTotals::from_json(v)))
@@ -320,6 +357,38 @@ mod tests {
         small.add_message(ConfigFormat::Pi, &message(10, 0, "2026-01-01", "m"));
         left.merge_max(&small);
         assert_eq!(left.totals.input, 1000);
+    }
+
+    /// 交叉分解：同一天两个 agent 用不同模型，不能互相串。
+    #[test]
+    fn cross_breakdown_separates_models_per_client() {
+        let mut bucket = DailyBucket::new("2026-01-01");
+        bucket.add_message(ConfigFormat::Pi, &message(100, 0, "2026-01-01", "glm-5"));
+        bucket.add_message(
+            ConfigFormat::QwenCode,
+            &message(7, 0, "2026-01-01", "qwen3"),
+        );
+
+        assert_eq!(bucket.by_client_model["pi"]["glm-5"].input, 100);
+        assert!(
+            !bucket.by_client_model["pi"].contains_key("qwen3"),
+            "qwen3 不是 pi 用的"
+        );
+        assert_eq!(bucket.by_client_model["qwen-code"]["qwen3"].input, 7);
+        assert!(!bucket.by_client_model["qwen-code"].contains_key("glm-5"));
+    }
+
+    /// 交叉分解的合并：不同 agent 的键都要保留。
+    #[test]
+    fn cross_breakdown_merges_per_client() {
+        let mut left = DailyBucket::new("2026-01-01");
+        left.add_message(ConfigFormat::Pi, &message(100, 0, "2026-01-01", "m1"));
+        let mut right = DailyBucket::new("2026-01-01");
+        right.add_message(ConfigFormat::Opencode, &message(50, 0, "2026-01-01", "m2"));
+
+        left.merge_max(&right);
+        assert_eq!(left.by_client_model["pi"]["m1"].input, 100);
+        assert_eq!(left.by_client_model["opencode"]["m2"].input, 50);
     }
 
     /// JSON 往返一致。

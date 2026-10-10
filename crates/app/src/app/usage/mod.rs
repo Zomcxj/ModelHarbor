@@ -20,11 +20,13 @@
 //! 把连续写入合并掉了，再加冷却只会让用户觉得数字不跟手。
 
 pub(in crate::app) mod aggregate;
+mod overview;
+pub(in crate::app) mod range;
 mod scan_sources;
 mod view;
 
 use crate::app::App;
-use crate::usage::{Ledger, SessionSnapshot};
+use crate::usage::{DailyMap, Ledger, SessionSnapshot};
 use eframe::egui;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -50,13 +52,18 @@ const SCAN_POLL_REPAINT_SECS: f64 = 0.25;
 /// 避免 0 秒（每帧重绘）把界面拖成空转。
 pub(in crate::app) const MIN_REPAINT_SECS: f64 = 0.01;
 
-/// 后台线程交回来的原始扫描结果：会话表、消息数、内核自报耗时。
-type ScanPayload = (HashMap<String, SessionSnapshot>, usize, u32);
+/// 后台线程交回来的原始扫描结果：会话表、按天分桶、消息数、内核自报耗时。
+type ScanPayload = (HashMap<String, SessionSnapshot>, DailyMap, usize, u32);
 
 /// 一次扫描的成品（已并入账本）。
 pub(in crate::app) struct UsageReport {
     /// 展示视图：实时扫描结果 ∪ 账本里已消失的会话，按最近活动倒序。
     pub sessions: Vec<SessionSnapshot>,
+    /// 按本地日历日分桶（含已删会话留下的记录）。
+    ///
+    /// 热力图与「今日 / 本周 / 本月 / 总计」都读这里：会话级汇总做不到这件事，
+    /// 一个会话可以横跨几十天。
+    pub daily: DailyMap,
     /// 本次扫描完成时刻（egui 时间轴秒），用于显示「更新于 N 秒前」。
     pub scanned_at: f64,
     /// 内核读到的消息条数。
@@ -204,11 +211,12 @@ impl App {
         // 1. 先收结果。`try_recv` 不阻塞：没有结果就立刻返回。
         let received = self.usage.rx.as_ref().map(Receiver::try_recv);
         match received {
-            Some(Ok(Ok((sessions, message_count, scan_ms)))) => {
+            Some(Ok(Ok((sessions, daily, message_count, scan_ms)))) => {
                 // 并入账本 + 产出展示视图。merge_scan 是 O(会话数)，几十条，UI 线程够用。
                 let report = merge_into_ledger(
                     &mut self.usage.ledger,
                     sessions,
+                    daily,
                     now,
                     message_count,
                     scan_ms,
@@ -291,6 +299,7 @@ impl App {
             let payload = crate::usage::scan().map(|scanned| {
                 (
                     scanned.sessions,
+                    scanned.daily,
                     scanned.message_count,
                     scanned.processing_time_ms,
                 )
@@ -336,6 +345,38 @@ impl App {
             None => &[],
         }
     }
+
+    /// 按天分桶（热力图与区间统计的输入）。
+    ///
+    /// 与 [`Self::usage_sessions`] 并列：两者服务于不同视图，都取自同一次扫描结果。
+    /// 扫描失败 / 还没扫完时返回 `None`，界面据此画「没有数据」。
+    pub(in crate::app) fn usage_daily(&self) -> Option<&DailyMap> {
+        self.usage
+            .result
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(|report| &report.daily)
+    }
+
+    /// 今天（本地日索引）。
+    ///
+    /// 区间边界都相对它算，所以集中在这里读一次系统时间，而不是每个函数各读一次
+    /// （跨零点时同一帧内读到不同值会画出不一致的界面）。
+    pub(in crate::app) fn usage_today(&self) -> i64 {
+        let offset = crate::app::balance::local_utc_offset_secs();
+        aggregate::local_day_index(unix_now_secs(), offset)
+    }
+}
+
+/// 当前时间（Unix 秒）。
+///
+/// 放在 `mod.rs` 而不是各子模块里各写一份：`view` 与 `overview` 都要用，
+/// 同一帧内两处读系统时间会跨零点不一致。
+pub(in crate::app) fn unix_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// 把扫描结果并进账本并产出展示视图。
@@ -345,13 +386,16 @@ impl App {
 pub(in crate::app) fn merge_into_ledger(
     ledger: &mut Ledger,
     scanned: HashMap<String, SessionSnapshot>,
+    daily: DailyMap,
     now: f64,
     message_count: usize,
     scan_ms: u32,
 ) -> UsageReport {
     ledger.merge_scan(scanned);
+    ledger.merge_daily(daily);
     UsageReport {
         sessions: ledger.view(),
+        daily: ledger.daily().clone(),
         scanned_at: now,
         message_count,
         scan_ms,
@@ -510,7 +554,14 @@ mod tests {
         };
 
         let mut ledger = Ledger::in_memory();
-        let first = merge_into_ledger(&mut ledger, scan_of(vec![snapshot("a", 100)]), 1.0, 7, 42);
+        let first = merge_into_ledger(
+            &mut ledger,
+            scan_of(vec![snapshot("a", 100)]),
+            DailyMap::new(),
+            1.0,
+            7,
+            42,
+        );
         assert_eq!(first.sessions.len(), 1);
         assert_eq!(first.message_count, 7);
         assert_eq!(first.scan_ms, 42);
@@ -518,10 +569,29 @@ mod tests {
         assert_eq!(first.total(), 100);
 
         // 下一轮 a 消失了 → 仍留在视图里，并标记 archived。
-        let second = merge_into_ledger(&mut ledger, scan_of(vec![]), 2.0, 0, 10);
+        let second = merge_into_ledger(&mut ledger, scan_of(vec![]), DailyMap::new(), 2.0, 0, 10);
         assert_eq!(second.sessions.len(), 1, "已删除的会话必须保留");
         assert!(second.sessions[0].archived);
         assert_eq!(second.total(), 100, "总量不因源里消失而缩水");
+    }
+
+    /// 按天分桶也要穿过 `merge_into_ledger` 进到报告里（热力图靠它）。
+    #[test]
+    fn merge_into_ledger_carries_daily_buckets() {
+        let mut bucket = crate::usage::DailyBucket::new("2026-03-15");
+        bucket.totals.input = 500;
+        bucket.totals.messages = 3;
+        let daily: DailyMap = [("2026-03-15".to_string(), bucket)].into_iter().collect();
+
+        let mut ledger = Ledger::in_memory();
+        let report = merge_into_ledger(&mut ledger, HashMap::new(), daily, 1.0, 3, 10);
+        assert_eq!(report.daily.len(), 1, "按天分桶要出现在报告里");
+        assert_eq!(report.daily["2026-03-15"].totals.input, 500);
+
+        // 下一轮扫描没有新数据：账本里的按天记录要留着（已删会话的用量靠它）。
+        let second = merge_into_ledger(&mut ledger, HashMap::new(), DailyMap::new(), 2.0, 0, 10);
+        assert_eq!(second.daily.len(), 1, "历史按天记录不因本轮没扫到而消失");
+        assert_eq!(second.daily["2026-03-15"].totals.input, 500);
     }
 
     #[test]
@@ -546,6 +616,7 @@ mod tests {
                 snapshot(ConfigFormat::Pi, 10, false),
                 snapshot(ConfigFormat::Opencode, 100, true),
             ],
+            daily: DailyMap::new(),
             scanned_at: 0.0,
             message_count: 2,
             scan_ms: 5,

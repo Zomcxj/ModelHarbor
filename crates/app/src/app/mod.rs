@@ -178,6 +178,8 @@ pub struct App {
     main_view: MainView,
     /// 用量视图内的维度页签（Agent / 模型 / 会话 / 时间）。
     usage_dimension: usage::aggregate::Dimension,
+    /// 用量视图的时间区间（今日 / 本周 / 本月 / 全部）。
+    usage_range: usage::range::Range,
     /// 本机用量扫描状态（见 [`crate::app::usage`]）。
     usage: usage::UsageState,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
@@ -353,6 +355,7 @@ impl Default for App {
             show_health: false,
             main_view: MainView::default(),
             usage_dimension: usage::aggregate::Dimension::default(),
+            usage_range: usage::range::Range::default(),
             usage: usage::UsageState::default(),
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
             glass: prefs.glass,
