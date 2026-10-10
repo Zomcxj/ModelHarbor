@@ -1,4 +1,8 @@
-# BRIEF U-1b：本机用量 UI（悬浮窗 + 四维统计 + 3 秒增量刷新）
+# BRIEF U-1b：本机用量 UI（主界面视图切换 + 四维统计 + 3 秒增量刷新）
+
+> **⚠️ 已修正（第二版）**：第一版 brief 写成了「悬浮窗」，方向错了。
+> 正确需求是**主界面内的视图切换**：一个「用量」视图 + 现有的「提供商管理」视图，
+> 在同一个位置二选一显示。**不要做悬浮窗，不要动顶栏按钮区。**
 
 ## 前置：地基已完成并提交
 
@@ -132,15 +136,58 @@ pub(super) struct UsageReport {
 }
 ```
 
-### 2. `crates/app/src/app/windows.rs` —— 加悬浮窗
+### 2. 主界面视图切换（**不是悬浮窗**）
 
-**照同文件里的 `ui_health_window` 写法**（`.order(Self::TOKENS_WINDOW_ORDER)`、`.fixed_size(size)`、`.constrain_to(area)`、`.current_pos(centered)`、`self.floating_window_frame(ctx)`、`ScrollArea`）。
+在 `crates/app/src/app/mod.rs` 的 `CentralPanel` 里，`ui_page_header(ui)` 之后插入视图切换条，
+再用 `match` 决定内容区画哪个视图：
 
-窗口标题「本机用量」。尺寸建议 `egui::vec2(760.0, height)`（比体检窗宽一点，要放表格）。
+```rust
+pub enum MainView {
+    /// 现有的 providers + agents 编辑区（默认）。
+    Providers,
+    /// 本机用量统计。
+    Usage,
+}
 
-### 3. 四维统计视图
+// App struct 加字段：main_view: MainView（默认 Providers）
+```
 
-窗口内用一组**维度切换按钮**（Agent / 模型 / 会话 / 时间），当前维度高亮（复用顶栏页签的选中样式：`ui.visuals().widgets.hovered.bg_fill` + 2px 描边，见 `bars/top_bar.rs`）。
+`CentralPanel` 改法：
+
+```rust
+egui::CentralPanel::default().show(ctx, |ui| {
+    self.ui_page_header(ui);      // 已有：保存 / 路径 / 分隔线
+    self.ui_view_switch(ui);      // 新增：两个视图的切换条
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, true])
+        /* ...原有 scroll 配置不变... */
+        .show(ui, |ui| {
+            match self.main_view {
+                MainView::Providers => {
+                    self.ui_providers_section(ui);
+                    ui.add_space(crate::theme::SPACE_2);
+                    if self.current_page.is_opencode_family() {
+                        self.ui_agents_section(ui);
+                        ui.add_space(crate::theme::SPACE_2);
+                    }
+                }
+                MainView::Usage => self.ui_usage_section(ui),
+            }
+        });
+});
+```
+
+**视图切换条的样子**：两个并排的按钮（「用量」「提供商管理」），当前选中的用
+`ui.visuals().widgets.hovered.bg_fill` + 2px 描边（照 `bars/top_bar.rs` 里页签的选中样式）。
+放在 `ui_page_header` 的分隔线**下方**、内容区**上方**。
+
+⚠️ 切换 `main_view` 时**不要**动 `current_page`（agent 页签）——用量视图对全部 agent 生效，
+与当前在哪个 agent 页无关。切回 Providers 时用户应看到原来的页面。
+
+### 3. 四维统计视图（`ui_usage_section`，画在内容区里）
+
+**不是悬浮窗，是内容区的一个区**（和 `ui_providers_section` 平级）。用一组**维度切换按钮**
+（Agent / 模型 / 会话 / 时间），当前维度高亮。
 
 **四个维度的聚合**（都在 app 层从 `Vec<SessionSnapshot>` 现算，不要改 core）：
 
@@ -161,9 +208,14 @@ pub(super) struct UsageReport {
 
 **相对时间**：`last_seen_ms` → 「2 分钟前」/「3 小时前」/「5 天前」。
 
-### 4. `crates/app/src/app/bars/top_bar.rs` —— 加按钮
+### 4. ~~`crates/app/src/app/bars/top_bar.rs` —— 加按钮~~
 
-在工具按钮区（`show_tokens` / `show_health` 那一排，约 540-620 行）加一个按钮：
+**不要动顶栏按钮区**。用量是主界面的一个视图，不是独立入口。
+
+（下面保留原内容仅作参考，实际不做）
+
+<details>
+<summary>原方案（已废弃）</summary>
 
 ```rust
 // 用量：本机各 agent 的 token 使用量（独立悬浮窗）。
@@ -179,21 +231,23 @@ if usage_btn.clicked() {
 }
 ```
 
-**图标**：看 `crates/app/assets/icons/` 里现有哪些可复用（`activity.svg` 已被体检用了，`database.svg` 已被别的用了）。可以复用 `database` 或找一个语义接近的。**不要新增 SVG 文件**（避免引入新的资源依赖问题）；若实在没有合适的，用 `activity` 也行（两个窗口不会同时开）。
+**图标**：不需要（视图切换条用文字按钮）。
+
+</details>
 
 ### 5. `crates/app/src/app/mod.rs` —— 状态字段 + 接线
 
 ```rust
-// App struct 里加（放在 show_health 附近）
-/// 本机用量悬浮窗是否打开。
-show_usage: bool,
+// App struct 里加（放在 current_page 附近）
+/// 主界面当前视图：用量 / 提供商管理。
+main_view: MainView,
 /// 本机用量扫描状态（见 [`crate::app::usage`]）。
 usage: usage::UsageState,
 ```
 
-- 初始化：`show_usage: false`，`usage: UsageState::default()`（或 `UsageState::new()`）
+- 初始化：`main_view: MainView::Providers`，`usage: UsageState::default()`
 - `update()` 里加 `self.poll_usage();`（在 `poll_balance()` 旁边）
-- 末尾加 `self.ui_usage_window(ctx);`（在 `ui_health_window(ctx)` 旁边）
+- **不要**加 `ui_usage_window(ctx)` 调用；用量画在 CentralPanel 里
 
 **启动时自动扫描**：`UsageState` 首次 `poll_usage` 时 `result.is_none() && rx.is_none()` → 立即触发一次扫描（不等 3 秒），满足「每次打开软件自动追加更新」。
 
@@ -222,11 +276,12 @@ cargo fmt --all -- --check
 
 ### 手工验证
 
-1. 打开软件 → 点用量按钮 → 窗口有数据（不用手点刷新）
-2. 窗口里四个维度都能切换出数
+1. 打开软件 → 切到「用量」视图 → 有数据（不用手点刷新）
+2. 四个维度都能切换出数
 3. 用 pi 或 opencode 跑一轮对话 → 3-5 秒内数字上涨
-4. **窗口开着时任务管理器里 CPU 占用接近 0**（空闲时不扫描）
+4. **用量视图开着时任务管理器里 CPU 占用接近 0**（空闲时不扫描）
 5. 关掉软件重开 → 数字不减少
+6. 切回「提供商管理」→ 还是原来的编辑界面，页面没变
 
 ---
 
@@ -246,7 +301,7 @@ cargo fmt --all -- --check
 ### 必须遵守
 
 - ✅ 中文注释，风格照 `balance.rs`（讲清「为什么」，不只讲「做什么」）
-- ✅ 悬浮窗照 `ui_health_window` 的写法
+- ✅ 用量画在**主界面内容区**（和 `ui_providers_section` 平级），用 `MainView` 枚举切换
 - ✅ 扫描在后台线程，UI 只读结果
 - ✅ 复用 `crate::prefs::Prefs::config_dir()` 取账本目录（不要自己拼路径）
 - ✅ 首次编译慢（tokscale 依赖树），这是正常的
@@ -254,17 +309,17 @@ cargo fmt --all -- --check
 ### 参考文件（先读这些）
 
 1. `crates/app/src/app/balance.rs` —— 后台线程 + mpsc 的**标准模式**
-2. `crates/app/src/app/windows.rs` —— `ui_health_window` 悬浮窗写法
-3. `crates/app/src/app/bars/top_bar.rs` 540-620 行 —— 工具按钮区
-4. `crates/core/src/usage/` —— 已完成的扫描 + 账本 API
-5. `crates/core/src/billing.rs` —— 本地日期换算的现成做法
+2. `crates/app/src/app/mod.rs` 的 `CentralPanel` 段（约 430-460 行）—— 视图切换的挂载点
+3. `crates/app/src/app/bars/page_header.rs` —— 它末尾有 `ui.separator()`，切换条加在其后
+4. `crates/app/src/app/providers/mod.rs` —— `ui_providers_section` 的写法（用量区照它的层级）
+5. `crates/core/src/usage/` —— 已完成的扫描 + 账本 API
+6. `crates/core/src/billing.rs` —— 本地日期换算的现成做法
 
 ---
 
 ## 交付物
 
-1. `crates/app/src/app/usage.rs`（新建）
-2. `crates/app/src/app/windows.rs`（加 `ui_usage_window`）
-3. `crates/app/src/app/bars/top_bar.rs`（加按钮）
-4. `crates/app/src/app/mod.rs`（状态字段 + 接线）
-5. 提交信息：`feat(usage): 本机用量悬浮窗（四维统计 + 3s 增量刷新）`
+1. `crates/app/src/app/usage.rs`（新建：后台线程 + 聚合 + 格式化 + 单测）
+2. `crates/app/src/app/mod.rs`（`MainView` 枚举 + 状态字段 + `ui_view_switch` + CentralPanel 接线）
+3. `crates/app/src/app/providers/mod.rs` 或 `usage.rs`（`ui_usage_section`，画四维视图）
+4. 提交信息：`feat(usage): 本机用量视图（四维统计 + 3s 增量刷新）`
