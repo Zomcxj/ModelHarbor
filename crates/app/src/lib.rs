@@ -10,5 +10,5 @@ pub mod windowfx;
 // 既有路径在 app 内部继续可用，避免逐个改动全部 `crate::x` 引用。
 pub use model_harbor_core::{
     backends, billing, convert, credentials, format, http_status, model, netguard, opencode_models,
-    prefs, presets, profiles, serialize, tokens, util,
+    prefs, presets, profiles, serialize, tokens, usage, util,
 };
