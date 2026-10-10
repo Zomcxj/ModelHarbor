@@ -12,6 +12,7 @@
 //! - **静默恢复**：文件损坏 / 读失败 → 当作空账本重建，绝不让账本问题导致功能不可用。
 
 use crate::format::ConfigFormat;
+use crate::usage::daily::{DailyBucket, DailyMap};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -170,6 +171,10 @@ fn client_format_from_label(label: &str) -> Option<ConfigFormat> {
 }
 
 /// 账本当前 schema 版本。格式变更时 +1，旧版本整体丢弃重建。
+///
+/// 新增可选的 `daily` 字段**不**升版本：旧账本没有这个键时按空处理，
+/// 下一轮扫描会补回来；而升版本会丢掉已攒下的会话历史（已删会话的用量
+/// 无法重扫回来，那是账本存在的意义）。
 const LEDGER_VERSION: u32 = 1;
 
 /// 用量账本。
@@ -180,8 +185,12 @@ const LEDGER_VERSION: u32 = 1;
 pub struct Ledger {
     /// `client:session_id` → 快照（含已归档的）。
     entries: HashMap<String, SessionSnapshot>,
-    /// 上次落盘后发生变化的键。
+    /// 按本地日历日分桶（含已删会话留下的记录）。
+    daily: DailyMap,
+    /// 上次落盘后发生变化的会话键。
     dirty: Vec<String>,
+    /// 上次落盘后发生变化的日期键。
+    dirty_days: Vec<String>,
     /// 账本文件路径；`None` = 纯内存（测试 / 落盘不可用时）。
     path: Option<PathBuf>,
 }
@@ -204,10 +213,12 @@ impl Ledger {
     /// 打开账本：读取落盘文件，损坏 / 版本不符时按空账本重建。
     pub fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let entries = Self::load(&path).unwrap_or_default();
+        let (entries, daily) = Self::load(&path).unwrap_or_default();
         Self {
             entries,
+            daily,
             dirty: Vec::new(),
+            dirty_days: Vec::new(),
             path: Some(path),
         }
     }
@@ -228,7 +239,7 @@ impl Ledger {
 
     /// 是否有未落盘的改动。
     pub fn is_dirty(&self) -> bool {
-        !self.dirty.is_empty()
+        !self.dirty.is_empty() || !self.dirty_days.is_empty()
     }
 
     /// 并入一次扫描结果。
@@ -265,6 +276,34 @@ impl Ledger {
         }
     }
 
+    /// 并入一次扫描的按天分桶。
+    ///
+    /// 与会话快照分开合并：两者服务于不同视图（会话明细 vs 热力图 /
+    /// 时间范围筛选），一条会话被删后它的按天记录也要留着。
+    /// 同一天重复扫描时逐字段取较大值，token 只增不减。
+    pub fn merge_daily(&mut self, scanned: DailyMap) {
+        for (date, fresh) in scanned {
+            match self.daily.get_mut(&date) {
+                Some(existing) => {
+                    let before = existing.clone();
+                    existing.merge_max(&fresh);
+                    if *existing != before {
+                        self.dirty_days.push(date);
+                    }
+                }
+                None => {
+                    self.daily.insert(date.clone(), fresh);
+                    self.dirty_days.push(date);
+                }
+            }
+        }
+    }
+
+    /// 按天分桶（热力图与「今日 / 本周 / 本月 / 总计」的数据源）。
+    pub fn daily(&self) -> &DailyMap {
+        &self.daily
+    }
+
     /// 展示视图：实时扫描结果 ∪ 账本（已删会话保留，标记 `archived`）。
     pub fn view(&self) -> Vec<SessionSnapshot> {
         let mut out: Vec<SessionSnapshot> = self.entries.values().cloned().collect();
@@ -281,11 +320,12 @@ impl Ledger {
     ///
     /// 无改动时直接返回，不产生 IO。
     pub fn save(&mut self) -> std::io::Result<()> {
-        if self.dirty.is_empty() {
+        if self.dirty.is_empty() && self.dirty_days.is_empty() {
             return Ok(());
         }
         let Some(path) = self.path.clone() else {
             self.dirty.clear();
+            self.dirty_days.clear();
             return Ok(());
         };
         let payload = json!({
@@ -295,19 +335,29 @@ impl Ledger {
                 .iter()
                 .map(|(key, entry)| (key.clone(), entry.to_json()))
                 .collect::<serde_json::Map<String, Value>>(),
+            "daily": self
+                .daily
+                .iter()
+                .map(|(date, bucket)| (date.clone(), bucket.to_json()))
+                .collect::<serde_json::Map<String, Value>>(),
         });
         let text = serde_json::to_string_pretty(&payload)?;
         write_atomic(&path, &text)?;
         self.dirty.clear();
+        self.dirty_days.clear();
         Ok(())
     }
 
-    fn load(path: &Path) -> Option<HashMap<String, SessionSnapshot>> {
+    /// 读取落盘内容。返回 `None` = 文件不存在 / 不可读 / 损坏。
+    ///
+    /// `daily` 缺失时按空处理而不是丢掉整个账本：`daily` 是后来加的字段，
+    /// 升级时不该把已经攒下的会话历史一起丢掉，下一轮扫描会把它补回来。
+    fn load(path: &Path) -> Option<(HashMap<String, SessionSnapshot>, DailyMap)> {
         let text = std::fs::read_to_string(path).ok()?;
         let value: Value = serde_json::from_str(&text).ok()?;
         if value.get("version").and_then(Value::as_u64)? != u64::from(LEDGER_VERSION) {
             // 版本不符：整体丢弃重建（宁可丢历史，不要脏数据）。
-            return Some(HashMap::new());
+            return Some((HashMap::new(), DailyMap::new()));
         }
         let sessions = value.get("sessions")?.as_object()?;
         let mut out = HashMap::with_capacity(sessions.len());
@@ -318,7 +368,20 @@ impl Ledger {
                 }
             }
         }
-        Some(out)
+        let daily = value
+            .get("daily")
+            .and_then(Value::as_object)
+            .map(|obj| {
+                obj.iter()
+                    .filter(|(_, v)| {
+                        // 全 0 的日期桶不值得占地方。
+                        !DailyBucket::from_json("", v).totals.is_empty()
+                    })
+                    .map(|(date, v)| (date.clone(), DailyBucket::from_json(date, v)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some((out, daily))
     }
 }
 
@@ -405,6 +468,19 @@ mod tests {
             .into_iter()
             .map(|s| (SessionSnapshot::key(s.client, &s.session_id), s))
             .collect()
+    }
+
+    /// 构造按天分桶：`(日期, input, output)`。
+    fn daily_of(days: &[(&str, i64, i64)]) -> DailyMap {
+        let mut out = DailyMap::new();
+        for (date, input, output) in days {
+            let mut bucket = DailyBucket::new(*date);
+            bucket.totals.input = *input;
+            bucket.totals.output = *output;
+            bucket.totals.messages = 1;
+            out.insert((*date).to_string(), bucket);
+        }
+        out
     }
 
     /// 键格式：`client_label:session_id`。
@@ -534,6 +610,77 @@ mod tests {
             assert!(gone.archived);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// 按天分桶能跨重开保留（热力图数据不能因为重启就没了）。
+    #[test]
+    fn daily_buckets_persist_across_reopen() {
+        let path = temp_path("daily-persist");
+        {
+            let mut ledger = Ledger::open(&path);
+            ledger.merge_daily(daily_of(&[
+                ("2026-01-01", 100, 10),
+                ("2026-01-02", 200, 20),
+            ]));
+            ledger.save().expect("落盘应成功");
+        }
+        {
+            let ledger = Ledger::open(&path);
+            assert_eq!(ledger.daily().len(), 2);
+            let day = &ledger.daily()["2026-01-02"];
+            assert_eq!(day.totals.input, 200);
+            assert_eq!(day.totals.output, 20);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 旧账本（没有 `daily` 键）不该丢掉会话历史。
+    ///
+    /// 已删会话的用量无法重扫回来，那是账本存在的意义；新增可选的 `daily`
+    /// 字段只能追加，不能靠升版本号把老数据洗掉。
+    #[test]
+    fn legacy_ledger_without_daily_keeps_sessions() {
+        let path = temp_path("legacy-no-daily");
+        let legacy = json!({
+            "version": 1,
+            "sessions": {
+                "pi:old": {
+                    "client": "pi",
+                    "session_id": "old",
+                    "model_id": "glm-5",
+                    "input": 42,
+                    "output": 7,
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&legacy).unwrap()).unwrap();
+
+        let ledger = Ledger::open(&path);
+        assert_eq!(ledger.len(), 1, "老账本的会话必须留着");
+        assert!(ledger.daily().is_empty(), "缺 daily 键按空处理");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 同一天重扫取较大值：源里偶发的回退不让历史缩水。
+    #[test]
+    fn daily_merge_never_shrinks() {
+        let mut ledger = Ledger::in_memory();
+        ledger.merge_daily(daily_of(&[("2026-01-01", 1000, 100)]));
+        ledger.merge_daily(daily_of(&[("2026-01-01", 10, 1)]));
+        assert_eq!(ledger.daily()["2026-01-01"].totals.input, 1000);
+    }
+
+    /// 已有 daily 且无新变化时，`save` 不产生 IO（差异写）。
+    #[test]
+    fn daily_unchanged_scan_does_not_dirty() {
+        let mut ledger = Ledger::in_memory();
+        ledger.merge_daily(daily_of(&[("2026-01-01", 100, 10)]));
+        ledger.save().expect("内存账本落盘应成功");
+        assert!(!ledger.is_dirty(), "落盘后应变干净");
+
+        // 同一天同样的数据再来一遍：不算变化。
+        ledger.merge_daily(daily_of(&[("2026-01-01", 100, 10)]));
+        assert!(!ledger.is_dirty(), "无变化不应标脏");
     }
 
     /// 账本文件损坏 → 静默重建，不 panic。
