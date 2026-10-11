@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 /// 一组 token 计数（不含会话数：按天分解时一个会话会落进多天，不能相加）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DayTotals {
     pub input: i64,
     pub output: i64,
@@ -22,6 +22,8 @@ pub struct DayTotals {
     pub reasoning: i64,
     /// 该桶里出现的消息条数（同一天同一会话的多条消息各计一次）。
     pub messages: i64,
+    /// 折算费用（美元）：上游实报或按本机定价缓存现算。旧账本条目没有，为 0。
+    pub cost: f64,
 }
 
 impl DayTotals {
@@ -50,6 +52,7 @@ impl DayTotals {
         self.messages = self
             .messages
             .saturating_add(i64::from(message.message_count.max(1)));
+        self.cost += message.cost;
     }
 
     /// 逐字段取较大值。账本合并用：token 只增不减，源里偶发的重扫回退不该让
@@ -61,6 +64,21 @@ impl DayTotals {
         self.cache_write = self.cache_write.max(other.cache_write);
         self.reasoning = self.reasoning.max(other.reasoning);
         self.messages = self.messages.max(other.messages);
+        self.cost = self.cost.max(other.cost);
+    }
+
+    /// 逐字段饱和扣减（删除会话时把它在账本里的贡献减掉）。
+    ///
+    /// 按天分桶是逐字段取较大值攒出来的，合计与分解可能来自不同轮扫描，
+    /// 扣减时对不上数：饱和到 0，不让负数污染统计。
+    pub fn saturating_sub_assign(&mut self, other: &Self) {
+        self.input = self.input.saturating_sub(other.input);
+        self.output = self.output.saturating_sub(other.output);
+        self.cache_read = self.cache_read.saturating_sub(other.cache_read);
+        self.cache_write = self.cache_write.saturating_sub(other.cache_write);
+        self.reasoning = self.reasoning.saturating_sub(other.reasoning);
+        self.messages = self.messages.saturating_sub(other.messages);
+        self.cost = (self.cost - other.cost).max(0.0);
     }
 
     /// 累加（跨天求和用）。
@@ -71,6 +89,7 @@ impl DayTotals {
         self.cache_write = self.cache_write.saturating_add(other.cache_write);
         self.reasoning = self.reasoning.saturating_add(other.reasoning);
         self.messages = self.messages.saturating_add(other.messages);
+        self.cost += other.cost;
     }
 
     fn to_json(self) -> Value {
@@ -81,6 +100,7 @@ impl DayTotals {
             "cache_write": self.cache_write,
             "reasoning": self.reasoning,
             "messages": self.messages,
+            "cost": self.cost,
         })
     }
 
@@ -93,12 +113,13 @@ impl DayTotals {
             cache_write: get("cache_write"),
             reasoning: get("reasoning"),
             messages: get("messages"),
+            cost: value.get("cost").and_then(Value::as_f64).unwrap_or(0.0),
         }
     }
 }
 
 /// 一天的用量：合计 + 按 agent / 模型 / 会话的分解。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DailyBucket {
     /// 本地日历日，`YYYY-MM-DD`（由 tokscale 的 `ParsedMessage.date` 给出；
     /// 上游用 `chrono::Local` 算，所以已经是本地日，不需再换算时区）。
@@ -178,6 +199,28 @@ impl DailyBucket {
         for (client, models) in &other.by_client_model {
             let target = self.by_client_model.entry(client.clone()).or_default();
             merge_breakdown(target, models);
+        }
+    }
+
+    /// 把一个会话在当天的贡献从合计与各分解里扣掉（删除会话用）。
+    ///
+    /// 模型归属按该会话最后一次用的模型近似：中途换模型的会话极少，而按天
+    /// 分桶里没有「会话 × 模型」这一层，拆不了更细。没有该会话的贡献时不动。
+    pub fn remove_session(&mut self, key: &str, client_label: &str, model_id: &str) {
+        let Some(totals) = self.by_session.remove(key) else {
+            return;
+        };
+        self.totals.saturating_sub_assign(&totals);
+        if let Some(entry) = self.by_client.get_mut(client_label) {
+            entry.saturating_sub_assign(&totals);
+        }
+        if let Some(entry) = self.by_model.get_mut(model_id) {
+            entry.saturating_sub_assign(&totals);
+        }
+        if let Some(by_model) = self.by_client_model.get_mut(client_label) {
+            if let Some(entry) = by_model.get_mut(model_id) {
+                entry.saturating_sub_assign(&totals);
+            }
         }
     }
 
@@ -275,6 +318,22 @@ mod tests {
             cost_source: Default::default(),
             service_tier: None,
         }
+    }
+
+    /// 成本随 add_message 累加、JSON 往返保留；旧条目（无 cost 键）按 0 读回。
+    #[test]
+    fn cost_accumulates_and_survives_json() {
+        let mut m = message(1, 2, "2026-01-01", "m");
+        m.cost = 1.25;
+        let mut t = DayTotals::default();
+        t.add_message(&m);
+        assert!((t.cost - 1.25).abs() < 1e-9);
+
+        let back = DayTotals::from_json(&t.to_json());
+        assert_eq!(back, t);
+
+        let legacy = DayTotals::from_json(&json!({ "input": 5 }));
+        assert_eq!(legacy.cost, 0.0);
     }
 
     /// 合计口径：五个桶相加，不重复计子集。

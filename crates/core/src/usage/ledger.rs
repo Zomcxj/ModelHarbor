@@ -14,19 +14,22 @@
 use crate::format::ConfigFormat;
 use crate::usage::daily::{DailyBucket, DailyMap};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// 一个会话在某一时刻的用量快照。
 ///
 /// 字段口径与 tokscale 一致：`input` 是**新鲜输入**（已排除缓存读），
 /// `cache_write_1h` 是 `cache_write` 的子集、**不参与合计**。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SessionSnapshot {
     pub client: ConfigFormat,
     pub session_id: String,
     /// 最后一次见到的模型名（同一会话可能中途换模型，取最近一条）。
     pub model_id: String,
+    /// 所属项目（工作区）：tokscale 解析出的 `workspace_label`，缺了退回
+    /// `workspace_key`。旧账本条目没有这个字段，为 `None`。
+    pub project: Option<String>,
     pub input: i64,
     pub output: i64,
     pub cache_read: i64,
@@ -34,6 +37,8 @@ pub struct SessionSnapshot {
     pub reasoning: i64,
     /// 会话内消息条数。
     pub message_count: i64,
+    /// 折算费用（美元）：上游实报或按本机定价缓存现算。旧账本条目没有，为 0。
+    pub cost: f64,
     /// 首次见到该会话的时间（Unix 毫秒）。
     pub first_seen_ms: i64,
     /// 最后一次见到该会话的时间（Unix 毫秒）。
@@ -54,12 +59,14 @@ impl SessionSnapshot {
             client,
             session_id: session_id.to_string(),
             model_id: model_id.to_string(),
+            project: None,
             input: 0,
             output: 0,
             cache_read: 0,
             cache_write: 0,
             reasoning: 0,
             message_count: 0,
+            cost: 0.0,
             first_seen_ms: i64::MAX,
             last_seen_ms: i64::MIN,
             archived: false,
@@ -78,6 +85,7 @@ impl SessionSnapshot {
         self.message_count = self
             .message_count
             .saturating_add(i64::from(message.message_count.max(1)));
+        self.cost += message.cost;
         if message.timestamp < self.first_seen_ms {
             self.first_seen_ms = message.timestamp;
         }
@@ -86,6 +94,13 @@ impl SessionSnapshot {
             if !message.model_id.is_empty() {
                 self.model_id = message.model_id.clone();
             }
+        }
+        // 项目跟着消息走：会话不会挪工作区，扫到就补上（旧账本条目没有）。
+        if message.workspace_label.is_some() || message.workspace_key.is_some() {
+            self.project = message
+                .workspace_label
+                .clone()
+                .or_else(|| message.workspace_key.clone());
         }
     }
 
@@ -110,12 +125,14 @@ impl SessionSnapshot {
             "client": self.client.label(),
             "session_id": self.session_id,
             "model_id": self.model_id,
+            "project": self.project,
             "input": self.input,
             "output": self.output,
             "cache_read": self.cache_read,
             "cache_write": self.cache_write,
             "reasoning": self.reasoning,
             "message_count": self.message_count,
+            "cost": self.cost,
             "first_seen_ms": self.first_seen_ms,
             "last_seen_ms": self.last_seen_ms,
         })
@@ -137,6 +154,10 @@ impl SessionSnapshot {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            project: value
+                .get("project")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             input: value.get("input").and_then(Value::as_i64).unwrap_or(0),
             output: value.get("output").and_then(Value::as_i64).unwrap_or(0),
             cache_read: value.get("cache_read").and_then(Value::as_i64).unwrap_or(0),
@@ -149,6 +170,7 @@ impl SessionSnapshot {
                 .get("message_count")
                 .and_then(Value::as_i64)
                 .unwrap_or(0),
+            cost: value.get("cost").and_then(Value::as_f64).unwrap_or(0.0),
             first_seen_ms: value
                 .get("first_seen_ms")
                 .and_then(Value::as_i64)
@@ -187,6 +209,8 @@ pub struct Ledger {
     entries: HashMap<String, SessionSnapshot>,
     /// 按本地日历日分桶（含已删会话留下的记录）。
     daily: DailyMap,
+    /// 被用户删除并**永久忽略**的会话键：之后的扫描不再把它们并回来。
+    ignored: BTreeSet<String>,
     /// 上次落盘后发生变化的会话键。
     dirty: Vec<String>,
     /// 上次落盘后发生变化的日期键。
@@ -213,10 +237,11 @@ impl Ledger {
     /// 打开账本：读取落盘文件，损坏 / 版本不符时按空账本重建。
     pub fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let (entries, daily) = Self::load(&path).unwrap_or_default();
+        let (entries, daily, ignored) = Self::load(&path).unwrap_or_default();
         Self {
             entries,
             daily,
+            ignored,
             dirty: Vec::new(),
             dirty_days: Vec::new(),
             path: Some(path),
@@ -242,6 +267,37 @@ impl Ledger {
         !self.dirty.is_empty() || !self.dirty_days.is_empty()
     }
 
+    /// 被删除并永久忽略的会话键（扫描线程据此跳过这些会话）。
+    pub fn ignored(&self) -> &BTreeSet<String> {
+        &self.ignored
+    }
+
+    /// 删除一个会话：从账本移除并**永久忽略** —— 之后的扫描不再把它并回来。
+    ///
+    /// 与「从磁盘消失 → 归档」不同：归档的会话下次扫到会复活，删掉的是
+    /// 用户明确不要的，必须拦在合并之前。它在各天分桶里的贡献同步扣掉，
+    /// 否则热力图 / 时间表会继续算它的量。
+    ///
+    /// 返回是否有改动（重复删同一个键时为 `false`）。
+    pub fn ignore_session(&mut self, key: &str) -> bool {
+        if !self.ignored.insert(key.to_string()) {
+            return false;
+        }
+        let snapshot = self.entries.remove(key);
+        self.dirty.push(key.to_string());
+        let Some(snapshot) = snapshot else {
+            return true;
+        };
+        for (date, bucket) in self.daily.iter_mut() {
+            let before = bucket.clone();
+            bucket.remove_session(key, snapshot.client.label(), &snapshot.model_id);
+            if *bucket != before {
+                self.dirty_days.push(date.clone());
+            }
+        }
+        true
+    }
+
     /// 并入一次扫描结果。
     ///
     /// - 新会话 → 新增；
@@ -253,6 +309,10 @@ impl Ledger {
             entry.archived = true;
         }
         for (key, fresh) in scanned {
+            if self.ignored.contains(&key) {
+                // 用户删掉的会话：扫到也不并回。
+                continue;
+            }
             match self.entries.get_mut(&key) {
                 Some(existing) => {
                     if existing.absorb_update(&fresh) {
@@ -340,6 +400,7 @@ impl Ledger {
                 .iter()
                 .map(|(date, bucket)| (date.clone(), bucket.to_json()))
                 .collect::<serde_json::Map<String, Value>>(),
+            "ignored": self.ignored.iter().cloned().collect::<Vec<_>>(),
         });
         let text = serde_json::to_string_pretty(&payload)?;
         write_atomic(&path, &text)?;
@@ -352,12 +413,12 @@ impl Ledger {
     ///
     /// `daily` 缺失时按空处理而不是丢掉整个账本：`daily` 是后来加的字段，
     /// 升级时不该把已经攒下的会话历史一起丢掉，下一轮扫描会把它补回来。
-    fn load(path: &Path) -> Option<(HashMap<String, SessionSnapshot>, DailyMap)> {
+    fn load(path: &Path) -> Option<(HashMap<String, SessionSnapshot>, DailyMap, BTreeSet<String>)> {
         let text = std::fs::read_to_string(path).ok()?;
         let value: Value = serde_json::from_str(&text).ok()?;
         if value.get("version").and_then(Value::as_u64)? != u64::from(LEDGER_VERSION) {
             // 版本不符：整体丢弃重建（宁可丢历史，不要脏数据）。
-            return Some((HashMap::new(), DailyMap::new()));
+            return Some((HashMap::new(), DailyMap::new(), BTreeSet::new()));
         }
         let sessions = value.get("sessions")?.as_object()?;
         let mut out = HashMap::with_capacity(sessions.len());
@@ -381,7 +442,18 @@ impl Ledger {
                     .collect()
             })
             .unwrap_or_default();
-        Some((out, daily))
+        let ignored = value
+            .get("ignored")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some((out, daily, ignored))
     }
 }
 
@@ -397,10 +469,15 @@ impl SessionSnapshot {
         self.cache_write = self.cache_write.max(fresh.cache_write);
         self.reasoning = self.reasoning.max(fresh.reasoning);
         self.message_count = self.message_count.max(fresh.message_count);
+        self.cost = self.cost.max(fresh.cost);
         self.first_seen_ms = self.first_seen_ms.min(fresh.first_seen_ms);
         self.last_seen_ms = self.last_seen_ms.max(fresh.last_seen_ms);
         if fresh.last_seen_ms >= before.last_seen_ms && !fresh.model_id.is_empty() {
             self.model_id = fresh.model_id.clone();
+        }
+        // 项目取新快照的：它来自扫描，永远是最新解析结果。
+        if fresh.project.is_some() {
+            self.project = fresh.project.clone();
         }
         *self != before
     }
@@ -432,6 +509,7 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokscale_core::ParsedMessage;
 
     /// 临时账本路径：进程 id + 原子计数器，避免并行测试撞目录。
     fn temp_path(name: &str) -> PathBuf {
@@ -451,12 +529,14 @@ mod tests {
             client: ConfigFormat::Pi,
             session_id: session.to_string(),
             model_id: "test-model".to_string(),
+            project: None,
             input,
             output,
             cache_read: 0,
             cache_write: 0,
             reasoning: 0,
             message_count: 1,
+            cost: 0.0,
             first_seen_ms: 1_000,
             last_seen_ms: 2_000,
             archived: false,
@@ -800,5 +880,176 @@ mod tests {
         assert!(text.contains("\"session_id\": \"s1\""), "内容: {text}");
         assert!(text.contains("\"input\": 42"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// 删除会话：从账本移除、进忽略名单，下一轮扫描不再并回。
+    #[test]
+    fn ignore_session_removes_and_blocks_resurrection() {
+        let mut ledger = Ledger::in_memory();
+        ledger.merge_scan(scan_of(vec![
+            snapshot("keep", 100, 10),
+            snapshot("gone", 500, 50),
+        ]));
+        let key = SessionSnapshot::key(ConfigFormat::Pi, "gone");
+        assert!(ledger.ignore_session(&key));
+        assert_eq!(ledger.len(), 1, "删掉的会话应从账本移除");
+        assert!(ledger.ignored().contains(&key));
+        assert!(!ledger.ignore_session(&key), "重复删同一键返回 false");
+
+        // 下一轮扫描仍扫到它：不许复活。
+        ledger.merge_scan(scan_of(vec![
+            snapshot("keep", 100, 10),
+            snapshot("gone", 500, 50),
+        ]));
+        assert_eq!(ledger.len(), 1, "被忽略的会话不许复活");
+        assert!(!ledger.view().iter().any(|s| s.session_id == "gone"));
+    }
+
+    /// 删除会话同步扣掉它在各天分桶里的贡献（热力图 / 时间表不再算它）。
+    #[test]
+    fn ignore_session_subtracts_daily_contribution() {
+        let mut ledger = Ledger::in_memory();
+        ledger.merge_scan(scan_of(vec![snapshot("gone", 500, 50)]));
+        let key = SessionSnapshot::key(ConfigFormat::Pi, "gone");
+        let mut bucket = DailyBucket::new("2026-01-01");
+        bucket.totals.input = 500;
+        bucket.totals.output = 50;
+        bucket.totals.messages = 1;
+        bucket.by_session.insert(key.clone(), bucket.totals);
+        bucket
+            .by_model
+            .insert("test-model".to_string(), bucket.totals);
+        bucket.by_client.insert("pi".to_string(), bucket.totals);
+        bucket
+            .by_client_model
+            .entry("pi".to_string())
+            .or_default()
+            .insert("test-model".to_string(), bucket.totals);
+        let mut daily = DailyMap::new();
+        daily.insert("2026-01-01".to_string(), bucket);
+        ledger.merge_daily(daily);
+
+        ledger.ignore_session(&key);
+        let day = ledger.daily().get("2026-01-01").unwrap();
+        assert_eq!(day.totals.input, 0, "合计要扣掉");
+        assert!(day.by_session.is_empty());
+        assert!(day.by_model["test-model"].input == 0);
+        assert!(day.by_client["pi"].input == 0);
+        assert!(day.by_client_model["pi"]["test-model"].input == 0);
+    }
+
+    /// 忽略名单落盘：重启后依然生效。
+    #[test]
+    fn ignored_list_survives_a_roundtrip() {
+        let path = temp_path("ignored");
+        let mut ledger = Ledger::open(&path);
+        ledger.merge_scan(scan_of(vec![snapshot("gone", 1, 1)]));
+        ledger.ignore_session(&SessionSnapshot::key(ConfigFormat::Pi, "gone"));
+        ledger.save().unwrap();
+        drop(ledger);
+
+        let mut reopened = Ledger::open(&path);
+        assert_eq!(reopened.len(), 0);
+        assert!(reopened
+            .ignored()
+            .contains(&SessionSnapshot::key(ConfigFormat::Pi, "gone")));
+        reopened.merge_scan(scan_of(vec![snapshot("gone", 1, 1)]));
+        assert_eq!(reopened.len(), 0, "重启后仍不复活");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 项目字段：absorb 从消息的工作区补齐，落盘往返不丢。
+    #[test]
+    fn project_flows_from_message_through_json() {
+        let message_with = |label: Option<&str>, key: Option<&str>| ParsedMessage {
+            client: "pi".to_string(),
+            model_id: "m".to_string(),
+            provider_id: String::new(),
+            session_id: "s1".to_string(),
+            workspace_key: key.map(str::to_string),
+            workspace_label: label.map(str::to_string),
+            timestamp: 0,
+            date: String::new(),
+            input: 1,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            cache_write_1h: 0,
+            reasoning: 0,
+            duration_ms: None,
+            message_count: 1,
+            agent: None,
+            cost: 0.0,
+            cost_source: Default::default(),
+            service_tier: None,
+        };
+        let mut snap = snapshot("s1", 1, 0);
+        snap.absorb(&message_with(Some("ModelHarbor"), Some("/f/ModelHarbor")));
+        assert_eq!(snap.project.as_deref(), Some("ModelHarbor"), "label 优先");
+
+        snap.absorb(&message_with(None, Some("/f/Other")));
+        assert_eq!(
+            snap.project.as_deref(),
+            Some("/f/Other"),
+            "缺 label 退回 key"
+        );
+
+        snap.absorb(&message_with(None, None));
+        assert_eq!(
+            snap.project.as_deref(),
+            Some("/f/Other"),
+            "空消息不清掉已知的"
+        );
+
+        let json = snap.to_json();
+        let back = SessionSnapshot::from_json(&SessionSnapshot::key(ConfigFormat::Pi, "s1"), &json)
+            .expect("往返应可读");
+        assert_eq!(back.project, snap.project);
+    }
+
+    /// 成本：absorb 累加、JSON 往返保留；旧条目（无 cost 键）按 0 读回。
+    #[test]
+    fn cost_flows_through_absorb_and_json() {
+        let mut snap = snapshot("costly", 1, 1);
+        let priced = ParsedMessage {
+            client: "pi".to_string(),
+            model_id: "m".to_string(),
+            provider_id: String::new(),
+            session_id: "costly".to_string(),
+            workspace_key: None,
+            workspace_label: None,
+            timestamp: 0,
+            date: String::new(),
+            input: 1,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            cache_write_1h: 0,
+            reasoning: 0,
+            duration_ms: None,
+            message_count: 1,
+            agent: None,
+            cost: 0.75,
+            cost_source: Default::default(),
+            service_tier: None,
+        };
+        snap.absorb(&priced);
+        snap.absorb(&priced);
+        assert!((snap.cost - 1.5).abs() < 1e-9, "两条各 0.75 应累加");
+
+        let back = SessionSnapshot::from_json(
+            &SessionSnapshot::key(ConfigFormat::Pi, "costly"),
+            &snap.to_json(),
+        )
+        .expect("往返应可读");
+        assert!((back.cost - 1.5).abs() < 1e-9);
+
+        // 旧账本条目没有 cost 键：按 0 读回，不报损坏。
+        let mut legacy = snap.to_json();
+        legacy.as_object_mut().unwrap().remove("cost");
+        let old =
+            SessionSnapshot::from_json(&SessionSnapshot::key(ConfigFormat::Pi, "costly"), &legacy)
+                .expect("旧条目应可读");
+        assert_eq!(old.cost, 0.0);
     }
 }

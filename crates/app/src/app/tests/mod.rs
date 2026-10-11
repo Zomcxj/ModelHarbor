@@ -57,6 +57,12 @@ mod syntax_highlight_tests;
 /// 之间选。这里用离屏渲染把实际颜色钉住。
 #[cfg(test)]
 mod tab_highlight_tests;
+/// 用量视图的图表与统计块布局：图例不能压住柱子、统计块不能折行错位。
+#[cfg(test)]
+mod usage_chart_layout_tests;
+/// 用量视图的两列布局与顶栏按钮位置。
+#[cfg(test)]
+mod usage_layout_tests;
 /// 用量表格的排版（数字右对齐、表头对齐）与 agent 筛选真的接到渲染路径上。
 #[cfg(test)]
 mod usage_table_layout_tests;

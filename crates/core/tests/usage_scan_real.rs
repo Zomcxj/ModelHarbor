@@ -5,7 +5,8 @@
 #[test]
 #[ignore = "依赖本机真实数据，手动跑：cargo test -p model_harbor_core --test usage_scan_real -- --ignored --nocapture"]
 fn scans_real_local_sessions() {
-    let result = model_harbor_core::usage::scan().expect("扫描应成功");
+    let result =
+        model_harbor_core::usage::scan(&std::collections::BTreeSet::new()).expect("扫描应成功");
     println!("消息数: {}", result.message_count);
     println!("会话数: {}", result.sessions.len());
     println!("内核耗时: {}ms", result.processing_time_ms);
@@ -38,7 +39,8 @@ fn scans_real_local_sessions() {
 #[test]
 #[ignore = "依赖本机真实数据，手动跑：cargo test -p model_harbor_core --test usage_scan_real -- --ignored --nocapture"]
 fn buckets_real_sessions_by_day() {
-    let result = model_harbor_core::usage::scan().expect("扫描应成功");
+    let result =
+        model_harbor_core::usage::scan(&std::collections::BTreeSet::new()).expect("扫描应成功");
     let daily = &result.daily;
     println!("按天桶数: {}", daily.len());
     assert!(daily.len() > 1, "本机应有多天数据，否则热力图没意义");

@@ -43,6 +43,38 @@ pub(in crate::app) fn format_tokens(n: i64) -> String {
     format!("{:.2}B", round_to(n as f64 / 1e9, 2))
 }
 
+/// 完整数字（千分位逗号）：`561,023,456`。
+///
+/// 总览卡用：紧凑写法（K/M）牺牲精度，用户要求第一组件展示全部数字。
+pub(in crate::app) fn format_full(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    if n < 0 {
+        out.push('-');
+    }
+    for (index, byte) in digits.bytes().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(byte as char);
+    }
+    out
+}
+
+/// 图表与悬停提示用的**统一 M 单位**（百万 token）。
+///
+/// 轴刻度混着 `500.0K / 1.2M / 2.0B` 没法直接比大小（用户反馈）；统一换成 M
+/// 之后刻度是线性的，柱子高度与数字直接对应。10M 以下保留一位小数，以上
+/// 取整 —— 「2030.0M」这种刻度没法读。
+pub(in crate::app) fn format_m(n: i64) -> String {
+    let millions = n.max(0) as f64 / 1_000_000.0;
+    if millions >= 10.0 {
+        format!("{millions:.0}M")
+    } else {
+        format!("{millions:.1}M")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 相对时间
 // ---------------------------------------------------------------------------
@@ -144,7 +176,10 @@ pub(in crate::app) fn weekday_mon0(day_index: i64) -> u8 {
 // 四维切换
 // ---------------------------------------------------------------------------
 
-/// 用量统计的四个维度。
+/// 用量统计的三个维度。
+///
+/// 时间维度不在这里：按天看的热力图（`range::heatmap_grid`）已经把它
+/// 画掉了，再列一张表是重复（用户反馈：删除时间模块）。
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(in crate::app) enum Dimension {
     /// 按 agent（后端）分组。
@@ -154,25 +189,21 @@ pub(in crate::app) enum Dimension {
     Model,
     /// 一条会话一行。
     Session,
-    /// 按本地日期分组。
-    Day,
 }
 
 impl Dimension {
     /// 全部维度，按界面上的展示顺序。
-    pub(in crate::app) const ALL: [Dimension; 4] = [
-        Dimension::Agent,
-        Dimension::Model,
-        Dimension::Session,
-        Dimension::Day,
-    ];
+    ///
+    /// 只用于测试：生产代码里三张表同屏画出，不再枚举维度做切换。
+    #[cfg(test)]
+    pub(in crate::app) const ALL: [Dimension; 3] =
+        [Dimension::Agent, Dimension::Model, Dimension::Session];
 
     pub(in crate::app) fn label(self) -> &'static str {
         match self {
             Self::Agent => "Agent",
             Self::Model => "模型",
             Self::Session => "会话",
-            Self::Day => "时间",
         }
     }
 }
@@ -234,15 +265,6 @@ pub(in crate::app) struct ModelUsage {
     pub last_seen_ms: i64,
     /// 用到这个模型的 agent（去重、按名字排序）。
     pub agents: Vec<String>,
-}
-
-/// 时间维度的一行（按本地日期分组）。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::app) struct DayUsage {
-    /// 本地日索引（[`local_day_index`]）。
-    pub day: i64,
-    pub totals: Totals,
-    pub last_seen_ms: i64,
 }
 
 /// 按 token 合计倒序；合计相同按名字正序，保证界面不跳动。
@@ -396,6 +418,7 @@ pub(in crate::app) fn session_rows_in_range(
             snapshot.cache_write = totals.cache_write;
             snapshot.reasoning = totals.reasoning;
             snapshot.message_count = totals.messages;
+            snapshot.cost = totals.cost;
             Some(snapshot)
         })
         .collect();
@@ -406,24 +429,6 @@ pub(in crate::app) fn session_rows_in_range(
             .then_with(|| a.session_id.cmp(&b.session_id))
     });
     out
-}
-
-/// 时间维度（区间内）：一天一行。
-pub(in crate::app) fn by_day_in_range(
-    daily: &DailyMap,
-    range: super::range::Range,
-    today: i64,
-) -> Vec<DayUsage> {
-    // 日期倒序：最近的在前（时间轴读起来才顺，不按 token 多少排）。
-    super::range::buckets_in_range(daily, range, today)
-        .into_iter()
-        .rev()
-        .map(|(day, bucket)| DayUsage {
-            day,
-            totals: totals_from_day(&bucket.totals),
-            last_seen_ms: 0,
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -437,16 +442,28 @@ mod tests {
             client: ConfigFormat::Pi,
             session_id: session.to_string(),
             model_id: model.to_string(),
+            project: None,
+
             input,
             output,
             cache_read: 0,
             cache_write: 0,
             reasoning: 0,
             message_count: 1,
+            cost: 0.0,
             first_seen_ms: 0,
             last_seen_ms: 1_700_000_000_000,
             archived: false,
         }
+    }
+
+    // ---- format_full ----
+    #[test]
+    fn full_numbers_get_thousands_separators() {
+        assert_eq!(format_full(0), "0");
+        assert_eq!(format_full(561), "561");
+        assert_eq!(format_full(123_456_789), "123,456,789");
+        assert_eq!(format_full(-98_765), "-98,765");
     }
 
     // ---- format_tokens ----
@@ -658,26 +675,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn by_day_groups_on_the_calendar_day() {
-        let rows = by_day_in_range(&daily_sample(), Range::All, sample_today());
-        assert_eq!(rows.len(), 2, "两天各一行");
-        // 最近的一天排前面。
-        assert!(rows[0].day > rows[1].day);
-        assert_eq!(rows[0].totals.total(), 4_150);
-        assert_eq!(rows[1].totals.total(), 10);
-    }
-
-    /// 区间筛选真的把范围外的天排除了。
-    #[test]
-    fn by_day_respects_the_range() {
-        let today = sample_today();
-        let today_only = by_day_in_range(&daily_sample(), Range::Today, today);
-        assert_eq!(today_only.len(), 1);
-        assert_eq!(today_only[0].day, today);
-        assert_eq!(today_only[0].totals.total(), 4_150, "昨天那 10 不算进来");
-    }
-
     /// 会话维度：只列区间内有活动的会话，用量取区间内的部分。
     #[test]
     fn session_rows_in_range_scopes_usage_to_the_range() {
@@ -769,15 +766,14 @@ mod tests {
     fn empty_input_produces_no_rows() {
         assert!(by_agent_in_range(&DailyMap::new(), Range::All, 0).is_empty());
         assert!(by_model_in_range(&DailyMap::new(), Range::All, 0).is_empty());
-        assert!(by_day_in_range(&DailyMap::new(), Range::All, 0).is_empty());
         assert!(session_rows_in_range(&[], &DailyMap::new(), Range::All, 0).is_empty());
     }
 
     #[test]
     fn every_dimension_is_listed_once() {
-        assert_eq!(Dimension::ALL.len(), 4);
+        assert_eq!(Dimension::ALL.len(), 3);
         let labels: Vec<&str> = Dimension::ALL.iter().map(|d| d.label()).collect();
-        assert_eq!(labels, vec!["Agent", "模型", "会话", "时间"]);
+        assert_eq!(labels, vec!["Agent", "模型", "会话"]);
         assert_eq!(Dimension::default(), Dimension::Agent);
     }
 }

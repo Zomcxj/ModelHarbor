@@ -1,0 +1,6 @@
+{
+  "rules": {
+    "rust-unwrap": { "disable": ["**"] },
+    "rust-expect": { "disable": ["**"] }
+  }
+}

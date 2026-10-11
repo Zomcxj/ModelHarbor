@@ -21,6 +21,8 @@
 
 pub(in crate::app) mod aggregate;
 mod chart;
+pub(in crate::app) use chart::ChartKind;
+mod component;
 mod overview;
 pub(in crate::app) mod range;
 mod scan_sources;
@@ -177,7 +179,7 @@ impl Default for UsageState {
 }
 
 impl UsageState {
-    /// 是否有扫描在途（界面据此显示「扫描中」）。
+    /// 是否有扫描在途（首次打开还没有结果时，界面据此显示「扫描中」）。
     pub(in crate::app) fn scanning(&self) -> bool {
         self.rx.is_some()
     }
@@ -357,9 +359,12 @@ impl App {
     /// 发起一次后台扫描。UI 线程只负责 spawn 与收结果。
     fn start_usage_scan(&mut self, now: f64, ctx: &egui::Context) {
         let (tx, rx) = std::sync::mpsc::channel();
+        // 已删除并永久忽略的会话：名单拷给后台线程，扫描时直接跳过，
+        // 否则删掉的会话会在下一轮扫描里复活。
+        let ignored = self.usage.ledger.ignored().clone();
         std::thread::spawn(move || {
             // 全量扫描（release 2.4-2.7s）：只能在后台线程跑。
-            let payload = crate::usage::scan().map(|scanned| {
+            let payload = crate::usage::scan(&ignored).map(|scanned| {
                 (
                     scanned.sessions,
                     scanned.daily,
@@ -372,7 +377,8 @@ impl App {
         self.usage.rx = Some(rx);
         self.usage.dirty_since = None;
         self.usage.last_poll_at = Some(now);
-        // 结果还没回来：先把「扫描中」画出来，并按轮询间隔继续要帧。
+        // 扫描在途：按轮询间隔继续要帧，结果回来后界面自动换上新数据
+        //（指示器已删，用户反馈）。
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(SCAN_POLL_REPAINT_SECS));
     }
 
@@ -419,8 +425,32 @@ impl App {
         if !due {
             return;
         }
+        self.save_usage_ledger_unthrottled(now);
+    }
+
+    /// 立即落盘（不节流）：删除会话是显式动作，不该等攒批间隔。
+    fn save_usage_ledger_unthrottled(&mut self, now: f64) {
+        if !self.usage.ledger.is_dirty() {
+            return;
+        }
         let _ = self.usage.ledger.save();
         self.usage.last_save_at = Some(now);
+    }
+
+    /// 删除一个会话：从账本移除并**永久忽略**，立即刷新展示数据并落盘。
+    ///
+    /// 磁盘上的会话文件不动 —— 删的只是 ModelHarbor 自己的统计；之后的
+    /// 扫描也跳过它（名单存在账本里，见 [`Ledger::ignore_session`]）。
+    pub(in crate::app) fn forget_usage_session(&mut self, key: &str, now: f64) {
+        self.usage.ledger.ignore_session(key);
+        if let Some(Ok(report)) = self.usage.result.as_mut() {
+            report
+                .sessions
+                .retain(|session| SessionSnapshot::key(session.client, &session.session_id) != key);
+            report.daily = self.usage.ledger.daily().clone();
+        }
+        self.usage_delete_pending = None;
+        self.save_usage_ledger_unthrottled(now);
     }
 
     /// 当前展示视图（各维度聚合的输入）。
@@ -840,12 +870,15 @@ mod tests {
             client: ConfigFormat::Pi,
             session_id: session.to_string(),
             model_id: "m".to_string(),
+            project: None,
+
             input,
             output: 0,
             cache_read: 0,
             cache_write: 0,
             reasoning: 0,
             message_count: 1,
+            cost: 0.0,
             first_seen_ms: 1_000,
             last_seen_ms: 2_000,
             archived: false,
@@ -905,12 +938,15 @@ mod tests {
             client,
             session_id: "s".into(),
             model_id: "m".into(),
+            project: None,
+
             input,
             output: 0,
             cache_read: 0,
             cache_write: 0,
             reasoning: 0,
             message_count: 1,
+            cost: 0.0,
             first_seen_ms: 0,
             last_seen_ms: 1,
             archived,

@@ -79,6 +79,65 @@ pub(in crate::app) fn totals_label(range: Range) -> &'static str {
     }
 }
 
+/// 趋势图自己的时间区间（与全局 [`Range`] 分开）。
+///
+/// 趋势图回答「最近走势如何」，固定窗口（最近 N 天）比今日 / 本周 / 本月
+/// 这种自然区间更合适；五个档位照 token-monitor 的趋势页。
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub(in crate::app) enum ChartRange {
+    /// 最近 7 天。
+    D7,
+    /// 最近 30 天。
+    #[default]
+    D30,
+    /// 最近 90 天。
+    D90,
+    /// 最近一年。
+    Y1,
+    /// 全部历史。
+    All,
+}
+
+impl ChartRange {
+    /// 全部档位，按界面上的展示顺序。
+    pub(in crate::app) const ALL: [ChartRange; 5] = [
+        ChartRange::D7,
+        ChartRange::D30,
+        ChartRange::D90,
+        ChartRange::Y1,
+        ChartRange::All,
+    ];
+
+    pub(in crate::app) fn label(self) -> &'static str {
+        match self {
+            Self::D7 => "7天",
+            Self::D30 => "30天",
+            Self::D90 => "90天",
+            Self::Y1 => "一年",
+            Self::All => "全部",
+        }
+    }
+
+    /// 区间覆盖的天数；`All` 返回 `None`。
+    pub(in crate::app) fn days(self) -> Option<i64> {
+        match self {
+            Self::D7 => Some(7),
+            Self::D30 => Some(30),
+            Self::D90 => Some(90),
+            Self::Y1 => Some(365),
+            Self::All => None,
+        }
+    }
+
+    /// 区间包含的日索引范围（闭区间）；`All` 返回 `None`（不设下界）。
+    ///
+    /// 上界固定为 `today`，与 [`Range::day_bounds`] 同一口径：账本里可能有
+    /// 未来日期的记录，不该混进「最近 7 天」。
+    pub(in crate::app) fn day_bounds(self, today: i64) -> Option<(i64, i64)> {
+        self.days().map(|days| (today - days + 1, today))
+    }
+}
+
 /// 某一天在 `DailyMap` 里的桶。
 ///
 /// `DailyMap` 用 `YYYY-MM-DD` 字符串做键（tokscale 给的就是这个格式），
@@ -97,8 +156,26 @@ pub(in crate::app) fn buckets_in_range(
     range: Range,
     today: i64,
 ) -> BTreeMap<i64, &DailyBucket> {
+    buckets_in_bounds(daily, range.day_bounds(today), today)
+}
+
+/// 趋势图区间内的桶：与 [`buckets_in_range`] 同一套逻辑，区间来自 [`ChartRange`]。
+pub(in crate::app) fn buckets_in_chart_range(
+    daily: &DailyMap,
+    chart_range: ChartRange,
+    today: i64,
+) -> BTreeMap<i64, &DailyBucket> {
+    buckets_in_bounds(daily, chart_range.day_bounds(today), today)
+}
+
+/// 按日索引边界（闭区间；`None` = 全部历史）取桶。
+fn buckets_in_bounds(
+    daily: &DailyMap,
+    bounds: Option<(i64, i64)>,
+    today: i64,
+) -> BTreeMap<i64, &DailyBucket> {
     let mut out = BTreeMap::new();
-    match range.day_bounds(today) {
+    match bounds {
         Some((start, end)) => {
             // 区间是连续的日子，逐天取桶（区间最多一个月，开销可忽略）。
             for day in start..=end {
@@ -150,7 +227,7 @@ pub(in crate::app) fn totals_in_range(daily: &DailyMap, range: Range, today: i64
 /// 跟参考实现（tokscale 的 Token Usage 面板）一样把「总量」与「日均 / 活跃天数 /
 /// 最高一天」分开：单看总量看不出频率 —— 一天猛跑 10 亿和一个月每天跑一点，
 /// 总量可能一样，但使用习惯完全不同。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(in crate::app) struct RangeStats {
     /// 区间内合计。
     pub totals: DayTotals,
@@ -603,6 +680,30 @@ mod tests {
         assert_eq!(totals_label(Range::Week), "本周用量");
         assert_eq!(totals_label(Range::Month), "本月用量");
         assert_eq!(totals_label(Range::All), "总计用量");
+    }
+
+    // ---- 趋势图自己的区间 ----
+
+    /// 固定窗口含今天在内共 N 天；全部不设下界但排除未来。
+    #[test]
+    fn chart_range_bounds_cover_n_days_ending_today() {
+        let today = today();
+        assert_eq!(ChartRange::D7.day_bounds(today), Some((today - 6, today)));
+        assert_eq!(ChartRange::D30.day_bounds(today), Some((today - 29, today)));
+        assert_eq!(ChartRange::D90.day_bounds(today), Some((today - 89, today)));
+        assert_eq!(ChartRange::Y1.day_bounds(today), Some((today - 364, today)));
+        assert_eq!(ChartRange::All.day_bounds(today), None);
+    }
+
+    /// 趋势图按自己的区间取桶：7 天档不带上月的数据。
+    #[test]
+    fn chart_buckets_respect_the_chart_range() {
+        let today = today();
+        let daily = daily_with(&[("2026-03-15", 100), ("2026-03-10", 50), ("2026-02-20", 999)]);
+        let buckets = buckets_in_chart_range(&daily, ChartRange::D7, today);
+        assert_eq!(buckets.len(), 2, "7 天档只要 03-10 与 03-15");
+        let all = buckets_in_chart_range(&daily, ChartRange::All, today);
+        assert_eq!(all.len(), 3);
     }
 
     // ---- 汇总事实 ----

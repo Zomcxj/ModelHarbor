@@ -276,35 +276,16 @@ impl App {
                         self.switch_to_page(id, ctx);
                     }
                 }
-                // 视图切换条：紧接 agent 页签右侧（用户要求的位置）。
+                // 视图切换条：紧接 agent 页签右侧（用户要求的位置）；
+                // 「提供商管理」在前（两按钮交换过位置）。
                 ui.separator();
                 self.ui_view_switch(ui);
                 // 「全部」：用量视图下的筛选器回到不筛选状态。
                 // 只在用量视图显示 —— 提供商管理没有「全部」这个概念。
+                // 与 agent 页签同组：两者都是「看哪部分数据」的筛选器。
                 if self.main_view == MainView::Usage {
                     ui.separator();
-                    let all_selected = self.usage_filter.is_none();
-                    let text = egui::RichText::new("全部");
-                    let text = if all_selected { text.strong() } else { text };
-                    let visuals = ui.visuals();
-                    let (fill, stroke) = if all_selected {
-                        (
-                            visuals.widgets.hovered.bg_fill,
-                            egui::Stroke::new(2.0f32, visuals.widgets.hovered.bg_stroke.color),
-                        )
-                    } else {
-                        (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
-                    };
-                    if ui
-                        .add(
-                            egui::Button::new(text)
-                                .fill(fill)
-                                .stroke(stroke)
-                                .min_size(egui::vec2(48.0, 22.0)),
-                        )
-                        .on_hover_text("显示全部 agent 的用量")
-                        .clicked()
-                    {
+                    if crate::app::usage::chip(ui, self.usage_filter.is_none(), "全部", 48.0) {
                         self.usage_filter = None;
                     }
                 }

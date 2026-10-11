@@ -50,9 +50,12 @@ pub struct ScanResult {
 
 /// 扫描本机全部已知 agent 的本地会话账本。
 ///
+/// `ignored` 是用户已删除并永久忽略的会话键（`client:session_id`）：扫到也不
+/// 进结果，否则删掉的会话会在下一轮扫描里复活。
+///
 /// **这是全量扫描（实测 2.4-2.7s），调用方必须放在后台线程**；UI 线程按指纹
 /// 变化 + debounce 决定何时重扫，见 `app::usage`。
-pub fn scan() -> Result<ScanResult, String> {
+pub fn scan(ignored: &std::collections::BTreeSet<String>) -> Result<ScanResult, String> {
     let options = tokscale_core::LocalParseOptions {
         home_dir: None,
         use_env_roots: false,
@@ -62,8 +65,39 @@ pub fn scan() -> Result<ScanResult, String> {
         year: None,
         scanner_settings: tokscale_core::scanner::ScannerSettings::default(),
     };
-    let parsed = tokscale_core::parse_local_clients(options)?;
+    let mut parsed = tokscale_core::parse_local_clients(options)?;
     let message_count = parsed.messages.len();
+    // 定价：tokscale 的解析通道不套定价（上游源码注释明说 "This lane applies
+    // no pricing"），只有上游实报的 cost 有值；其余用本机定价缓存现算
+    // （%APPDATA%\tokscale\cache，同步、离线，无网络请求）。缓存不存在时
+    // 保持 0：界面不显示金额，不能拿 $0.00 冒充「没花钱」。
+    if let Some(pricing) = tokscale_core::pricing::PricingService::load_cached_any_age() {
+        for message in &mut parsed.messages {
+            // 上游实报过的不再现算；空模型名没法定价，也跳过。
+            if message.cost != 0.0 || message.model_id.is_empty() {
+                continue;
+            }
+            let breakdown = tokscale_core::TokenBreakdown {
+                input: message.input,
+                output: message.output,
+                cache_read: message.cache_read,
+                cache_write: message.cache_write,
+                cache_write_1h: message.cache_write_1h,
+                reasoning: message.reasoning,
+            };
+            message.cost = tokscale_core::calculate_cost_with_service_tier(
+                &pricing,
+                &message.model_id,
+                if message.provider_id.is_empty() {
+                    None
+                } else {
+                    Some(&message.provider_id)
+                },
+                &breakdown,
+                message.service_tier.as_deref(),
+            );
+        }
+    }
     let mut sessions: HashMap<String, SessionSnapshot> = HashMap::new();
     let mut daily = DailyMap::new();
     for message in &parsed.messages {
@@ -73,6 +107,10 @@ pub fn scan() -> Result<ScanResult, String> {
             continue;
         };
         let key = SessionSnapshot::key(client, &message.session_id);
+        if ignored.contains(&key) {
+            // 用户删掉的会话：不进会话汇总，也不进按天分桶。
+            continue;
+        }
         let entry = sessions.entry(key).or_insert_with(|| {
             SessionSnapshot::new(client, &message.session_id, &message.model_id)
         });

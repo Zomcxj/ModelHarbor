@@ -46,12 +46,15 @@ fn session(client: ConfigFormat, id: &str, input: i64) -> SessionSnapshot {
         client,
         session_id: id.to_string(),
         model_id: "claude-opus-5".to_string(),
+        project: None,
+
         input,
         output: input / 10,
         cache_read: input * 4,
         cache_write: 0,
         reasoning: 0,
         message_count: 3,
+        cost: 0.0,
         first_seen_ms: 1_700_000_000_000,
         last_seen_ms: 1_700_000_000_000,
         archived: false,
@@ -183,8 +186,9 @@ fn number_columns_are_right_aligned() {
     // 按「列」分组：x 中心接近的算同一列，再看右边缘是否齐平。
     let mut rights_by_column: HashMap<i64, Vec<f32>> = HashMap::new();
     for n in &numbers {
-        // 量化到 4px 网格，容忍字体度量的小抖动。
-        let key = (n.rect.center().x / 4.0).round() as i64;
+        // 按**右缘**量化到 4px 网格分组（右对齐列的中心随文本宽度漂移，
+        // 一加列就会跨过量化格把同列拆散；要对齐的本来就是右缘）。
+        let key = (n.rect.right() / 4.0).round() as i64;
         rights_by_column
             .entry(key)
             .or_default()
