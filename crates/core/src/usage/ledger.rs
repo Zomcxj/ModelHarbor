@@ -199,6 +199,14 @@ fn client_format_from_label(label: &str) -> Option<ConfigFormat> {
 /// 无法重扫回来，那是账本存在的意义）。
 const LEDGER_VERSION: u32 = 1;
 
+/// 账本落盘内容的反序列化产物：会话快照、按天分桶、忽略名单、数据时刻。
+type LoadedLedger = (
+    HashMap<String, SessionSnapshot>,
+    DailyMap,
+    BTreeSet<String>,
+    Option<i64>,
+);
+
 /// 用量账本。
 ///
 /// 内存里持有全部会话快照；[`Ledger::merge_scan`] 并入新扫描结果，
@@ -217,6 +225,9 @@ pub struct Ledger {
     dirty_days: Vec<String>,
     /// 账本文件路径；`None` = 纯内存（测试 / 落盘不可用时）。
     path: Option<PathBuf>,
+    /// 数据落盘时刻（unix 毫秒）：缓存秒显用它标注「更新于多久前」。
+    /// 旧格式文件没有这个键时回落文件 mtime；`None` = 未知。
+    saved_at: Option<i64>,
 }
 
 impl Ledger {
@@ -237,7 +248,7 @@ impl Ledger {
     /// 打开账本：读取落盘文件，损坏 / 版本不符时按空账本重建。
     pub fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let (entries, daily, ignored) = Self::load(&path).unwrap_or_default();
+        let (entries, daily, ignored, saved_at) = Self::load(&path).unwrap_or_default();
         Self {
             entries,
             daily,
@@ -245,6 +256,7 @@ impl Ledger {
             dirty: Vec::new(),
             dirty_days: Vec::new(),
             path: Some(path),
+            saved_at,
         }
     }
 
@@ -256,6 +268,11 @@ impl Ledger {
     /// 账本条目数（含已归档）。
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// 数据落盘时刻（unix 毫秒）；`None` = 从未落盘 / 未知。
+    pub fn saved_at(&self) -> Option<i64> {
+        self.saved_at
     }
 
     pub fn is_empty(&self) -> bool {
@@ -388,8 +405,10 @@ impl Ledger {
             self.dirty_days.clear();
             return Ok(());
         };
+        let saved_at = unix_now_ms();
         let payload = json!({
             "version": LEDGER_VERSION,
+            "saved_at": saved_at,
             "sessions": self
                 .entries
                 .iter()
@@ -404,6 +423,7 @@ impl Ledger {
         });
         let text = serde_json::to_string_pretty(&payload)?;
         write_atomic(&path, &text)?;
+        self.saved_at = Some(saved_at);
         self.dirty.clear();
         self.dirty_days.clear();
         Ok(())
@@ -413,12 +433,12 @@ impl Ledger {
     ///
     /// `daily` 缺失时按空处理而不是丢掉整个账本：`daily` 是后来加的字段，
     /// 升级时不该把已经攒下的会话历史一起丢掉，下一轮扫描会把它补回来。
-    fn load(path: &Path) -> Option<(HashMap<String, SessionSnapshot>, DailyMap, BTreeSet<String>)> {
+    fn load(path: &Path) -> Option<LoadedLedger> {
         let text = std::fs::read_to_string(path).ok()?;
         let value: Value = serde_json::from_str(&text).ok()?;
         if value.get("version").and_then(Value::as_u64)? != u64::from(LEDGER_VERSION) {
             // 版本不符：整体丢弃重建（宁可丢历史，不要脏数据）。
-            return Some((HashMap::new(), DailyMap::new(), BTreeSet::new()));
+            return Some((HashMap::new(), DailyMap::new(), BTreeSet::new(), None));
         }
         let sessions = value.get("sessions")?.as_object()?;
         let mut out = HashMap::with_capacity(sessions.len());
@@ -453,8 +473,32 @@ impl Ledger {
                     .collect()
             })
             .unwrap_or_default();
-        Some((out, daily, ignored))
+        // saved_at 是缓存秒显加的新键：旧格式没有时回落文件 mtime，不升版本。
+        let saved_at = value
+            .get("saved_at")
+            .and_then(Value::as_i64)
+            .or_else(|| file_mtime_ms(path));
+        Some((out, daily, ignored, saved_at))
     }
+}
+
+/// 当前 unix 毫秒；时钟异常时按 0 处理（只影响「更新于」的显示）。
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 文件修改时刻（unix 毫秒）：旧格式账本没有 `saved_at` 键时的回落。
+fn file_mtime_ms(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis() as i64,
+    )
 }
 
 impl SessionSnapshot {
@@ -689,6 +733,40 @@ mod tests {
             assert_eq!(gone.input, 500);
             assert!(gone.archived);
         }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 落盘要记下数据时刻：缓存秒显的「更新于」靠它。
+    #[test]
+    fn save_records_saved_at() {
+        let path = temp_path("saved-at");
+        let mut ledger = Ledger::open(&path);
+        ledger.merge_scan(scan_of(vec![snapshot("a", 100, 10)]));
+        assert!(ledger.saved_at().is_none(), "落盘前没有可靠的数据时刻");
+        ledger.save().expect("落盘应成功");
+        let saved = ledger.saved_at().expect("落盘后应记下数据时刻");
+        let now = unix_now_ms();
+        assert!(
+            saved > now - 60_000 && saved <= now,
+            "数据时刻应是刚刚: {saved}"
+        );
+        // 重开能读回。
+        let reopened = Ledger::open(&path);
+        assert_eq!(reopened.saved_at(), Some(saved));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 旧格式（无 saved_at 键）回落文件 mtime：升级不丢「更新于」，不升版本。
+    #[test]
+    fn legacy_ledger_without_saved_at_falls_back_to_mtime() {
+        let path = temp_path("legacy-saved-at");
+        std::fs::write(&path, r#"{"version":1,"sessions":{},"ignored":[]}"#).expect("应能写入");
+        let ledger = Ledger::open(&path);
+        assert_eq!(
+            ledger.saved_at(),
+            file_mtime_ms(&path),
+            "缺 saved_at 键时回落文件 mtime"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

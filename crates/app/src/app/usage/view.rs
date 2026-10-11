@@ -176,6 +176,7 @@ impl App {
         };
         let ledger_len = self.usage.ledger_len();
         let scanning = self.usage.scanning();
+        let cached_saved_at = self.usage.cached_saved_at();
         let filter = self.usage_filter_label();
         let weak = ui.visuals().weak_text_color();
 
@@ -185,38 +186,53 @@ impl App {
                     .size(crate::theme::TEXT_BODY)
                     .strong(),
             );
-            match &report {
-                Some((sessions, messages, _scan_ms, scanned_at)) => {
-                    // 「更新于 N 秒前」：把 egui 时间轴上的扫描时刻换算成距今多久。
-                    let age_ms = ((frame_time - scanned_at).max(0.0) * 1_000.0) as i64;
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} 个会话 · {} 条消息 · 更新于 {}",
-                            sessions,
-                            messages,
-                            aggregate::relative_time(now_ms - age_ms, now_ms)
-                        ))
-                        .size(crate::theme::TEXT_CAPTION)
-                        .color(weak),
-                    );
+            if let Some(saved_ms) = cached_saved_at {
+                // 缓存秒显：账本数据先顶上（后台扫完自动替换）。标清数据新旧，
+                // 避免把几分钟前的数字当成实时值；超过 5 分钟用警示色。
+                let sessions = report.as_ref().map_or(0, |(sessions, _, _, _)| *sessions);
+                let stale = now_ms - saved_ms > aggregate::CACHED_STALE_MS;
+                ui.label(
+                    egui::RichText::new(aggregate::cached_status_line(
+                        sessions,
+                        Some(saved_ms),
+                        now_ms,
+                        scanning,
+                    ))
+                    .size(crate::theme::TEXT_CAPTION)
+                    .color(if stale { semantics.warn } else { weak }),
+                );
+                if scanning {
+                    ui.spinner();
                 }
-                None => {
+            } else if let Some((sessions, messages, _scan_ms, scanned_at)) = &report {
+                // 「更新于 N 秒前」：把 egui 时间轴上的扫描时刻换算成距今多久。
+                let age_ms = ((frame_time - scanned_at).max(0.0) * 1_000.0) as i64;
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} 个会话 · {} 条消息 · 更新于 {}",
+                        sessions,
+                        messages,
+                        aggregate::relative_time(now_ms - age_ms, now_ms)
+                    ))
+                    .size(crate::theme::TEXT_CAPTION)
+                    .color(weak),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new("还没有扫描结果")
+                        .size(crate::theme::TEXT_CAPTION)
+                        .color(semantics.warn),
+                );
+                if scanning {
+                    // 首次打开、扫描还在路上：给个「扫描中」指示（用户反馈：
+                    // 刚打开需要）。有了数据就不再画，免得在数字旁边常驻
+                    //（此前按用户反馈删过一次）。
+                    ui.spinner();
                     ui.label(
-                        egui::RichText::new("还没有扫描结果")
+                        egui::RichText::new("扫描中…")
                             .size(crate::theme::TEXT_CAPTION)
-                            .color(semantics.warn),
+                            .color(weak),
                     );
-                    if scanning {
-                        // 首次打开、扫描还在路上：给个「扫描中」指示（用户反馈：
-                        // 刚打开需要）。有了数据就不再画，免得在数字旁边常驻
-                        //（此前按用户反馈删过一次）。
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new("扫描中…")
-                                .size(crate::theme::TEXT_CAPTION)
-                                .color(weak),
-                        );
-                    }
                 }
             }
         });

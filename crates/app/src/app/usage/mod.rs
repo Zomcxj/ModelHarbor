@@ -148,6 +148,8 @@ impl UsageReport {
 pub(in crate::app) struct UsageState {
     /// 最近一次成功扫描的结果（已并入账本）。
     pub result: Option<Result<UsageReport, String>>,
+    /// `result` 当前是账本顶上的缓存数据（打开秒显）：后台扫完即替换。
+    cached: bool,
     /// 扫描在途时的接收端。
     rx: Option<Receiver<Result<ScanPayload, String>>>,
     /// 账本（跨扫描保留已删会话）。
@@ -164,8 +166,9 @@ pub(in crate::app) struct UsageState {
 
 impl Default for UsageState {
     fn default() -> Self {
-        Self {
+        let mut state = Self {
             result: None,
+            cached: false,
             rx: None,
             // 账本按项目既有约定放在配置目录（`Prefs::config_dir()`，
             // 与 settings.json / tokens.json 同目录），不自己拼路径。
@@ -174,7 +177,11 @@ impl Default for UsageState {
             last_save_at: None,
             fingerprints: scan_sources::Fingerprints::new(),
             dirty_since: None,
-        }
+        };
+        // 打开秒显：账本里有上次的数据就直接顶上，后台扫完再替换
+        //（对齐 token-monitor：缓存保持可见，后台刷新期间不清屏）。
+        state.fill_from_ledger();
+        state
     }
 }
 
@@ -187,6 +194,50 @@ impl UsageState {
     /// 账本条目数（含已归档的已删会话）。
     pub(in crate::app) fn ledger_len(&self) -> usize {
         self.ledger.len()
+    }
+
+    /// 打开秒显：账本里有数据就把上次的结果直接填进展示（后台扫完替换）。
+    /// 返回是否填上了；账本为空时清掉旧展示与缓存标记（保持状态一致）。
+    pub(in crate::app) fn fill_from_ledger(&mut self) -> bool {
+        self.cached = false;
+        if self.ledger.is_empty() {
+            self.result = None;
+            return false;
+        }
+        self.cached = true;
+        self.result = Some(Ok(UsageReport {
+            sessions: self.ledger.view(),
+            daily: self.ledger.daily().clone(),
+            // 缓存态不读 egui 时间轴的 scanned_at：时刻在 `cached_saved_at`。
+            scanned_at: 0.0,
+            message_count: 0,
+            scan_ms: 0,
+        }));
+        true
+    }
+
+    /// 缓存展示中的数据时刻（账本落盘时刻，unix 毫秒）；
+    /// `None` = 实时数据或还没有数据。
+    pub(in crate::app) fn cached_saved_at(&self) -> Option<i64> {
+        if self.cached {
+            self.ledger.saved_at()
+        } else {
+            None
+        }
+    }
+
+    /// 收下后台扫描结果：并入账本、替换展示视图、清掉缓存标记。
+    fn adopt_scan(&mut self, payload: ScanPayload, now: f64) {
+        let (sessions, daily, message_count, scan_ms) = payload;
+        self.result = Some(Ok(merge_into_ledger(
+            &mut self.ledger,
+            sessions,
+            daily,
+            now,
+            message_count,
+            scan_ms,
+        )));
+        self.cached = false;
     }
 }
 
@@ -278,21 +329,16 @@ impl App {
         match received {
             Some(Ok(Ok((sessions, daily, message_count, scan_ms)))) => {
                 // 并入账本 + 产出展示视图。merge_scan 是 O(会话数)，几十条，UI 线程够用。
-                let report = merge_into_ledger(
-                    &mut self.usage.ledger,
-                    sessions,
-                    daily,
-                    now,
-                    message_count,
-                    scan_ms,
-                );
-                self.usage.result = Some(Ok(report));
+                self.usage
+                    .adopt_scan((sessions, daily, message_count, scan_ms), now);
                 self.usage.rx = None;
                 self.save_usage_ledger(now);
             }
             Some(Ok(Err(err))) => {
-                // 扫描失败：保留上次结果（界面上继续显示旧数字 + 一行错误）。
+                // 扫描失败：换上错误页（与无缓存时的行为一致）。缓存标记一并清掉，
+                // 否则「有缓存 → 自动重扫」会在持续失败时每帧打转。
                 self.usage.result = Some(Err(err));
+                self.usage.cached = false;
                 self.usage.rx = None;
             }
             Some(Err(TryRecvError::Empty)) => {}
@@ -304,8 +350,9 @@ impl App {
         }
 
         // 2. 首帧（或上次扫描失败后重开）自动扫一次：满足「每次打开软件自动更新」。
-        //    不等 3 秒，否则打开用量视图会先看到一段空白。
-        if self.usage.result.is_none() && self.usage.rx.is_none() {
+        //    缓存秒显也一样：账本只保证「有得看」，扫完才保证「是新的」。
+        //    不等 3 秒，否则打开用量视图会先看到一段过期数字。
+        if self.usage.rx.is_none() && (self.usage.result.is_none() || self.usage.cached) {
             self.start_usage_scan(now, ctx);
             return;
         }
@@ -394,7 +441,9 @@ impl App {
         daily: DailyMap,
     ) {
         // 用内存账本：否则会读用户真实账本，行数不定、断言不稳。
+        // 换账本意味着构造时秒显的缓存数据一并作废。
         self.usage.ledger = Ledger::in_memory();
+        self.usage.cached = false;
         let scanned: HashMap<String, SessionSnapshot> = sessions
             .into_iter()
             .map(|s| (SessionSnapshot::key(s.client, &s.session_id), s))
@@ -929,6 +978,84 @@ mod tests {
         let second = merge_into_ledger(&mut ledger, HashMap::new(), DailyMap::new(), 2.0, 0, 10);
         assert_eq!(second.daily.len(), 1, "历史按天记录不因本轮没扫到而消失");
         assert_eq!(second.daily["2026-03-15"].totals.input, 500);
+    }
+
+    /// 打开秒显：账本非空 → 直接可展示（不用等扫描），后台扫完回到实时态。
+    #[test]
+    fn fill_from_ledger_shows_cached_data_until_scan_lands() {
+        use crate::format::ConfigFormat;
+        let snapshot = |session: &str, input: i64| SessionSnapshot {
+            client: ConfigFormat::Pi,
+            session_id: session.to_string(),
+            model_id: "m".to_string(),
+            project: None,
+            input,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            reasoning: 0,
+            message_count: 1,
+            cost: 0.0,
+            first_seen_ms: 1_000,
+            last_seen_ms: 2_000,
+            archived: false,
+        };
+        let scan_of = |items: Vec<SessionSnapshot>| {
+            items
+                .into_iter()
+                .map(|s| (SessionSnapshot::key(s.client, &s.session_id), s))
+                .collect::<HashMap<_, _>>()
+        };
+
+        let mut state = UsageState {
+            result: None,
+            cached: false,
+            rx: None,
+            ledger: Ledger::in_memory(),
+            last_poll_at: None,
+            last_save_at: None,
+            fingerprints: scan_sources::Fingerprints::new(),
+            dirty_since: None,
+        };
+        state.ledger.merge_scan(scan_of(vec![snapshot("a", 100)]));
+        assert!(state.fill_from_ledger(), "账本非空应当填上");
+        let report = state
+            .result
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .expect("缓存秒显应当有可展示数据");
+        assert_eq!(report.sessions.len(), 1);
+        assert!(state.cached, "展示的是账本顶上的缓存");
+
+        // 后台扫描收尾：替换展示并清掉缓存标记。
+        state.adopt_scan(
+            (scan_of(vec![snapshot("a", 150)]), DailyMap::new(), 1, 5),
+            3.0,
+        );
+        assert!(!state.cached, "扫完要回到实时态");
+        assert!(state.cached_saved_at().is_none());
+        let report = state.result.as_ref().and_then(|r| r.as_ref().ok()).unwrap();
+        assert_eq!(report.sessions[0].input, 150, "展示要换成最新扫描");
+    }
+
+    /// 账本为空 → 不填充：界面维持「还没有扫描结果 · 扫描中」。
+    #[test]
+    fn fill_from_ledger_skips_empty_ledger() {
+        // 显式构造，不碰用户真实账本（default() 会读它并秒显）。
+        let mut state = UsageState {
+            result: None,
+            cached: false,
+            rx: None,
+            ledger: Ledger::in_memory(),
+            last_poll_at: None,
+            last_save_at: None,
+            fingerprints: scan_sources::Fingerprints::new(),
+            dirty_since: None,
+        };
+        assert!(!state.fill_from_ledger());
+        assert!(state.result.is_none());
+        assert!(!state.cached);
+        assert!(state.cached_saved_at().is_none());
     }
 
     #[test]

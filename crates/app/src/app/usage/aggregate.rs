@@ -83,6 +83,36 @@ pub(in crate::app) fn format_m(n: i64) -> String {
 ///
 /// 时间在未来（时钟回拨、或源里的时间戳比本机快）时按「刚刚」处理，
 /// 不显示负数。
+/// 缓存展示超过该时长即标注「已过期」（对齐 token-monitor 的 5 分钟阈值）。
+pub(in crate::app) const CACHED_STALE_MS: i64 = 5 * 60 * 1000;
+
+/// 缓存态的状态行文案（纯逻辑便于单测）：
+/// `{sessions} 个会话 · 缓存 · 更新于 {age}[ · 已过期][ · 正在更新…]`。
+pub(in crate::app) fn cached_status_line(
+    sessions: usize,
+    saved_ms: Option<i64>,
+    now_ms: i64,
+    refreshing: bool,
+) -> String {
+    let mut line = match saved_ms {
+        Some(saved_ms) => {
+            let mut line = format!(
+                "{sessions} 个会话 · 缓存 · 更新于 {}",
+                relative_time(saved_ms, now_ms)
+            );
+            if now_ms - saved_ms > CACHED_STALE_MS {
+                line.push_str(" · 已过期");
+            }
+            line
+        }
+        None => format!("{sessions} 个会话 · 缓存"),
+    };
+    if refreshing {
+        line.push_str(" · 正在更新…");
+    }
+    line
+}
+
 pub(in crate::app) fn relative_time(last_seen_ms: i64, now_ms: i64) -> String {
     let delta_secs = (now_ms - last_seen_ms).max(0) / 1_000;
     if delta_secs < 60 {
