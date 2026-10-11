@@ -20,10 +20,11 @@
 //! 把连续写入合并掉了，再加冷却只会让用户觉得数字不跟手。
 
 pub(in crate::app) mod aggregate;
+mod chart;
 mod overview;
 pub(in crate::app) mod range;
 mod scan_sources;
-mod view;
+pub(in crate::app) mod view;
 
 use crate::app::App;
 use crate::format::ConfigFormat;
@@ -52,6 +53,63 @@ const SCAN_POLL_REPAINT_SECS: f64 = 0.25;
 /// 重绘请求的最小间隔：两个期限都已经过去时退化成这个节拍，
 /// 避免 0 秒（每帧重绘）把界面拖成空转。
 pub(in crate::app) const MIN_REPAINT_SECS: f64 = 0.01;
+
+/// 段控按钮：选中态 = 悬浮色底 + 2px 描边，与顶栏页签同一套样式。
+///
+/// 宽度固定（不随标签长短跳动），返回是否被点击。用量视图里的区间 / 维度 /
+/// 图表开关三组按钮都用它，免得到处重写一遍选中态。
+pub(in crate::app) fn chip(ui: &mut egui::Ui, selected: bool, label: &str, width: f32) -> bool {
+    let visuals = ui.visuals();
+    let (fill, stroke) = if selected {
+        (
+            visuals.widgets.hovered.bg_fill,
+            egui::Stroke::new(2.0f32, visuals.widgets.hovered.bg_stroke.color),
+        )
+    } else {
+        (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
+    };
+    let text = egui::RichText::new(label);
+    let text = if selected { text.strong() } else { text };
+    ui.add(
+        egui::Button::new(text)
+            .fill(fill)
+            .stroke(stroke)
+            .min_size(egui::vec2(width, 22.0)),
+    )
+    .clicked()
+}
+
+/// 系列颜色：强调色按黄金角转一圈，第 0 个系列就是强调色本身。
+///
+/// 用黄金角（137.508°）而不是均分：均分时系列一多，相邻两色就贴在一起；
+/// 黄金角让任意前缀的几个系列都散得开。
+///
+/// 饱和度与明度按明暗主题分开夹：亮色主题下高饱和色在浅底上会「发飘」，
+/// 深色主题下低明度色在深底上又糊成一片。
+///
+/// 趋势图的堆叠系列与总览卡的构成条共用它，两处的颜色才对得上。
+pub(in crate::app) fn series_color(
+    index: usize,
+    accent: egui::Color32,
+    dark: bool,
+) -> egui::Color32 {
+    // 第 0 个系列原样用强调色：下面那套 s/v 夹取是为了保证「转出来」的颜色
+    // 在深浅底上都看得清，但强调色本身是主题作者调过的，不该被动。
+    // （`Hsva` 在线性空间算，往返一趟会把强调色推偏几个色阶。）
+    if index == 0 {
+        return accent;
+    }
+    let mut hsva = egui::ecolor::Hsva::from(accent);
+    hsva.h = (hsva.h + index as f32 * 0.381_966_1).fract();
+    if dark {
+        hsva.s = hsva.s.clamp(0.35, 0.95);
+        hsva.v = hsva.v.max(0.55);
+    } else {
+        hsva.s = hsva.s.clamp(0.35, 0.95);
+        hsva.v = hsva.v.min(0.90);
+    }
+    egui::Color32::from(hsva)
+}
 
 /// 后台线程交回来的原始扫描结果：会话表、按天分桶、消息数、内核自报耗时。
 type ScanPayload = (HashMap<String, SessionSnapshot>, DailyMap, usize, u32);

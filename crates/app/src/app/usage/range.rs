@@ -173,7 +173,7 @@ impl RangeStats {
     }
 }
 
-/// 统计区间内的汇总事实。
+/// 区间内的汇总事实。
 pub(in crate::app) fn range_stats(daily: &DailyMap, range: Range, today: i64) -> RangeStats {
     let mut stats = RangeStats::default();
     for (day, bucket) in buckets_in_range(daily, range, today) {
@@ -187,6 +187,51 @@ pub(in crate::app) fn range_stats(daily: &DailyMap, range: Range, today: i64) ->
         }
     }
     stats
+}
+
+/// 区间内用量第一的模型。
+///
+/// 区间内没有任何模型记录时返回 `None`（不编造「未知模型」）。
+pub(in crate::app) fn top_model_in_range(
+    daily: &DailyMap,
+    range: Range,
+    today: i64,
+) -> Option<(String, i64)> {
+    let mut best: Option<(String, i64)> = None;
+    for (model, totals) in breakdown_in_range(daily, range, today, |bucket| &bucket.by_model) {
+        let total = totals.total();
+        if total <= 0 {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, current)| total > *current) {
+            best = Some((model, total));
+        }
+    }
+    best
+}
+
+/// 连续活跃天数（截至今天往前数，断一天就停）。
+///
+/// 照 GitHub / tokscale 的口径：只有「今天或昨天有量」才算连续 —— 否则用户
+/// 断了一周还会看到「连续 1 天」，那是上一条记录的残留，不是当前连续。
+/// 今天还没用不算断（一天还没过完）。
+pub(in crate::app) fn current_streak(daily: &DailyMap, today: i64) -> usize {
+    let has_usage =
+        |day: i64| bucket_for(daily, day).is_some_and(|bucket| bucket.totals.total() > 0);
+    // 今天没量就从昨天起数（今天可能还没开始用）。
+    let mut cursor = if has_usage(today) {
+        today
+    } else if has_usage(today - 1) {
+        today - 1
+    } else {
+        return 0;
+    };
+    let mut streak = 0usize;
+    while has_usage(cursor) {
+        streak += 1;
+        cursor -= 1;
+    }
+    streak
 }
 
 /// 区间内按某个分解维度汇总（agent / 模型 / 会话）。
@@ -609,5 +654,96 @@ mod tests {
         assert_eq!(stats.totals.input, 100, "上月的不算进来");
         assert_eq!(stats.active_days, 1);
         assert_eq!(stats.best_day.map(|(_, t)| t), Some(100));
+    }
+
+    // ---- 连续天数 ----
+
+    /// 连续天数从今天往前数，断一天就停。
+    #[test]
+    fn streak_counts_back_from_today() {
+        let today = today();
+        let daily = daily_with(&[
+            ("2026-03-15", 10),
+            ("2026-03-14", 10),
+            ("2026-03-13", 10),
+            // 03-12 缺 → 到此为止
+            ("2026-03-11", 10),
+        ]);
+        assert_eq!(current_streak(&daily, today), 3);
+    }
+
+    /// 今天还没用不算断（一天还没过完），从昨天起数。
+    #[test]
+    fn streak_tolerates_a_quiet_today() {
+        let today = today();
+        let daily = daily_with(&[("2026-03-14", 10), ("2026-03-13", 10)]);
+        assert_eq!(current_streak(&daily, today), 2);
+    }
+
+    /// 今天和昨天都没量就是断了，不是「上一条记录的残留」。
+    #[test]
+    fn streak_is_zero_when_both_today_and_yesterday_are_empty() {
+        let today = today();
+        let daily = daily_with(&[("2026-03-13", 10), ("2026-03-12", 10)]);
+        assert_eq!(current_streak(&daily, today), 0);
+    }
+
+    /// 0 用量的那天不算活跃，也不能续上连续。
+    #[test]
+    fn streak_ignores_zero_usage_days() {
+        let today = today();
+        let daily = daily_with(&[("2026-03-15", 10), ("2026-03-14", 0), ("2026-03-13", 10)]);
+        assert_eq!(current_streak(&daily, today), 1);
+    }
+
+    /// 空账本没有连续。
+    #[test]
+    fn streak_of_empty_ledger_is_zero() {
+        assert_eq!(current_streak(&DailyMap::new(), today()), 0);
+    }
+
+    // ---- 最爱模型 ----
+
+    /// 最爱模型取区间内用量最大的那个。
+    #[test]
+    fn top_model_picks_the_largest_in_range() {
+        let today = today();
+        let mut bucket = day(0);
+        bucket.by_model.insert("small".into(), day(10).totals);
+        bucket.by_model.insert("big".into(), day(90).totals);
+        let daily: DailyMap = [("2026-03-15".to_string(), bucket)].into_iter().collect();
+        let (model, total) = top_model_in_range(&daily, Range::Month, today).unwrap();
+        assert_eq!(model, "big");
+        assert_eq!(total, 90);
+    }
+
+    /// 区间内没有模型记录时不给答案，也不编造「未知模型」。
+    #[test]
+    fn top_model_is_none_without_data() {
+        assert_eq!(
+            top_model_in_range(&DailyMap::new(), Range::All, today()),
+            None
+        );
+    }
+
+    /// 最爱模型也受区间限制。
+    #[test]
+    fn top_model_respects_the_range() {
+        let today = today();
+        let mut recent = day(0);
+        recent.by_model.insert("new".into(), day(10).totals);
+        let mut old = day(0);
+        old.by_model.insert("old".into(), day(999).totals);
+        let daily: DailyMap = [
+            ("2026-03-15".to_string(), recent),
+            ("2026-02-20".to_string(), old),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            top_model_in_range(&daily, Range::Month, today).map(|(m, _)| m),
+            Some("new".to_string()),
+            "本月的量小，但上月的 999 不该算进来"
+        );
     }
 }

@@ -24,6 +24,8 @@ resvg = "0.45.1"
 # 默认特性已含 glow，不含 wgpu。
 eframe = { version = "0.33", features = ["default"] }
 egui_extras = { version = "0.33", features = ["svg"] }
+# 停在 0.34：0.35 起依赖 egui 0.34，与上面「停在 0.33」的决定冲突。
+egui_plot = "0.34"
 windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",

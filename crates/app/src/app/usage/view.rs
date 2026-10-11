@@ -38,28 +38,10 @@ impl App {
 
     /// 单个视图切换按钮：选中态 = 悬浮色底 + 2px 描边（与顶栏页签同一套）。
     fn view_switch_button(&self, ui: &mut egui::Ui, view: super::super::MainView) -> bool {
-        let selected = self.main_view == view;
-        let visuals = ui.visuals();
-        let (fill, stroke) = if selected {
-            (
-                visuals.widgets.hovered.bg_fill,
-                egui::Stroke::new(2.0f32, visuals.widgets.hovered.bg_stroke.color),
-            )
-        } else {
-            (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
-        };
-        let text = egui::RichText::new(view.label());
-        let text = if selected { text.strong() } else { text };
-        ui.add(
-            egui::Button::new(text)
-                .fill(fill)
-                .stroke(stroke)
-                .min_size(egui::vec2(72.0, 22.0)),
-        )
-        .clicked()
+        super::chip(ui, self.main_view == view, view.label(), 72.0)
     }
 
-    /// 用量视图主体：状态行 + 控件行 + 总览（含热力图）+ 表格。
+    /// 用量视图主体：状态行 + 控件行 + 总览（含趋势图与热力图）+ 表格。
     pub(in crate::app) fn ui_usage_section(&mut self, ui: &mut egui::Ui) {
         self.ui_usage_status(ui);
         ui.add_space(crate::theme::SPACE_3);
@@ -103,12 +85,12 @@ impl App {
                     .strong(),
             );
             match &report {
-                Some((sessions, messages, scan_ms, scanned_at)) => {
+                Some((sessions, messages, _scan_ms, scanned_at)) => {
                     // 「更新于 N 秒前」：把 egui 时间轴上的扫描时刻换算成距今多久。
                     let age_ms = ((frame_time - scanned_at).max(0.0) * 1_000.0) as i64;
                     ui.label(
                         egui::RichText::new(format!(
-                            "{} 个会话 · {} 条消息 · 更新于 {} · 内核 {scan_ms} ms",
+                            "{} 个会话 · {} 条消息 · 更新于 {}",
                             sessions,
                             messages,
                             aggregate::relative_time(now_ms - age_ms, now_ms)
@@ -137,35 +119,26 @@ impl App {
         if let Some(err) = error {
             ui.label(egui::RichText::new(format!("上次扫描失败：{err}")).color(semantics.err));
         }
-        ui.label(
-            egui::RichText::new(format!("账本保留已删除会话的用量（共 {ledger_len} 条）"))
-                .size(crate::theme::TEXT_CAPTION)
-                .color(weak),
-        );
+        // 账本那句只说「历史比磁盘上多」：是不是「已删除会话」是实现细节，
+        // 用户关心的是数字为何比源目录里看到的多。
+        if ledger_len > 0 {
+            ui.label(
+                egui::RichText::new(format!("含 {ledger_len} 条已从磁盘消失的历史会话"))
+                    .size(crate::theme::TEXT_CAPTION)
+                    .color(weak),
+            );
+        }
     }
 
     /// 四个维度的切换按钮。
     pub(in crate::app) fn dimension_buttons(&mut self, ui: &mut egui::Ui) {
         for dimension in Dimension::ALL {
-            let selected = self.usage_dimension == dimension;
-            let visuals = ui.visuals();
-            let (fill, stroke) = if selected {
-                (
-                    visuals.widgets.hovered.bg_fill,
-                    egui::Stroke::new(2.0f32, visuals.widgets.hovered.bg_stroke.color),
-                )
-            } else {
-                (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
-            };
-            let text = egui::RichText::new(dimension.label());
-            let text = if selected { text.strong() } else { text };
-            let response = ui.add(
-                egui::Button::new(text)
-                    .fill(fill)
-                    .stroke(stroke)
-                    .min_size(egui::vec2(DIM_BUTTON_WIDTH, 22.0)),
-            );
-            if response.clicked() {
+            if super::chip(
+                ui,
+                self.usage_dimension == dimension,
+                dimension.label(),
+                DIM_BUTTON_WIDTH,
+            ) {
                 self.usage_dimension = dimension;
             }
         }
@@ -176,42 +149,69 @@ impl App {
         let sessions: Vec<SessionSnapshot> = self.usage_sessions().to_vec();
         let daily = self.usage_daily_filtered();
         if sessions.is_empty() && daily.is_empty() {
-            let semantics = crate::theme::semantics(ui);
-            ui.label(egui::RichText::new("没有找到本机用量数据。").color(semantics.warn));
-            ui.label(
-                egui::RichText::new(
-                    "统计的是各 agent 自己写在磁盘上的会话账本（pi / opencode / \
-                     workbuddy / dsh 等）。先用其中任意一个跑一轮对话，数字就会出现在这里。",
-                )
-                .small()
-                .weak(),
-            );
+            self.ui_usage_empty(ui);
             return;
         }
-        let _offset = crate::app::balance::local_utc_offset_secs();
         let now_ms = unix_now_ms();
         let today = self.usage_today();
         let range = self.usage_range;
-        match self.usage_dimension {
+        let sort = self.usage_sort;
+        let show_all = self.usage_show_all;
+        let action = match self.usage_dimension {
             Dimension::Agent => {
                 let rows = aggregate::by_agent_in_range(&daily, range, today);
-                usage_table_shell(ui, |ui| agent_table(ui, &rows, now_ms, range, today));
+                usage_table_shell(ui, |ui| {
+                    agent_table(ui, &rows, now_ms, range, sort, show_all)
+                })
             }
             Dimension::Model => {
                 let rows = aggregate::by_model_in_range(&daily, range, today);
-                usage_table_shell(ui, |ui| model_table(ui, &rows, now_ms, range, today));
+                usage_table_shell(ui, |ui| {
+                    model_table(ui, &rows, now_ms, range, sort, show_all)
+                })
             }
             Dimension::Session => {
                 // 会话维度也必须走区间：拿会话总量当「本月」会虚高
                 // （一个会话可以横跨几十天）。
                 let rows = aggregate::session_rows_in_range(&sessions, &daily, range, today);
-                usage_table_shell(ui, |ui| session_table(ui, &rows, now_ms, range, today));
+                usage_table_shell(ui, |ui| {
+                    session_table(ui, &rows, now_ms, range, sort, show_all)
+                })
             }
             Dimension::Day => {
                 let rows = aggregate::by_day_in_range(&daily, range, today);
-                usage_table_shell(ui, |ui| day_table(ui, &rows, today, now_ms));
+                usage_table_shell(ui, |ui| day_table(ui, &rows, today, sort, show_all))
             }
+        };
+        match action {
+            Some(TableAction::Sort(key)) => self.usage_sort = self.usage_sort.toggled(key),
+            Some(TableAction::ToggleShowAll) => self.usage_show_all = !self.usage_show_all,
+            None => {}
         }
+    }
+
+    /// 空状态：一行说明 + 一行「怎么让数字出现」。
+    fn ui_usage_empty(&self, ui: &mut egui::Ui) {
+        let semantics = crate::theme::semantics(ui);
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::same(crate::theme::SPACE_3 as i8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new("没有找到本机用量数据。")
+                        .size(crate::theme::TEXT_BODY)
+                        .color(semantics.warn),
+                );
+                ui.add_space(crate::theme::SPACE_2);
+                ui.label(
+                    egui::RichText::new(
+                        "统计的是各 agent 自己写在磁盘上的会话账本（pi / opencode / \
+                         workbuddy / dsh 等）。先用其中任意一个跑一轮对话，数字就会出现在这里。",
+                    )
+                    .small()
+                    .weak(),
+                );
+            });
     }
 }
 
@@ -220,14 +220,15 @@ fn unix_now_ms() -> i64 {
     super::unix_now_secs().saturating_mul(1_000)
 }
 
-/// 表格外壳：统一内边距，并撑满可用宽度。
-fn usage_table_shell(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+/// 表格外壳：统一内边距，并撑满可用宽度；把闭包的返回值（表格交互）透出去。
+fn usage_table_shell<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::NONE
         .inner_margin(egui::Margin::same(crate::theme::SPACE_3 as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            body(ui);
-        });
+            body(ui)
+        })
+        .inner
 }
 
 // ---------------------------------------------------------------------------
@@ -264,64 +265,213 @@ struct Column {
     width: f32,
     /// 数字列：右对齐 + 等宽字体。
     numeric: bool,
+    /// 排序键：`None` = 该列不可排序（如会话 id、模型名这类文本列）。
+    sort: Option<SortKey>,
 }
 
 impl Column {
-    /// 文本列（左对齐）。
+    /// 文本列（左对齐，不可排序）。
     const fn text(header: &'static str, width: f32) -> Self {
         Self {
             header,
             width,
             numeric: false,
+            sort: None,
         }
     }
 
-    /// 数字列（右对齐 + 等宽）。
-    const fn number(header: &'static str, width: f32) -> Self {
+    /// 数字列（右对齐 + 等宽），可点表头排序。
+    const fn number(header: &'static str, width: f32, sort: SortKey) -> Self {
         Self {
             header,
             width,
             numeric: true,
+            sort: Some(sort),
         }
     }
+
+    /// 文本列 + 可排序（用于日期、Agent 名这类）。
+    const fn sorted_text(header: &'static str, width: f32, sort: SortKey) -> Self {
+        Self {
+            header,
+            width,
+            numeric: false,
+            sort: Some(sort),
+        }
+    }
+}
+
+/// 可排序的键。
+///
+/// 只列真正有意义的几个：每个维度都能按「用量」与「名称」排，加时间维度
+/// 自己就是时间序。再多就是给用户出选择题。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::app) enum SortKey {
+    /// 名称 / 模型 id / 日期。
+    Name,
+    /// 合计 token。
+    Total,
+    /// 输入 token。
+    Input,
+    /// 输出 token。
+    Output,
+    /// 缓存读 token。
+    CacheRead,
+}
+
+/// 排序状态：当前键 + 是否降序。
+#[derive(Clone, Copy, Debug)]
+pub(in crate::app) struct SortState {
+    pub key: SortKey,
+    /// `true` = 大在前。数字列默认降序（看用量），名称列默认升序。
+    pub descending: bool,
+}
+
+impl SortState {
+    /// 默认：按合计降序（用户最关心「谁用得最多」）。
+    pub(in crate::app) const fn by_total() -> Self {
+        Self {
+            key: SortKey::Total,
+            descending: true,
+        }
+    }
+
+    /// 点表头：同一个键则翻转方向，换键则取该键的默认方向。
+    pub(in crate::app) fn toggled(self, key: SortKey) -> Self {
+        if self.key == key {
+            Self {
+                key,
+                descending: !self.descending,
+            }
+        } else {
+            Self {
+                key,
+                // 名称升序（A→Z 更自然），其余降序（大在前）。
+                descending: key != SortKey::Name,
+            }
+        }
+    }
+
+    /// 排序指示箭头。
+    fn arrow(self, key: SortKey) -> &'static str {
+        if self.key != key {
+            return "";
+        }
+        if self.descending {
+            " ▼"
+        } else {
+            " ▲"
+        }
+    }
+}
+
+/// 排序：按当前键与方向排，方向相同时用名称正序兜底，保证界面不跳动。
+fn sort_rows<T>(
+    rows: &mut [T],
+    state: SortState,
+    name: impl Fn(&T) -> String,
+    value: impl Fn(&T, SortKey) -> i64,
+) {
+    let name_of = |row: &T| name(row);
+    rows.sort_by(|a, b| {
+        let ord = if state.key == SortKey::Name {
+            name_of(a).cmp(&name_of(b))
+        } else {
+            value(a, state.key).cmp(&value(b, state.key))
+        };
+        let ord = if state.descending { ord.reverse() } else { ord };
+        ord.then_with(|| name_of(a).cmp(&name_of(b)))
+    });
 }
 
 /// 表格：表头 + 逐行，列按固定宽度排。
 ///
 /// 每行是一个闭包，负责往当前行里塞单元格（用 [`cell_text`] / [`cell_number`]）；
 /// 这样四个维度共用一套列宽与对齐规则，不用各写一遍排版。
-fn table<F>(ui: &mut egui::Ui, columns: &[Column], rows: impl IntoIterator<Item = F>)
+///
+/// 行背景：隔行加一层极淡的底色（斑马纹），鼠标所在行再叠一层悬浮色 ——
+/// 列宽固定、行高只有 16 点，不给背景提示很容易看串行。
+///
+/// 返回被点的表头列（没有则 `None`）。
+fn table<F>(
+    ui: &mut egui::Ui,
+    columns: &[Column],
+    sort: SortState,
+    rows: impl IntoIterator<Item = F>,
+) -> Option<SortKey>
 where
     F: FnOnce(&mut egui::Ui),
 {
-    table_header(ui, columns);
+    let clicked = table_header(ui, columns, sort);
     ui.add_space(crate::theme::SPACE_2);
-    for row in rows {
-        ui.horizontal(|ui| {
-            // 列间距由列宽自己承担（数字列内右侧留白），这里不留额外间距，
-            // 否则列起点会随 `item_spacing` 漂移。
-            ui.spacing_mut().item_spacing.x = 0.0;
-            row(ui);
-        });
+    let faint = ui.visuals().faint_bg_color;
+    let hover = ui.visuals().widgets.hovered.weak_bg_fill;
+    let row_width: f32 = columns.iter().map(|column| column.width).sum();
+    for (index, row) in rows.into_iter().enumerate() {
+        // 先占位拿到本行的矩形，再把背景画在内容下面。
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(row_width, CELL_HEIGHT), egui::Sense::hover());
+        if index % 2 == 1 {
+            ui.painter().rect_filled(rect, 0.0, faint);
+        }
+        if response.hovered() {
+            ui.painter().rect_filled(rect, 0.0, hover);
+        }
+        // 内容画在占位矩形内：新建一个子 `Ui`，游标从行首开始。
+        let mut row_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        row_ui.spacing_mut().item_spacing.x = 0.0;
+        row(&mut row_ui);
         ui.add_space(crate::theme::SPACE_1);
     }
+    clicked
 }
 
 /// 表头：弱化 + 与数据列同宽同对齐，于是表头正好落在数字上方。
-fn table_header(ui: &mut egui::Ui, columns: &[Column]) {
+///
+/// 可排序的列画成可点的按钮（悬停变手型），当前排序列带 ▲/▼ 指示。
+fn table_header(ui: &mut egui::Ui, columns: &[Column], sort: SortState) -> Option<SortKey> {
+    let mut clicked = None;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for column in columns {
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(column.width, CELL_HEIGHT), egui::Sense::hover());
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(column.width, CELL_HEIGHT),
+                if column.sort.is_some() {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                },
+            );
+            let header = match column.sort {
+                Some(key) => format!("{}{}", column.header, sort.arrow(key)),
+                None => column.header.to_string(),
+            };
+            let color = if column.sort.is_some_and(|key| key == sort.key) {
+                ui.visuals().strong_text_color()
+            } else {
+                ui.visuals().weak_text_color()
+            };
             let galley = ui.painter().layout_no_wrap(
-                column.header.to_string(),
+                header,
                 egui::FontId::proportional(crate::theme::TEXT_CAPTION),
-                ui.visuals().weak_text_color(),
+                color,
             );
             paint_in_cell(ui, rect, galley, column.numeric);
+            if let Some(key) = column.sort {
+                if response
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    clicked = Some(key);
+                }
+            }
         }
     });
+    clicked
 }
 
 /// 把 galley 按列的对齐方式放进单元格：数字贴右内边距、文本贴左内边距，纵向居中。
@@ -388,19 +538,89 @@ fn cell_number(ui: &mut egui::Ui, columns: &[Column], index: usize, text: &str, 
     paint_in_cell(ui, rect, galley, true);
 }
 
-/// Agent 维度表：agent / 合计 / 输入 / 输出 / 缓存读 / 最近活动。
+/// 一页最多先画多少行，其余折叠。
+///
+/// 模型动辄几百个，全画出来要滚很久，而前几名就占了九成以上的量。
+const PAGE_ROWS: usize = 20;
+
+/// 行是否折叠（超过 [`PAGE_ROWS`] 时只看前几行）。
+///
+/// 返回「要画的行数」与「总共多少行」，调用方据此决定要不要画「显示全部」开关。
+fn visible_rows(total: usize, show_all: bool) -> usize {
+    if show_all {
+        total
+    } else {
+        total.min(PAGE_ROWS)
+    }
+}
+
+/// 「显示全部 / 只看前 N」开关：只有真的被截断时才画。
+fn show_all_toggle(ui: &mut egui::Ui, total: usize, show_all: bool) -> bool {
+    if total <= PAGE_ROWS {
+        return false;
+    }
+    let label = if show_all {
+        format!("只看前 {PAGE_ROWS}")
+    } else {
+        format!("显示全部 {total} 行")
+    };
+    ui.add_space(crate::theme::SPACE_2);
+    ui.add(egui::Button::new(
+        egui::RichText::new(label).size(crate::theme::TEXT_CAPTION),
+    ))
+    .clicked()
+}
+
+/// 表格交互的结果。
+enum TableAction {
+    /// 点了某个表头：切换排序。
+    Sort(SortKey),
+    /// 点了「显示全部 / 只看前 N」。
+    ToggleShowAll,
+}
+
+/// 把两个交互信号合成一个动作（显示全部优先：它不在表头里，不可能同时发生）。
+fn table_action(clicked: Option<SortKey>, toggled: bool) -> Option<TableAction> {
+    match (clicked, toggled) {
+        (_, true) => Some(TableAction::ToggleShowAll),
+        (Some(key), false) => Some(TableAction::Sort(key)),
+        (None, false) => None,
+    }
+}
+
+/// Agent 维度表：Agent / 合计 / 输入 / 输出 / 缓存读 / 最近活动。
 ///
 /// 不列会话数：一个会话可以横跨多天，按区间求和时「会话数」相加会重复计数。
-fn agent_table(ui: &mut egui::Ui, rows: &[AgentUsage], now_ms: i64, range: Range, _today: i64) {
+fn agent_table(
+    ui: &mut egui::Ui,
+    rows: &[AgentUsage],
+    now_ms: i64,
+    range: Range,
+    sort: SortState,
+    show_all: bool,
+) -> Option<TableAction> {
     let columns = [
-        Column::text("Agent", 130.0),
-        Column::number("合计", NUM_W),
-        Column::number("输入", NUM_W),
-        Column::number("输出", NUM_W),
-        Column::number("缓存读", NUM_W),
+        Column::sorted_text("Agent", 130.0, SortKey::Name),
+        Column::number("合计", NUM_W, SortKey::Total),
+        Column::number("输入", NUM_W, SortKey::Input),
+        Column::number("输出", NUM_W, SortKey::Output),
+        Column::number("缓存读", NUM_W, SortKey::CacheRead),
         Column::text("最近活动", 90.0),
     ];
-    let rows: Vec<_> = rows
+    let mut rows: Vec<AgentUsage> = rows.to_vec();
+    sort_rows(
+        &mut rows,
+        sort,
+        |row| row.client.label().to_string(),
+        |row, key| match key {
+            SortKey::Input => row.totals.input,
+            SortKey::Output => row.totals.output,
+            SortKey::CacheRead => row.totals.cache_read,
+            _ => row.totals.total(),
+        },
+    );
+    let visible = visible_rows(rows.len(), show_all);
+    let items: Vec<_> = rows[..visible]
         .iter()
         .map(|row| {
             let client = row.client;
@@ -445,20 +665,41 @@ fn agent_table(ui: &mut egui::Ui, rows: &[AgentUsage], now_ms: i64, range: Range
             }
         })
         .collect();
-    table(ui, &columns, rows);
+    let clicked = table(ui, &columns, sort, items);
+    table_action(clicked, show_all_toggle(ui, rows.len(), show_all))
 }
 
 /// 模型维度表：模型 / 合计 / 输入 / 输出 / 缓存读 / 来源 agent。
-fn model_table(ui: &mut egui::Ui, rows: &[ModelUsage], now_ms: i64, range: Range, _today: i64) {
+fn model_table(
+    ui: &mut egui::Ui,
+    rows: &[ModelUsage],
+    now_ms: i64,
+    range: Range,
+    sort: SortState,
+    show_all: bool,
+) -> Option<TableAction> {
     let columns = [
-        Column::text("模型", 210.0),
-        Column::number("合计", NUM_W),
-        Column::number("输入", NUM_W),
-        Column::number("输出", NUM_W),
-        Column::number("缓存读", NUM_W),
+        Column::sorted_text("模型", 210.0, SortKey::Name),
+        Column::number("合计", NUM_W, SortKey::Total),
+        Column::number("输入", NUM_W, SortKey::Input),
+        Column::number("输出", NUM_W, SortKey::Output),
+        Column::number("缓存读", NUM_W, SortKey::CacheRead),
         Column::text("来源 agent", 150.0),
     ];
-    let rows: Vec<_> = rows
+    let mut rows: Vec<ModelUsage> = rows.to_vec();
+    sort_rows(
+        &mut rows,
+        sort,
+        |row| row.model_id.clone(),
+        |row, key| match key {
+            SortKey::Input => row.totals.input,
+            SortKey::Output => row.totals.output,
+            SortKey::CacheRead => row.totals.cache_read,
+            _ => row.totals.total(),
+        },
+    );
+    let visible = visible_rows(rows.len(), show_all);
+    let items: Vec<_> = rows[..visible]
         .iter()
         .map(|row| {
             let model_id = row.model_id.clone();
@@ -507,7 +748,8 @@ fn model_table(ui: &mut egui::Ui, rows: &[ModelUsage], now_ms: i64, range: Range
             }
         })
         .collect();
-    table(ui, &columns, rows);
+    let clicked = table(ui, &columns, sort, items);
+    table_action(clicked, show_all_toggle(ui, rows.len(), show_all))
 }
 
 /// 会话维度表：会话 / Agent / 模型 / 区间内用量 / 状态。
@@ -518,22 +760,38 @@ fn session_table(
     rows: &[SessionSnapshot],
     now_ms: i64,
     range: Range,
-    _today: i64,
-) {
+    sort: SortState,
+    show_all: bool,
+) -> Option<TableAction> {
     // 表头是 `&'static str`：按区间二选一，不动态拼字符串。
     let total_column = if range == Range::All {
-        Column::number("合计", NUM_W)
+        Column::number("合计", NUM_W, SortKey::Total)
     } else {
-        Column::number("区间内", NUM_W)
+        Column::number("区间内", NUM_W, SortKey::Total)
     };
     let columns = [
         Column::text("会话", 180.0),
-        Column::text("Agent", 120.0),
+        Column::sorted_text("Agent", 120.0, SortKey::Name),
         Column::text("模型", 210.0),
         total_column,
         Column::text("状态", 90.0),
     ];
-    let rows: Vec<_> = rows
+    let mut rows: Vec<SessionSnapshot> = rows.to_vec();
+    sort_rows(
+        &mut rows,
+        sort,
+        // 会话没有天然的名字：用「Agent + 会话 id」当排序兜底键，
+        // 保证同一个 agent 的会话能聚在一起。
+        |row| format!("{}:{}", row.client.label(), row.session_id),
+        |row, key| match key {
+            SortKey::Input => row.input,
+            SortKey::Output => row.output,
+            SortKey::CacheRead => row.cache_read,
+            _ => row.total(),
+        },
+    );
+    let visible = visible_rows(rows.len(), show_all);
+    let items: Vec<_> = rows[..visible]
         .iter()
         .map(|row| {
             let short = aggregate::short_session_id(&row.session_id, SESSION_ID_CHARS);
@@ -558,22 +816,47 @@ fn session_table(
             }
         })
         .collect();
-    table(ui, &columns, rows);
+    let clicked = table(ui, &columns, sort, items);
+    table_action(clicked, show_all_toggle(ui, rows.len(), show_all))
 }
 
 /// 时间维度表：日期 / 合计 / 输入 / 输出 / 缓存读 / 消息。
 ///
 /// 不列会话数：跨天会话会在多天各计一次，列出来会让人以为总量对不上。
-fn day_table(ui: &mut egui::Ui, rows: &[DayUsage], today: i64, _now_ms: i64) {
+fn day_table(
+    ui: &mut egui::Ui,
+    rows: &[DayUsage],
+    today: i64,
+    sort: SortState,
+    show_all: bool,
+) -> Option<TableAction> {
     let columns = [
-        Column::text("日期", 120.0),
-        Column::number("合计", NUM_W),
-        Column::number("输入", NUM_W),
-        Column::number("输出", NUM_W),
-        Column::number("缓存读", NUM_W),
-        Column::number("消息", 56.0),
+        Column::sorted_text("日期", 120.0, SortKey::Name),
+        Column::number("合计", NUM_W, SortKey::Total),
+        Column::number("输入", NUM_W, SortKey::Input),
+        Column::number("输出", NUM_W, SortKey::Output),
+        Column::number("缓存读", NUM_W, SortKey::CacheRead),
+        Column::number("消息", 56.0, SortKey::Name),
     ];
-    let rows: Vec<_> = rows
+    let mut rows: Vec<DayUsage> = rows.to_vec();
+    sort_rows(
+        &mut rows,
+        sort,
+        // 日期用**定宽**写法当排序键：`今天 / 昨天` 这种文案直接比字符串
+        // 会把「今天」排到「2026-03-15」前面，而按 `YYYY-MM-DD` 比就对了。
+        |row| {
+            let (year, month, day) = aggregate::civil_from_days(row.day);
+            format!("{year:04}-{month:02}-{day:02}")
+        },
+        |row, key| match key {
+            SortKey::Input => row.totals.input,
+            SortKey::Output => row.totals.output,
+            SortKey::CacheRead => row.totals.cache_read,
+            _ => row.totals.total(),
+        },
+    );
+    let visible = visible_rows(rows.len(), show_all);
+    let items: Vec<_> = rows[..visible]
         .iter()
         .map(|row| {
             let label = aggregate::day_label(row.day, today);
@@ -612,5 +895,6 @@ fn day_table(ui: &mut egui::Ui, rows: &[DayUsage], today: i64, _now_ms: i64) {
             }
         })
         .collect();
-    table(ui, &columns, rows);
+    let clicked = table(ui, &columns, sort, items);
+    table_action(clicked, show_all_toggle(ui, rows.len(), show_all))
 }

@@ -24,6 +24,7 @@ rfd.workspace = true
 resvg.workspace = true
 eframe.workspace = true
 egui_extras.workspace = true
+egui_plot.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys.workspace = true

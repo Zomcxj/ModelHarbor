@@ -185,6 +185,12 @@ pub struct App {
     /// 与 `current_page` 分开存：用量视图下点页签是筛选，不该改动配置页状态
     /// （切回提供商管理时用户应看到原来那一页）。
     usage_filter: Option<ConfigFormat>,
+    /// 用量趋势图是否按模型堆叠（默认堆叠，更能看出量花在哪个模型上）。
+    usage_chart_stacked: bool,
+    /// 用量表格的排序（各维度共用一份：默认「合计降序」）。
+    usage_sort: usage::view::SortState,
+    /// 用量表格是否展开全部行（默认只画前 [`usage::view::PAGE_ROWS`] 行）。
+    usage_show_all: bool,
     /// 本机用量扫描状态（见 [`crate::app::usage`]）。
     usage: usage::UsageState,
     /// 界面形状预设（圆角默认值 + 描边宽度）。
@@ -362,6 +368,9 @@ impl Default for App {
             usage_dimension: usage::aggregate::Dimension::default(),
             usage_range: usage::range::Range::default(),
             usage_filter: None,
+            usage_chart_stacked: true,
+            usage_sort: usage::view::SortState::by_total(),
+            usage_show_all: false,
             usage: usage::UsageState::default(),
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
             glass: prefs.glass,

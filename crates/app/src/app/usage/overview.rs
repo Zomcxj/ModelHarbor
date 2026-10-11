@@ -34,11 +34,13 @@ const RANGE_BUTTON_WIDTH: f32 = 56.0;
 const TEXT_CAPTION: f32 = crate::theme::TEXT_CAPTION;
 
 impl App {
-    /// 区间切换 + 总览卡 + 热力图。
+    /// 区间切换 + 总览卡 + 趋势图 + 热力图。
     pub(in crate::app) fn ui_usage_overview(&mut self, ui: &mut egui::Ui) {
         self.ui_usage_controls(ui);
         ui.add_space(crate::theme::SPACE_3);
         self.ui_usage_summary(ui);
+        ui.add_space(crate::theme::SPACE_4);
+        self.ui_usage_chart(ui);
         ui.add_space(crate::theme::SPACE_4);
         self.ui_usage_heatmap(ui);
     }
@@ -60,39 +62,29 @@ impl App {
     /// 区间切换：今日 / 本周 / 本月 / 全部。
     fn range_buttons(&mut self, ui: &mut egui::Ui) {
         for range in Range::ALL {
-            let selected = self.usage_range == range;
-            let visuals = ui.visuals();
-            let (fill, stroke) = if selected {
-                (
-                    visuals.widgets.hovered.bg_fill,
-                    egui::Stroke::new(2.0f32, visuals.widgets.hovered.bg_stroke.color),
-                )
-            } else {
-                (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
-            };
-            let text = egui::RichText::new(range.label());
-            let text = if selected { text.strong() } else { text };
-            if ui
-                .add(
-                    egui::Button::new(text)
-                        .fill(fill)
-                        .stroke(stroke)
-                        .min_size(egui::vec2(RANGE_BUTTON_WIDTH, 22.0)),
-                )
-                .clicked()
-            {
+            if super::chip(
+                ui,
+                self.usage_range == range,
+                range.label(),
+                RANGE_BUTTON_WIDTH,
+            ) {
                 self.usage_range = range;
             }
         }
     }
 
-    /// 总览卡：当前区间的合计 + 输入 / 输出 / 缓存分解。
+    /// 总览卡：当前区间的合计 + 构成条 + 汇总事实。
     fn ui_usage_summary(&mut self, ui: &mut egui::Ui) {
         let daily = self.usage_daily_filtered();
         let today = self.usage_today();
         let range = self.usage_range;
         let stats = range::range_stats(&daily, range, today);
         let all = range::totals_in_range(&daily, Range::All, today);
+        // 连续天数与最爱模型不看区间：前者是「当前状态」，后者照区间取。
+        let streak = range::current_streak(&daily, today);
+        let top_model = range::top_model_in_range(&daily, range, today)
+            .map(|(model, total)| format!("{}（{}）", model, aggregate::format_tokens(total)))
+            .unwrap_or_else(|| "—".to_string());
         let weak = ui.visuals().weak_text_color();
 
         egui::Frame::NONE
@@ -117,6 +109,12 @@ impl App {
                         .color(weak),
                     );
                 });
+
+                ui.add_space(crate::theme::SPACE_2);
+
+                // 构成条：四个桶的占比一眼可见 —— 缓存读常常占九成以上，
+                // 不给比例看不出量到底花在哪。
+                composition_bar(ui, &stats.totals, self.theme.accent_color());
 
                 ui.add_space(crate::theme::SPACE_3);
 
@@ -148,16 +146,16 @@ impl App {
                     ] {
                         stat_block(ui, label, &value);
                     }
+                    // 第二排：使用习惯。照参考实现（tokscale 的 Stats 页）
+                    // 把「连续天数 / 最爱模型」这类事实列出来 —— 单看总量
+                    // 看不出频率与偏好。
+                    for (label, value) in [
+                        ("连续天数", format!("{} 天", streak)),
+                        ("最爱模型", top_model),
+                    ] {
+                        stat_block(ui, label, &value);
+                    }
                 });
-
-                ui.add_space(crate::theme::SPACE_3);
-
-                // 分解：照参考实现的明细行，四个桶都列。
-                ui.label(
-                    egui::RichText::new(usage_breakdown_line(&stats.totals))
-                        .size(crate::theme::TEXT_SMALL)
-                        .color(weak),
-                );
 
                 if stats.totals.total() == 0 {
                     ui.add_space(crate::theme::SPACE_2);
@@ -274,19 +272,70 @@ impl App {
     }
 }
 
-/// 分解行：`输入 x · 输出 y · 缓存读 z · 缓存写 w`。
+/// 构成条：四个桶按占比排成一条横条 + 一行图例。
 ///
-/// 照参考实现（tokscale 的明细行）把四个桶都列出来，而不是只给合计 ——
-/// 缓存读常常占九成以上，不给分解看不出量到底花在哪。
-fn usage_breakdown_line(totals: &crate::usage::DayTotals) -> String {
-    format!(
-        "输入 {} · 输出 {} · 缓存读 {} · 缓存写 {}",
-        aggregate::format_tokens(totals.input),
-        aggregate::format_tokens(totals.output),
-        aggregate::format_tokens(totals.cache_read),
-        aggregate::format_tokens(totals.cache_write),
-    )
+/// 比一行「输入 x · 输出 y · 缓存读 z · 缓存写 w」的小字强：缓存读常常占
+/// 九成以上，不给比例看不出量到底花在哪。
+///
+/// 宽度按占比分配；总用量为 0 时整条不画（总览卡已经给了空状态提示）。
+fn composition_bar(ui: &mut egui::Ui, totals: &crate::usage::DayTotals, accent: egui::Color32) {
+    let total = totals.total();
+    if total <= 0 {
+        return;
+    }
+    let dark = ui.visuals().dark_mode;
+    let buckets = [
+        ("输入", totals.input),
+        ("输出", totals.output),
+        ("缓存读", totals.cache_read),
+        ("缓存写", totals.cache_write),
+    ];
+
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), COMPOSITION_BAR_HEIGHT),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter_at(rect);
+    let radius = 3.0;
+    let mut x = rect.left();
+    for (index, (_, value)) in buckets.iter().enumerate() {
+        if *value <= 0 {
+            continue;
+        }
+        let width = rect.width() * (*value as f32 / total as f32);
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(x, rect.top()),
+                egui::vec2(width.max(1.0), rect.height()),
+            ),
+            radius,
+            super::series_color(index, accent, dark),
+        );
+        x += width;
+    }
+
+    ui.add_space(crate::theme::SPACE_2);
+    let weak = ui.visuals().weak_text_color();
+    ui.horizontal_wrapped(|ui| {
+        for (index, (label, value)) in buckets.iter().enumerate() {
+            let (swatch, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(swatch, 2.0, super::series_color(index, accent, dark));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{label} {} · {}",
+                    percent_of(*value, total),
+                    aggregate::format_tokens(*value)
+                ))
+                .size(crate::theme::TEXT_CAPTION)
+                .color(weak),
+            );
+        }
+    });
 }
+
+/// 构成条高度。
+const COMPOSITION_BAR_HEIGHT: f32 = 8.0;
 
 /// 一个统计块：小标签在上、数字在下（照参考实现的 `Total / Tokens / Best day`）。
 ///

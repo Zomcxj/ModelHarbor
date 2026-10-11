@@ -209,10 +209,11 @@ fn number_columns_are_right_aligned() {
 #[test]
 fn headers_sit_above_their_numbers() {
     let texts = render(None);
+    // 表头可能带排序箭头（`合计 ▼`）：按前缀找，不要求完全相等。
     let header = |name: &str| {
         texts
             .iter()
-            .find(|t| t.text == name)
+            .find(|t| t.text == name || t.text.starts_with(&format!("{name} ")))
             .unwrap_or_else(|| panic!("没渲染出表头「{name}」"))
     };
     let total = header("合计");
