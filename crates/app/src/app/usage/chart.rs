@@ -440,6 +440,11 @@ fn build_series(
         .map(|(model, _)| model.clone())
         .collect();
 
+    // 区间内无任何模型分解时返回空系列；空系列上 `series.len() - 1`
+    // 会发生 usize 下溢。
+    if top.is_empty() {
+        return Vec::new();
+    }
     let mut series: Vec<Series> = top
         .iter()
         .enumerate()

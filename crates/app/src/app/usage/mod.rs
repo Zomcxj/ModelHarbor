@@ -116,6 +116,13 @@ pub(in crate::app) fn series_color(
 /// 后台线程交回来的原始扫描结果：会话表、按天分桶、消息数、内核自报耗时。
 type ScanPayload = (HashMap<String, SessionSnapshot>, DailyMap, usize, u32);
 
+/// 后台线程发回的消息：**起飞时的忽略名单代数** + 扫描结果。
+///
+/// 扫描期间的删除使在途结果作废：该结果的按天分桶仍含被删会话的贡献，
+/// `merge_daily` 按 max 合并保留较大值，该贡献将永久留在统计中（重复删除
+/// 不再扣减，统计侧不存在其他恢复途径）。
+type ScanMessage = (u64, Result<ScanPayload, String>);
+
 /// 一次扫描的成品（已并入账本）。
 pub(in crate::app) struct UsageReport {
     /// 展示视图：实时扫描结果 ∪ 账本里已消失的会话，按最近活动倒序。
@@ -150,8 +157,12 @@ pub(in crate::app) struct UsageState {
     pub result: Option<Result<UsageReport, String>>,
     /// `result` 当前是账本顶上的缓存数据（打开秒显）：后台扫完即替换。
     cached: bool,
+    /// 忽略名单的代数：每**成功**删一个会话 +1。
+    ///
+    /// 扫描起飞时随消息记录；落地时不一致则整份结果作废。
+    ignore_generation: u64,
     /// 扫描在途时的接收端。
-    rx: Option<Receiver<Result<ScanPayload, String>>>,
+    rx: Option<Receiver<ScanMessage>>,
     /// 账本（跨扫描保留已删会话）。
     ledger: Ledger,
     /// 上次指纹检测时刻（egui 秒）。
@@ -169,6 +180,7 @@ impl Default for UsageState {
         let mut state = Self {
             result: None,
             cached: false,
+            ignore_generation: 0,
             rx: None,
             // 账本按项目既有约定放在配置目录（`Prefs::config_dir()`，
             // 与 settings.json / tokens.json 同目录），不自己拼路径。
@@ -316,6 +328,44 @@ pub(in crate::app) fn repaint_delay(dirty_since: Option<f64>, now: f64) -> Optio
     })
 }
 
+/// 在途扫描结果的处置（纯决策，不依赖 `App`，可单测）。
+#[derive(Debug, PartialEq)]
+pub(in crate::app) enum Landing {
+    /// 没有可接收的结果（扫描仍在途或无在途扫描）。
+    Empty,
+    /// 采纳并并入账本。
+    Adopt(ScanPayload),
+    /// 扫描失败：切换到错误页。
+    Fail(String),
+    /// 忽略名单在扫描期间变更：整份结果作废，由调用方以新名单重新扫描。
+    Stale,
+    /// 通道关闭（后台线程异常退出）。
+    Disconnected,
+}
+
+/// 收一次在途扫描的结果并决定处置。
+///
+/// 消息被接收（无论采纳或作废）后即清空接收端。
+fn land_scan(rx: &mut Option<Receiver<ScanMessage>>, current_generation: u64) -> Landing {
+    let Some(receiver) = rx.as_mut() else {
+        return Landing::Empty;
+    };
+    let landing = match receiver.try_recv() {
+        Ok((spawn_generation, Ok(payload))) => {
+            if spawn_generation == current_generation {
+                Landing::Adopt(payload)
+            } else {
+                Landing::Stale
+            }
+        }
+        Ok((_, Err(err))) => Landing::Fail(err),
+        Err(TryRecvError::Empty) => return Landing::Empty,
+        Err(TryRecvError::Disconnected) => Landing::Disconnected,
+    };
+    *rx = None;
+    landing
+}
+
 impl App {
     /// 每帧调用：收扫描结果 + 按指纹变化决定是否重扫。
     ///
@@ -325,28 +375,29 @@ impl App {
         let now = ctx.input(|input| input.time);
 
         // 1. 先收结果。`try_recv` 不阻塞：没有结果就立刻返回。
-        let received = self.usage.rx.as_ref().map(Receiver::try_recv);
-        match received {
-            Some(Ok(Ok((sessions, daily, message_count, scan_ms)))) => {
+        let current_generation = self.usage.ignore_generation;
+        match land_scan(&mut self.usage.rx, current_generation) {
+            Landing::Empty => {}
+            Landing::Adopt(payload) => {
                 // 并入账本 + 产出展示视图。merge_scan 是 O(会话数)，几十条，UI 线程够用。
-                self.usage
-                    .adopt_scan((sessions, daily, message_count, scan_ms), now);
-                self.usage.rx = None;
+                self.usage.adopt_scan(payload, now);
                 self.save_usage_ledger(now);
             }
-            Some(Ok(Err(err))) => {
+            Landing::Fail(err) => {
                 // 扫描失败：换上错误页（与无缓存时的行为一致）。缓存标记一并清掉，
                 // 否则「有缓存 → 自动重扫」会在持续失败时每帧打转。
                 self.usage.result = Some(Err(err));
                 self.usage.cached = false;
-                self.usage.rx = None;
             }
-            Some(Err(TryRecvError::Empty)) => {}
-            Some(Err(TryRecvError::Disconnected)) => {
+            Landing::Stale => {
+                // 扫描期间忽略名单变更：整份结果作废，以新名单立即重新扫描
+                // （见 [`ScanMessage`]）；代价是竞态命中时多执行一轮扫描。
+                self.start_usage_scan(now, ctx);
+                return;
+            }
+            Landing::Disconnected => {
                 // 线程异常退出：结束等待，下一轮检测再决定要不要重扫。
-                self.usage.rx = None;
             }
-            None => {}
         }
 
         // 2. 首帧（或上次扫描失败后重开）自动扫一次：满足「每次打开软件自动更新」。
@@ -405,10 +456,12 @@ impl App {
 
     /// 发起一次后台扫描。UI 线程只负责 spawn 与收结果。
     fn start_usage_scan(&mut self, now: f64, ctx: &egui::Context) {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel::<ScanMessage>();
         // 已删除并永久忽略的会话：名单拷给后台线程，扫描时直接跳过，
         // 否则删掉的会话会在下一轮扫描里复活。
         let ignored = self.usage.ledger.ignored().clone();
+        // 记录起飞时的名单代数；落地时不一致则整份结果作废。
+        let generation = self.usage.ignore_generation;
         std::thread::spawn(move || {
             // 全量扫描（release 2.4-2.7s）：只能在后台线程跑。
             let payload = crate::usage::scan(&ignored).map(|scanned| {
@@ -419,7 +472,7 @@ impl App {
                     scanned.processing_time_ms,
                 )
             });
-            let _ = tx.send(payload);
+            let _ = tx.send((generation, payload));
         });
         self.usage.rx = Some(rx);
         self.usage.dirty_since = None;
@@ -441,9 +494,10 @@ impl App {
         daily: DailyMap,
     ) {
         // 用内存账本：否则会读用户真实账本，行数不定、断言不稳。
-        // 换账本意味着构造时秒显的缓存数据一并作废。
+        // 更换账本后，构造期填充的缓存数据一并失效（忽略名单代数同时归零）。
         self.usage.ledger = Ledger::in_memory();
         self.usage.cached = false;
+        self.usage.ignore_generation = 0;
         let scanned: HashMap<String, SessionSnapshot> = sessions
             .into_iter()
             .map(|s| (SessionSnapshot::key(s.client, &s.session_id), s))
@@ -491,7 +545,10 @@ impl App {
     /// 磁盘上的会话文件不动 —— 删的只是 ModelHarbor 自己的统计；之后的
     /// 扫描也跳过它（名单存在账本里，见 [`Ledger::ignore_session`]）。
     pub(in crate::app) fn forget_usage_session(&mut self, key: &str, now: f64) {
-        self.usage.ledger.ignore_session(key);
+        // 仅在实际删除时递增代数：重复删除不改变名单。
+        if self.usage.ledger.ignore_session(key) {
+            self.usage.ignore_generation += 1;
+        }
         if let Some(Ok(report)) = self.usage.result.as_mut() {
             report
                 .sessions
@@ -790,6 +847,60 @@ mod tests {
     }
 
     #[test]
+    /// 起飞与落地之间名单没变：正常收下，接收端清掉。
+    #[test]
+    fn land_scan_adopts_when_the_generation_matches() {
+        let (tx, rx) = std::sync::mpsc::channel::<ScanMessage>();
+        tx.send((3, Ok((HashMap::new(), DailyMap::new(), 0, 0))))
+            .unwrap();
+        let mut rx = Some(rx);
+        assert_eq!(land_scan(&mut rx, 3), Landing::Adopt(Default::default()));
+        assert!(rx.is_none(), "收下的消息要把接收端清掉");
+        // 清掉之后再收：空。
+        assert_eq!(land_scan(&mut rx, 3), Landing::Empty);
+    }
+
+    /// 起飞后名单变了（代数对不上）：整份作废，要求重扫。
+    /// 该结果的按天分桶仍含被删会话的贡献；max 合并会将其永久保留，
+    /// 故整份作废。
+    #[test]
+    fn land_scan_discards_a_scan_from_before_an_ignore() {
+        let (tx, rx) = std::sync::mpsc::channel::<ScanMessage>();
+        // 这份 payload 里带着被删会话的贡献（模拟在途扫描的旧数据）。
+        let mut daily = DailyMap::new();
+        let mut bucket = crate::usage::DailyBucket::new("2026-01-01");
+        bucket.totals.input = 500;
+        daily.insert("2026-01-01".into(), bucket);
+        tx.send((0, Ok((HashMap::new(), daily, 0, 0)))).unwrap();
+        let mut rx = Some(rx);
+        // 落地时代数已是 1（删除发生在起飞之后）。
+        assert_eq!(land_scan(&mut rx, 1), Landing::Stale);
+        assert!(rx.is_none(), "作废的消息同样要把接收端清掉");
+    }
+
+    /// 扫描失败切换到错误页；空通道保留接收端；通道关闭时清空接收端。
+    #[test]
+    fn land_scan_fail_empty_and_disconnected() {
+        let (tx, rx) = std::sync::mpsc::channel::<ScanMessage>();
+        tx.send((0, Err("boom".into()))).unwrap();
+        let mut rx = Some(rx);
+        assert_eq!(land_scan(&mut rx, 0), Landing::Fail("boom".into()));
+        assert!(rx.is_none());
+
+        // 空通道：保持接收端（扫描还在途）。
+        let (_tx, rx) = std::sync::mpsc::channel::<ScanMessage>();
+        let mut rx = Some(rx);
+        assert_eq!(land_scan(&mut rx, 0), Landing::Empty);
+        assert!(rx.is_some(), "在途时不能把接收端清掉");
+
+        // 断连：清掉，等下一轮检测决定重扫。
+        let (tx, rx) = std::sync::mpsc::channel::<ScanMessage>();
+        drop(tx);
+        let mut rx = Some(rx);
+        assert_eq!(land_scan(&mut rx, 0), Landing::Disconnected);
+        assert!(rx.is_none());
+    }
+
     fn poll_due_throttles_to_the_interval() {
         assert!(poll_due(None, 0.0), "首次应立刻检测");
         assert!(!poll_due(Some(10.0), 10.0));
@@ -1010,6 +1121,7 @@ mod tests {
         let mut state = UsageState {
             result: None,
             cached: false,
+            ignore_generation: 0,
             rx: None,
             ledger: Ledger::in_memory(),
             last_poll_at: None,
@@ -1045,6 +1157,7 @@ mod tests {
         let mut state = UsageState {
             result: None,
             cached: false,
+            ignore_generation: 0,
             rx: None,
             ledger: Ledger::in_memory(),
             last_poll_at: None,

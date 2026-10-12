@@ -79,10 +79,6 @@ pub(in crate::app) fn format_m(n: i64) -> String {
 // 相对时间
 // ---------------------------------------------------------------------------
 
-/// `last_seen_ms` 相对 `now_ms` 的「N 分钟前」文案。
-///
-/// 时间在未来（时钟回拨、或源里的时间戳比本机快）时按「刚刚」处理，
-/// 不显示负数。
 /// 缓存展示超过该时长即标注「已过期」（对齐 token-monitor 的 5 分钟阈值）。
 pub(in crate::app) const CACHED_STALE_MS: i64 = 5 * 60 * 1000;
 
@@ -113,6 +109,10 @@ pub(in crate::app) fn cached_status_line(
     line
 }
 
+/// `last_seen_ms` 相对 `now_ms` 的「N 分钟前」文案。
+///
+/// 时间在未来（时钟回拨、或源里的时间戳比本机快）时按「刚刚」处理，
+/// 不显示负数。
 pub(in crate::app) fn relative_time(last_seen_ms: i64, now_ms: i64) -> String {
     let delta_secs = (now_ms - last_seen_ms).max(0) / 1_000;
     if delta_secs < 60 {
