@@ -196,7 +196,7 @@ impl App {
                     plot_ui.line(
                         Line::new(item.label.clone(), PlotPoints::from(smooth_curve(&points)))
                             .color(item.color)
-                            .width(2.0),
+                            .width(2.0_f32),
                     );
                 }
             });

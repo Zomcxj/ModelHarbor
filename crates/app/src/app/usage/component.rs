@@ -23,7 +23,7 @@ pub(in crate::app) fn card<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui
         .inner_margin(egui::Margin::same(crate::theme::SPACE_3 as i8))
         // 外框描边与圆角跟主题的非交互控件走（换主题一起变）。
         .stroke(egui::Stroke::new(
-            1.0,
+            1.0_f32,
             visuals.widgets.noninteractive.bg_stroke.color,
         ))
         .corner_radius(visuals.widgets.noninteractive.corner_radius)
