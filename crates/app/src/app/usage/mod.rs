@@ -846,7 +846,6 @@ mod tests {
         }
     }
 
-    #[test]
     /// 起飞与落地之间名单没变：正常收下，接收端清掉。
     #[test]
     fn land_scan_adopts_when_the_generation_matches() {
@@ -901,6 +900,7 @@ mod tests {
         assert!(rx.is_none());
     }
 
+    #[test]
     fn poll_due_throttles_to_the_interval() {
         assert!(poll_due(None, 0.0), "首次应立刻检测");
         assert!(!poll_due(Some(10.0), 10.0));
