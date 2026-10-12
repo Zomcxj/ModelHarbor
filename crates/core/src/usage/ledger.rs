@@ -289,29 +289,19 @@ impl Ledger {
         &self.ignored
     }
 
-    /// 删除一个会话：从账本移除并**永久忽略** —— 之后的扫描不再把它并回来。
+    /// 删除一个会话：从账本移除并加入忽略名单 —— 之后的扫描不再把它并回来。
     ///
-    /// 与「从磁盘消失 → 归档」不同：归档的会话下次扫到会复活，删掉的是
-    /// 用户明确不要的，必须拦在合并之前。它在各天分桶里的贡献同步扣掉，
-    /// 否则热力图 / 时间表会继续算它的量。
+    /// 与「从磁盘消失 → 归档」不同：归档的会话行还在账本里，删掉的行也一并
+    /// 拿掉。但它已并入按天分桶的贡献**保留**（token-monitor 式隐藏）：总量、
+    /// 热力图与时间表不因删除缩水，只是列表里看不见它了。
     ///
     /// 返回是否有改动（重复删同一个键时为 `false`）。
     pub fn ignore_session(&mut self, key: &str) -> bool {
         if !self.ignored.insert(key.to_string()) {
             return false;
         }
-        let snapshot = self.entries.remove(key);
+        self.entries.remove(key);
         self.dirty.push(key.to_string());
-        let Some(snapshot) = snapshot else {
-            return true;
-        };
-        for (date, bucket) in self.daily.iter_mut() {
-            let before = bucket.clone();
-            bucket.remove_session(key, snapshot.client.label(), &snapshot.model_id);
-            if *bucket != before {
-                self.dirty_days.push(date.clone());
-            }
-        }
         true
     }
 
@@ -983,9 +973,9 @@ mod tests {
         assert!(!ledger.view().iter().any(|s| s.session_id == "gone"));
     }
 
-    /// 删除会话同步扣掉它在各天分桶里的贡献（热力图 / 时间表不再算它）。
+    /// 删除会话只藏行：已并入按天分桶的贡献保留（总量不因删除缩水）。
     #[test]
-    fn ignore_session_subtracts_daily_contribution() {
+    fn ignore_session_keeps_daily_contribution() {
         let mut ledger = Ledger::in_memory();
         ledger.merge_scan(scan_of(vec![snapshot("gone", 500, 50)]));
         let key = SessionSnapshot::key(ConfigFormat::Pi, "gone");
@@ -1009,11 +999,11 @@ mod tests {
 
         ledger.ignore_session(&key);
         let day = ledger.daily().get("2026-01-01").unwrap();
-        assert_eq!(day.totals.input, 0, "合计要扣掉");
-        assert!(day.by_session.is_empty());
-        assert!(day.by_model["test-model"].input == 0);
-        assert!(day.by_client["pi"].input == 0);
-        assert!(day.by_client_model["pi"]["test-model"].input == 0);
+        assert_eq!(day.totals.input, 500, "总量不因删除缩水");
+        assert_eq!(day.by_session[&key].input, 500);
+        assert_eq!(day.by_model["test-model"].input, 500);
+        assert_eq!(day.by_client["pi"].input, 500);
+        assert_eq!(day.by_client_model["pi"]["test-model"].input, 500);
     }
 
     /// 忽略名单落盘：重启后依然生效。

@@ -67,20 +67,6 @@ impl DayTotals {
         self.cost = self.cost.max(other.cost);
     }
 
-    /// 逐字段饱和扣减（删除会话时把它在账本里的贡献减掉）。
-    ///
-    /// 按天分桶是逐字段取较大值攒出来的，合计与分解可能来自不同轮扫描，
-    /// 扣减时对不上数：饱和到 0，不让负数污染统计。
-    pub fn saturating_sub_assign(&mut self, other: &Self) {
-        self.input = self.input.saturating_sub(other.input);
-        self.output = self.output.saturating_sub(other.output);
-        self.cache_read = self.cache_read.saturating_sub(other.cache_read);
-        self.cache_write = self.cache_write.saturating_sub(other.cache_write);
-        self.reasoning = self.reasoning.saturating_sub(other.reasoning);
-        self.messages = self.messages.saturating_sub(other.messages);
-        self.cost = (self.cost - other.cost).max(0.0);
-    }
-
     /// 累加（跨天求和用）。
     pub fn add_assign(&mut self, other: &Self) {
         self.input = self.input.saturating_add(other.input);
@@ -199,28 +185,6 @@ impl DailyBucket {
         for (client, models) in &other.by_client_model {
             let target = self.by_client_model.entry(client.clone()).or_default();
             merge_breakdown(target, models);
-        }
-    }
-
-    /// 把一个会话在当天的贡献从合计与各分解里扣掉（删除会话用）。
-    ///
-    /// 模型归属按该会话最后一次用的模型近似：中途换模型的会话极少，而按天
-    /// 分桶里没有「会话 × 模型」这一层，拆不了更细。没有该会话的贡献时不动。
-    pub fn remove_session(&mut self, key: &str, client_label: &str, model_id: &str) {
-        let Some(totals) = self.by_session.remove(key) else {
-            return;
-        };
-        self.totals.saturating_sub_assign(&totals);
-        if let Some(entry) = self.by_client.get_mut(client_label) {
-            entry.saturating_sub_assign(&totals);
-        }
-        if let Some(entry) = self.by_model.get_mut(model_id) {
-            entry.saturating_sub_assign(&totals);
-        }
-        if let Some(by_model) = self.by_client_model.get_mut(client_label) {
-            if let Some(entry) = by_model.get_mut(model_id) {
-                entry.saturating_sub_assign(&totals);
-            }
         }
     }
 
