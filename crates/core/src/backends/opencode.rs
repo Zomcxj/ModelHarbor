@@ -5,7 +5,7 @@
 use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
-use crate::model::{AgentRow, ProviderRow};
+use crate::model::{AgentRow, OpencodeSchemaVersion, ProviderRow};
 use crate::util::{home_dir_string, parse_config_content, wsl_home, WslPathProbe};
 use serde_json::{Map, Value};
 use std::path::Path;
@@ -179,15 +179,17 @@ impl Backend for OpenCodeFamilyBackend {
                 // 当前文件：以 UI 状态为准整体替换 agent / provider（删除即生效）；
                 // 列表为空时移除对应键，不写空对象
                 let mut r = extras.clone();
-                // 键名跟随源文件：复数键存在就写复数，否则写单数。
+                // 键名与写回形状跟随源文件：复数键存在就写复数，否则写单数；
+                // v2 文件写 v2 形状（package / settings / capabilities 等）。
                 // 在可变借用之前取，避免借用冲突。
                 let ak = agents_key(&r);
                 let pk = providers_key(&r);
+                let version = detect_schema_version(&r);
                 if let Value::Object(o) = &mut r {
                     let mut am = Map::new();
                     for a in agents {
                         if !a.key.is_empty() {
-                            am.insert(a.key.clone(), a.to_value());
+                            am.insert(a.key.clone(), a.to_value_as(version));
                         }
                     }
                     if am.is_empty() {
@@ -199,7 +201,7 @@ impl Backend for OpenCodeFamilyBackend {
                     let mut pm = Map::new();
                     for p in providers {
                         if !p.key.is_empty() {
-                            pm.insert(p.key.clone(), p.to_value());
+                            pm.insert(p.key.clone(), p.to_value_as(version));
                         }
                     }
                     if pm.is_empty() {
@@ -277,11 +279,16 @@ fn with_schema(root: Value, schema: &str) -> Value {
 /// 按目标方言补齐模型级**必需成对字段**。
 ///
 /// 三家 CLI 的 required 不同：`limit.context` / `limit.output` 三家都要求成对；
-/// `modalities.input` / `modalities.output` 仅 mimocode 要求成对。
+/// 模态成对（v1 在 `modalities`，v2 在 `capabilities`）仅 mimocode 要求。
 ///
-/// 补法：`modalities` 缺的一侧补 `["text"]`；`limit` 只给一半时整块删除
-/// （`limit` 在模型级可选）。`modalities` 两侧都没写时整块删除。
-fn complete_required_model_fields(model: &mut Value, flavor: ConfigFormat) {
+/// 补法：缺的一侧补 `["text"]`；`limit` 只给一半时整块删除
+/// （`limit` 在模型级可选）。模态两侧都没写时：v1 整块删除（`{}` 非法），
+/// v2 若还留着 `tools` 等键则补齐两侧、否则删除。
+fn complete_required_model_fields(
+    model: &mut Value,
+    flavor: ConfigFormat,
+    version: OpencodeSchemaVersion,
+) {
     let Some(obj) = model.as_object_mut() else {
         return;
     };
@@ -297,12 +304,16 @@ fn complete_required_model_fields(model: &mut Value, flavor: ConfigFormat) {
         }
     }
 
-    // modalities：只有 mimocode 要求 input + output 成对。
+    // 模态成对：只有 mimocode 要求。
     if flavor != ConfigFormat::Mimocode {
         return;
     }
+    let parent = match version {
+        OpencodeSchemaVersion::V1 => "modalities",
+        OpencodeSchemaVersion::V2 => "capabilities",
+    };
     let modality_sides = obj
-        .get("modalities")
+        .get(parent)
         .and_then(Value::as_object)
         .map(|m| (m.contains_key("input"), m.contains_key("output")));
     let Some((has_input, has_output)) = modality_sides else {
@@ -310,28 +321,39 @@ fn complete_required_model_fields(model: &mut Value, flavor: ConfigFormat) {
     };
     match (has_input, has_output) {
         (true, true) => {}
-        // 两侧都没写：整块删掉（`{}` 非法）。
         (false, false) => {
-            obj.remove("modalities");
+            let has_other = obj
+                .get(parent)
+                .and_then(Value::as_object)
+                .is_some_and(|m| !m.is_empty());
+            if has_other {
+                fill_text_modality(obj, parent, "input");
+                fill_text_modality(obj, parent, "output");
+            } else {
+                obj.remove(parent);
+            }
         }
-        (true, false) => fill_text_modality(obj, "output"),
-        (false, true) => fill_text_modality(obj, "input"),
+        (true, false) => fill_text_modality(obj, parent, "output"),
+        (false, true) => fill_text_modality(obj, parent, "input"),
     }
 }
 
-/// 把 `modalities.<side>` 补成 `["text"]`。
-fn fill_text_modality(obj: &mut Map<String, Value>, side: &str) {
-    if let Some(modalities) = obj.get_mut("modalities").and_then(Value::as_object_mut) {
-        modalities.insert(
+/// 把 `<parent>.<side>` 补成 `["text"]`。
+fn fill_text_modality(obj: &mut Map<String, Value>, parent: &str, side: &str) {
+    if let Some(target) = obj.get_mut(parent).and_then(Value::as_object_mut) {
+        target.insert(
             side.into(),
             Value::Array(vec![Value::String("text".into())]),
         );
     }
 }
 
-/// 对整个 root 的 `provider.*.models.*` 逐个补齐必需字段，含目标文件里原有的模型。
+/// 对整个 root 的 provider 表逐个补齐必需字段，含目标文件里原有的模型。
+/// 兼容新旧顶层键：新版写 `providers`，旧版写 `provider`。
 fn complete_required_fields_in(root: &mut Value, flavor: ConfigFormat) {
-    let Some(providers) = root.get_mut("provider").and_then(Value::as_object_mut) else {
+    let version = detect_schema_version(root);
+    let pk = providers_key(root);
+    let Some(providers) = root.get_mut(pk).and_then(Value::as_object_mut) else {
         return;
     };
     for provider in providers.values_mut() {
@@ -339,7 +361,7 @@ fn complete_required_fields_in(root: &mut Value, flavor: ConfigFormat) {
             continue;
         };
         for model in models.values_mut() {
-            complete_required_model_fields(model, flavor);
+            complete_required_model_fields(model, flavor, version);
         }
     }
 }
@@ -375,15 +397,45 @@ fn providers_table(root: &Value) -> Option<&Map<String, Value>> {
     root.get(providers_key(root)).and_then(|x| x.as_object())
 }
 
+/// 整文件判定 opencode schema 版本。
+///
+/// provider 用 `package` / `settings` 是 v2 最强证据；顶层复数
+/// `agents` / `plugins`（pi 从不具备、旧版 opencode 写单数）与 agent 的
+/// `model#variant` 作后备。顶层复数 `providers` **单独不作证据**：
+/// 那也是 pi 的内容形状（顶层就是 providers），裸复数键归 pi 认领。
+/// 写回形状跟随此判定：给 v1 更新 v1，给 v2 更新 v2。
+pub fn detect_schema_version(root: &Value) -> OpencodeSchemaVersion {
+    if providers_table(root).is_some_and(|table| {
+        table
+            .values()
+            .any(|p| p.get("package").is_some() || p.get("settings").is_some())
+    }) {
+        return OpencodeSchemaVersion::V2;
+    }
+    if root.get("agents").and_then(Value::as_object).is_some() || root.get("plugins").is_some() {
+        return OpencodeSchemaVersion::V2;
+    }
+    if agents_table(root).is_some_and(|table| {
+        table
+            .values()
+            .any(|a| crate::util::str_at(a, "model").contains('#'))
+    }) {
+        return OpencodeSchemaVersion::V2;
+    }
+    OpencodeSchemaVersion::V1
+}
+
 pub fn merge_opencode_root(
     target_root: &Value,
     agents: &[AgentRow],
     providers: &[ProviderRow],
 ) -> Value {
-    // 键名跟随目标文件：复数键存在就写复数，否则写单数。
+    // 键名与写回形状跟随目标文件：复数键存在就写复数，否则写单数；
+    // 目标是 v2 就写 v2 形状。
     // 在可变借用之前取，避免借用冲突。
     let ak = agents_key(target_root);
     let pk = providers_key(target_root);
+    let version = detect_schema_version(target_root);
     let mut root = target_root.clone();
     if let Value::Object(o) = &mut root {
         let mut am = o
@@ -393,7 +445,7 @@ pub fn merge_opencode_root(
             .unwrap_or_default();
         for a in agents {
             if !a.key.is_empty() {
-                let value = a.to_value();
+                let value = a.to_value_as(version);
                 let entry = match am.get(&a.key) {
                     Some(target) => convert::merge_conservative(target, &value),
                     None => value,
@@ -410,7 +462,7 @@ pub fn merge_opencode_root(
             .unwrap_or_default();
         for p in providers {
             if !p.key.is_empty() {
-                let value = p.to_value();
+                let value = p.to_value_as(version);
                 let entry = match pm.get(&p.key) {
                     Some(target) => convert::merge_conservative(target, &value),
                     None => value,

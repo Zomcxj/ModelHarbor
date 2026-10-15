@@ -223,6 +223,26 @@ pub fn npm_to_api(npm: &str) -> String {
     }
 }
 
+/// v2 的 `@opencode/ai/providers/<后缀>` 包 → api（线上协议）。
+///
+/// 后缀映射：anthropic → anthropic-messages、google → google-generative-ai、
+/// openai → openai-responses、mistral → mistral-conversations；
+/// openai-compatible 与未知后缀 → openai-completions。
+/// 非 v2 前缀的包名走 [`npm_to_api`]。
+pub fn package_or_npm_to_api(pkg: &str) -> String {
+    if let Some(suffix) = pkg.strip_prefix("@opencode/ai/providers/") {
+        let last = suffix.rsplit('/').next().unwrap_or(suffix);
+        return match last {
+            "anthropic" => "anthropic-messages".to_string(),
+            "google" => "google-generative-ai".to_string(),
+            "openai" => "openai-responses".to_string(),
+            "mistral" => "mistral-conversations".to_string(),
+            _ => "openai-completions".to_string(),
+        };
+    }
+    npm_to_api(pkg)
+}
+
 /// omp 官方 9 值（`google-gemini-cli` 为 omp 专属）。
 pub const OMP_APIS: [&str; 9] = [
     "openai-completions",
@@ -359,6 +379,7 @@ pub fn model_from_pi(v: &Value) -> ModelRow {
         } else {
             crate::format::ConfigFormat::Pi
         }),
+        schema: crate::model::OpencodeSchemaVersion::V1,
         raw: v.clone(),
         kimi_alias: String::new(),
     }
@@ -509,6 +530,7 @@ pub fn provider_from_pi(key: &str, v: &Value) -> ProviderRow {
         models,
         new_model: ModelRow::new(),
         source_format: Some(crate::format::ConfigFormat::Pi),
+        schema: crate::model::OpencodeSchemaVersion::V1,
         raw: v.clone(),
         pi_api: api.to_string(),
         qwen_pid: String::new(),

@@ -216,6 +216,7 @@ fn provider_from_dsh(key: &str, v: &Value, credentials_root: &Value) -> Provider
         models,
         new_model: ModelRow::new(),
         source_format: Some(ConfigFormat::DeepSeekHarness),
+        schema: crate::model::OpencodeSchemaVersion::V1,
         raw: v.clone(),
         pi_api: api.to_string(),
         qwen_pid: String::new(),
