@@ -5,7 +5,7 @@
 use super::{Backend, BackendLoad};
 use crate::convert;
 use crate::format::ConfigFormat;
-use crate::model::{AgentRow, ProviderRow};
+use crate::model::{AgentRow, OpencodeSchemaVersion, ProviderRow};
 use crate::util::{home_dir_string, parse_config_content, wsl_home};
 use serde_json::{Map, Value};
 
@@ -36,11 +36,14 @@ impl Backend for PiBackend {
         if super::opencode::family_path_matches(path) {
             return false;
         }
-        // 含 `providers` 对象且无 `provider` 键
+        // 含 `providers` 对象且无 `provider` 键；opencode v2 的内容特征
+        // （顶层复数 agents/plugins、providers 条目带 package/settings）
+        // 同样命中前一条，命中 v2 特征时让路给 opencode。
         parse_config_content(content)
             .map(|v| {
                 v.get("providers").and_then(|x| x.as_object()).is_some()
                     && v.get("provider").is_none()
+                    && super::opencode::detect_schema_version(&v) != OpencodeSchemaVersion::V2
             })
             .unwrap_or(false)
     }

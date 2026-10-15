@@ -83,6 +83,38 @@ fn detect_format_distinguishes_backends() {
         backends::detect_format("{\"providers\": {}, \"provider\": {}}", ""),
         ConfigFormat::Opencode
     );
+    // opencode v2：顶层复数 providers（与 pi 重合），但条目带 package/settings、
+    // 顶层带 agents/plugins —— 任意路径下都不得被 pi 认领。
+    assert_eq!(
+        backends::detect_format(
+            "{\"providers\": {\"p\": {\"package\": \"@opencode/ai/providers/openai-compatible\"}}}",
+            ""
+        ),
+        ConfigFormat::Opencode
+    );
+    assert_eq!(
+        backends::detect_format(
+            "{\"agents\": {}, \"providers\": {\"p\": {\"settings\": {}}}}",
+            ""
+        ),
+        ConfigFormat::Opencode
+    );
+    // pi 自己的内容（条目 baseUrl/apiKey/api）不受影响。
+    assert_eq!(
+        backends::detect_format(
+            "{\"providers\": {\"p\": {\"baseUrl\": \"https://x\", \"api\": \"openai-completions\"}}}",
+            ""
+        ),
+        ConfigFormat::Pi
+    );
+    // 桌面任意命名的 v2 样本（无 /opencode/ 目录段）也要认成 opencode。
+    assert_eq!(
+        backends::detect_format(
+            "{\"plugins\": [\"a\"], \"providers\": {\"p\": {\"package\": \"x\"}}}",
+            "C:/Users/x/Desktop/opencodev2.json"
+        ),
+        ConfigFormat::Opencode
+    );
 }
 
 #[test]
@@ -773,10 +805,13 @@ fn opencode_plural_keys_round_trip_and_detect() {
         ConfigFormat::Opencode,
         "新版 opencode 配置不得误判为 pi"
     );
-    // 无路径上下文时，纯复数 `providers` 正是 pi 的内容形状，pi 认领是既有
-    // 设计（真实 opencode 文件靠路径认领）；单复数键并存时 opencode 才靠
-    // 内容兜底胜出（pi 要求无 `provider` 键）。
-    assert_eq!(backends::detect_format(content, ""), ConfigFormat::Pi);
+    // 无路径上下文时：顶层复数 `agents` 是 opencode v2 的内容证据（pi 从无该键），
+    // 不得被 pi 认领；裸复数 `providers`（无 v2 条目特征）才是 pi 的形状。
+    assert_eq!(
+        backends::detect_format(content, ""),
+        ConfigFormat::Opencode,
+        "带复数 agents 的内容应按 v2 证据归 opencode"
+    );
     assert_eq!(
         backends::detect_format(r#"{ "providers": {}, "provider": {} }"#, ""),
         ConfigFormat::Opencode
