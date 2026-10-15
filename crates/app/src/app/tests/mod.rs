@@ -46,6 +46,9 @@ mod real_config_enable_visibility;
 mod real_file_grouping;
 #[cfg(test)]
 mod save_all_tests;
+/// 启动页选择：跟随顶栏「已安装」段的拖动顺序，而非固定后端序。
+#[cfg(test)]
+mod startup_page_tests;
 #[cfg(test)]
 mod station_token_tests;
 #[cfg(test)]
@@ -60,6 +63,9 @@ mod tab_highlight_tests;
 /// 用量视图的图表与统计块布局：图例不能压住柱子、统计块不能折行错位。
 #[cfg(test)]
 mod usage_chart_layout_tests;
+/// 删除会话后「行隐藏、明细真删、总量保留」的端到端契约。
+#[cfg(test)]
+mod usage_delete_keeps_total_tests;
 /// 用量视图的两列布局与顶栏按钮位置。
 #[cfg(test)]
 mod usage_layout_tests;

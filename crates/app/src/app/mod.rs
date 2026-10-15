@@ -194,6 +194,11 @@ pub struct App {
     ///
     /// 两段式确认防误触：第一击标待确认，再击同一行才真删。
     usage_delete_pending: Option<String>,
+    /// 删除会话时源侧的错误（进程在跑 / 路径不在了 / 写库失败）。
+    ///
+    /// 源删不掉时账本仍会收走明细（不让界面卡在「删了又回来」），
+    /// 所以这个提示与「已从统计里移除」同时成立。
+    usage_source_error: Option<String>,
     /// 用量表格的排序（各维度共用一份：默认「合计降序」）。
     usage_sort: usage::view::SortState,
     /// 本机用量扫描状态（见 [`crate::app::usage`]）。
@@ -204,6 +209,10 @@ pub struct App {
     glass: bool,
     /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
     tab_order: Vec<String>,
+    /// 常驻任务栏：点 X 只把主窗口收进托盘，托盘图标可唤回 / 退出。
+    ///
+    /// 默认开启（用户要求默认常驻点亮）；开关在顶栏外观按钮左侧。
+    tray_resident: bool,
     /// 上次网络守卫检测时刻（egui 秒）。
     net_guard_at: f64,
     theme: Theme,
@@ -272,6 +281,23 @@ pub struct App {
 /// 启动时的方言判定：以**文件内容**为准，路径所属页面只作回退。
 ///
 /// 文件读不出内容时保持页面推断。
+/// 启动页：跟随顶栏「已安装」段的显示顺序（可拖动换位），取第一个已安装页面。
+///
+/// 与顶栏同一套 `tab_order` 排序，所见即所得：用户把哪个页签拖到最前，
+/// 启动就加载哪个的默认路径。没有已安装页面时返回 `None`，调用方退回
+/// 旧的内容探测。判定谓词可注入，测试借此模拟安装集合。
+fn startup_page_with(
+    paths: &ConfigPaths,
+    tab_order: &[String],
+    installed: impl Fn(ConfigFormat) -> bool,
+) -> Option<(ConfigFormat, String)> {
+    paths
+        .tab_order(tab_order, &installed)
+        .into_iter()
+        .find(|id| installed(*id))
+        .map(|id| (id, backends::target_path(id, &paths.local_path(id))))
+}
+
 fn startup_format(owner: ConfigFormat, path: &str) -> ConfigFormat {
     let path = path.trim();
     if path.is_empty() {
@@ -294,9 +320,13 @@ impl Default for App {
         // 路径：先套用 prefs 里用户手动指定过的覆盖，再定位要打开的页面。
         let mut paths = ConfigPaths::default();
         paths.apply_overrides(&prefs.config_paths);
-        let (format, path) = paths
-            .detect_preferring_overrides(&prefs.config_paths)
-            .unwrap_or((ConfigFormat::Opencode, String::new()));
+        // 启动页跟随顶栏「已安装」段的拖动顺序：第一个是谁就加载谁。
+        // 旧行为按固定后端序探测，命中恒为 opencode（用户报障）。
+        // 没有已安装页面时退回旧探测。
+        let (format, path) =
+            startup_page_with(&paths, &prefs.tab_order, |id| paths.validate_target(id))
+                .or_else(|| paths.detect_preferring_overrides(&prefs.config_paths))
+                .unwrap_or((ConfigFormat::Opencode, String::new()));
         // 启动探测只按「哪一页有覆盖路径」选后端；方言以文件内容为准。
         let format = startup_format(format, &path);
         // 各后端内置网关的免费模型：逐后端读一次落盘缓存；缺失或过期的后端
@@ -375,11 +405,13 @@ impl Default for App {
             usage_chart_kind: usage::ChartKind::default(),
             usage_chart_range: usage::range::ChartRange::default(),
             usage_delete_pending: None,
+            usage_source_error: None,
             usage_sort: usage::view::SortState::by_total(),
             usage: usage::UsageState::default(),
             ui_style: crate::theme::UiStyle::from_key(&prefs.ui_style),
             glass: prefs.glass,
             tab_order: prefs.tab_order.clone(),
+            tray_resident: prefs.tray_resident,
             net_guard_at: 0.0,
             // 界面设置来自家目录 .modelharbor/settings.json。
             theme: Theme::from_key(&prefs.theme),
@@ -422,6 +454,12 @@ impl Default for App {
         // WSL 总闸与同步勾选同步初始化。
         crate::util::wsl_set_enabled(prefs.sync_wsl);
         app.apply_load();
+        // 常驻任务栏：默认开启，启动即建托盘图标（用户要求默认常驻点亮）。
+        // 测试环境不建真实托盘，避免离屏测试挂起。
+        #[cfg(all(target_os = "windows", not(test)))]
+        if app.tray_resident {
+            crate::tray::ensure();
+        }
         app
     }
 }
@@ -434,6 +472,32 @@ impl eframe::App for App {
         } else {
             visuals.panel_fill.to_normalized_gamma_f32()
         }
+    }
+
+    /// 常驻任务栏：拦截关闭事件 + 消费托盘菜单事件。
+    ///
+    /// 常驻模式下点 X 不退出，只把窗口收进托盘；托盘菜单「退出」才真关。
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        #[cfg(target_os = "windows")]
+        {
+            // 常驻模式：拦截关闭，改为隐藏窗口。
+            // `close_requested` 在 hook 之前已被捕获，无法从输入里抠掉事件；
+            // eframe 以输出命令里有没有 `CancelClose` 为准，发它就够。
+            if self.tray_resident && raw_input.viewport().close_requested() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                crate::tray::hide_main_window();
+            }
+            // 托盘菜单事件（托盘线程写入，主窗口线程消费）。
+            for event in crate::tray::drain_events() {
+                match event {
+                    crate::tray::TrayEvent::Show => crate::tray::show_main_window(),
+                    crate::tray::TrayEvent::Exit => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+        }
+        let _ = (ctx, raw_input);
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -488,6 +552,13 @@ impl eframe::App for App {
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             self.ui_page_header(ui);
+            // 用量视图的状态行（筛选 / 新鲜度 / 错误 + 区间切换）画在滚动区
+            // 之外：固定在顶部，不跟随页面滚动（用户要求）。滚到长表里也能
+            // 看到当前区间与筛选条件。
+            if matches!(self.main_view, MainView::Usage) {
+                self.ui_usage_status(ui);
+                ui.add_space(crate::theme::SPACE_4);
+            }
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
@@ -551,6 +622,10 @@ struct ToolbarIcons {
     bot: Option<egui::TextureHandle>,
     server: Option<egui::TextureHandle>,
     zap: Option<egui::TextureHandle>,
+    /// 常驻任务栏开关（点亮态图标）。
+    pin: Option<egui::TextureHandle>,
+    /// 退出按钮图标。
+    log_out: Option<egui::TextureHandle>,
 }
 
 impl App {
@@ -646,6 +721,14 @@ impl App {
             "toolbar_icon_zap",
             include_bytes!("../../assets/icons/zap.svg"),
         );
+        self.toolbar_icons.pin = load(
+            "toolbar_icon_pin",
+            include_bytes!("../../assets/icons/pin.svg"),
+        );
+        self.toolbar_icons.log_out = load(
+            "toolbar_icon_log_out",
+            include_bytes!("../../assets/icons/log-out.svg"),
+        );
         self.toolbar_icons.unfold = load(
             "toolbar_icon_unfold",
             include_bytes!("../../assets/icons/unfold.svg"),
@@ -689,6 +772,7 @@ impl App {
             ui_style: self.ui_style.key().to_string(),
             glass: self.glass,
             tab_order: self.tab_order.clone(),
+            tray_resident: self.tray_resident,
         }
     }
 

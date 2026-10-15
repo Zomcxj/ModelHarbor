@@ -352,6 +352,49 @@ impl App {
                         );
                     }
                     ui.separator();
+                    // 常驻任务栏开关（主题左侧）：点亮 = 点 X 只收进托盘。
+                    // 默认常驻点亮（用户要求）。
+                    let resident_tint = ui.visuals().text_color();
+                    let resident_btn = toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.pin.as_ref(),
+                        self.tray_resident,
+                        resident_tint,
+                    )
+                    .on_hover_text(if self.tray_resident {
+                        "常驻任务栏：已开启。点 X 只把窗口收进托盘，托盘图标可唤回 / 退出"
+                    } else {
+                        "常驻任务栏：已关闭。点 X 直接退出程序"
+                    })
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if resident_btn.clicked() {
+                        self.tray_resident = !self.tray_resident;
+                        #[cfg(target_os = "windows")]
+                        if self.tray_resident {
+                            crate::tray::ensure();
+                        } else {
+                            crate::tray::teardown();
+                        }
+                    }
+                    // 退出：真正关闭程序（不受常驻拦截）。
+                    let quit_tint = ui.visuals().text_color();
+                    let quit_btn = toolbar_icon_button(
+                        ui,
+                        self.toolbar_icons.log_out.as_ref(),
+                        false,
+                        quit_tint,
+                    )
+                    .on_hover_text("退出 ModelHarbor")
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if quit_btn.clicked() {
+                        // 常驻模式下点 X 会被拦截，这里走专门的退出通道：
+                        // 先关常驻再发关闭命令，避免被 CancelClose 拦下。
+                        self.tray_resident = false;
+                        #[cfg(target_os = "windows")]
+                        crate::tray::teardown();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    ui.separator();
                     let look_tint = ui.visuals().text_color();
                     let look_btn = toolbar_icon_button(
                         ui,

@@ -3,6 +3,8 @@ pub mod app;
 pub mod cursor;
 pub mod motion;
 pub mod theme;
+#[cfg(target_os = "windows")]
+pub mod tray;
 pub mod ui;
 pub mod windowfx;
 

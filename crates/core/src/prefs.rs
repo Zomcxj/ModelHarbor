@@ -176,7 +176,7 @@ impl ConfigPathPrefs {
 }
 
 /// 界面偏好。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefs {
     /// 是否显示全部 API Key 明文。
     pub show_api_keys: bool,
@@ -204,6 +204,30 @@ pub struct Prefs {
     /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
     /// 只对已安装的那一组生效，未安装的页面排在后面并按字母序。
     pub tab_order: Vec<String>,
+    /// 常驻任务栏：点 X 只把主窗口收进托盘，托盘图标可唤回 / 退出。
+    ///
+    /// 旧设置文件没有这个字段时默认开启（用户要求默认常驻点亮）。
+    pub tray_resident: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            show_api_keys: false,
+            save_format: String::new(),
+            theme: String::new(),
+            sync_wsl: false,
+            config_paths: ConfigPathPrefs::default(),
+            collapsed: Vec::new(),
+            allow_model_test_with_proxy: false,
+            guide_dismissed: false,
+            ui_style: String::new(),
+            glass: false,
+            tab_order: Vec::new(),
+            // 默认常驻点亮（用户要求）。
+            tray_resident: true,
+        }
+    }
 }
 
 impl Prefs {
@@ -302,6 +326,11 @@ impl Prefs {
             // 只有真正的布尔 true 才开亚克力：缺字段、字符串 "true" 都按关闭处理。
             glass: root.get("glass").and_then(Value::as_bool).unwrap_or(false),
             tab_order: get_list("tab_order"),
+            // 缺字段 = 旧设置文件：默认开启（用户要求默认常驻点亮）。
+            tray_resident: root
+                .get("tray_resident")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
         }
     }
 
@@ -364,6 +393,7 @@ impl Prefs {
                     .collect(),
             ),
         );
+        root.insert("tray_resident".to_string(), Value::Bool(self.tray_resident));
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -441,6 +471,7 @@ mod tests {
             // 非默认值，覆盖亚克力档的读写。
             glass: true,
             tab_order: vec!["pi".to_string(), "zcode".to_string()],
+            tray_resident: false,
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
     }

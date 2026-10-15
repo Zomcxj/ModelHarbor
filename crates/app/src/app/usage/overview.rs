@@ -23,13 +23,17 @@ const HEATMAP_WEEKS: usize = 53;
 const MONTH_ROW_HEIGHT: f32 = 16.0;
 
 /// 区间切换按钮宽度。
+///
+/// 状态行要按组宽预留右侧空间，所以宽度只通过
+/// [`Self::usage_range_chips_width`] 对外给出，不让调用方自己拿档位
+/// 个数乘一遍（两处各写一份数字迟早对不上）。
 const RANGE_BUTTON_WIDTH: f32 = 56.0;
 
 /// 小标签字号（用于 painter 画的文字）。
 const TEXT_CAPTION: f32 = crate::theme::TEXT_CAPTION;
 
 impl App {
-    /// 总览卡 + 趋势图 + 热力图（区间按钮在 [`super::view`] 的双栏之上）。
+    /// 总览卡 + 趋势图 + 热力图（区间切换在 [`super::view`] 的状态行里）。
     pub(in crate::app) fn ui_usage_overview(&mut self, ui: &mut egui::Ui) {
         self.ui_usage_summary(ui);
         ui.add_space(crate::theme::SPACE_4);
@@ -38,35 +42,34 @@ impl App {
         self.ui_usage_heatmap(ui);
     }
 
-    /// 控件行：区间切换（今日 / 本周 / 本月 / 全部）。
+    /// 区间切换组：今日 / 本周 / 本月 / 全部，包在分段控件组里。
     ///
-    /// 由 [`super::view`] 画在双栏之上：横跨整个窗口宽度保证单一行，
-    /// 右列的 Agent 卡也和左列第一张卡顶部平齐（用户反馈）。
-    pub(in crate::app) fn ui_usage_controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            self.range_buttons(ui);
+    /// 由 [`super::view::ui_usage_status`] 画在状态行最右侧（用户要求）：
+    /// 它切的是全页口径，与筛选文字同属一行，不必单独占一行竖向空间。
+    pub(in crate::app) fn ui_usage_range_chips(&mut self, ui: &mut egui::Ui) {
+        super::component::chip_group(ui, |ui| {
+            for range in Range::ALL {
+                if super::chip(
+                    ui,
+                    self.usage_range == range,
+                    range.label(),
+                    RANGE_BUTTON_WIDTH,
+                ) {
+                    self.usage_range = range;
+                }
+            }
         });
     }
 
-    /// 区间切换：今日 / 本周 / 本月 / 全部。
-    fn range_buttons(&mut self, ui: &mut egui::Ui) {
-        for range in Range::ALL {
-            if super::chip(
-                ui,
-                self.usage_range == range,
-                range.label(),
-                RANGE_BUTTON_WIDTH,
-            ) {
-                self.usage_range = range;
-            }
-        }
+    /// 区间切换组占多宽：状态行按它预留右侧空间，剩下的才给左侧文字。
+    pub(in crate::app) fn usage_range_chips_width() -> f32 {
+        super::component::chip_group_width(Range::ALL.len(), RANGE_BUTTON_WIDTH)
     }
 
     /// 总览卡：当前区间的合计 + 构成条 + 汇总事实。
     ///
-    /// 区间切换按钮不在这里：它要横跨整个窗口宽度单独一行（用户反馈：
-    /// 今日 / 本周 / 本月 / 全部单一行），由 [`super::view`] 画在双栏之上 ——
-    /// 这样右列的 Agent 卡也和左列第一张卡顶部平齐。
+    /// 区间切换按钮不在这里：它在状态行最右侧（用户要求），由
+    /// [`super::view::ui_usage_status`] 画。
     fn ui_usage_summary(&mut self, ui: &mut egui::Ui) {
         let daily = self.usage_daily_filtered();
         let today = self.usage_today();
@@ -79,12 +82,18 @@ impl App {
 
         super::component::card(ui, |ui| {
             // 主数字：照参考实现把「大数 + 小标签」放在一起，一眼看到量级。
+            // 数值变化时逐位滚动（对齐 token-monitor v0.70.0 的 digit roll）。
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(aggregate::format_full(stats.totals.total()))
-                        .size(crate::theme::TEXT_HEADING)
-                        .strong()
-                        .monospace(),
+                crate::motion::rolling_number(
+                    ui,
+                    ui.id().with("total"),
+                    &aggregate::format_full(stats.totals.total()),
+                    |s| {
+                        egui::RichText::new(s)
+                            .size(crate::theme::TEXT_HEADING)
+                            .strong()
+                            .monospace()
+                    },
                 );
                 ui.label(
                     egui::RichText::new(format!(
@@ -100,14 +109,16 @@ impl App {
             // 金额行已删（用户反馈：不要花费）；定价算出的成本仍留在核心层，
             // 界面不再展示。主数字是全数字，这行给一眼可读的量级。
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "≈ {}",
-                        aggregate::format_tokens(stats.totals.total())
-                    ))
-                    .size(crate::theme::TEXT_TITLE)
-                    .strong()
-                    .monospace(),
+                crate::motion::rolling_number(
+                    ui,
+                    ui.id().with("approx"),
+                    &format!("≈ {}", aggregate::format_tokens(stats.totals.total())),
+                    |s| {
+                        egui::RichText::new(s)
+                            .size(crate::theme::TEXT_TITLE)
+                            .strong()
+                            .monospace()
+                    },
                 );
                 ui.label(
                     egui::RichText::new(format!(
@@ -347,14 +358,22 @@ fn composition_bar(ui: &mut egui::Ui, totals: &crate::usage::DayTotals, accent: 
             let (swatch, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
             ui.painter()
                 .rect_filled(swatch, 2.0, super::series_color(index, accent, dark));
-            ui.label(
-                egui::RichText::new(format!(
+            // 整条图例（桶名 + 占比 + 数值）交给同一个逐位滚动：非数字字符
+            // 本就静态画，所有字符共用同一槽顶，不会出现「数值比文字高半行」
+            // 的错位（label 垂直居中、滚动数字贴行顶就会差半个行高）。
+            crate::motion::rolling_number(
+                ui,
+                ui.id().with(("bucket", index)),
+                &format!(
                     "{label} {} · {}",
                     percent_of(*value, total),
                     aggregate::format_tokens(*value)
-                ))
-                .size(crate::theme::TEXT_CAPTION)
-                .color(weak),
+                ),
+                |s| {
+                    egui::RichText::new(s)
+                        .size(crate::theme::TEXT_CAPTION)
+                        .color(weak)
+                },
             );
         }
     });

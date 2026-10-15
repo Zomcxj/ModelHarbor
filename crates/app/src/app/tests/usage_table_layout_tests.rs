@@ -47,6 +47,7 @@ fn session(client: ConfigFormat, id: &str, input: i64) -> SessionSnapshot {
         session_id: id.to_string(),
         model_id: "claude-opus-5".to_string(),
         project: None,
+        title: None,
 
         input,
         output: input / 10,
@@ -154,6 +155,10 @@ fn render(filter: Option<ConfigFormat>) -> Vec<TextAt> {
         },
         |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
+                // 照搬 [`App::update`] 的用量分支：状态行（含筛选
+                // 文字与区间切换）画在滚动区**之外**，固定在顶部不跟随滚动。
+                app.ui_usage_status(ui);
+                ui.add_space(crate::theme::SPACE_4);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, true])
                     .show(ui, |ui| {

@@ -13,6 +13,13 @@ pub const COLLAPSE_TIME: f32 = 0.18;
 /// 滑动开关的滑块行程时长（秒）。
 pub const TOGGLE_TIME: f32 = 0.14;
 
+/// 数字逐位滚动时长（秒）。
+///
+/// 比悬停 / 折叠长一档：滚动要让人看清「旧值滚走、新值滚入」，
+/// 太快就成了闪一下。参考实现（token-monitor v0.70.0 的 digit roll）
+/// 也在半秒量级。
+pub const DIGIT_ROLL_TIME: f32 = 0.45;
+
 /// 动画时长的编译期上界检查。
 const _: () = {
     assert!(HOVER_TIME <= 0.2, "悬停过渡时长超过 0.2s，界面会显得拖沓");
@@ -22,6 +29,14 @@ const _: () = {
     );
     assert!(TOGGLE_TIME <= 0.2, "开关滑动时长超过 0.2s，点击会显得迟钝");
     assert!(TOGGLE_TIME > 0.0, "开关滑动时长不能为零，否则没有滑动过程");
+    assert!(
+        DIGIT_ROLL_TIME <= 0.6,
+        "数字滚动时长超过 0.6s，读数会显得迟滞"
+    );
+    assert!(
+        DIGIT_ROLL_TIME > 0.0,
+        "数字滚动时长不能为零，否则没有滚动过程"
+    );
 };
 
 /// gamma 空间的逐通道插值（预乘 alpha 原样插）。
@@ -74,6 +89,155 @@ pub fn snap_collapse(ctx: &egui::Context, id: egui::Id, open: bool) {
     ctx.animate_bool_with_time(id.with("collapse"), open, 0.0);
 }
 
+/// 数字逐位滚动：每位数字在自己的槽里垂直滚动，非数字字符（逗号、点、单位）原地不动。
+///
+/// 参考 token-monitor v0.70.0 的默认动画（digit roll，#1014）：总量与分解
+/// 读数切换时逐位滚动，而不是整串闪换。
+///
+/// 槽：宽度取**终值**该位的字符宽（滚动期间布局不跳），高度一行。
+/// 补间 0 = 只见旧位，1 = 只见新位：旧位随补间上移出槽，新位自槽下滚入，
+/// 超出槽的部分裁掉。位数变多时新增高位同样自下方滚入。
+///
+/// 状态存三个临时键：`id` = 本轮滚动起点值，`id/target` = 终点值，
+/// `id/roll_start` = 起点时刻。滚动途中值又变：上一轮直接钉到它的终点、
+/// 新一轮从那里起滚（不倒跳，对齐参考实现 #1025 对滚动层数的收口）。
+///
+/// 整串矩形经 [`egui::Ui::allocate_exact_size`] 分配并返回：与 `Label`
+/// 同一套布局行为，在行内垂直居中——与同行的色块、标签共用行中心，
+/// 不会像贴行顶直画那样错开半个行高。
+///
+/// `everything_is_visible`（调试模式）与首帧都不滚动、直接画终值，
+/// 布局测试因此能拿到稳定文本。
+pub fn rolling_number(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    text: &str,
+    rich: impl Fn(&str) -> egui::RichText + Copy,
+) -> egui::Rect {
+    let ctx = ui.ctx().clone();
+    let target_id = id.with("target");
+    let start_id = id.with("roll_start");
+    let now = ctx.input(|input| input.time);
+
+    let mut from = ctx
+        .data(|data| data.get_temp::<String>(id))
+        .unwrap_or_else(|| text.to_string());
+    let mut target = ctx
+        .data(|data| data.get_temp::<String>(target_id))
+        .unwrap_or_else(|| from.clone());
+
+    if ctx.memory(|mem| mem.everything_is_visible()) {
+        // 调试模式：钉终值、清状态。
+        from = text.to_string();
+        target = from.clone();
+        ctx.data_mut(|data| {
+            data.insert_temp(id, from.clone());
+            data.remove_temp::<String>(target_id);
+            data.remove_temp::<f64>(start_id);
+        });
+    } else if text != target {
+        // 值变了：上一轮（若有）钉到它的终点，新一轮从那里起滚。
+        from = target;
+        target = text.to_string();
+        ctx.data_mut(|data| {
+            data.insert_temp(id, from.clone());
+            data.insert_temp(target_id, target.clone());
+            data.insert_temp(start_id, now);
+        });
+    } else {
+        // 值未变：记下当前显示值，供下次变化作为滚动起点。
+        ctx.data_mut(|data| data.insert_temp(id, text.to_string()));
+    }
+
+    let rolling = from != target;
+    let t = if rolling {
+        let start = ctx
+            .data(|data| data.get_temp::<f64>(start_id))
+            .unwrap_or(now);
+        ((now - start) as f32 / DIGIT_ROLL_TIME).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    if rolling && t < 1.0 {
+        ctx.request_repaint();
+    }
+    if rolling && t >= 1.0 {
+        // 滚完：起点值升为终点值，清计时。
+        ctx.data_mut(|data| {
+            data.insert_temp(id, target.clone());
+            data.remove_temp::<f64>(start_id);
+        });
+    }
+    // 缓动：先快后慢，收尾不突兀。
+    let eased = 1.0 - (1.0 - t).powi(2);
+
+    let chars: Vec<char> = target.chars().collect();
+    let from_chars: Vec<char> = from.chars().collect();
+    // 从右往左对齐数位：末位对末位。
+    let offset = chars.len().saturating_sub(from_chars.len());
+    let fallback = ui.visuals().text_color();
+
+    // 先整体量排：每位一个 galley，总宽与行高定了才能向布局要矩形。
+    let galleys: Vec<_> = chars
+        .iter()
+        .map(|ch| {
+            egui::WidgetText::from(rich(&ch.to_string())).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Body,
+            )
+        })
+        .collect();
+    let width = galleys.iter().map(|g| g.size().x).sum::<f32>();
+    let height = galleys.iter().map(|g| g.size().y).fold(0.0f32, f32::max);
+    // 经布局分配（而非贴游标直画）：行内垂直居中与 Label / 色块一致。
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+
+    let mut x = rect.min.x;
+    let top = rect.min.y;
+    let mut painter = ui.painter().clone();
+    for (index, ch) in chars.iter().enumerate() {
+        let galley = galleys[index].clone();
+        let size = galley.size();
+        let slot = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(size.x, size.y));
+        let old_ch = index
+            .checked_sub(offset)
+            .and_then(|i| from_chars.get(i))
+            .copied();
+        let rolls = rolling && t < 1.0 && ch.is_ascii_digit() && old_ch != Some(*ch);
+        if !rolls {
+            painter.galley(slot.min, galley, fallback);
+        } else {
+            let clip = painter.clip_rect();
+            painter.set_clip_rect(slot);
+            if let Some(old_ch) = old_ch {
+                // 旧位：随补间上移出槽。
+                let old_galley = egui::WidgetText::from(rich(&old_ch.to_string())).into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                );
+                painter.galley(
+                    slot.min - egui::vec2(0.0, size.y * eased),
+                    old_galley,
+                    fallback,
+                );
+            }
+            // 新位：自槽下滚入。
+            painter.galley(
+                slot.min + egui::vec2(0.0, size.y * (1.0 - eased)),
+                galley,
+                fallback,
+            );
+            painter.set_clip_rect(clip);
+        }
+        x += size.x;
+    }
+    rect
+}
+
 /// 带高度动画的折叠体：收起且动画结束后返回 `None`（本帧不渲染）。
 ///
 /// 动画中先给父布局预留补间高度，再把 body 画进同一位置的独立子树、用裁剪收住
@@ -122,8 +286,47 @@ pub fn animated_collapse<R>(
 
 #[cfg(test)]
 mod tests {
-    use super::{animated_collapse, lerp_color};
+    use super::{animated_collapse, lerp_color, rolling_number};
     use eframe::egui;
+
+    /// 收集全部文本形状的位置（含嵌套）。
+    fn texts_at(out: &egui::FullOutput) -> Vec<(String, f32, f32)> {
+        let mut hits = Vec::new();
+        fn collect(shape: &egui::Shape, hits: &mut Vec<(String, f32, f32)>) {
+            match shape {
+                egui::Shape::Text(t) => {
+                    hits.push((t.galley.text().to_string(), t.pos.x, t.pos.y));
+                }
+                egui::Shape::Vec(items) => items.iter().for_each(|s| collect(s, hits)),
+                _ => {}
+            }
+        }
+        for cs in &out.shapes {
+            collect(&cs.shape, &mut hits);
+        }
+        hits
+    }
+
+    /// 跑一帧并返回输出与读数矩形。
+    fn run_frame(ctx: &egui::Context, time: f64, text: &str) -> (egui::FullOutput, egui::Rect) {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+        let mut rect = egui::Rect::NOTHING;
+        let out = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(time),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    rect = rolling_number(ui, egui::Id::new("n"), text, |s| {
+                        egui::RichText::new(s).monospace()
+                    });
+                });
+            },
+        );
+        (out, rect)
+    }
 
     #[test]
     fn lerp_color_hits_endpoints_and_midpoint() {
@@ -245,6 +448,90 @@ mod tests {
             ctx.data(|data| data.get_temp::<f32>(id.with("open_height"))),
             full,
             "收起后满高记录不能被清掉"
+        );
+    }
+
+    /// 首帧静态；值变化帧旧值在位、新值在槽下待入；滚完后只剩新值，
+    /// 且滚动期间预留宽度与终值一致（布局不跳）。
+    #[test]
+    fn rolling_number_rolls_old_out_and_new_in_then_settles() {
+        let ctx = egui::Context::default();
+
+        let (out, first_rect) = run_frame(&ctx, 0.0, "12");
+        let texts = texts_at(&out);
+        let top = texts
+            .iter()
+            .find(|(t, _, _)| t == "1")
+            .expect("首帧应画出旧串首位")
+            .2;
+        assert!(
+            texts.iter().all(|(_, _, y)| (*y - top).abs() < 0.01),
+            "首帧应只画一层，实际：{texts:?}"
+        );
+
+        // 值变化帧：补间 0，旧值在位、新值在槽下（裁剪外但形状在）。
+        let (out, mid_rect) = run_frame(&ctx, 1.0, "34");
+        let texts = texts_at(&out);
+        let old_y = texts
+            .iter()
+            .find(|(t, _, _)| t == "1")
+            .expect("旧值应仍在")
+            .2;
+        let new_y = texts
+            .iter()
+            .find(|(t, _, _)| t == "3")
+            .expect("新值应已入列")
+            .2;
+        assert!((old_y - top).abs() < 0.01, "补间 0 时旧值应还在原位");
+        assert!(new_y > top + 1.0, "新值应在槽下待入，实际 {new_y} vs {top}");
+        let row_h = new_y - top;
+
+        // 半程：旧值上移出槽、新值自下滚入。
+        let (out, _) = run_frame(&ctx, 1.0 + f64::from(super::DIGIT_ROLL_TIME) * 0.5, "34");
+        let texts = texts_at(&out);
+        let old_y = texts.iter().find(|(t, _, _)| t == "1").unwrap().2;
+        let new_y = texts.iter().find(|(t, _, _)| t == "3").unwrap().2;
+        assert!(old_y < top, "半程时旧值应已上移出槽");
+        assert!(
+            new_y > top && new_y < top + row_h,
+            "半程时新值应在槽内，实际 {new_y}"
+        );
+
+        // 滚完：只剩新值、回到原位。
+        let (out, end_rect) = run_frame(&ctx, 1.0 + f64::from(super::DIGIT_ROLL_TIME) + 0.1, "34");
+        let texts = texts_at(&out);
+        assert!(
+            texts
+                .iter()
+                .all(|(t, _, y)| t != "1" && (*y - top).abs() < 0.01),
+            "滚完后应只剩新值且在原位，实际：{texts:?}"
+        );
+        assert!(
+            (mid_rect.width() - end_rect.width()).abs() < 0.01,
+            "滚动期间预留宽度应与终值一致"
+        );
+        assert!(
+            (first_rect.width() - end_rect.width()).abs() < 0.01,
+            "等宽字体下两值同位数，宽度应相同"
+        );
+    }
+
+    /// 调试模式下值变化不滚动，直接画终值。
+    #[test]
+    fn rolling_number_snaps_under_everything_is_visible() {
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|mem| mem.set_everything_is_visible(true));
+        let (_, _) = run_frame(&ctx, 0.0, "12");
+        let (out, _) = run_frame(&ctx, 0.01, "34");
+        let texts = texts_at(&out);
+        let ys: Vec<f32> = texts.iter().map(|(_, _, y)| *y).collect();
+        assert!(
+            ys.iter().all(|y| (y - ys[0]).abs() < 0.01),
+            "调试模式下不应出现待入层，实际：{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|(t, _, _)| t == "3") && !texts.iter().any(|(t, _, _)| t == "1"),
+            "调试模式下应直接画终值"
         );
     }
 }

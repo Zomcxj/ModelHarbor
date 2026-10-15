@@ -425,10 +425,15 @@ pub(in crate::app) fn session_rows_in_range(
     today: i64,
 ) -> Vec<SessionSnapshot> {
     let rows = super::range::breakdown_in_range(daily, range, today, |bucket| &bucket.by_session);
-    // 以账本里的快照为模板（带 archived 标记、模型名、最近活动），
-    // 但用量换成区间内的 —— 这正是不能直接用会话总量的原因。
+    // 以账本里的快照为模板（带模型名、最近活动），但用量换成区间内的 ——
+    // 这正是不能直接用会话总量的原因。
+    //
+    // 源里已消失的会话（`archived`）不建模板：它们不进列表。逐日 `by_session`
+    // 里仍有它们的条目（用量要留在聚合里），所以这里显式挡一道，
+    // 否则换个 `view()` 实现它们就又会冒出来。
     let by_key: std::collections::HashMap<String, &SessionSnapshot> = sessions
         .iter()
+        .filter(|snapshot| !snapshot.archived)
         .map(|snapshot| {
             (
                 SessionSnapshot::key(snapshot.client, &snapshot.session_id),
@@ -473,6 +478,7 @@ mod tests {
             session_id: session.to_string(),
             model_id: model.to_string(),
             project: None,
+            title: None,
 
             input,
             output,
@@ -747,15 +753,19 @@ mod tests {
         assert_eq!(rows[0].total(), 100, "只算今天的部分，不是一生的 1000");
     }
 
-    /// 归档会话的标记要带出来给界面画角标。
+    /// 源里已消失的会话不进列表（**核心需求**）：
+    /// 即使它在区间内的逐日 `by_session` 里还有条目。
     #[test]
-    fn session_rows_in_range_keep_the_archived_mark() {
-        let mut archived = snapshot("gone", "gpt-5", 7, 3);
-        archived.client = ConfigFormat::WorkBuddy;
-        archived.archived = true;
-        let rows = session_rows_in_range(&[archived], &daily_sample(), Range::All, sample_today());
-        let row = rows.iter().find(|r| r.session_id == "gone").unwrap();
-        assert!(row.archived, "archived 标记要带出来");
+    fn session_rows_in_range_hide_archived_sessions() {
+        let mut gone = snapshot("gone", "gpt-5", 7, 3);
+        gone.client = ConfigFormat::WorkBuddy;
+        gone.archived = true;
+        // 区间内有它的用量（聚合里要留着），但会话说不过去。
+        let rows = session_rows_in_range(&[gone], &daily_sample(), Range::All, sample_today());
+        assert!(
+            rows.is_empty(),
+            "源里已消失的会话不该占列表行（用量仍在聚合里）"
+        );
     }
 
     /// 区间内没有活动的会话不出现在列表里。

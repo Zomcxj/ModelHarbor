@@ -50,6 +50,7 @@ fn session(id: &str, model: &str, input: i64) -> SessionSnapshot {
         session_id: id.to_string(),
         model_id: model.to_string(),
         project: None,
+        title: None,
 
         input,
         output: input / 10,

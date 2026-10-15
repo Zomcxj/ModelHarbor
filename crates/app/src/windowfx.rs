@@ -34,6 +34,11 @@ mod imp {
         let _ = MAIN_HWND.set(hwnd);
     }
 
+    /// 主窗口句柄（未登记时返回 `None`）。
+    pub fn main_hwnd() -> Option<isize> {
+        MAIN_HWND.get().copied()
+    }
+
     /// 按档位设置窗口背景。
     ///
     /// Win11（build 22000+）用 `DWMWA_SYSTEMBACKDROP_TYPE`；旧系统该属性被忽略，
@@ -82,9 +87,13 @@ mod imp {
 
     pub fn set_main_hwnd(_hwnd: isize) {}
 
+    pub fn main_hwnd() -> Option<isize> {
+        None
+    }
+
     pub fn set_backdrop(_backdrop: Backdrop) {}
 
     pub fn set_rounded_corners() {}
 }
 
-pub use imp::{set_backdrop, set_main_hwnd, set_rounded_corners};
+pub use imp::{main_hwnd, set_backdrop, set_main_hwnd, set_rounded_corners};

@@ -12,11 +12,11 @@ use crate::app::App;
 use crate::usage::SessionSnapshot;
 use eframe::egui;
 
-/// 第二列（表）从上到下排的维度：Agent / 模型 / 会话。
+/// 左右并排的两张表：Agent / 模型。
 ///
-/// 时间表单独放在第一列热力图下方（用户要求的布局）——它跟日历一样是
-/// 「按天看」的视角，放在一起读起来顺。
-const TABLES_COLUMN: [Dimension; 3] = [Dimension::Agent, Dimension::Model, Dimension::Session];
+/// 会话表不并排：它列最多（会话名 / id / Agent / 模型 / 项目 / 用量 /
+/// 状态 / 操作），挤半宽会把每列压成省略号，因此独占一行（用户要求）。
+const SIDE_BY_SIDE: [Dimension; 2] = [Dimension::Agent, Dimension::Model];
 
 /// 会话 id 在表里最多显示多少个字符。
 const SESSION_ID_CHARS: usize = 20;
@@ -42,29 +42,23 @@ impl App {
         super::chip(ui, self.main_view == view, view.label(), 72.0)
     }
 
-    /// 用量视图主体：状态行 + 两列（左：总览 / 右：四张表）。
+    /// 用量视图主体：单列纵向流。
     ///
-    /// 时间 / Agent / 模型 / 会话四张表放第二列（用户要求的布局），总览卡、
-    /// 趋势图与热力图留在第一列。两列都从顶部开始，互不挤占。
+    /// 布局（用户要求）：总览（含趋势图与热力图）占满宽 → Agent 与模型
+    /// 左右并排 → 会话表独占一行。不再分左右两栏，每张表能拿到更多列宽。
+    ///
+    /// 状态行（含区间切换）不在这里：它固定在滚动区之上，不跟随页面滚动
+    /// （用户要求），由 [`App::update`] 先画。
     pub(in crate::app) fn ui_usage_section(&mut self, ui: &mut egui::Ui) {
-        self.ui_usage_status(ui);
-        ui.add_space(crate::theme::SPACE_3);
-        // 区间按钮横跨整个窗口宽度单独一行（用户反馈：今日 / 本周 / 本月 /
-        // 全部单一行）；双栏从同一 y 开始，Agent 卡与左列总览卡顶部平齐。
-        self.ui_usage_controls(ui);
-        ui.add_space(crate::theme::SPACE_4);
         let sessions: Vec<SessionSnapshot> = self.usage_sessions().to_vec();
         let daily = self.usage_daily_filtered();
         if sessions.is_empty() && daily.is_empty() {
             self.ui_usage_empty(ui);
             return;
         }
-        // 左右列随页面缩放、始终保持 4:3（用户反馈）：间距不计入比例，
-        // 也不再夹上下限 —— 比例在任何窗口宽度下都不变。
-        let gap = crate::theme::SPACE_4;
-        let usable = (ui.available_width() - gap).max(1.0);
-        let overview_width = usable * 4.0 / 7.0;
-        let tables_width = usable * 3.0 / 7.0;
+        // 总览（总览卡 + 趋势图 + 热力图）占满宽。
+        self.ui_usage_overview(ui);
+        ui.add_space(crate::theme::SPACE_5);
 
         let now_ms = unix_now_ms();
         let today = self.usage_today();
@@ -72,7 +66,7 @@ impl App {
         let sort = self.usage_sort;
         let pending_delete = self.usage_delete_pending.clone();
 
-        // 两列各是独立闭包，`self` 借不进来：交互（排序 / 删除）用 `RefCell`
+        // 表格在独立闭包里画，`self` 借不进来：交互（排序 / 删除）用 `RefCell`
         // 收集，画完统一处理。不同交互不可能同帧同时发生，逐个处理即可。
         let collected: std::cell::RefCell<Vec<TableAction>> = std::cell::RefCell::new(Vec::new());
         let record = |result: Option<TableAction>| {
@@ -81,54 +75,63 @@ impl App {
             }
         };
 
-        // 左列的底部 y：热力图是左列最后一件，会话卡要跟它对齐底边。
-        let mut left_bottom = 0.0_f32;
+        // 并排两张表的行集先算出来：表体高度按较多一方的行数锁定，
+        // 两卡底边才齐平（用户要求：Agent 卡高度与模型卡对齐）。
+        let side: Vec<TableRows> = SIDE_BY_SIDE
+            .iter()
+            .copied()
+            .map(|dimension| TableRows::of(dimension, &sessions, &daily, range, today))
+            .collect();
+        let side_rows = side.iter().map(TableRows::len).max().unwrap_or(0);
+        let side_body = super::component::body_height(side_rows, super::component::BODY_MAX_HEIGHT);
+
+        // Agent 与模型左右并排，各占一半：间距不计入比例。
+        let gap = crate::theme::SPACE_4;
+        let half = ((ui.available_width() - gap) / 2.0).max(1.0);
         ui.horizontal_top(|ui| {
-            // 第一列：总览（控件 + 总览卡 + 趋势图 + 热力图）。
-            // 时间维度由热力图承担，不再单独列表（用户反馈：删除时间模块）。
-            ui.allocate_ui_with_layout(
-                egui::vec2(overview_width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.set_width(overview_width);
-                    self.ui_usage_overview(ui);
-                    left_bottom = ui.min_rect().bottom();
-                },
-            );
-            ui.add_space(gap);
-            // 第二列：Agent / 模型 / 会话三张表从上到下。
-            ui.allocate_ui_with_layout(
-                egui::vec2(tables_width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.set_width(tables_width);
-                    // 解除列高限制：allocate_ui_with_layout 的 0 高期望会把内部
-                    // 所有 ScrollArea 的视口压到「剩余可用高度」，会话表装不满
-                    // 卡内空间（用户反馈：列表要铺满组件）。
-                    ui.set_max_height(f32::INFINITY);
-                    for (index, dimension) in TABLES_COLUMN.iter().copied().enumerate() {
-                        if index > 0 {
-                            ui.add_space(crate::theme::SPACE_5);
-                        }
-                        // 会话卡期望高 = 左列底部 - 卡片顶部；其余表不参与对齐。
-                        let card_height = (dimension == Dimension::Session)
-                            .then(|| left_bottom - ui.cursor().top());
+            for (index, rows) in side.iter().enumerate() {
+                if index > 0 {
+                    ui.add_space(gap);
+                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(half, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(half);
+                        // 解除列高限制：allocate_ui_with_layout 的 0 高期望会把内部
+                        // 所有 ScrollArea 的视口压到「剩余可用高度」，表体装不满
+                        // 卡内空间（用户反馈：列表要铺满组件）。
+                        ui.set_max_height(f32::INFINITY);
                         record(self.ui_dimension_table(
                             ui,
-                            dimension,
-                            &sessions,
-                            &daily,
+                            rows,
                             now_ms,
-                            today,
                             range,
                             sort,
+                            side_body,
                             pending_delete.as_deref(),
-                            card_height,
                         ));
-                    }
-                },
-            );
+                    },
+                );
+            }
         });
+        ui.add_space(crate::theme::SPACE_5);
+        // 会话表独占一行（全宽）：它的列最多，挤半宽每列都只剩省略号。
+        let session_rows = TableRows::of(Dimension::Session, &sessions, &daily, range, today);
+        record(self.ui_dimension_table(
+            ui,
+            &session_rows,
+            now_ms,
+            range,
+            sort,
+            // 表体高度是其余两表的三倍（用户要求）。同样走锁定：只给上限
+            // 时，视口会被页面剩余高度夹住，窗口矮一点就看不到三倍的行。
+            super::component::body_height(
+                session_rows.len(),
+                super::component::SESSION_BODY_HEIGHT,
+            ),
+            pending_delete.as_deref(),
+        ));
 
         let frame_time = ui.input(|input| input.time);
         self.handle_table_actions(collected.into_inner(), frame_time);
@@ -151,11 +154,14 @@ impl App {
         }
     }
 
-    /// 顶部状态行：合计、扫描进度、数据新鲜度与错误。
-    /// 顶部状态行：筛选、扫描进度、数据新鲜度与错误。
+    /// 顶部状态行：筛选 / 扫描进度 / 数据新鲜度 / 错误 + 最右侧的区间切换。
     ///
-    /// 压成两行（原本三行）：用量视图下面是表格，上面多占一行就少一行数据。
-    fn ui_usage_status(&mut self, ui: &mut egui::Ui) {
+    /// 这一行由 [`App::update`] 画在滚动区之上，因此固定不动
+    /// （用户要求）：滚到长表里也能看到当前区间与筛选条件。
+    ///
+    /// 排版：左侧文字占满「整行减去区间组件宽度」，区间切换组件贴右边缘；
+    /// 两格顶对齐，整行高度取两者较高的那个。
+    pub(in crate::app) fn ui_usage_status(&mut self, ui: &mut egui::Ui) {
         let semantics = crate::theme::semantics(ui);
         let now_ms = unix_now_ms();
         let frame_time = ui.input(|input| input.time);
@@ -174,22 +180,99 @@ impl App {
             Some(Err(err)) => Some(err.clone()),
             _ => None,
         };
-        let ledger_len = self.usage.ledger_len();
+        let ledger_archived = self.usage.ledger_archived_len();
         let scanning = self.usage.scanning();
         let cached_saved_at = self.usage.cached_saved_at();
         let filter = self.usage_filter_label();
         let weak = ui.visuals().weak_text_color();
 
+        // 排版：左侧文字铺满剩余宽度，区间切换组件贴右（用户要求）。
+        //
+        // 两格各自拿到一个死矩形的子 `Ui`：`allocate_ui_with_layout` 只把
+        // 实际用掉的宽度（`min_rect`）还给父级，于是筛选文字一短，整组
+        // 区间按钮就跟着往左跑。先把两格的位置定死，再把整行高度还给
+        // 父级（两格里较高的那个）。
+        let chips_width = Self::usage_range_chips_width();
+        let row = ui.available_rect_before_wrap();
+        let left_width = (row.width() - crate::theme::SPACE_3 - chips_width).max(1.0);
+
+        let mut left = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(
+                    row.min,
+                    egui::vec2(left_width, 0.0),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        // 文字可能折行，也可能多一行错误 / 账本提示：不能拿子 `Ui` 的
+        // 剩余高度当上限，否则第二行就被压成 0 高。
+        left.set_max_height(f32::INFINITY);
+        self.usage_status_text(
+            &mut left,
+            &filter,
+            cached_saved_at,
+            report.as_ref(),
+            error.as_deref(),
+            now_ms,
+            frame_time,
+            scanning,
+            ledger_archived,
+            semantics,
+            weak,
+        );
+        let left_height = left.min_rect().height();
+
+        let mut right = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(
+                    egui::pos2(row.max.x - chips_width, row.min.y),
+                    egui::vec2(chips_width, 0.0),
+                ))
+                // 横向对齐留 `Align::Min`：竖向布局下的 `Max` 会让
+                // `prefer_right_to_left()` 成立，`chip_group` 里的
+                // `ui.horizontal` 跟着反向，四个按钮就排成「全部 … 今日」。
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        right.set_max_height(f32::INFINITY);
+        self.ui_usage_range_chips(&mut right);
+        let right_height = right.min_rect().height();
+
+        // 把整行高度还给父级：`new_child` 只画不占位，父级游标还停在行首，
+        // 不推进的话后面的 `ScrollArea` 会从状态行顶部起画，把整行盖住
+        // （首栏被覆盖的缺陷就是这么来的）。`expand_to_include_rect` 只并
+        // `min_rect`/`max_rect`、不动游标，所以这里必须用推进游标的版本。
+        ui.advance_cursor_after_rect(egui::Rect::from_min_max(
+            row.min,
+            egui::pos2(row.max.x, row.min.y + left_height.max(right_height)),
+        ));
+    }
+
+    /// 状态行左侧的文字：筛选 / 缓存或扫描新鲜度 / 错误 / 账本归档提示。
+    #[allow(clippy::too_many_arguments)]
+    fn usage_status_text(
+        &mut self,
+        ui: &mut egui::Ui,
+        filter: &str,
+        cached_saved_at: Option<i64>,
+        report: Option<&(usize, usize, u32, f64)>,
+        error: Option<&str>,
+        now_ms: i64,
+        frame_time: f64,
+        scanning: bool,
+        ledger_archived: usize,
+        semantics: crate::theme::Semantics,
+        weak: egui::Color32,
+    ) {
         ui.horizontal_wrapped(|ui| {
             ui.label(
-                egui::RichText::new(&filter)
+                egui::RichText::new(filter)
                     .size(crate::theme::TEXT_BODY)
                     .strong(),
             );
             if let Some(saved_ms) = cached_saved_at {
                 // 缓存秒显：账本数据先顶上（后台扫完自动替换）。标清数据新旧，
                 // 避免把几分钟前的数字当成实时值；超过 5 分钟用警示色。
-                let sessions = report.as_ref().map_or(0, |(sessions, _, _, _)| *sessions);
+                let sessions = report.map_or(0, |(sessions, _, _, _)| *sessions);
                 let stale = now_ms - saved_ms > aggregate::CACHED_STALE_MS;
                 ui.label(
                     egui::RichText::new(aggregate::cached_status_line(
@@ -204,14 +287,12 @@ impl App {
                 if scanning {
                     ui.spinner();
                 }
-            } else if let Some((sessions, messages, _scan_ms, scanned_at)) = &report {
+            } else if let Some((sessions, messages, _scan_ms, scanned_at)) = report {
                 // 「更新于 N 秒前」：把 egui 时间轴上的扫描时刻换算成距今多久。
                 let age_ms = ((frame_time - scanned_at).max(0.0) * 1_000.0) as i64;
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} 个会话 · {} 条消息 · 更新于 {}",
-                        sessions,
-                        messages,
+                        "{sessions} 个会话 · {messages} 条消息 · 更新于 {}",
                         aggregate::relative_time(now_ms - age_ms, now_ms)
                     ))
                     .size(crate::theme::TEXT_CAPTION)
@@ -239,84 +320,49 @@ impl App {
         if let Some(err) = error {
             ui.label(egui::RichText::new(format!("上次扫描失败：{err}")).color(semantics.err));
         }
-        // 账本那句只说「历史比磁盘上多」：是不是「已删除会话」是实现细节，
+        // 源侧删除失败（进程在跑 / 写库失败）：说清统计那半是否也已处理。
+        // 拦下整次删除的情形不能写成「已从统计里移除」，否则用户会以为删成了。
+        if let Some(err) = self.usage_source_error.clone() {
+            ui.label(egui::RichText::new(err).color(semantics.err));
+        }
+        // 账本那句只说「历史比磁盘上多」：是不是「已从源里消失」是实现细节，
         // 用户关心的是数字为何比源目录里看到的多。
-        if ledger_len > 0 {
+        if ledger_archived > 0 {
             ui.label(
-                egui::RichText::new(format!("含 {ledger_len} 条已从磁盘消失的历史会话"))
-                    .size(crate::theme::TEXT_CAPTION)
-                    .color(weak),
+                egui::RichText::new(format!(
+                    "含 {ledger_archived} 条已从 agent 库里消失的历史会话（只在合计里，不占上表）"
+                ))
+                .size(crate::theme::TEXT_CAPTION)
+                .color(weak),
             );
         }
     }
 
-    /// 画一个维度的表（带小节标题），返回它的交互结果。
+    /// 画一张维度的表（带小节标题），返回它的交互结果。
     ///
     /// 标题用 `Dimension::label`：四个表同屏后，不标就分不清哪张是哪张。
+    /// `body` 由调用方给：并排的两张表共用一个预算，两卡才等高。
     /// `pending_delete` 只对会话表有意义：标着哪一行正等二次确认。
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn ui_dimension_table(
         &self,
         ui: &mut egui::Ui,
-        dimension: Dimension,
-        sessions: &[SessionSnapshot],
-        daily: &crate::usage::DailyMap,
+        rows: &TableRows,
         now_ms: i64,
-        today: i64,
         range: Range,
         sort: SortState,
+        body: f32,
         pending_delete: Option<&str>,
-        card_height: Option<f32>,
     ) -> Option<TableAction> {
         // 标题画在卡片**里面**：与趋势图 / 热力图的组件外壳一致。
         super::component::card(ui, |ui| {
-            super::component::heading(ui, dimension.label());
+            super::component::heading(ui, rows.dimension().label());
             ui.add_space(crate::theme::SPACE_2);
-            match dimension {
-                Dimension::Agent => {
-                    let rows = aggregate::by_agent_in_range(daily, range, today);
-                    agent_table(ui, &rows, sort, super::component::BODY_MAX_HEIGHT)
-                }
-                Dimension::Model => {
-                    let rows = aggregate::by_model_in_range(daily, range, today);
-                    model_table(ui, &rows, sort, super::component::BODY_MAX_HEIGHT)
-                }
-                Dimension::Session => {
-                    // 会话维度也必须走区间：拿会话总量当「本月」会虚高
-                    // （一个会话可以横跨几十天）。
-                    let rows = aggregate::session_rows_in_range(sessions, daily, range, today);
-                    // 卡底要与左列平齐（用户反馈）：卡内装得下几整行就画几整行
-                    // （末行不裁半），装不下的行在表体内滚动；内容比左列矮时由
-                    // 下面的底部填充补齐，底边仍与热力图平齐。
-                    let card_height = card_height.unwrap_or(0.0);
-                    let consumed = ui.cursor().top() - ui.min_rect().top();
-                    let rest = card_height
-                        - crate::theme::SPACE_3 * 2.0
-                        - CARD_STROKE_OVERHEAD
-                        - consumed
-                        - TABLE_HEADER_HEIGHT;
-                    let rows_fit = (rest / ROW_PITCH).floor();
-                    let max_height = if card_height > 0.0 && rows_fit >= MIN_ALIGNED_ROWS {
-                        rows_fit * ROW_PITCH
-                    } else {
-                        super::component::BODY_MAX_HEIGHT
-                    };
-                    let action =
-                        session_table(ui, &rows, now_ms, range, sort, max_height, pending_delete);
-                    if card_height > 0.0 {
-                        // 底部填充：把卡内高度精确补到目标值。add_space 是纯光标推进
-                        // （不叠加 item_spacing），min_rect 会包含它 —— 卡片总高即期望高，
-                        // 底边与热力图平齐。
-                        let target = ui.min_rect().top() + card_height
-                            - crate::theme::SPACE_3 * 2.0
-                            - CARD_STROKE_OVERHEAD;
-                        let fill = target - ui.cursor().top();
-                        if fill > 0.0 {
-                            ui.add_space(fill);
-                        }
-                    }
-                    action
+            match rows {
+                TableRows::Agent(rows) => agent_table(ui, rows, sort, body),
+                TableRows::Model(rows) => model_table(ui, rows, sort, body),
+                TableRows::Session(rows) => {
+                    session_table(ui, rows, now_ms, range, sort, body, pending_delete)
                 }
             }
         })
@@ -350,6 +396,57 @@ impl App {
 /// 当前时间（Unix 毫秒）。
 fn unix_now_ms() -> i64 {
     super::unix_now_secs().saturating_mul(1_000)
+}
+
+/// 一张表的行集。
+///
+/// 三个维度的行类型不同，用枚举收拢：并排的两张表要先各自算出行数，
+/// 按较多的一方锁定表体高度，两卡底边才齐平（用户要求：Agent 卡高度
+/// 与模型卡对齐）。行集在画之前算好，高度就不会随绘制顺序漂移。
+enum TableRows {
+    Agent(Vec<AgentUsage>),
+    Model(Vec<ModelUsage>),
+    Session(Vec<SessionSnapshot>),
+}
+
+impl TableRows {
+    /// 按维度与区间聚合出行集。
+    ///
+    /// 会话维度也必须走区间：拿会话总量当「本月」会虚高（一个会话可以
+    /// 横跨几十天）。
+    fn of(
+        dimension: Dimension,
+        sessions: &[SessionSnapshot],
+        daily: &crate::usage::DailyMap,
+        range: Range,
+        today: i64,
+    ) -> Self {
+        match dimension {
+            Dimension::Agent => Self::Agent(aggregate::by_agent_in_range(daily, range, today)),
+            Dimension::Model => Self::Model(aggregate::by_model_in_range(daily, range, today)),
+            Dimension::Session => Self::Session(aggregate::session_rows_in_range(
+                sessions, daily, range, today,
+            )),
+        }
+    }
+
+    /// 这组行属于哪个维度：卡片标题与交互都按它走。
+    fn dimension(&self) -> Dimension {
+        match self {
+            Self::Agent(_) => Dimension::Agent,
+            Self::Model(_) => Dimension::Model,
+            Self::Session(_) => Dimension::Session,
+        }
+    }
+
+    /// 行数：并排两表取较大值当作共同的高度预算。
+    fn len(&self) -> usize {
+        match self {
+            Self::Agent(rows) => rows.len(),
+            Self::Model(rows) => rows.len(),
+            Self::Session(rows) => rows.len(),
+        }
+    }
 }
 
 /// 文本列伸缩的下限比例：再窄就只剩省略号，没有信息量了。
@@ -412,20 +509,6 @@ fn fit_columns<const N: usize>(columns: &[Column; N], available: f32) -> [Column
 /// 行高（也是每个单元格的高度）。
 /// 行高 21 + 行距 4 = 25px（用户定的行距）：5 行预算 = 125px。
 const CELL_HEIGHT: f32 = 21.0;
-
-/// 卡片描边（1px）在两侧各外扩约 1px（取整后）：实测外框高 = 内容
-/// + 2×内边距 + 2。会话卡对齐预算与底部填充都按外框目标反推内容高。
-const CARD_STROKE_OVERHEAD: f32 = 2.0;
-
-/// 一行占的高（行高 + 行距）：会话卡的对齐预算按整行数取整用。
-const ROW_PITCH: f32 = CELL_HEIGHT + crate::theme::SPACE_1;
-
-/// 对齐生效所需的至少整行数：再矮的卡对不齐也难看，不如按 5 行滚动。
-const MIN_ALIGNED_ROWS: f32 = 2.0;
-
-/// 表头行占的高（行高 + 行距）：会话卡对齐预算要从卡高里扣掉 ——
-/// 不扣的话卡底边比热力图低出一截（用户反馈）。
-const TABLE_HEADER_HEIGHT: f32 = CELL_HEIGHT + crate::theme::SPACE_1;
 
 /// 数值列的常用宽度：`123.4M` 这类最长 6-7 字符。
 const NUM_W: f32 = 68.0;
@@ -589,7 +672,7 @@ fn table<F>(
     id: &str,
     columns: &[Column],
     sort: SortState,
-    max_height: f32,
+    body: f32,
     rows: impl IntoIterator<Item = F>,
 ) -> Option<SortKey>
 where
@@ -604,7 +687,7 @@ where
     let hover = ui.visuals().widgets.hovered.weak_bg_fill;
     let row_width: f32 = columns.iter().map(|column| column.width).sum();
     // 行区在组件内部滚动（表头固定）：行数再多也不把整页撑长。
-    super::component::scroll_body(ui, id, max_height, |ui| {
+    super::component::scroll_body(ui, id, body, |ui| {
         for (index, row) in rows.into_iter().enumerate() {
             // 先占位拿到本行的矩形，再把背景画在内容下面。
             let (rect, response) =
@@ -757,7 +840,7 @@ fn agent_table(
     ui: &mut egui::Ui,
     rows: &[AgentUsage],
     sort: SortState,
-    max_height: f32,
+    body: f32,
 ) -> Option<TableAction> {
     let columns = fit_columns(
         &[
@@ -829,7 +912,7 @@ fn agent_table(
             }
         })
         .collect();
-    let clicked = table(ui, "agent-table", &columns, sort, max_height, items);
+    let clicked = table(ui, "agent-table", &columns, sort, body, items);
     table_action(clicked)
 }
 
@@ -838,11 +921,11 @@ fn model_table(
     ui: &mut egui::Ui,
     rows: &[ModelUsage],
     sort: SortState,
-    max_height: f32,
+    body: f32,
 ) -> Option<TableAction> {
     let columns = fit_columns(
         &[
-            Column::sorted_text("模型", 210.0, SortKey::Name),
+            Column::sorted_text("模型", 130.0, SortKey::Name),
             Column::number("合计", NUM_W, SortKey::Total),
             Column::number("输入", NUM_W, SortKey::Input),
             Column::number("输出", NUM_W, SortKey::Output),
@@ -910,14 +993,14 @@ fn model_table(
             }
         })
         .collect();
-    let clicked = table(ui, "model-table", &columns, sort, max_height, items);
+    let clicked = table(ui, "model-table", &columns, sort, body, items);
     table_action(clicked)
 }
 
-/// 会话维度表：会话 / Agent / 模型 / 项目 / 区间内用量 / 状态 / 操作。
+/// 会话维度表：会话名 / 会话 / Agent / 模型 / 项目 / 区间内用量 / 状态 / 操作。
 ///
 /// 区间不是「全部」时，用量列是该会话在区间内的部分，不是它的一生总量。
-/// 项目列来自 tokscale 解析出的工作区，旧账本条目没有，画「—」。
+/// 会话名与项目列都可能缺（源里没存名字、旧账本条目没有项目），缺了画「—」。
 /// 操作列是两段式删除：第一击标待确认，再击同一行才真删（见 [`delete_cell`]）。
 #[allow(clippy::too_many_arguments)]
 fn session_table(
@@ -926,7 +1009,7 @@ fn session_table(
     now_ms: i64,
     range: Range,
     sort: SortState,
-    max_height: f32,
+    body: f32,
     pending_delete: Option<&str>,
 ) -> Option<TableAction> {
     // 表头是 `&'static str`：按区间二选一，不动态拼字符串。
@@ -937,9 +1020,10 @@ fn session_table(
     };
     let columns = fit_columns(
         &[
-            Column::text("会话", 170.0),
-            Column::sorted_text("Agent", 110.0, SortKey::Name),
-            Column::text("模型", 190.0),
+            Column::text("会话名", 210.0),
+            Column::text("会话", 150.0),
+            Column::sorted_text("Agent", 100.0, SortKey::Name),
+            Column::text("模型", 170.0),
             Column::text("项目", 110.0),
             total_column,
             Column::text("状态", 88.0),
@@ -951,9 +1035,15 @@ fn session_table(
     sort_rows(
         &mut rows,
         sort,
-        // 会话没有天然的名字：用「Agent + 会话 id」当排序兜底键，
+        // 有会话名的按名字排，没有的退回会话 id；前缀仍是 Agent，
         // 保证同一个 agent 的会话能聚在一起。
-        |row| format!("{}:{}", row.client.label(), row.session_id),
+        |row| {
+            format!(
+                "{}:{}",
+                row.client.label(),
+                row.title.as_deref().unwrap_or(&row.session_id)
+            )
+        },
         |row, key| match key {
             SortKey::Input => row.input,
             SortKey::Output => row.output,
@@ -966,35 +1056,33 @@ fn session_table(
     let items: Vec<_> = rows
         .iter()
         .map(|row| {
+            let title = row.title.clone().unwrap_or_else(|| "—".to_string());
             let short = aggregate::short_session_id(&row.session_id, SESSION_ID_CHARS);
             let client = row.client;
             let model_id = row.model_id.clone();
             let project = row.project.clone().unwrap_or_else(|| "—".to_string());
             let total = row.total();
             let last_seen_ms = row.last_seen_ms;
-            let archived = row.archived;
             let key = SessionSnapshot::key(client, &row.session_id);
             let confirming = pending_delete == Some(key.as_str());
             let deletions = &deletions;
             move |ui: &mut egui::Ui| {
-                cell_text(ui, &columns, 0, &short, false);
-                cell_text(ui, &columns, 1, client.label(), false);
-                cell_text(ui, &columns, 2, &model_id, false);
-                cell_text(ui, &columns, 3, &project, false);
-                cell_number(ui, &columns, 4, &aggregate::format_tokens(total), true);
-                // 归档会话优先标状态（它比「最近活动」更值得注意：
-                // 用户可能以为统计读错了，得说清用量来自账本）。
-                if archived {
-                    cell_text(ui, &columns, 5, "已归档", false);
-                } else {
-                    let when = aggregate::relative_time(last_seen_ms, now_ms);
-                    cell_text(ui, &columns, 5, &when, false);
-                }
-                delete_cell(ui, &columns, 6, &key, confirming, deletions);
+                // 会话名加粗当主标识，会话 id 退为辅助列（用户要求增加会话名）。
+                cell_text(ui, &columns, 0, &title, true);
+                cell_text(ui, &columns, 1, &short, false);
+                cell_text(ui, &columns, 2, client.label(), false);
+                cell_text(ui, &columns, 3, &model_id, false);
+                cell_text(ui, &columns, 4, &project, false);
+                cell_number(ui, &columns, 5, &aggregate::format_tokens(total), true);
+                // 状态列只画最近活动：源里已消失的会话不进列表（见
+                // [`crate::usage::Ledger::view`]），不存在「已归档」这个状态。
+                let when = aggregate::relative_time(last_seen_ms, now_ms);
+                cell_text(ui, &columns, 6, &when, false);
+                delete_cell(ui, &columns, 7, &key, confirming, deletions);
             }
         })
         .collect();
-    let clicked = table(ui, "session-table", &columns, sort, max_height, items);
+    let clicked = table(ui, "session-table", &columns, sort, body, items);
     let deleted = deletions.into_inner().into_iter().next();
     if let Some(key) = deleted {
         // 删除优先：同一个单元格同帧不可能又排序又删除。
@@ -1003,7 +1091,7 @@ fn session_table(
     table_action(clicked)
 }
 
-/// 会话表的删除单元格：两段式确认，防在密集表格里误触把账本数据删了。
+/// 会话表的删除单元格：两段式确认，防在密集表格里误触。
 ///
 /// 第一击把该行标成待确认（按钮变「确认」，红色）；再击同一行才真删。
 /// 待确认状态存在 `App::usage_delete_pending`，点别行会转移过去。
@@ -1039,8 +1127,8 @@ fn delete_cell(
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(if confirming {
-            "再点一次确认删除：该会话将从用量统计中永久移除（不影响磁盘文件）"
+            "再点一次确认删除：会话从 agent 的库里真删掉，不能撤销"
         } else {
-            "从用量统计中删除该会话"
+            "删除该会话（从 agent 的库里真删；已计入的用量保留在统计里）"
         });
 }

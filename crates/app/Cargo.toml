@@ -27,6 +27,7 @@ egui_extras.workspace = true
 egui_plot.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
+trayicon = "0.4.1"
 windows-sys.workspace = true
 
 [build-dependencies]

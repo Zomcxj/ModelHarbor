@@ -1,8 +1,7 @@
 //! 「本机用量」的状态机：后台扫描 + 3 秒增量检测 + debounce。
 //!
 //! 照 [`crate::app::balance`] 的模式：后台线程 + `mpsc::Receiver`，UI 线程每帧
-//! `try_recv` 收结果，**绝不在 UI 线程调 `usage::scan()`**（debug 实测 14.6s，
-//! 会把界面卡死）。
+//! `try_recv` 收结果，**绝不在 UI 线程调 `usage::scan()`**。
 //!
 //! 重扫的触发条件是**源文件指纹变了**，不是「过了 3 秒」：
 //!
@@ -14,7 +13,7 @@
 //!                  └─ 一直在变（agent 流式写文件）──► 最多等 5 秒就重扫
 //! ```
 //!
-//! debounce 参数照 token-monitor 的实测值（`DEBOUNCE_SECS` / `MAX_WAIT_SECS` /
+//! debounce 参数对齐 token-monitor（`DEBOUNCE_SECS` / `MAX_WAIT_SECS` /
 //! `POLL_INTERVAL_SECS`），**没有额外的冷却** —— token-monitor 在源码里明确写了
 //! 「There is deliberately no cooldown on top of the debounce」：debounce 已经
 //! 把连续写入合并掉了，再加冷却只会让用户觉得数字不跟手。
@@ -23,6 +22,9 @@ pub(in crate::app) mod aggregate;
 mod chart;
 pub(in crate::app) use chart::ChartKind;
 mod component;
+// 布局测试拿行距预算做断言（会话表体是普通表的三倍）。
+#[cfg(test)]
+pub(in crate::app) use component::ROW_PITCH;
 mod overview;
 pub(in crate::app) mod range;
 mod scan_sources;
@@ -38,17 +40,17 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 /// 连续变化合并窗口：首次发现变化后等这么久，期间没再变才重扫。
 pub(in crate::app) const DEBOUNCE_SECS: f64 = 1.5;
 
-/// 持续写入时的强制触发上限：agent 流式写会话文件时，指纹每 3 秒都在变，
+/// 持续写入时的强制触发上限：agent 流式写会话文件时，指纹每轮检测都在变，
 /// 光靠「静止 1.5 秒」可能永远等不到，所以最多等这么久就重扫一次。
 pub(in crate::app) const MAX_WAIT_SECS: f64 = 5.0;
 
 /// 指纹检测间隔：每 3 秒才 stat 一遍源文件（空闲时这是唯一的开销）。
 pub(in crate::app) const POLL_INTERVAL_SECS: f64 = 3.0;
 
-/// 账本落盘的最小间隔：扫描可能 3-5 秒一次，但没必要每次都写盘。
+/// 账本落盘的最小间隔：扫描最密也就检测间隔一次，没必要每次都写盘。
 pub(in crate::app) const SAVE_INTERVAL_SECS: f64 = 30.0;
 
-/// 扫描在途时的轮询间隔：扫描要 2.4-14 秒，界面空闲时不会自己重绘，
+/// 扫描在途时的轮询间隔：扫描耗时远超过一帧，界面空闲时不会自己重绘，
 /// 所以要主动要帧才能及时收结果。
 const SCAN_POLL_REPAINT_SECS: f64 = 0.25;
 
@@ -120,7 +122,7 @@ type ScanPayload = (HashMap<String, SessionSnapshot>, DailyMap, usize, u32);
 pub(in crate::app) struct UsageReport {
     /// 展示视图：实时扫描结果 ∪ 账本里已消失的会话，按最近活动倒序。
     pub sessions: Vec<SessionSnapshot>,
-    /// 按本地日历日分桶（含已删会话留下的记录）。
+    /// 按本地日历日分桶（聚合与各分解保留已删会话的用量，明细不含它）。
     ///
     /// 热力图与「今日 / 本周 / 本月 / 总计」都读这里：会话级汇总做不到这件事，
     /// 一个会话可以横跨几十天。
@@ -191,9 +193,9 @@ impl UsageState {
         self.rx.is_some()
     }
 
-    /// 账本条目数（含已归档的已删会话）。
-    pub(in crate::app) fn ledger_len(&self) -> usize {
-        self.ledger.len()
+    /// 源里已消失、只存在于账本里的会话条数。
+    pub(in crate::app) fn ledger_archived_len(&self) -> usize {
+        self.ledger.archived_len()
     }
 
     /// 打开秒显：账本里有数据就把上次的结果直接填进展示（后台扫完替换）。
@@ -296,7 +298,7 @@ pub(in crate::app) fn poll_due(last_poll_at: Option<f64>, now: f64) -> bool {
 
 /// debounce 期间该请求多久之后重绘。
 ///
-/// 界面空闲时 egui 不重绘，不主动要帧就等不到「1.5 秒后该扫了」的那一刻。
+/// 界面空闲时 egui 不重绘，不主动要帧就等不到「合并窗口到期该扫了」的那一刻。
 /// 返回 `None` = 不需要额外请求（没在 debounce）。
 ///
 /// 只认**还没到**的期限：把已过去的期限夹到 0 再取最小，会退化成 0.01 秒的
@@ -381,7 +383,16 @@ impl App {
         let (outcome, dirty_since) = poll_outcome(changed, self.usage.dirty_since, now);
         self.usage.dirty_since = dirty_since;
         match outcome {
-            PollOutcome::Idle => {}
+            // 空闲也要按「下一个检测点」要帧：egui 空闲时不主动重绘，
+            // 不要帧则周期检测饿死，源文件此后再有变化也永远发现不了
+            // （只能靠鼠标移动复活）。「半分钟不刷新」的缺陷就是这么来的。
+            PollOutcome::Idle => {
+                let delay = match self.usage.last_poll_at {
+                    Some(last) => (last + POLL_INTERVAL_SECS - now).max(MIN_REPAINT_SECS),
+                    None => MIN_REPAINT_SECS,
+                };
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(delay));
+            }
             PollOutcome::Debouncing => self.request_usage_repaint(ctx, now),
             PollOutcome::Scan => self.start_usage_scan(now, ctx),
         }
@@ -391,7 +402,9 @@ impl App {
     ///
     /// 取「到 debounce 期限」与「到下一个检测点」里更近的那个：扫描只能在检测点
     /// 发起，所以只等期限会白绘一帧再重排，而只等检测点又会让 [`MAX_WAIT_SECS`]
-    /// 在把检测间隔调小时失去作用。
+    /// 在把检测间隔调小时失去作用。两个期限都已过期时，唯一有意义的帧就是
+    /// 检测点本身：此时若仍取最小值，会退化成 [`MIN_REPAINT_SECS`] 节拍的
+    /// 空转重绘（检测间隔远大于合并窗口时尤其明显）。
     fn request_usage_repaint(&self, ctx: &egui::Context, now: f64) {
         let Some(deadline) = repaint_delay(self.usage.dirty_since, now) else {
             return;
@@ -400,8 +413,14 @@ impl App {
             Some(last) => (last + POLL_INTERVAL_SECS - now).max(0.0),
             None => 0.0,
         };
-        let delay = deadline.min(to_next_poll).max(MIN_REPAINT_SECS);
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(delay));
+        let delay = if deadline <= MIN_REPAINT_SECS {
+            to_next_poll
+        } else {
+            deadline.min(to_next_poll)
+        };
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+            delay.max(MIN_REPAINT_SECS),
+        ));
     }
 
     /// 发起一次后台扫描。UI 线程只负责 spawn 与收结果。
@@ -412,7 +431,7 @@ impl App {
         // 会照常合并保留，见 [`Ledger::ignore_session`]）。
         let ignored = self.usage.ledger.ignored().clone();
         std::thread::spawn(move || {
-            // 全量扫描（release 2.4-2.7s）：只能在后台线程跑。
+            // 全量扫描耗时远超一帧：只能在后台线程跑。
             let payload = crate::usage::scan(&ignored).map(|scanned| {
                 (
                     scanned.sessions,
@@ -433,7 +452,7 @@ impl App {
 
     /// 注入一次「扫描完成」的结果（仅测试用）。
     ///
-    /// 排版测试只关心表格怎么画，不想真去扫盘（2.4 秒起、且依赖本机数据）。
+    /// 排版测试只关心表格怎么画，不去真扫盘（也不依赖本机数据）。
     /// 走 `merge_into_ledger` 而不是直接塞 `result`：与生产路径同构，
     /// 这样测试里的 `daily` 与 `sessions` 会经过同一套账本合并逻辑。
     #[cfg(test)]
@@ -462,6 +481,16 @@ impl App {
         self.usage.result = Some(Ok(report));
     }
 
+    /// 测试钩子：预置源指纹与干净状态，让下一次 [`Self::poll_usage`]
+    /// 直接落在空闲分支（不必真等源文件变化，也不触发后台扫描）。
+    #[cfg(test)]
+    pub(in crate::app) fn seed_usage_idle_for_test(&mut self) {
+        self.usage.fingerprints = scan_sources::fingerprint();
+        self.usage.dirty_since = None;
+        self.usage.last_poll_at = None;
+        self.usage.rx = None;
+    }
+
     /// 账本落盘（按 [`SAVE_INTERVAL_SECS`] 节流）。
     ///
     /// 落盘失败不影响功能：账本留在内存里，本次会话的数字照样正确。
@@ -488,18 +517,48 @@ impl App {
         self.usage.last_save_at = Some(now);
     }
 
-    /// 删除一个会话：从列表里隐藏并**永久忽略**，立即刷新展示数据并落盘。
+    /// 删除一个会话：先把它从**源**里删掉，再从统计里收走明细。
     ///
-    /// 只动 ModelHarbor 自己的展示：磁盘上的会话文件不碰，之后的扫描也
-    /// 跳过它（名单存在账本里，见 [`Ledger::ignore_session`]）。它已并入
-    /// 按天分桶的贡献**保留在统计里** —— 总量、热力图与时间表不因删除缩水
-    /// （token-monitor 式的「隐藏」而非「抹除」）。
+    /// 两半是同一次动作：
+    /// - **源**（agent 自己的库 / 会话文件）：真删，见 [`crate::usage::delete_session`]。
+    ///   失败时按 [`DeleteError::blocks_ledger`] 决定统计那半做不做：
+    ///   可修的失败（agent 在跑、写库出错）**两半都不做** —— 行从列表里
+    ///   消失后用户再也点不到它，源里的会话就水远删不掉了；不可修的失败
+    ///   （后端不支持删源）没有重试可言，照旧收走统计。
+    /// - **账本**：会话快照与逐日 `by_session` 明细真删；各维度的合计与分解
+    ///   原样保留，所以总量、热力图与时间表不因删除缩水。同时把键记进忽略
+    ///   名单，挡住「删前已起飞的扫描」把它并回来。
     pub(in crate::app) fn forget_usage_session(&mut self, key: &str, now: f64) {
+        let source = crate::usage::delete_session(key);
+        self.apply_session_removal(key, source, now);
+    }
+
+    /// 删除的后半段（与源删除分开：测试要拿「源删成了 / 拦下了」两种输入
+    /// 跑同一段逻辑，不依赖本机真的装没装那些 agent）。
+    pub(in crate::app) fn apply_session_removal(
+        &mut self,
+        key: &str,
+        source: Result<crate::usage::Deleted, crate::usage::DeleteError>,
+        now: f64,
+    ) {
+        if let Err(err) = &source {
+            if err.blocks_ledger() {
+                self.usage_source_error = Some(err.message());
+                self.usage_delete_pending = None;
+                return;
+            }
+        }
+        self.usage_source_error = source.err().map(|err| err.message());
         self.usage.ledger.ignore_session(key);
         if let Some(Ok(report)) = self.usage.result.as_mut() {
             report
                 .sessions
                 .retain(|session| SessionSnapshot::key(session.client, &session.session_id) != key);
+            // 内存里的展示数据同步收掉明细：不等下一轮扫描，
+            // 否则账本已摘、报表还揣着，两者不一致。
+            for bucket in report.daily.values_mut() {
+                bucket.remove_session_detail(key);
+            }
         }
         self.usage_delete_pending = None;
         self.save_usage_ledger_unthrottled(now);
@@ -650,6 +709,58 @@ mod tests {
     use crate::app::usage::range::Range;
     use crate::usage::DayTotals;
     use std::collections::BTreeMap;
+
+    /// 空闲分支必须按「下一个检测点」要帧：egui 空闲时不自行重绘，
+    /// 不要帧则周期检测饿死——源文件此后的变化永远发现不了（「半分钟
+    /// 不刷新」的历史缺陷），滚动条淡入这类逐帧动画也会停在透明档。
+    #[test]
+    fn idle_poll_requests_a_repaint_for_the_next_check() {
+        let mut app = crate::app::App::default();
+        app.set_usage_result_for_test(Vec::new(), DailyMap::new());
+        app.seed_usage_idle_for_test();
+        let ctx = egui::Context::default();
+        // egui 0.33 的重绘请求走回调（`repaint_delay` 字段已移除）。
+        // 首帧 egui 内部会发一次 delay=0 的补遍请求，那只够续一帧；
+        // 空闲轮询必须自己按「下一个检测点」要帧，否则照样饿死。
+        let requested = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&requested);
+        ctx.set_request_repaint_callback(move |info| {
+            sink.lock().unwrap().push(info.delay);
+        });
+        // 第一遍：初始化视口 / 字体等内部机制会发一次 delay=0 的补遍请求，
+        // 且合并逻辑只让更小的 delay 触发回调——先把它消耗掉。
+        let _ = ctx.run(
+            egui::RawInput {
+                time: Some(100.0),
+                ..Default::default()
+            },
+            |ctx| app.poll_usage(ctx),
+        );
+        requested.lock().unwrap().clear();
+        // 第二遍（一个检测间隔后）：又到了检测点，源没变 → 空闲分支。
+        let _ = ctx.run(
+            egui::RawInput {
+                time: Some(100.0 + POLL_INTERVAL_SECS + 0.5),
+                ..Default::default()
+            },
+            |ctx| app.poll_usage(ctx),
+        );
+        let delays = requested.lock().unwrap();
+        let poll_request = delays
+            .iter()
+            .copied()
+            .find(|d| *d > std::time::Duration::ZERO);
+        let Some(delay) = poll_request else {
+            panic!(
+                "空闲轮询没有请求定时重绘（只见到 {:?}）：周期检测将饿死，界面永不刷新",
+                *delays
+            );
+        };
+        assert!(
+            delay <= std::time::Duration::from_secs_f64(POLL_INTERVAL_SECS + 0.5),
+            "重绘请求晚于下一个检测点：{delay:?}"
+        );
+    }
 
     /// 无筛选：原样返回（不做无谓的深拷贝）。
     #[test]
@@ -822,20 +933,20 @@ mod tests {
         // 100 秒发现变化（还没到窗口）
         let (outcome, since) = poll_outcome(4, None, 100.0);
         assert_eq!(outcome, PollOutcome::Debouncing);
-        // 101.5 秒时源已经安静（changed == 0），但改动仍待处理 → 该扫了。
-        let (outcome, since) = poll_outcome(0, since, 101.5);
+        // 合并窗口到期时源已经安静（changed == 0），但改动仍待处理 → 该扫了。
+        let (outcome, since) = poll_outcome(0, since, 100.0 + DEBOUNCE_SECS);
         assert_eq!(outcome, PollOutcome::Scan, "已置脏的改动不能被丢掉");
         assert_eq!(since, None, "扫完清脏");
     }
 
     #[test]
     fn change_settling_for_the_debounce_window_triggers_a_scan() {
-        // 100 秒首次发现变化 → 101.4 秒还没到窗口
-        let (outcome, since) = poll_outcome(1, Some(100.0), 101.4);
+        // 100 秒首次发现变化 → 窗口到期前 0.1 秒还没到窗口
+        let (outcome, since) = poll_outcome(1, Some(100.0), 100.0 + DEBOUNCE_SECS - 0.1);
         assert_eq!(outcome, PollOutcome::Debouncing);
         assert_eq!(since, Some(100.0));
-        // 101.5 秒（正好 DEBOUNCE_SECS）触发
-        let (outcome, _) = poll_outcome(1, Some(100.0), 101.5);
+        // 正好 DEBOUNCE_SECS 触发
+        let (outcome, _) = poll_outcome(1, Some(100.0), 100.0 + DEBOUNCE_SECS);
         assert_eq!(outcome, PollOutcome::Scan);
     }
 
@@ -903,7 +1014,7 @@ mod tests {
 
     #[test]
     fn repaint_delay_asks_for_the_nearest_deadline() {
-        // 刚发现变化：等 1.5 秒（比 5 秒上限近）。
+        // 刚发现变化：等合并窗口（比上限近）。
         assert_eq!(repaint_delay(Some(100.0), 100.0), Some(DEBOUNCE_SECS));
         // 已等了 4.6 秒：离上限只剩 0.4 秒。
         let delay = repaint_delay(Some(100.0), 104.6).expect("应要一帧");
@@ -914,7 +1025,7 @@ mod tests {
         assert_eq!(repaint_delay(None, 100.0), None);
     }
 
-    /// 端到端：并入账本 → 视图；已删会话保留在展示里。
+    /// 端到端：并入账本 → 视图；源里消失的会话保留在展示里（归档）。
     #[test]
     fn merge_into_ledger_keeps_deleted_sessions_in_the_view() {
         use crate::format::ConfigFormat;
@@ -923,6 +1034,7 @@ mod tests {
             session_id: session.to_string(),
             model_id: "m".to_string(),
             project: None,
+            title: None,
 
             input,
             output: 0,
@@ -957,11 +1069,11 @@ mod tests {
         assert_eq!(first.scanned_at, 1.0);
         assert_eq!(first.total(), 100);
 
-        // 下一轮 a 消失了 → 仍留在视图里，并标记 archived。
+        // 下一轮 a 消失了 → 不进视图，但账本里还留着（合计不缩水）。
         let second = merge_into_ledger(&mut ledger, scan_of(vec![]), DailyMap::new(), 2.0, 0, 10);
-        assert_eq!(second.sessions.len(), 1, "已删除的会话必须保留");
-        assert!(second.sessions[0].archived);
-        assert_eq!(second.total(), 100, "总量不因源里消失而缩水");
+        assert!(second.sessions.is_empty(), "源里已消失的不进列表");
+        assert_eq!(ledger.len(), 1, "用量在账本里留着");
+        assert_eq!(ledger.archived_len(), 1);
     }
 
     /// 按天分桶也要穿过 `merge_into_ledger` 进到报告里（热力图靠它）。
@@ -992,6 +1104,7 @@ mod tests {
             session_id: session.to_string(),
             model_id: "m".to_string(),
             project: None,
+            title: None,
             input,
             output: 0,
             cache_read: 0,
@@ -1069,6 +1182,7 @@ mod tests {
             session_id: "s".into(),
             model_id: "m".into(),
             project: None,
+            title: None,
 
             input,
             output: 0,
