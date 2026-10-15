@@ -483,18 +483,13 @@ impl eframe::App for App {
             // 常驻模式：拦截关闭，改为隐藏窗口。
             // `close_requested` 在 hook 之前已被捕获，无法从输入里抠掉事件；
             // eframe 以输出命令里有没有 `CancelClose` 为准，发它就够。
-            if self.tray_resident && raw_input.viewport().close_requested() {
+            // 托盘菜单点过「退出」则放行（`PostMessageW(WM_CLOSE)` 走的就是这条路）。
+            if self.tray_resident
+                && !crate::tray::exit_requested()
+                && raw_input.viewport().close_requested()
+            {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 crate::tray::hide_main_window();
-            }
-            // 托盘菜单事件（托盘线程写入，主窗口线程消费）。
-            for event in crate::tray::drain_events() {
-                match event {
-                    crate::tray::TrayEvent::Show => crate::tray::show_main_window(),
-                    crate::tray::TrayEvent::Exit => {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                }
             }
         }
         let _ = (ctx, raw_input);
@@ -624,8 +619,6 @@ struct ToolbarIcons {
     zap: Option<egui::TextureHandle>,
     /// 常驻任务栏开关（点亮态图标）。
     pin: Option<egui::TextureHandle>,
-    /// 退出按钮图标。
-    log_out: Option<egui::TextureHandle>,
 }
 
 impl App {
@@ -724,10 +717,6 @@ impl App {
         self.toolbar_icons.pin = load(
             "toolbar_icon_pin",
             include_bytes!("../../assets/icons/pin.svg"),
-        );
-        self.toolbar_icons.log_out = load(
-            "toolbar_icon_log_out",
-            include_bytes!("../../assets/icons/log-out.svg"),
         );
         self.toolbar_icons.unfold = load(
             "toolbar_icon_unfold",

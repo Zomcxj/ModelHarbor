@@ -1,21 +1,15 @@
 //! 常驻任务栏（系统托盘）：仅 Windows。
 //!
-//! 「常驻」模式下主窗口最小化到托盘而不退出：点 X 只是隐藏窗口，托盘
-//! 图标双击或右键「显示主窗口」即可唤回；右键「退出」才真正关闭。
+//! 「常驻」模式下点 X 只把主窗口隐藏进托盘，托盘右键菜单可唤回或退出。
 //!
-//! 托盘菜单的回调运行在系统托盘线程：只往全局队列里塞事件，主窗口
-//! 每帧在 `raw_input_hook` 里排空（见 [`drain_events`]）。
+//! 托盘菜单回调运行在 trayicon 内部线程，而窗口隐藏后 egui 不再画帧——
+//! 事件不能走 UI 队列（永远没人消费，唤回与退出都会石沉大海）。这里直接
+//! 用跨线程安全的 Win32 调用：`ShowWindowAsync` 把显示操作投回窗口自己的
+//! 消息队列；退出则 `PostMessageW(WM_CLOSE)` 走正常关闭流程，
+//! `raw_input_hook` 见到 [`exit_requested`] 标记后放行。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-
-/// 托盘菜单事件：由托盘线程写入，主窗口线程消费。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TrayEvent {
-    /// 显示主窗口（托盘双击 / 右键「显示主窗口」）。
-    Show,
-    /// 退出程序（右键「退出」）。
-    Exit,
-}
 
 /// 菜单项标识（trayicon 要求 `PartialEq + Clone + Send + Sync`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,12 +18,9 @@ enum Item {
     Exit,
 }
 
-static EVENTS: OnceLock<Mutex<Vec<TrayEvent>>> = OnceLock::new();
+/// 退出标记：托盘菜单点了「退出」之后，关闭请求不再被常驻模式拦截。
+static FORCE_EXIT: AtomicBool = AtomicBool::new(false);
 static TRAY: OnceLock<Mutex<Option<trayicon::TrayIcon<Item>>>> = OnceLock::new();
-
-fn events() -> &'static Mutex<Vec<TrayEvent>> {
-    EVENTS.get_or_init(|| Mutex::new(Vec::new()))
-}
 
 /// 托盘是否已建好（常驻模式开关的当前态）。
 pub fn is_active() -> bool {
@@ -37,12 +28,9 @@ pub fn is_active() -> bool {
         .is_some_and(|slot| slot.lock().map(|g| g.is_some()).unwrap_or(false))
 }
 
-/// 排空托盘事件队列（每帧调用一次，主窗口线程）。
-pub fn drain_events() -> Vec<TrayEvent> {
-    events()
-        .lock()
-        .map(|mut queue| std::mem::take(&mut *queue))
-        .unwrap_or_default()
+/// 托盘菜单是否点过「退出」：`raw_input_hook` 据此决定放行关闭。
+pub fn exit_requested() -> bool {
+    FORCE_EXIT.load(Ordering::Relaxed)
 }
 
 /// 建托盘图标（幂等）：图标取 `assets/icon.ico`，菜单两项。
@@ -64,13 +52,15 @@ pub fn ensure() {
         .tooltip("ModelHarbor")
         .icon(icon)
         .menu(menu)
-        .sender(|item| {
-            let event = match item {
-                Item::Show => TrayEvent::Show,
-                Item::Exit => TrayEvent::Exit,
-            };
-            if let Ok(mut queue) = events().lock() {
-                queue.push(event);
+        // 左键单击直接唤回（Windows / KDE 生效）；右键保持默认弹菜单。
+        .on_click(Item::Show)
+        // 回调在托盘线程：窗口隐藏时 egui 不画帧，不能走 UI 队列，
+        // 直接用跨线程安全的 Win32 调用。
+        .sender(|item| match item {
+            Item::Show => show_main_window(),
+            Item::Exit => {
+                FORCE_EXIT.store(true, Ordering::Relaxed);
+                post_close();
             }
         })
         .build()
@@ -87,15 +77,23 @@ pub fn teardown() {
     if let Ok(mut slot) = TRAY.get_or_init(|| Mutex::new(None)).lock() {
         *slot = None;
     }
-    if let Ok(mut queue) = events().lock() {
-        queue.clear();
+}
+
+/// 给主窗口投一条 `WM_CLOSE`：走正常的 winit / eframe 关闭流程，
+/// `raw_input_hook` 见到 [`exit_requested`] 后放行。拿不到句柄时直接退出。
+fn post_close() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    match crate::windowfx::main_hwnd() {
+        Some(hwnd) => unsafe {
+            PostMessageW(hwnd as *mut core::ffi::c_void, WM_CLOSE, 0, 0);
+        },
+        None => std::process::exit(0),
     }
 }
 
-/// 主窗口最小化到托盘（隐藏窗口；托盘图标仍在）。
+/// 主窗口收进托盘（隐藏窗口；托盘图标仍在）。主窗口线程调用。
 ///
-/// 句柄由 `main.rs` 经 `windowfx::set_main_hwnd` 登记；拿不到就退回
-/// 普通最小化，行为不至于退化。
+/// 句柄由 `main.rs` 经 `windowfx::set_main_hwnd` 登记；拿不到就什么也不做。
 pub fn hide_main_window() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
     if let Some(hwnd) = crate::windowfx::main_hwnd() {
@@ -105,12 +103,17 @@ pub fn hide_main_window() {
     }
 }
 
-/// 把主窗口从托盘唤回（显示并还原）。
+/// 把主窗口从托盘唤回。托盘线程调用：`ShowWindowAsync` 是跨线程版本
+/// （把显示操作投回窗口自己的消息队列），随后置前。
 pub fn show_main_window() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_RESTORE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetForegroundWindow, ShowWindowAsync, SW_RESTORE,
+    };
     if let Some(hwnd) = crate::windowfx::main_hwnd() {
+        let hwnd = hwnd as *mut core::ffi::c_void;
         unsafe {
-            ShowWindow(hwnd as *mut core::ffi::c_void, SW_RESTORE);
+            ShowWindowAsync(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
         }
     }
 }
