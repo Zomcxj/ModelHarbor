@@ -3,13 +3,22 @@
 //! 问题：opencode / workbuddy 的会话被删后，其用量从源文件里消失；只读源会让
 //! 历史总量凭空缩水。
 //!
-//! 做法（照 token-monitor 的 `sessionUsageArchive`）：每次扫描后把会话快照并进账本，
-//! 展示时「实时扫描结果 ∪ 账本里已消失的会话」，后者标记 [`SessionSnapshot::archived`]。
+//! 做法（照 token-monitor 的 `sessionUsageArchive`）：每次扫描后把会话快照并进账本；
+//! 源里已消失的标记 [`SessionSnapshot::archived`] —— 它们**不进列表**（会话表只呈现
+//! agent 自己库里还在的会话），但用量留在聚合里，总量不缩水。
+//!
+//! 账本分两层，生命周期不同：
+//! - **聚合**（按天合计与 agent / 模型 / 交叉分解）：只增不减，永久保留；
+//! - **明细**（会话快照与逐日 `by_session`）：源里消失后只服用于合计；用户主动
+//!   删除则真删（[`Ledger::ignore_session`]）。
 //!
 //! 三条硬约束：
 //! - **原子写**：写临时文件再 rename，中途崩溃不会留下半个文件；
 //! - **差异写**：只落盘变化的条目，不是每次全量重写；
 //! - **静默恢复**：文件损坏 / 读失败 → 当作空账本重建，绝不让账本问题导致功能不可用。
+//!
+//! 用户主动删除的会话另走一条路（[`Ledger::ignore_session`]）：
+//! **明细收走、聚合留下** —— 与 cc-switch / token-monitor 同构。
 
 use crate::format::ConfigFormat;
 use crate::usage::daily::{DailyBucket, DailyMap};
@@ -30,6 +39,12 @@ pub struct SessionSnapshot {
     /// 所属项目（工作区）：tokscale 解析出的 `workspace_label`，缺了退回
     /// `workspace_key`。旧账本条目没有这个字段，为 `None`。
     pub project: Option<String>,
+    /// 会话名：源里存了名字的客户端（opencode 系的 `session.title`）取原文，
+    /// 没存的（pi）取首条用户消息的开头。见 [`crate::usage::titles`]。
+    ///
+    /// 与 `project` 一样落盘：名字来自单独的采集通道，不参与消息汇总，
+    /// 重扫之间靠账本带着走。旧账本条目没有这个字段，为 `None`。
+    pub title: Option<String>,
     pub input: i64,
     pub output: i64,
     pub cache_read: i64,
@@ -43,7 +58,10 @@ pub struct SessionSnapshot {
     pub first_seen_ms: i64,
     /// 最后一次见到该会话的时间（Unix 毫秒）。
     pub last_seen_ms: i64,
-    /// 该会话已从源文件里消失（被删除），用量由账本保留。
+    /// 该会话是否已从源文件里消失（被删除或源侧滚动清理），用量由账本保留。
+    ///
+    /// 这个标记**落盘**（见 `to_json` / `from_json`）：不落盘的话，每次重启
+    /// 账本里那些源里早已消失的会话会被当成实时结果列出来。
     pub archived: bool,
 }
 
@@ -60,6 +78,7 @@ impl SessionSnapshot {
             session_id: session_id.to_string(),
             model_id: model_id.to_string(),
             project: None,
+            title: None,
             input: 0,
             output: 0,
             cache_read: 0,
@@ -126,6 +145,7 @@ impl SessionSnapshot {
             "session_id": self.session_id,
             "model_id": self.model_id,
             "project": self.project,
+            "title": self.title,
             "input": self.input,
             "output": self.output,
             "cache_read": self.cache_read,
@@ -135,6 +155,7 @@ impl SessionSnapshot {
             "cost": self.cost,
             "first_seen_ms": self.first_seen_ms,
             "last_seen_ms": self.last_seen_ms,
+            "archived": self.archived,
         })
     }
 
@@ -158,6 +179,10 @@ impl SessionSnapshot {
                 .get("project")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            title: value
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             input: value.get("input").and_then(Value::as_i64).unwrap_or(0),
             output: value.get("output").and_then(Value::as_i64).unwrap_or(0),
             cache_read: value.get("cache_read").and_then(Value::as_i64).unwrap_or(0),
@@ -179,7 +204,13 @@ impl SessionSnapshot {
                 .get("last_seen_ms")
                 .and_then(Value::as_i64)
                 .unwrap_or(i64::MIN),
-            archived: false,
+            // 旧账本没有这个键：当作「源里已消失」。缺这个键的账本来自只存合计的
+            // 版本，其中哪些会话在源里仍在无从得知，而会话表只列活会话 ——
+            // 宁可不列（下一轮扫描立刻会把活会话补回来），不能把已消失的列出去。
+            archived: value
+                .get("archived")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
         })
     }
 }
@@ -213,9 +244,9 @@ type LoadedLedger = (
 /// [`Ledger::view`] 产出「实时 ∪ 已归档」的展示视图。
 #[derive(Debug, Default)]
 pub struct Ledger {
-    /// `client:session_id` → 快照（含已归档的）。
+    /// `client:session_id` → 快照（含已归档的；用户主动删除的不在）。
     entries: HashMap<String, SessionSnapshot>,
-    /// 按本地日历日分桶（含已删会话留下的记录）。
+    /// 按本地日历日分桶（聚合与各分解保留已删会话的用量，会话明细不含它）。
     daily: DailyMap,
     /// 被用户删除并**永久忽略**的会话键：之后的扫描不再把它们并回来。
     ignored: BTreeSet<String>,
@@ -279,6 +310,14 @@ impl Ledger {
         self.entries.is_empty()
     }
 
+    /// 源里已消失、只存在于账本里的会话条数。
+    ///
+    /// 界面用它说明「总里为何比会话表里的行更早的会话也算进去了」：这些会话
+    /// 不占列表，用量仍计入合计。
+    pub fn archived_len(&self) -> usize {
+        self.entries.values().filter(|entry| entry.archived).count()
+    }
+
     /// 是否有未落盘的改动。
     pub fn is_dirty(&self) -> bool {
         !self.dirty.is_empty() || !self.dirty_days.is_empty()
@@ -289,11 +328,18 @@ impl Ledger {
         &self.ignored
     }
 
-    /// 删除一个会话：从账本移除并加入忽略名单 —— 之后的扫描不再把它并回来。
+    /// 删除一个会话：账本里**摘掉它的全部明细**并加入忽略名单 ——
+    /// 之后的扫描不再把它并回来。
     ///
-    /// 与「从磁盘消失 → 归档」不同：归档的会话行还在账本里，删掉的行也一并
-    /// 拿掉。但它已并入按天分桶的贡献**保留**（token-monitor 式隐藏）：总量、
-    /// 热力图与时间表不因删除缩水，只是列表里看不见它了。
+    /// 摘掉的是明细（会话快照 + 每天的 `by_session` 条目）；按天桶里的
+    /// 合计与 agent / 模型 / 交叉分解**原样保留**，总量、热力图与时间表
+    /// 不因删除缩水。这与 cc-switch（`usage_daily_rollups` 不带会话维度，
+    /// 删会话只删 `session_log_sync` 的书签行）和 token-monitor（剪枝只删
+    /// `periods` 的 today / month 窗口，`allTime` 永久保留）一致：
+    /// **聚合留下、明细收走**。
+    ///
+    /// 明细必须真删：留着它账本会随会话数无上限增长，而它对界面已无作用
+    /// （会话表以 `by_session` 为行来源，但以账本快照为模板，快照已在此移除）。
     ///
     /// 返回是否有改动（重复删同一个键时为 `false`）。
     pub fn ignore_session(&mut self, key: &str) -> bool {
@@ -301,6 +347,11 @@ impl Ledger {
             return false;
         }
         self.entries.remove(key);
+        for (date, bucket) in &mut self.daily {
+            if bucket.remove_session_detail(key) {
+                self.dirty_days.push(date.clone());
+            }
+        }
         self.dirty.push(key.to_string());
         true
     }
@@ -309,12 +360,11 @@ impl Ledger {
     ///
     /// - 新会话 → 新增；
     /// - 已有会话 → 用量取**较大值**（token 只增不减；源里偶发的重扫回退不应让总量缩水）；
-    /// - 账本里有、本次扫描没有 → 标记 [`SessionSnapshot::archived`]（**核心需求**）。
+    /// - 账本里有、本次扫描没有 → 标记 [`SessionSnapshot::archived`]：既不上列表，
+    ///   用量也仍留在聚合里。
     pub fn merge_scan(&mut self, scanned: HashMap<String, SessionSnapshot>) {
-        // 先全部标成「本次没见到」，下面见到的再摘掉。
-        for entry in self.entries.values_mut() {
-            entry.archived = true;
-        }
+        // 本次见到的键：末尾要靠它区分「没见到」与「刚见到」。
+        let seen: BTreeSet<String> = scanned.keys().cloned().collect();
         for (key, fresh) in scanned {
             if self.ignored.contains(&key) {
                 // 用户删掉的会话：扫到也不并回。
@@ -322,10 +372,14 @@ impl Ledger {
             }
             match self.entries.get_mut(&key) {
                 Some(existing) => {
-                    if existing.absorb_update(&fresh) {
+                    let changed = existing.absorb_update(&fresh);
+                    // 从「已消失」回到「在源里」也要落盘：状态翻了但不标脏，
+                    // 下一次重启就又把活会话当成已消失的。
+                    let reappeared = existing.archived;
+                    existing.archived = false;
+                    if changed || reappeared {
                         self.dirty.push(key);
                     }
-                    existing.archived = false;
                 }
                 None => {
                     let mut fresh = fresh;
@@ -335,20 +389,31 @@ impl Ledger {
                 }
             }
         }
-        // 本次没见到的：状态从「实时」翻成「已归档」也算变化。
-        for (key, entry) in &self.entries {
-            if entry.archived && !self.dirty.contains(key) {
-                self.dirty.push(key.clone());
+        // 本次没见到的：翻成「已消失」并落盘（已是这个状态的不重复标脏）。
+        for (key, entry) in &mut self.entries {
+            if seen.contains(key) || entry.archived {
+                continue;
             }
+            entry.archived = true;
+            self.dirty.push(key.clone());
         }
     }
 
     /// 并入一次扫描的按天分桶。
     ///
     /// 与会话快照分开合并：两者服务于不同视图（会话明细 vs 热力图 /
-    /// 时间范围筛选），一条会话被删后它的按天记录也要留着。
+    /// 时间范围筛选），一条会话被删后它的合计仍要留着。
     /// 同一天重复扫描时逐字段取较大值，token 只增不减。
-    pub fn merge_daily(&mut self, scanned: DailyMap) {
+    pub fn merge_daily(&mut self, mut scanned: DailyMap) {
+        // 在途扫描的明细裁剪：本轮扫描起飞时拿到的忽略名单还不含本次删掉的
+        // 键（用户在本轮扫描进行中点了删除），结果里会带着已删会话的明细。
+        // 合计与分解照并（token 计数不缩水），明细按当前名单摘掉 ——
+        // 否则删除会被一轮旧扫描悄悄复活。
+        for bucket in scanned.values_mut() {
+            for key in &self.ignored {
+                bucket.remove_session_detail(key);
+            }
+        }
         for (date, fresh) in scanned {
             match self.daily.get_mut(&date) {
                 Some(existing) => {
@@ -371,9 +436,18 @@ impl Ledger {
         &self.daily
     }
 
-    /// 展示视图：实时扫描结果 ∪ 账本（已删会话保留，标记 `archived`）。
+    /// 展示视图：**源里仍在的会话**，按最近活动倒序。
+    ///
+    /// 源里已消失的（[`SessionSnapshot::archived`]）不列：会话表只呈现 agent
+    /// 自己库里还存在的会话，否则列表里绝大部分是从磁盘上早已消失的幽灵行。
+    /// 它们的用量仍留在 [`Self::daily`] 的合计与各分解里 —— 少的是行，不是数。
     pub fn view(&self) -> Vec<SessionSnapshot> {
-        let mut out: Vec<SessionSnapshot> = self.entries.values().cloned().collect();
+        let mut out: Vec<SessionSnapshot> = self
+            .entries
+            .values()
+            .filter(|entry| !entry.archived)
+            .cloned()
+            .collect();
         // 稳定排序：按最近活动倒序，其次按会话 id，保证 UI 不跳动。
         out.sort_by(|a, b| {
             b.last_seen_ms
@@ -439,7 +513,7 @@ impl Ledger {
                 }
             }
         }
-        let daily = value
+        let mut daily: DailyMap = value
             .get("daily")
             .and_then(Value::as_object)
             .map(|obj| {
@@ -452,7 +526,7 @@ impl Ledger {
                     .collect()
             })
             .unwrap_or_default();
-        let ignored = value
+        let ignored: BTreeSet<String> = value
             .get("ignored")
             .and_then(Value::as_array)
             .map(|items| {
@@ -463,6 +537,14 @@ impl Ledger {
                     .collect()
             })
             .unwrap_or_default();
+        // 读取时按忽略名单收一遍明细：早期版本只藏行不摘明细，旧账本里会
+        // 残留已删会话的 `by_session` 条目。此处自愈，不升版本（升版本会把
+        // 历史一起丢掉）。合计与各分解不动，与删除时的语义一致。
+        for key in &ignored {
+            for bucket in daily.values_mut() {
+                bucket.remove_session_detail(key);
+            }
+        }
         // saved_at 是缓存秒显加的新键：旧格式没有时回落文件 mtime，不升版本。
         let saved_at = value
             .get("saved_at")
@@ -512,6 +594,10 @@ impl SessionSnapshot {
         // 项目取新快照的：它来自扫描，永远是最新解析结果。
         if fresh.project.is_some() {
             self.project = fresh.project.clone();
+        }
+        // 会话名同理：采集通道每轮重读源，新值优先（用户可能在 agent 里改了名）。
+        if fresh.title.is_some() {
+            self.title = fresh.title.clone();
         }
         *self != before
     }
@@ -564,6 +650,7 @@ mod tests {
             session_id: session.to_string(),
             model_id: "test-model".to_string(),
             project: None,
+            title: None,
             input,
             output,
             cache_read: 0,
@@ -642,7 +729,7 @@ mod tests {
         assert_eq!(ledger.view()[0].output, 40);
     }
 
-    /// **核心需求**：会话从源里消失后，账本仍保留其用量并标记 archived。
+    /// **核心需求**：会话从源里消失后，账本仍保留其用量，但**不进展示视图**。
     #[test]
     fn deleted_session_survives_in_ledger() {
         let mut ledger = Ledger::in_memory();
@@ -653,29 +740,26 @@ mod tests {
         // 下一轮扫描：gone 消失了
         ledger.merge_scan(scan_of(vec![snapshot("keep", 150, 15)]));
 
+        assert_eq!(ledger.len(), 2, "两条都还在账本里");
+        assert_eq!(ledger.archived_len(), 1, "消失的那条标记为已消失");
         let view = ledger.view();
-        assert_eq!(view.len(), 2, "已删除的会话必须保留");
-        let gone = view
-            .iter()
-            .find(|s| s.session_id == "gone")
-            .expect("gone 应仍在账本里");
-        assert!(gone.archived, "消失的会话应标记 archived");
-        assert_eq!(gone.input, 500, "用量原样保留");
-        assert_eq!(gone.output, 50);
-
-        let keep = view.iter().find(|s| s.session_id == "keep").unwrap();
-        assert!(!keep.archived, "仍在源里的不应标记 archived");
+        assert_eq!(view.len(), 1, "源里已消失的不进列表");
+        assert_eq!(view[0].session_id, "keep");
+        assert!(!view[0].archived, "仍在源里的不应标记");
     }
 
-    /// 已归档的会话重新出现 → archived 摘掉。
+    /// 已归档的会话重新出现 → 回到列表里。
     #[test]
     fn reappearing_session_clears_archived() {
         let mut ledger = Ledger::in_memory();
         ledger.merge_scan(scan_of(vec![snapshot("s1", 100, 10)]));
         ledger.merge_scan(scan_of(vec![]));
-        assert!(ledger.view()[0].archived);
+        assert!(ledger.view().is_empty(), "源里没了就不列");
+        assert_eq!(ledger.archived_len(), 1);
         ledger.merge_scan(scan_of(vec![snapshot("s1", 100, 10)]));
-        assert!(!ledger.view()[0].archived, "会话回来后不应再标 archived");
+        assert_eq!(ledger.view().len(), 1, "会话回来后要回到列表");
+        assert!(!ledger.view()[0].archived, "会话回来后不应再标记");
+        assert_eq!(ledger.archived_len(), 0);
     }
 
     /// 源里的回退（重扫读到更小值）不让总量缩水。
@@ -715,13 +799,16 @@ mod tests {
         }
         {
             let mut ledger = Ledger::open(&path);
+            // 重开后落盘的 archived 要读回来：源里已消失的那条不该上列表。
+            assert_eq!(ledger.view().len(), 2, "两条都还在源里");
+            assert_eq!(ledger.archived_len(), 0, "重开时两条都是活的");
             // 新的一轮：gone 已从源里消失
             ledger.merge_scan(scan_of(vec![snapshot("keep", 100, 10)]));
             let view = ledger.view();
-            assert_eq!(view.len(), 2, "重开后已删会话仍应保留");
-            let gone = view.iter().find(|s| s.session_id == "gone").unwrap();
-            assert_eq!(gone.input, 500);
-            assert!(gone.archived);
+            assert_eq!(view.len(), 1, "源里已消失的不进列表");
+            assert_eq!(view[0].session_id, "keep");
+            assert_eq!(ledger.len(), 2, "重开后已删会话仍留在账本里");
+            assert_eq!(ledger.archived_len(), 1);
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -973,7 +1060,8 @@ mod tests {
         assert!(!ledger.view().iter().any(|s| s.session_id == "gone"));
     }
 
-    /// 删除会话只藏行：已并入按天分桶的贡献保留（总量不因删除缩水）。
+    /// 删除会话：明细（快照 + 逐日 `by_session`）真删，
+    /// 合计与各分解保留 —— 总量不因删除缩水，账本也不因会话数无限膨胀。
     #[test]
     fn ignore_session_keeps_daily_contribution() {
         let mut ledger = Ledger::in_memory();
@@ -1000,10 +1088,41 @@ mod tests {
         ledger.ignore_session(&key);
         let day = ledger.daily().get("2026-01-01").unwrap();
         assert_eq!(day.totals.input, 500, "总量不因删除缩水");
-        assert_eq!(day.by_session[&key].input, 500);
-        assert_eq!(day.by_model["test-model"].input, 500);
-        assert_eq!(day.by_client["pi"].input, 500);
+        assert_eq!(day.by_model["test-model"].input, 500, "按模型保留");
+        assert_eq!(day.by_client["pi"].input, 500, "按 agent 保留");
         assert_eq!(day.by_client_model["pi"]["test-model"].input, 500);
+        assert!(
+            !day.by_session.contains_key(&key),
+            "会话明细真删（留着会随会话数无上限增长）"
+        );
+    }
+
+    /// 在途扫描的明细裁剪：扫描起飞时名单还不含本次删掉的键，
+    /// 结果里的明细也不许把删除冲掉；合计照并。
+    #[test]
+    fn merge_daily_drops_ignored_session_details() {
+        let mut ledger = Ledger::in_memory();
+        let key = SessionSnapshot::key(ConfigFormat::Pi, "gone");
+        ledger.merge_scan(scan_of(vec![snapshot("gone", 500, 50)]));
+        ledger.ignore_session(&key);
+
+        // 模拟一轮在途扫描的结果：明细仍在，合计仍是该会话的量。
+        let mut bucket = DailyBucket::new("2026-01-02");
+        bucket.totals.input = 500;
+        bucket.totals.messages = 1;
+        bucket.by_session.insert(key.clone(), bucket.totals);
+        bucket.by_client.insert("pi".to_string(), bucket.totals);
+        let mut daily = DailyMap::new();
+        daily.insert("2026-01-02".to_string(), bucket);
+        ledger.merge_daily(daily);
+
+        let day = ledger.daily().get("2026-01-02").unwrap();
+        assert_eq!(day.totals.input, 500, "合计照并");
+        assert_eq!(day.by_client["pi"].input, 500, "分解照并");
+        assert!(
+            !day.by_session.contains_key(&key),
+            "在途扫描的明细也要按名单摘掉"
+        );
     }
 
     /// 忽略名单落盘：重启后依然生效。

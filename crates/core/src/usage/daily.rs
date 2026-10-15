@@ -1,8 +1,8 @@
 //! 按天的用量桶 —— 热力图与「今日 / 本周 / 本月 / 总计」的数据基础。
 //!
-//! 为什么不能只靠会话级汇总：一个会话可以横跨几十天（本机实测最长 31 天），
-//! 用它的 `last_seen_ms` 归日会把整月的量堆到最后一天。tokscale 的
-//! `ParsedMessage.date` 已经按消息算好了本地日历日，这里按那个粒度分桶。
+//! 不能只靠会话级汇总：一个会话可以横跨几十天，用它的 `last_seen_ms` 归日会把
+//! 整月的量堆到最后一天。tokscale 的 `ParsedMessage.date` 已经按消息算好了
+//! 本地日历日，这里按那个粒度分桶。
 //!
 //! 桶里除了合计还留了**按 agent / 按模型**的分解：时间筛选与维度筛选叠加时
 //! （「本月 × pi」「本周 × claude-opus-5」）必须用同粒度的数据，否则总览卡片的
@@ -186,6 +186,22 @@ impl DailyBucket {
             let target = self.by_client_model.entry(client.clone()).or_default();
             merge_breakdown(target, models);
         }
+    }
+
+    /// 摘掉一个会话在当天的**明细**（只从 `by_session` 移除该键）。
+    ///
+    /// 合计与按 agent / 模型 / 交叉分解**原样保留**：删除收走的是会话明细，
+    /// 不是用量。这与 cc-switch 的 `usage_daily_rollups`（表里根本没有会话
+    /// 维度）和 token-monitor 的 `periods.allTime`（剪枝只删 today / month
+    /// 窗口）一致 —— 两家都只留聚合、不留会话明细。
+    ///
+    /// 会话表以 `by_session` 为行来源、以账本快照为模板，被删会话的快照已随
+    /// [`crate::usage::Ledger::ignore_session`] 移除，所以摘掉明细不会让界面
+    /// 少一行；留着它只会让账本随会话数无限膨胀。
+    ///
+    /// 返回是否真的摘掉了（该会话当天没有记录时为 `false`）。
+    pub fn remove_session_detail(&mut self, key: &str) -> bool {
+        self.by_session.remove(key).is_some()
     }
 
     pub fn to_json(&self) -> Value {

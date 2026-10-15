@@ -19,7 +19,11 @@ pub enum ConfigFormat {
 }
 
 impl ConfigFormat {
-    pub fn label(&self) -> &str {
+    /// 展示名，同时是账本键的前缀（`client:session_id`）。
+    ///
+    /// 返回 `&'static str`：全部取值都是字面量，放宽生命周期后调用方
+    /// 可以把它存进 `DeleteError` 之类的「不借 self」的结构里。
+    pub fn label(&self) -> &'static str {
         match self {
             ConfigFormat::Opencode => "opencode",
             ConfigFormat::Kilocode => "kilocode",

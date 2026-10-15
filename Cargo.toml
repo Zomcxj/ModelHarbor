@@ -48,6 +48,9 @@ winresource = "0.1"
 # 注意 profile 里的 `[profile.release.package.tokscale-core]`：它吃 `opt-level = "z"`
 # 会慢 20%（全量扫描 2.5s → 3.0s），单包提到 `3` 换回速度。
 tokscale-core = { git = "https://github.com/junhoyeo/tokscale", tag = "v4.18.0" }
+# 删除会话要写 opencode 系的 SQLite 库（`usage::delete`）。版本跟着 tokscale-core
+# 走：同一份 libsqlite3-sys 只编译一次。
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [profile.release]
 opt-level = "z"

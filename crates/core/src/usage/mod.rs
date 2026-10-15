@@ -2,12 +2,13 @@
 //! 四个维度汇总 token 使用量。
 //!
 //! 扫描内核用 [`tokscale_core`]（上游 `junhoyeo/tokscale`，MIT）：它原生解析 56 个
-//! agent 的会话格式，本模块只做三件事 ——
+//! agent 的会话格式，本模块只做四件事 ——
 //!
 //! 1. [`agents`]：把 [`ConfigFormat`](crate::format::ConfigFormat) 映射到 tokscale 的
 //!    client id（**6/10 拼写不一致**，必须显式映射）；
 //! 2. [`scan`]：调 `parse_local_clients` 拿回扁平消息列表，再按维度汇总；
-//! 3. [`ledger`]：把每次扫描到的会话快照落盘，**已删除的会话用量永久保留**。
+//! 3. [`titles`]：补会话名（tokscale 的消息流不带名字）；
+//! 4. [`ledger`]：把每次扫描到的会话快照落盘，**已删除的会话用量永久保留**。
 //!
 //! 口径（与 tokscale 一致，勿自行调整）：
 //! - `input` 是**新鲜输入**，已排除 `cache_read`，不要重复相加；
@@ -15,10 +16,16 @@
 
 pub mod agents;
 pub mod daily;
+pub mod delete;
 pub mod ledger;
+pub mod titles;
+
+// pi 系的存储布局：删除与读名字共用，不对外暴露。
+mod pi;
 
 pub use agents::{config_format_for_client, tokscale_client_for};
 pub use daily::{DailyBucket, DailyMap, DayTotals, UNKNOWN_MODEL};
+pub use delete::{delete_session, DeleteError, Deleted};
 pub use ledger::{Ledger, SessionSnapshot};
 
 use std::collections::HashMap;
@@ -39,8 +46,8 @@ pub struct ScanResult {
     pub sessions: HashMap<String, SessionSnapshot>,
     /// 按本地日历日分桶的用量（热力图与「今日 / 本月 / 总计」的基础）。
     ///
-    /// 会话级汇总做不到这件事：一个会话可以横跨几十天（本机实测最长 31 天），
-    /// 按它的 `last_seen_ms` 归日会把整月的量堆到最后一天。
+    /// 会话级汇总做不到这件事：一个会话可以横跨几十天，按它的
+    /// `last_seen_ms` 归日会把整月的量堆到最后一天。
     pub daily: DailyMap,
     /// 消息条数（tokscale 的 `ParsedMessage` 计数）。
     pub message_count: usize,
@@ -53,8 +60,8 @@ pub struct ScanResult {
 /// `ignored` 是用户已删除并永久忽略的会话键（`client:session_id`）：扫到也不
 /// 进结果，否则删掉的会话会在下一轮扫描里复活。
 ///
-/// **这是全量扫描（实测 2.4-2.7s），调用方必须放在后台线程**；UI 线程按指纹
-/// 变化 + debounce 决定何时重扫，见 `app::usage`。
+/// **这是全量扫描，调用方必须放在后台线程**；UI 线程按指纹变化 + debounce
+/// 决定何时重扫，见 `app::usage`。
 pub fn scan(ignored: &std::collections::BTreeSet<String>) -> Result<ScanResult, String> {
     let options = tokscale_core::LocalParseOptions {
         home_dir: None,
@@ -123,6 +130,9 @@ pub fn scan(ignored: &std::collections::BTreeSet<String>) -> Result<ScanResult, 
                 .add_message(client, message);
         }
     }
+    // 会话名：tokscale 的消息流里没这个字段，单独一趟从源里读
+    // （opencode 系读库里的 title，pi 系取首条用户消息）。读不到就留空。
+    titles::collect(&mut sessions);
     Ok(ScanResult {
         sessions,
         daily,

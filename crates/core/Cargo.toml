@@ -12,6 +12,8 @@ toml.workspace = true
 ureq.workspace = true
 # 本机用量统计（`usage` 模块）的扫描内核。
 tokscale-core.workspace = true
+# 删除会话要写 opencode 系的库（`usage::delete`）。
+rusqlite.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys.workspace = true
