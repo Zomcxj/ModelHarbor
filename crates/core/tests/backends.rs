@@ -757,3 +757,56 @@ fn differing_pixel_fraction(a: &[u8], b: &[u8]) -> f32 {
     }
     differing as f32 / total as f32
 }
+
+/// 新版 opencode 顶层写复数 `agents` / `providers`（无单数键）：
+/// 解析要读到条目，保存要写回复数键，且路径判别不得被 pi 的内容特征抢走。
+#[test]
+fn opencode_plural_keys_round_trip_and_detect() {
+    let content = r#"{
+        "agents": { "writer": { "mode": "subagent", "model": "p/m" } },
+        "providers": { "newp": { "npm": "@ai-sdk/x", "models": {} } }
+    }"#;
+    let path = "/home/u/.config/opencode/opencode.json";
+    // 路径判别：opencode 系路径不得被 pi 的内容特征（providers 且无 provider）抢走。
+    assert_eq!(
+        backends::detect_format(content, path),
+        ConfigFormat::Opencode,
+        "新版 opencode 配置不得误判为 pi"
+    );
+    // 无路径上下文时，纯复数 `providers` 正是 pi 的内容形状，pi 认领是既有
+    // 设计（真实 opencode 文件靠路径认领）；单复数键并存时 opencode 才靠
+    // 内容兜底胜出（pi 要求无 `provider` 键）。
+    assert_eq!(backends::detect_format(content, ""), ConfigFormat::Pi);
+    assert_eq!(
+        backends::detect_format(r#"{ "providers": {}, "provider": {} }"#, ""),
+        ConfigFormat::Opencode
+    );
+
+    let b = backends::backend(ConfigFormat::Opencode);
+    let load = b.parse(content).expect("复数键应解析出条目");
+    assert_eq!(load.agents.len(), 1, "复数 agents 表应读出条目");
+    assert_eq!(load.providers.len(), 1, "复数 providers 表应读出条目");
+
+    // 当前文件保存：键名跟随源文件写复数。
+    let root = b.serialize_root(&load.agents, &load.providers, &load.extras, None);
+    assert!(root["agents"]["writer"].is_object(), "应写回复数 agents 键");
+    assert!(
+        root["providers"]["newp"].is_object(),
+        "应写回复数 providers 键"
+    );
+    assert!(root.get("agent").is_none(), "不得另写单数键");
+    assert!(root.get("provider").is_none(), "不得另写单数键");
+
+    // 跨目标合并同样跟随目标文件键名。
+    let merged = backends::opencode::merge_opencode_root(&load.root, &load.agents, &load.providers);
+    assert!(merged["agents"]["writer"].is_object());
+    assert!(merged.get("agent").is_none());
+
+    // 旧版单数文件：解析与保存都走单数，行为不变。
+    let legacy = r#"{ "agent": { "w": { "mode": "subagent" } } }"#;
+    let load2 = b.parse(legacy).expect("单数键仍应解析");
+    assert_eq!(load2.agents.len(), 1);
+    let root2 = b.serialize_root(&load2.agents, &[], &load2.extras, None);
+    assert!(root2["agent"]["w"].is_object(), "单数源文件应写单数键");
+    assert!(root2.get("agents").is_none(), "不得另写复数键");
+}

@@ -143,22 +143,18 @@ impl Backend for OpenCodeFamilyBackend {
         if self.0.id != ConfigFormat::Opencode {
             return false;
         }
-        // 正向特征：顶层含 provider 对象。
+        // 正向特征：顶层含 provider 对象（单复数键都认）。
         parse_config_content(content)
-            .map(|v| v.get("provider").and_then(|x| x.as_object()).is_some())
+            .map(|v| providers_table(&v).is_some())
             .unwrap_or(false)
     }
 
     fn parse(&self, content: &str) -> Result<BackendLoad, String> {
         let v = parse_config_content(content)?;
-        let agents = v
-            .get("agent")
-            .and_then(|x| x.as_object())
+        let agents = agents_table(&v)
             .map(|o| o.iter().map(|(k, av)| AgentRow::from(k, av)).collect())
             .unwrap_or_default();
-        let providers = v
-            .get("provider")
-            .and_then(|x| x.as_object())
+        let providers = providers_table(&v)
             .map(|o| o.iter().map(|(k, pv)| ProviderRow::from(k, pv)).collect())
             .unwrap_or_default();
         Ok(BackendLoad {
@@ -183,6 +179,10 @@ impl Backend for OpenCodeFamilyBackend {
                 // 当前文件：以 UI 状态为准整体替换 agent / provider（删除即生效）；
                 // 列表为空时移除对应键，不写空对象
                 let mut r = extras.clone();
+                // 键名跟随源文件：复数键存在就写复数，否则写单数。
+                // 在可变借用之前取，避免借用冲突。
+                let ak = agents_key(&r);
+                let pk = providers_key(&r);
                 if let Value::Object(o) = &mut r {
                     let mut am = Map::new();
                     for a in agents {
@@ -191,9 +191,9 @@ impl Backend for OpenCodeFamilyBackend {
                         }
                     }
                     if am.is_empty() {
-                        o.remove("agent");
+                        o.remove(ak);
                     } else {
-                        o.insert("agent".into(), Value::Object(am));
+                        o.insert(ak.into(), Value::Object(am));
                     }
 
                     let mut pm = Map::new();
@@ -203,9 +203,9 @@ impl Backend for OpenCodeFamilyBackend {
                         }
                     }
                     if pm.is_empty() {
-                        o.remove("provider");
+                        o.remove(pk);
                     } else {
-                        o.insert("provider".into(), Value::Object(pm));
+                        o.insert(pk.into(), Value::Object(pm));
                     }
                 }
                 with_schema(r, schema)
@@ -228,6 +228,14 @@ impl Backend for OpenCodeFamilyBackend {
 
 /// opencode 系全体成员。
 pub static FAMILY: &[&Flavor] = &[&OPENCODE, &KILOCODE, &MIMOCODE];
+
+/// 路径是否属于 opencode 系任一成员。
+///
+/// 供其他后端的内容兜底判别让路：新版 opencode 顶层写 `providers`
+/// （无 `provider`），与 pi 系的内容特征重合，光看内容会误认领。
+pub fn family_path_matches(path: &str) -> bool {
+    FAMILY.iter().any(|f| path_matches(f, path))
+}
 
 /// 路径是否属于某个 opencode 系成员：路径段里含其目录名或文件名。
 ///
@@ -340,15 +348,46 @@ fn complete_required_fields_in(root: &mut Value, flavor: ConfigFormat) {
 /// agent / provider 以 UI 状态 upsert，目标已有同名条目按字段保守合并
 /// （UI 提供的键覆盖，目标独有键与目标独有条目一律保留），
 /// 其余顶层字段原样保留。
+/// 顶层 agents / providers 键名跟随源文件：新版 opencode 写复数
+/// `agents` / `providers`，旧版写单数 `agent` / `provider`。
+/// 复数存在即用复数，否则回退单数。
+fn agents_key(root: &Value) -> &'static str {
+    if root.get("agents").and_then(|x| x.as_object()).is_some() {
+        "agents"
+    } else {
+        "agent"
+    }
+}
+
+fn providers_key(root: &Value) -> &'static str {
+    if root.get("providers").and_then(|x| x.as_object()).is_some() {
+        "providers"
+    } else {
+        "provider"
+    }
+}
+
+fn agents_table(root: &Value) -> Option<&Map<String, Value>> {
+    root.get(agents_key(root)).and_then(|x| x.as_object())
+}
+
+fn providers_table(root: &Value) -> Option<&Map<String, Value>> {
+    root.get(providers_key(root)).and_then(|x| x.as_object())
+}
+
 pub fn merge_opencode_root(
     target_root: &Value,
     agents: &[AgentRow],
     providers: &[ProviderRow],
 ) -> Value {
+    // 键名跟随目标文件：复数键存在就写复数，否则写单数。
+    // 在可变借用之前取，避免借用冲突。
+    let ak = agents_key(target_root);
+    let pk = providers_key(target_root);
     let mut root = target_root.clone();
     if let Value::Object(o) = &mut root {
         let mut am = o
-            .get("agent")
+            .get(ak)
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
@@ -362,10 +401,10 @@ pub fn merge_opencode_root(
                 am.insert(a.key.clone(), entry);
             }
         }
-        o.insert("agent".into(), Value::Object(am));
+        o.insert(ak.into(), Value::Object(am));
 
         let mut pm = o
-            .get("provider")
+            .get(pk)
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
@@ -379,7 +418,7 @@ pub fn merge_opencode_root(
                 pm.insert(p.key.clone(), entry);
             }
         }
-        o.insert("provider".into(), Value::Object(pm));
+        o.insert(pk.into(), Value::Object(pm));
     }
     root
 }

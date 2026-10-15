@@ -30,7 +30,12 @@ impl Backend for PiBackend {
         Some(format!("{}/.pi/agent/models.json", wsl_home()?))
     }
 
-    fn detect(&self, content: &str, _path: &str) -> bool {
+    fn detect(&self, content: &str, path: &str) -> bool {
+        // opencode 系路径不归 pi 认领：新版 opencode 顶层同样写
+        // `providers` 且无 `provider`，内容特征与 pi 重合。
+        if super::opencode::family_path_matches(path) {
+            return false;
+        }
         // 含 `providers` 对象且无 `provider` 键
         parse_config_content(content)
             .map(|v| {
