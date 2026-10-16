@@ -260,7 +260,15 @@ impl Default for AgentRow {
 
 impl AgentRow {
     pub fn from(key: &str, v: &Value) -> Self {
-        let schema = OpencodeSchemaVersion::of_agent(v);
+        Self::from_with_schema(key, v, OpencodeSchemaVersion::of_agent(v))
+    }
+
+    /// 指定条目 schema 版本构造（加载路径用：版本跟**文件**走）。
+    ///
+    /// 逐条嗅探（[`Self::from`]）会把 v2 文件里的极简 agent（无 `request`、
+    /// model 不带 `#`）误判成 v1：温度从顶层死键读（v2 运行时不看），保存时
+    /// 走「v1→v2 转换」把已有的 `request.body.temperature` 静默删掉。
+    pub fn from_with_schema(key: &str, v: &Value, schema: OpencodeSchemaVersion) -> Self {
         let (model, variant, temperature) = match schema {
             OpencodeSchemaVersion::V1 => (
                 str_at(v, "model").to_string(),

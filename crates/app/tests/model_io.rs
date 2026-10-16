@@ -1,5 +1,5 @@
 use model_harbor_app::app::{load_opencode_result, load_or_empty};
-use model_harbor_core::model::{AgentRow, ModelRow, ProviderRow};
+use model_harbor_core::model::{AgentRow, ModelRow, OpencodeSchemaVersion, ProviderRow};
 use model_harbor_core::util::{is_wsl_path, win_to_wsl};
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -270,6 +270,101 @@ fn nested_roundtrip_modify_and_reload() {
     let (_, agents2, _) = load_or_empty(path.to_str().unwrap());
     assert_eq!(agents2[0].description, "new desc");
     fs::remove_file(&path).ok();
+}
+
+#[test]
+fn v2_file_assigns_schema_to_minimal_agents() {
+    // v2 文件里的极简 agent（无 request、model 不带 #）不能被逐条嗅探
+    // 误判成 v1：温度要从 request.body 读，而不是顶层死键。
+    let path = tmp_path("v2_minimal");
+    let content = serde_json::to_string_pretty(&json!({
+        "agents": {
+            "plain": {
+                "mode": "subagent",
+                "description": "minimal",
+                "model": "openai/gpt-4.1",
+                "request": { "body": { "temperature": 0.5 } }
+            }
+        }
+    }))
+    .unwrap();
+    fs::write(&path, &content).unwrap();
+
+    let (_, agents, _) = load_or_empty(path.to_str().unwrap());
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].schema, OpencodeSchemaVersion::V2, "版本跟文件走");
+    assert_eq!(
+        agents[0].temperature, "0.5",
+        "从 request.body.temperature 读"
+    );
+
+    // 写回保持 v2 形状，顶层不出现死键。
+    let out = agents[0].to_value();
+    assert_eq!(out["request"]["body"]["temperature"], 0.5);
+    assert!(
+        out.get("temperature").is_none(),
+        "顶层不许出现 v1 形状的温度"
+    );
+    fs::remove_file(&path).ok();
+}
+
+#[test]
+fn v2_minimal_agent_full_roundtrip_keeps_temperature() {
+    // 数据丢失回归：极简 agent 以前被误判成 v1，保存时
+    // request.body.temperature 被静默删掉。
+    let path = tmp_path("v2_rt_temp");
+    let content = serde_json::to_string_pretty(&json!({
+        "agents": {
+            "plain": {
+                "mode": "subagent",
+                "description": "old",
+                "model": "openai/gpt-4.1",
+                "request": { "body": { "temperature": 0.5 } }
+            }
+        }
+    }))
+    .unwrap();
+    fs::write(&path, &content).unwrap();
+
+    let (mut root_val, mut agents, _) = load_or_empty(path.to_str().unwrap());
+    agents[0].description = "new".to_string();
+
+    if let Value::Object(ref mut o) = root_val {
+        let mut am = Map::new();
+        for a in &agents {
+            am.insert(a.key.clone(), a.to_value());
+        }
+        o.insert("agents".into(), Value::Object(am));
+    }
+    fs::write(&path, serde_json::to_string_pretty(&root_val).unwrap()).unwrap();
+
+    let (_, agents2, _) = load_or_empty(path.to_str().unwrap());
+    assert_eq!(agents2[0].description, "new");
+    assert_eq!(agents2[0].temperature, "0.5", "只改描述不许弄丢温度");
+    fs::remove_file(&path).ok();
+}
+
+#[test]
+fn agent_sniffing_still_recognizes_explicit_v2_and_v1() {
+    // 逐条嗅探本身保留（AgentRow::from 的老语义）：带 request 的条目判 v2，
+    // 顶层温度的条目判 v1；文件级指定用 from_with_schema。
+    let v2 = json!({ "model": "a#high", "request": { "body": { "temperature": 0.1 } } });
+    assert_eq!(AgentRow::from("a", &v2).schema, OpencodeSchemaVersion::V2);
+    assert_eq!(AgentRow::from("a", &v2).temperature, "0.1");
+
+    let v1 = json!({ "model": "a", "variant": "high", "temperature": 0.1 });
+    assert_eq!(AgentRow::from("a", &v1).schema, OpencodeSchemaVersion::V1);
+    assert_eq!(AgentRow::from("a", &v1).temperature, "0.1");
+
+    // 极简条目自嗅探是 v1（老语义），但文件级指定后从 request.body 读。
+    let minimal = json!({ "model": "a" });
+    assert_eq!(
+        AgentRow::from("a", &minimal).schema,
+        OpencodeSchemaVersion::V1
+    );
+    let forced = AgentRow::from_with_schema("a", &minimal, OpencodeSchemaVersion::V2);
+    assert_eq!(forced.schema, OpencodeSchemaVersion::V2);
+    assert_eq!(forced.temperature, "", "v2 极简条目没写温度就是空");
 }
 
 #[test]

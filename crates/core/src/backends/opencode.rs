@@ -151,8 +151,16 @@ impl Backend for OpenCodeFamilyBackend {
 
     fn parse(&self, content: &str) -> Result<BackendLoad, String> {
         let v = parse_config_content(content)?;
+        // agent 条目的 schema 版本跟**文件**走：v2 文件里的极简 agent
+        //（无 request、model 不带 #）按逐条嗅探会误判成 v1，温度从顶层
+        // 死键读、保存时把 request.body.temperature 静默删掉。
+        let file_schema = detect_schema_version(&v);
         let agents = agents_table(&v)
-            .map(|o| o.iter().map(|(k, av)| AgentRow::from(k, av)).collect())
+            .map(|o| {
+                o.iter()
+                    .map(|(k, av)| AgentRow::from_with_schema(k, av, file_schema))
+                    .collect()
+            })
             .unwrap_or_default();
         let providers = providers_table(&v)
             .map(|o| o.iter().map(|(k, pv)| ProviderRow::from(k, pv)).collect())

@@ -76,6 +76,8 @@ pub(in crate::app) struct ProviderFormFlags {
     pub(in crate::app) modal_output_label: &'static str,
     /// 协议包下拉标签：v1 `npm` / v2 `package`。
     pub(in crate::app) package_label: &'static str,
+    /// agent 温度标签：v1 顶层 `temperature` / v2 `request.body.temperature`。
+    pub(in crate::app) agent_temperature_label: &'static str,
 }
 
 impl ProviderFormFlags {
@@ -203,6 +205,11 @@ impl ProviderFormFlags {
                 "modalities.output"
             },
             package_label: if oc_v2 { "package" } else { "npm" },
+            agent_temperature_label: if oc_v2 {
+                "request.body.temperature"
+            } else {
+                "temperature"
+            },
         }
     }
 }

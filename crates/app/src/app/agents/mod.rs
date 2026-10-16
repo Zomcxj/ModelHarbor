@@ -203,6 +203,8 @@ impl App {
     }
 
     pub(super) fn render_agent_form(&mut self, ui: &mut egui::Ui, idx: usize) {
+        // 方言标签（v2 温度在 request.body 下）。
+        let form_flags = crate::app::providers::ProviderFormFlags::new(self);
         let prev_key = self.agents[idx].key.clone();
         let other_keys: HashSet<String> = self
             .agents
@@ -243,7 +245,7 @@ impl App {
                 agent_variant_combo(ui, format!("agent_variant_{}", a.key), &current_variant);
         });
         ui.horizontal_wrapped(|ui| {
-            field_label(ui, 120.0, "temperature");
+            field_label(ui, 120.0, form_flags.agent_temperature_label);
             numeric_text_edit(ui, &mut a.temperature, 120.0, "");
             field_label(ui, 120.0, "color");
             ui.add(egui::TextEdit::singleline(&mut a.color).desired_width(120.0));
@@ -258,6 +260,8 @@ impl App {
     }
 
     pub(super) fn ui_new_agent_form(&mut self, ui: &mut egui::Ui) {
+        // 方言标签（v2 温度在 request.body 下）。
+        let form_flags = crate::app::providers::ProviderFormFlags::new(self);
         ui.group(|ui| {
             ui.horizontal_wrapped(|ui| {
                 field_label(ui, 120.0, "key");
@@ -294,7 +298,7 @@ impl App {
                     agent_variant_combo(ui, "new_agent_variant".to_string(), &current_variant);
             });
             ui.horizontal_wrapped(|ui| {
-                field_label(ui, 120.0, "temperature");
+                field_label(ui, 120.0, form_flags.agent_temperature_label);
                 numeric_text_edit(ui, &mut self.new_agent.temperature, 120.0, "0.7");
                 field_label(ui, 120.0, "color");
                 ui.add(
