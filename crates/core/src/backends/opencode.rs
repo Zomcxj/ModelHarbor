@@ -401,7 +401,12 @@ fn agents_key(root: &Value) -> &'static str {
 }
 
 fn providers_key(root: &Value) -> &'static str {
-    if root.get("providers").and_then(|x| x.as_object()).is_some() {
+    // opencode 的惯例键是单数 `provider`：目标里单、复并存时（pi 遗留的
+    // 顶层 `providers` 被有意保留的场景）必须仍写单数，否则 provider 条目
+    // 被误 upsert 进 pi 形状的容器。仅当目标只有复数键时才跟随复数。
+    if root.get("provider").and_then(|x| x.as_object()).is_none()
+        && root.get("providers").and_then(|x| x.as_object()).is_some()
+    {
         "providers"
     } else {
         "provider"
