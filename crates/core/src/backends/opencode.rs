@@ -157,6 +157,9 @@ impl Backend for OpenCodeFamilyBackend {
         let providers = providers_table(&v)
             .map(|o| o.iter().map(|(k, pv)| ProviderRow::from(k, pv)).collect())
             .unwrap_or_default();
+        // 行的 schema 记录 raw 的真实形状（供同版本增量写用）；「kilo / mimo
+        // 永远 v1」由写盘路径的 target_version 钳制（见 serialize_root），
+        // 不在这里改行 schema —— 否则同版本写会保留 raw 里的 v2 键。
         Ok(BackendLoad {
             root: v.clone(),
             agents,
@@ -184,7 +187,7 @@ impl Backend for OpenCodeFamilyBackend {
                 // 在可变借用之前取，避免借用冲突。
                 let ak = agents_key(&r);
                 let pk = providers_key(&r);
-                let version = detect_schema_version(&r);
+                let version = target_version(self.0.id, &r);
                 if let Value::Object(o) = &mut r {
                     let mut am = Map::new();
                     for a in agents {
@@ -212,7 +215,15 @@ impl Backend for OpenCodeFamilyBackend {
                 }
                 with_schema(r, schema)
             }
-            Some(target) => with_schema(merge_opencode_root(target, agents, providers), schema),
+            Some(target) => with_schema(
+                merge_opencode_root_as(
+                    target,
+                    agents,
+                    providers,
+                    target_version(self.0.id, target),
+                ),
+                schema,
+            ),
         };
         // 按目标方言补齐必需字段，含目标文件里保留下来的旧条目。
         complete_required_fields_in(&mut root, self.0.id);
@@ -425,17 +436,43 @@ pub fn detect_schema_version(root: &Value) -> OpencodeSchemaVersion {
     OpencodeSchemaVersion::V1
 }
 
+/// 某个 opencode 系后端的读写版本：opencode 跟随文件内容（v1 或 v2）；
+/// kilo / mimo 永远 v1 —— v2 只是 opencode 本家的演进，它们的 CLI
+/// 没有跟进 v2 schema（用户拍板）。
+fn target_version(id: ConfigFormat, root: &Value) -> OpencodeSchemaVersion {
+    if id == ConfigFormat::Opencode {
+        detect_schema_version(root)
+    } else {
+        OpencodeSchemaVersion::V1
+    }
+}
+
 pub fn merge_opencode_root(
     target_root: &Value,
     agents: &[AgentRow],
     providers: &[ProviderRow],
+) -> Value {
+    merge_opencode_root_as(
+        target_root,
+        agents,
+        providers,
+        detect_schema_version(target_root),
+    )
+}
+
+/// 同 [`merge_opencode_root`]，但写回版本由调用方指定
+/// （opencode 系保存路径用它馴 kilo / mimo 永远写 v1）。
+pub fn merge_opencode_root_as(
+    target_root: &Value,
+    agents: &[AgentRow],
+    providers: &[ProviderRow],
+    version: OpencodeSchemaVersion,
 ) -> Value {
     // 键名与写回形状跟随目标文件：复数键存在就写复数，否则写单数；
     // 目标是 v2 就写 v2 形状。
     // 在可变借用之前取，避免借用冲突。
     let ak = agents_key(target_root);
     let pk = providers_key(target_root);
-    let version = detect_schema_version(target_root);
     let mut root = target_root.clone();
     if let Value::Object(o) = &mut root {
         let mut am = o

@@ -113,6 +113,29 @@ fn translate_package(pkg: &str, schema: OpencodeSchemaVersion) -> String {
     pkg.to_string()
 }
 
+/// 包名末段：最后一个 `/` 之后的部分（无 `/` 时原样返回）。
+///
+/// v1（`@ai-sdk/*`）与 v2（`@opencode/ai/providers/*`）同一协议的末段一致
+/// （见 [`PACKAGE_VERSION_PAIRS`]），UI 下拉用末段统一表示两个版本。
+pub fn package_suffix(pkg: &str) -> &str {
+    pkg.rsplit('/').next().unwrap_or(pkg)
+}
+
+/// 末段 + 目标版本 → 完整包名。空末段返回空串。
+///
+/// 前缀与 [`PACKAGE_VERSION_PAIRS`] 一致：v1 用 `@ai-sdk/`，v2 用
+/// `@opencode/ai/providers/`。UI 下拉选中末段后据此拼回当前页版本的全名；
+/// 落盘时 [`translate_package`] 还会再按目标文件版本兜底翻译。
+pub fn package_full_name(suffix: &str, schema: OpencodeSchemaVersion) -> String {
+    if suffix.is_empty() {
+        return String::new();
+    }
+    match schema {
+        OpencodeSchemaVersion::V1 => format!("@ai-sdk/{suffix}"),
+        OpencodeSchemaVersion::V2 => format!("@opencode/ai/providers/{suffix}"),
+    }
+}
+
 /// 包名是否等价 opencode 的 openai 缺省兼容层（未显式声明 developer role 时不勾选）。
 /// 同时覆盖 v1（@ai-sdk/*）与 v2（@opencode/ai/providers/*）两种写法。
 fn is_default_openai_package(pkg: &str) -> bool {
@@ -462,7 +485,10 @@ impl ModelRow {
                     (
                         variants,
                         store,
-                        false,
+                        // v2 无 reasoning 键：默认按勾选处理（用户拍板）。
+                        // 写回 v2 时不落盘（见 apply_identity 的 V2 分支），
+                        // 跨到 v1 目标时落成 reasoning: true。
+                        true,
                         tool_call,
                         nested_list_str(v, &["capabilities", "input"]),
                         nested_list_str(v, &["capabilities", "output"]),

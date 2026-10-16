@@ -6,7 +6,9 @@ use model_harbor_core::backends;
 use model_harbor_core::backends::opencode::detect_schema_version;
 use model_harbor_core::convert::package_or_npm_to_api;
 use model_harbor_core::format::ConfigFormat;
-use model_harbor_core::model::{AgentRow, ModelRow, OpencodeSchemaVersion, ProviderRow};
+use model_harbor_core::model::{
+    package_full_name, package_suffix, AgentRow, ModelRow, OpencodeSchemaVersion, ProviderRow,
+};
 use serde_json::{json, Value};
 
 /// 合成 v1 内容：顶层单数键、npm / options、modalities / reasoning、variants 对象。
@@ -127,8 +129,8 @@ fn v2_parse_maps_fields_into_rows() {
     let m = &p.models[0];
     assert_eq!(m.schema, OpencodeSchemaVersion::V2);
     assert!(m.tool_call);
-    // v2 无 reasoning：读入恒为关。
-    assert!(!m.reasoning);
+    // v2 无 reasoning 键：默认按勾选处理（用户拍板），跨到 v1 目标时落 true。
+    assert!(m.reasoning);
     assert_eq!(m.modalities_input, "text");
     assert_eq!(m.modalities_output, "text");
     assert_eq!(m.variants, "medium, high");
@@ -257,7 +259,7 @@ fn v2_rows_saved_into_v1_target_become_v1() {
     assert_eq!(m["tool_call"], json!(true));
     assert_eq!(m["modalities"]["input"], json!(["text"]));
     assert_eq!(m["variants"], json!({ "medium": {}, "high": {} }));
-    // v2 来源没有 reasoning 信息，不覆盖；目标文件自己的 reasoning 保留。
+    // v2 来源默认勾选 reasoning：跨到 v1 落成 true（与目标文件自己的值一致）。
     assert_eq!(m["reasoning"], json!(true));
 }
 
@@ -348,4 +350,132 @@ fn package_suffix_maps_to_api() {
         "anthropic-messages"
     );
     assert_eq!(package_or_npm_to_api(""), "openai-completions");
+}
+
+/// 包名末段：v1 / v2 全名取末段一致，自定义包原样。
+#[test]
+fn package_suffix_strips_known_prefixes() {
+    assert_eq!(
+        package_suffix("@ai-sdk/openai-compatible"),
+        "openai-compatible"
+    );
+    assert_eq!(
+        package_suffix("@opencode/ai/providers/openai-compatible"),
+        "openai-compatible"
+    );
+    assert_eq!(package_suffix("@ai-sdk/anthropic"), "anthropic");
+    assert_eq!(package_suffix("@opencode/ai/providers/google"), "google");
+    // 无斜杠 / 自定义包：原样返回。
+    assert_eq!(package_suffix("custom-pkg"), "custom-pkg");
+    assert_eq!(package_suffix(""), "");
+}
+
+/// 末段 + 版本 → 全名：v1 用 @ai-sdk/，v2 用 @opencode/ai/providers/。
+#[test]
+fn package_full_name_follows_schema() {
+    assert_eq!(
+        package_full_name("anthropic", OpencodeSchemaVersion::V1),
+        "@ai-sdk/anthropic"
+    );
+    assert_eq!(
+        package_full_name("anthropic", OpencodeSchemaVersion::V2),
+        "@opencode/ai/providers/anthropic"
+    );
+    assert_eq!(
+        package_full_name("openai-compatible", OpencodeSchemaVersion::V2),
+        "@opencode/ai/providers/openai-compatible"
+    );
+    // 空末段返回空串（= 不指定包）。
+    assert_eq!(package_full_name("", OpencodeSchemaVersion::V2), "");
+}
+
+/// 往返：末段拼回全名后再取末段，与原末段一致（两版都成立）。
+#[test]
+fn package_suffix_full_name_round_trip() {
+    for suffix in [
+        "openai",
+        "anthropic",
+        "google",
+        "openai-compatible",
+        "mistral",
+    ] {
+        for schema in [OpencodeSchemaVersion::V1, OpencodeSchemaVersion::V2] {
+            let full = package_full_name(suffix, schema);
+            assert_eq!(package_suffix(&full), suffix, "{suffix} @ {schema:?}");
+        }
+    }
+}
+
+/// v2 只是 opencode 本家的演进：kilo / mimo 的写盘永远 v1，
+/// 即使目标内容混入了 v2 特征（如手工拷贝的 opencode v2 内容）。
+/// 行 schema 记录 raw 真实形状（可能为 v2），由写盘的 target_version 钳制转换。
+#[test]
+fn kilocode_and_mimocode_always_write_v1_even_with_v2_content() {
+    let v2_content = r#"{
+        "provider": {
+            "p1": {
+                "package": "@opencode/ai/providers/anthropic",
+                "settings": { "baseURL": "https://x/v1", "apiKey": "sk" },
+                "models": {
+                    "m1": {
+                        "name": "m1",
+                        "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+                        "limit": { "context": 100 }
+                    }
+                }
+            }
+        }
+    }"#;
+    let extras: Value = serde_json::from_str(v2_content).unwrap();
+    for id in [ConfigFormat::Kilocode, ConfigFormat::Mimocode] {
+        let backend = backends::backend(id);
+        let load = backend.parse(v2_content).expect("解析成功");
+        // 写回强制 v1 形状：npm（翻译回 @ai-sdk/*）、options、tool_call，
+        // 不写 package / settings / capabilities。
+        let root = backend.serialize_root(&[], &load.providers, &extras, None);
+        let p = &root["provider"]["p1"];
+        assert_eq!(p["npm"], json!("@ai-sdk/anthropic"), "{id:?} 写回 v1 包名");
+        assert!(p.get("package").is_none(), "{id:?} 不写 package");
+        assert!(p.get("settings").is_none(), "{id:?} 不写 settings");
+        assert_eq!(
+            p["options"]["baseURL"],
+            json!("https://x/v1"),
+            "{id:?} baseURL 落在 options"
+        );
+        let m = &p["models"]["m1"];
+        assert!(m.get("capabilities").is_none(), "{id:?} 不写 capabilities");
+        assert_eq!(m["tool_call"], json!(true), "{id:?} 工具调用落 v1 键");
+        assert_eq!(
+            m["modalities"]["input"],
+            json!(["text"]),
+            "{id:?} 模态落 v1 键"
+        );
+    }
+}
+
+/// opencode 本家不受钳制影响：同样的 v2 内容仍按 v2 解析与写回。
+#[test]
+fn opencode_itself_still_follows_v2_content() {
+    let v2_content = r#"{
+        "provider": {
+            "p1": {
+                "package": "@opencode/ai/providers/anthropic",
+                "settings": { "baseURL": "https://x/v1" },
+                "models": { "m1": { "capabilities": { "tools": true } } }
+            }
+        }
+    }"#;
+    let extras: Value = serde_json::from_str(v2_content).unwrap();
+    let backend = backends::backend(ConfigFormat::Opencode);
+    let load = backend.parse(v2_content).expect("解析成功");
+    assert_eq!(load.providers[0].schema, OpencodeSchemaVersion::V2);
+    // extras 是 v2 内容 → 写回跟随 v2。
+    let root = backend.serialize_root(&[], &load.providers, &extras, None);
+    let p = &root["provider"]["p1"];
+    assert_eq!(
+        p["package"],
+        json!("@opencode/ai/providers/anthropic"),
+        "opencode 本家 v2 写回不受影响"
+    );
+    assert!(p.get("npm").is_none(), "v2 写回不该出现 npm");
 }
