@@ -9,6 +9,7 @@ mod section;
 mod tokens;
 
 pub(in crate::app) use flags::ProviderFormFlags;
+pub(in crate::app) use flags::SyncField;
 
 use super::App;
 use crate::format::ConfigFormat;

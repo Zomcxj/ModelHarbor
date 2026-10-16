@@ -4,7 +4,7 @@ use crate::app::fetch::{
     cancel_discovery, discovery_panel, model_latency_label, model_probe_button, net_guard_gate,
     probe_candidates_label, start_discovery, DiscoveryState, LatencyState, NEW_PROVIDER_FETCH_KEY,
 };
-use crate::app::providers::ProviderFormFlags;
+use crate::app::providers::{ProviderFormFlags, SyncField};
 use crate::convert;
 use crate::credentials;
 use crate::format::ConfigFormat;
@@ -126,6 +126,8 @@ impl App {
                             true,
                             None,
                             &format!("new_provider#{}", j),
+                            // 新增表单不提供「同步」（表单尚未入库）。
+                            &mut None,
                         );
                     },
                 );

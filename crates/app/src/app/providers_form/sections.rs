@@ -44,14 +44,14 @@ pub(super) fn provider_header_fields(
             }
         }
         if flags.show_oc {
-            provider_npm_combo(ui, p, &ctx.npm_salt, ctx.npm_empty_label);
+            provider_npm_combo(ui, p, flags, &ctx.npm_salt, ctx.npm_empty_label);
         }
         if !flags.show_oc {
             provider_api_combo(ui, p, ctx.page, &ctx.api_salt);
         }
         // timeout / timeoutMs 与 npm/api 同排（第一行）。
         if flags.show_oc && flags.show_provider_timeout {
-            field_label(ui, 120.0, "options.timeout");
+            field_label(ui, 120.0, flags.timeout_label);
             numeric_text_edit(ui, &mut p.timeout, 70.0, "180000");
         }
         if flags.show_dsh {

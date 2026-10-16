@@ -7,6 +7,7 @@ impl super::App {
         idx: usize,
         model_hover_target: &mut Option<String>,
         model_enable_target: &mut Option<(usize, usize)>,
+        sync_target: &mut Option<(SyncField, String)>,
     ) {
         let prev_key = self.providers[idx].key.clone();
         let other_keys: HashSet<String> = self
@@ -167,6 +168,7 @@ impl super::App {
                         }
                     });
                     // 用 `(provider key, 模型下标)` 当下拉 id 盐：模型 id 允许为空或重复。
+                    let mut model_sync: Option<SyncField> = None;
                     model_core_fields_row(
                         ui,
                         &mut p.models[j],
@@ -174,7 +176,16 @@ impl super::App {
                         false,
                         Some((&other_ids, &global_dup_ids)),
                         &format!("{}#{}", p.key, j),
+                        &mut model_sync,
                     );
+                    // 同步信号连同源值冒泡到区块层统一应用（避开借用冲突）。
+                    if let Some(field) = model_sync {
+                        let value = match field {
+                            SyncField::Context => p.models[j].context.clone(),
+                            SyncField::Output => p.models[j].output.clone(),
+                        };
+                        sync_target.get_or_insert((field, value));
+                    }
                     let mut variants = VariantsCtx {
                         label: variants_label,
                         names: variant_names,

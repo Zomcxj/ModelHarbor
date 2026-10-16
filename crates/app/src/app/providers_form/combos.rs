@@ -1,43 +1,60 @@
 use super::*;
 
-/// npm 包下拉（opencode 专用）；`id_salt` 区分同一页面内的多个表单实例。
+/// 协议包下拉（opencode 专用）；`id_salt` 区分同一页面内的多个表单实例。
+///
+/// 选项统一显示包名**末段**（`openai-compatible` 等）：v1 的 `@ai-sdk/*` 与 v2 的
+/// `@opencode/ai/providers/*` 末段一致，一套词表即可。选中后按 `p.schema`
+/// 拼回当前页版本的全名；落盘时 `to_value_as` 还会再按目标文件版本兜底翻译。
 pub(super) fn provider_npm_combo(
     ui: &mut egui::Ui,
     p: &mut ProviderRow,
+    flags: &ProviderFormFlags,
     id_salt: &str,
     empty_has_label: bool,
 ) {
-    pub(super) const NPM_OPTIONS: [&str; 5] = [
-        "",
-        "@ai-sdk/openai",
-        "@ai-sdk/anthropic",
-        "@ai-sdk/google",
-        "@ai-sdk/openai-compatible",
-    ];
-    field_label(ui, 120.0, "npm");
+    /// 官方协议包的末段（不含 `@ai-sdk/` / `@opencode/ai/providers/` 前缀）。
+    /// 与 core 的 `PACKAGE_VERSION_PAIRS` 一一对应（mistral 仅出现在译表里，
+    /// 下拉不列，与改动前一致）。
+    const PACKAGE_SUFFIXES: [&str; 4] = ["openai", "anthropic", "google", "openai-compatible"];
+    field_label(ui, 120.0, flags.package_label);
+    // 当前值按末段比较：v1 / v2 全名不同但末段相同，两版都能选中。
+    // 未收录的自定义包不在词表里，原样显示全名且不预选任何项。
+    let known = PACKAGE_SUFFIXES.contains(&crate::model::package_suffix(&p.npm));
     let current = p.npm.clone();
-    let mut selected = NPM_OPTIONS.iter().position(|n| *n == current.as_str());
+    let current_suffix = crate::model::package_suffix(&current).to_string();
+    let selected = if known {
+        PACKAGE_SUFFIXES
+            .iter()
+            .position(|n| *n == current_suffix.as_str())
+    } else {
+        None
+    };
+    // `None` = 未选中任何项；`Some(None)` = 选了「(空)」。
+    let mut picked: Option<Option<usize>> = selected.map(Some);
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(if current.is_empty() {
-            "选择 npm 包..."
+            "选择协议包...".to_string()
         } else {
-            &current
+            current_suffix.clone()
         })
         .width(220.0)
         .show_ui(ui, |ui| {
-            for (i, npm) in NPM_OPTIONS.iter().enumerate() {
-                let label = if npm.is_empty() && empty_has_label {
-                    "(空)"
-                } else {
-                    *npm
-                };
-                if ui.selectable_label(selected == Some(i), label).clicked() {
-                    selected = Some(i);
+            // 首项「(空)」= 不指定包（写盘时走默认兼容层）。
+            if empty_has_label && ui.selectable_label(current.is_empty(), "(空)").clicked() {
+                picked = Some(None);
+            }
+            for (i, suffix) in PACKAGE_SUFFIXES.iter().enumerate() {
+                if ui.selectable_label(selected == Some(i), *suffix).clicked() {
+                    picked = Some(Some(i));
                 }
             }
         });
-    if let Some(i) = selected {
-        p.npm = NPM_OPTIONS[i].to_string();
+    // 按当前页版本拼回全名；选「(空)」则清空；未动过不写回（保留自定义包名）。
+    if let Some(choice) = picked {
+        p.npm = match choice {
+            Some(i) => crate::model::package_full_name(PACKAGE_SUFFIXES[i], p.schema),
+            None => String::new(),
+        };
     }
 }
 

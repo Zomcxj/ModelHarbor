@@ -1,4 +1,5 @@
 use super::flags::CardActions;
+use super::flags::SyncField;
 use crate::app::balance;
 use crate::app::bars::{sticky_begin, sticky_end};
 use crate::app::App;
@@ -33,6 +34,11 @@ impl App {
         // 同一模型 id 全局只能开一个，在所有卡片渲染完之后统一处理。
         if let Some(picked) = actions.model_enable.take() {
             self.enable_model_exclusively(picked);
+        }
+        // 「同步」：把源模型的 context / output 值刷到本页全部模型。
+        // 同样在所有卡片渲染完之后统一应用，避开渲染期的可变借用。
+        if let Some((field, value)) = actions.sync.take() {
+            self.apply_limit_sync(field, value);
         }
         if let Some(idx) = actions.remove {
             self.providers.remove(idx);
@@ -175,5 +181,27 @@ impl App {
                 }
             });
         });
+    }
+
+    /// 把某个模型的 context / output 值刷到本页全部模型（「同步」下拉首项）。
+    ///
+    /// `value` 是源模型在点下时的值（渲染期已取出，这里只做写回）；空值不刷。
+    pub(in crate::app) fn apply_limit_sync(&mut self, field: SyncField, value: String) {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            self.status = format!("源模型的{}为空，未同步", field.label());
+            return;
+        }
+        let mut touched = 0usize;
+        for p in &mut self.providers {
+            for m in &mut p.models {
+                match field {
+                    SyncField::Context => m.context = value.clone(),
+                    SyncField::Output => m.output = value.clone(),
+                }
+                touched += 1;
+            }
+        }
+        self.status = format!("已把{} {value} 同步到 {touched} 个模型", field.label());
     }
 }

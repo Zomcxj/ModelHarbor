@@ -13,19 +13,23 @@ impl App {
         self.providers
             .iter()
             .any(|provider| match self.current_page {
-                // opencode 系三者字段口径相同。
+                // opencode 系三者字段口径相同；v1 用 options.*，v2 用 settings.*。
                 ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
+                    let has = |key: &str| {
+                        provider
+                            .raw
+                            .get("options")
+                            .and_then(|v| v.get(key))
+                            .is_some()
+                            || provider
+                                .raw
+                                .get("settings")
+                                .and_then(|v| v.get(key))
+                                .is_some()
+                    };
                     match field {
-                        "base_url" => provider
-                            .raw
-                            .get("options")
-                            .and_then(|v| v.get("baseURL"))
-                            .is_some(),
-                        "timeout" => provider
-                            .raw
-                            .get("options")
-                            .and_then(|v| v.get("timeout"))
-                            .is_some(),
+                        "base_url" => has("baseURL"),
+                        "timeout" => has("timeout"),
                         _ => false,
                     }
                 }
@@ -77,17 +81,29 @@ impl App {
         }
         self.providers.iter().any(|provider| {
             provider.models.iter().any(|model| match self.current_page {
-                // opencode 系三者模型字段口径相同。
+                // opencode 系三者模型字段口径相同；v1 用 reasoning / tool_call /
+                // modalities / options.store，v2 用 capabilities.tools /
+                // capabilities.input / body.store（v2 无 reasoning）。
                 ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
+                    let cap = |key: &str| {
+                        model
+                            .raw
+                            .get("capabilities")
+                            .and_then(|v| v.get(key))
+                            .is_some()
+                    };
                     match field {
                         "name" => model.raw.get("name").is_some(),
                         "reasoning" => model.raw.get("reasoning").is_some(),
-                        "tool_call" => model.raw.get("tool_call").is_some(),
-                        "store" => model
-                            .raw
-                            .get("options")
-                            .and_then(|v| v.get("store"))
-                            .is_some(),
+                        "tool_call" => model.raw.get("tool_call").is_some() || cap("tools"),
+                        "store" => {
+                            model
+                                .raw
+                                .get("options")
+                                .and_then(|v| v.get("store"))
+                                .is_some()
+                                || model.raw.get("body").and_then(|v| v.get("store")).is_some()
+                        }
                         "context" => model
                             .raw
                             .get("limit")
@@ -98,11 +114,14 @@ impl App {
                             .get("limit")
                             .and_then(|v| v.get("output"))
                             .is_some(),
-                        "input" => model
-                            .raw
-                            .get("modalities")
-                            .and_then(|v| v.get("input"))
-                            .is_some(),
+                        "input" => {
+                            model
+                                .raw
+                                .get("modalities")
+                                .and_then(|v| v.get("input"))
+                                .is_some()
+                                || cap("input")
+                        }
                         "variants" => model.raw.get("variants").is_some(),
                         _ => false,
                     }

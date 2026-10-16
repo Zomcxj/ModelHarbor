@@ -182,6 +182,7 @@ impl App {
                     idx,
                     &mut actions.model_hover,
                     &mut actions.model_enable,
+                    &mut actions.sync,
                 );
             });
         });

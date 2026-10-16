@@ -10,6 +10,9 @@ use super::*;
 ///
 /// `salt` 区分同一页里的多个表单实例：下拉的展开状态按 `Id` 记在 egui 里，
 /// 两处共用同一个 id 会互相串开合状态。
+///
+/// `sync` 收集本帧被点下的「同步」目标（context / output）：点中时写入，
+/// 由调用方冒泡到区块层统一应用。新增表单（`relaxed`）不提供同步。
 pub(super) fn model_core_fields_row(
     ui: &mut egui::Ui,
     m: &mut ModelRow,
@@ -17,6 +20,7 @@ pub(super) fn model_core_fields_row(
     relaxed: bool,
     dup: Option<(&HashSet<String>, &HashSet<String>)>,
     salt: &str,
+    sync: &mut Option<SyncField>,
 ) {
     let on = |flag: bool| relaxed || flag;
     ui.horizontal_wrapped(|ui| {
@@ -64,24 +68,41 @@ pub(super) fn model_core_fields_row(
         if on(flags.show_model_context) {
             field_label(ui, 120.0, flags.context_label);
             numeric_text_edit(ui, &mut m.context, 53.0, "");
-            preset_combo(
+            // 新增表单不提供同步（本模型尚未入表，无「全部模型」可刷）。
+            let sync_tip = if relaxed {
+                None
+            } else {
+                Some("把当前模型的上下文值同步到本页全部模型")
+            };
+            if preset_combo(
                 ui,
                 &mut m.context,
                 &CONTEXT_PRESETS,
                 &format!("ctx_preset_{}", salt),
                 "常用上下文预设值；选择即填入，之后仍可手动改。",
-            );
+                sync_tip,
+            ) {
+                *sync = Some(SyncField::Context);
+            }
         }
         if on(flags.show_model_output) {
             field_label(ui, 120.0, flags.output_label);
             numeric_text_edit(ui, &mut m.output, 53.0, "");
-            preset_combo(
+            let sync_tip = if relaxed {
+                None
+            } else {
+                Some("把当前模型的最大输出值同步到本页全部模型")
+            };
+            if preset_combo(
                 ui,
                 &mut m.output,
                 &OUTPUT_PRESETS,
                 &format!("out_preset_{}", salt),
                 "常用最大输出预设值；选择即填入，之后仍可手动改。",
-            );
+                sync_tip,
+            ) {
+                *sync = Some(SyncField::Output);
+            }
         }
     });
 }
@@ -101,7 +122,7 @@ pub(super) fn model_modalities_row(
             ui.add(egui::TextEdit::singleline(&mut m.modalities_input).desired_width(80.0));
         }
         if flags.show_oc {
-            field_label(ui, 120.0, "modalities.output");
+            field_label(ui, 120.0, flags.modal_output_label);
             ui.add(egui::TextEdit::singleline(&mut m.modalities_output).desired_width(80.0));
         }
         if on(flags.show_model_variants) {
@@ -129,7 +150,8 @@ pub(super) fn new_model_subform(
     show_key: &str,
 ) {
     // `show_key` 逐表单唯一（编辑表单带 provider key），用作预设下拉的 id 盐。
-    model_core_fields_row(ui, &mut p.new_model, flags, true, None, show_key);
+    // 新增表单不提供同步，故传入的 sync 出参恒为 None。
+    model_core_fields_row(ui, &mut p.new_model, flags, true, None, show_key, &mut None);
     model_modalities_row(ui, &mut p.new_model, flags, variants, true);
     ui.horizontal(|ui| {
         ui.add_space(crate::theme::SPACE_7);

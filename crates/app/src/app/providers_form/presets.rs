@@ -32,13 +32,17 @@ pub(super) fn preset_index(value: &str, presets: &[u32]) -> Option<usize> {
 ///
 /// 只**填值**、不锁定，填完仍可继续手动编辑。选中项按当前值反查，
 /// 手填的非预设值显示为 `选择...`。
+///
+/// `sync_tooltip` 为 `Some` 时，下拉首项额外加一个「同步」：点击不改本字段，
+/// 而是返回 `true`，由调用方把当前值刷到本页全部模型。
 pub(super) fn preset_combo(
     ui: &mut egui::Ui,
     value: &mut String,
     presets: &[u32],
     id_salt: &str,
     tooltip: &str,
-) {
+    sync_tooltip: Option<&str>,
+) -> bool {
     // 当前值恰好等于某个预设时，把下拉显示成那一项；否则显示占位文案。
     let selected = preset_index(value, presets);
     let text = match selected {
@@ -47,10 +51,22 @@ pub(super) fn preset_combo(
     };
     // 只有真正点了某一项才写回：初值取 `None`，避免未选也走一次赋值。
     let mut picked: Option<usize> = None;
+    let mut sync_clicked = false;
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(text)
         .width(72.0)
         .show_ui(ui, |ui| {
+            // 首项「同步」：把当前模型的本字段值刷到本页所有模型。
+            if let Some(st) = sync_tooltip {
+                if ui
+                    .selectable_label(false, "同步")
+                    .on_hover_text(st)
+                    .clicked()
+                {
+                    sync_clicked = true;
+                }
+                ui.separator();
+            }
             for (i, k) in presets.iter().enumerate() {
                 if ui
                     .selectable_label(selected == Some(i), preset_label(*k))
@@ -65,4 +81,5 @@ pub(super) fn preset_combo(
     if let Some(i) = picked {
         *value = preset_value(presets[i]);
     }
+    sync_clicked
 }

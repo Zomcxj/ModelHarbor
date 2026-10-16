@@ -1,5 +1,25 @@
 use crate::app::App;
 use crate::format::ConfigFormat;
+use crate::model::OpencodeSchemaVersion;
+
+/// 模型预设下拉里「同步」的目标字段：上下文（输入窗口）或最大输出。
+#[derive(Clone, Copy)]
+pub(in crate::app) enum SyncField {
+    /// 上下文 / 输入窗口（`limit.context`）。
+    Context,
+    /// 最大输出（`limit.output`）。
+    Output,
+}
+
+impl SyncField {
+    /// 状态栏文案用的中文名。
+    pub(in crate::app) fn label(self) -> &'static str {
+        match self {
+            Self::Context => "上下文",
+            Self::Output => "最大输出",
+        }
+    }
+}
 
 /// 卡片渲染时向外收集的动作与落点。
 #[derive(Default)]
@@ -15,6 +35,9 @@ pub(super) struct CardActions {
     /// 本帧被勾上「启用」的模型，用 `(provider 下标, 模型下标)` 定位。
     /// 同一模型 id 全局互斥，统一在 [`App::ui_providers_section`] 里处理。
     pub(super) model_enable: Option<(usize, usize)>,
+    /// 本帧被点下的「同步」：把某个模型的 context / output 值刷到本页全部模型。
+    /// 渲染时只登记信号，统一在 [`App::ui_providers_section`] 里应用（避开借用冲突）。
+    pub(super) sync: Option<(SyncField, String)>,
 }
 
 /// provider / model 表单的字段可见性与方言标签（各页面共用）。
@@ -47,12 +70,25 @@ pub(in crate::app) struct ProviderFormFlags {
     pub(in crate::app) context_label: &'static str,
     pub(in crate::app) output_label: &'static str,
     pub(in crate::app) input_label: &'static str,
+    /// provider 超时标签：v1 `options.timeout` / v2 `settings.timeout`。
+    pub(in crate::app) timeout_label: &'static str,
+    /// 输出模态标签：v1 `modalities.output` / v2 `capabilities.output`。
+    pub(in crate::app) modal_output_label: &'static str,
+    /// 协议包下拉标签：v1 `npm` / v2 `package`。
+    pub(in crate::app) package_label: &'static str,
 }
 
 impl ProviderFormFlags {
     pub(in crate::app) fn new(app: &App) -> Self {
         // opencode 系（opencode / kilocode / mimocode）字段口径相同，共用一个开关。
         let show_oc = app.current_page.is_opencode_family();
+        // v2 只是 opencode 本家的演进：只有 opencode 页显示 v2 键名标签，
+        // kilo / mimo 两页永远 v1（settings.* / capabilities.* 是 opencode 独有）。
+        let oc_v2 = app.current_page == ConfigFormat::Opencode
+            && app
+                .providers
+                .iter()
+                .any(|p| p.schema == OpencodeSchemaVersion::V2);
         let show_dsh = app.current_page == ConfigFormat::DeepSeekHarness;
         let show_zcode = app.current_page == ConfigFormat::ZCode;
         let show_wb = app.current_page == ConfigFormat::WorkBuddy;
@@ -80,7 +116,11 @@ impl ProviderFormFlags {
             // 开关的存在性由**后端语义**决定，不看文件里有没有这个键。
             show_model_disabled: app.current_page.has_model_enable(),
             base_label: if show_oc {
-                "options.baseURL"
+                if oc_v2 {
+                    "settings.baseURL"
+                } else {
+                    "options.baseURL"
+                }
             } else if show_dsh {
                 "baseURL"
             } else if show_zcode {
@@ -93,7 +133,11 @@ impl ProviderFormFlags {
                 "baseUrl"
             },
             api_key_label: if show_oc {
-                "options.apiKey"
+                if oc_v2 {
+                    "settings.apiKey"
+                } else {
+                    "options.apiKey"
+                }
             } else if show_dsh {
                 "apiKeyEnv"
             } else if show_zcode {
@@ -132,7 +176,11 @@ impl ProviderFormFlags {
                 "maxTokens"
             },
             input_label: if show_oc {
-                "modalities.input"
+                if oc_v2 {
+                    "capabilities.input"
+                } else {
+                    "modalities.input"
+                }
             } else if show_zcode {
                 "properties.supports*"
             } else if show_wb {
@@ -144,6 +192,17 @@ impl ProviderFormFlags {
             } else {
                 "input"
             },
+            timeout_label: if oc_v2 {
+                "settings.timeout"
+            } else {
+                "options.timeout"
+            },
+            modal_output_label: if oc_v2 {
+                "capabilities.output"
+            } else {
+                "modalities.output"
+            },
+            package_label: if oc_v2 { "package" } else { "npm" },
         }
     }
 }
