@@ -208,6 +208,8 @@ pub struct Prefs {
     ///
     /// 旧设置文件没有这个字段时默认开启（用户要求默认常驻点亮）。
     pub tray_resident: bool,
+    /// 用量页记住的时间区间键（`today` / `week` / `month` / `all`；空 = 用 App 默认）。
+    pub usage_range: String,
 }
 
 impl Default for Prefs {
@@ -226,6 +228,7 @@ impl Default for Prefs {
             tab_order: Vec::new(),
             // 默认常驻点亮（用户要求）。
             tray_resident: true,
+            usage_range: String::new(),
         }
     }
 }
@@ -331,6 +334,7 @@ impl Prefs {
                 .get("tray_resident")
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
+            usage_range: get_str("usage_range"),
         }
     }
 
@@ -394,6 +398,10 @@ impl Prefs {
             ),
         );
         root.insert("tray_resident".to_string(), Value::Bool(self.tray_resident));
+        root.insert(
+            "usage_range".to_string(),
+            Value::String(self.usage_range.clone()),
+        );
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -472,6 +480,8 @@ mod tests {
             glass: true,
             tab_order: vec!["pi".to_string(), "zcode".to_string()],
             tray_resident: false,
+            // 非默认值，覆盖用量区间的读写。
+            usage_range: "week".to_string(),
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
     }

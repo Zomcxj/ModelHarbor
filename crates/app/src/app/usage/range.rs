@@ -39,6 +39,27 @@ impl Range {
         }
     }
 
+    /// 持久化用的稳定键（写进 settings.json；与 label 解耦，改文案不影响存档）。
+    pub(in crate::app) fn key(self) -> &'static str {
+        match self {
+            Self::Today => "today",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::All => "all",
+        }
+    }
+
+    /// 从持久化键还原；空串或未知键回退默认档（本月）。
+    pub(in crate::app) fn from_key(key: &str) -> Range {
+        match key {
+            "today" => Range::Today,
+            "week" => Range::Week,
+            "month" => Range::Month,
+            "all" => Range::All,
+            _ => Range::default(),
+        }
+    }
+
     /// 区间包含的日索引范围（闭区间）；`All` 返回 `None`（不设下界）。
     ///
     /// 上界固定为 `today`：账本里可能有未来日期的记录（系统时钟被改过、
@@ -680,6 +701,17 @@ mod tests {
         assert_eq!(totals_label(Range::Week), "本周用量");
         assert_eq!(totals_label(Range::Month), "本月用量");
         assert_eq!(totals_label(Range::All), "总计用量");
+    }
+
+    /// 持久化键往返：每个区间都能从键还原，未知 / 空键回退默认档（本月）。
+    #[test]
+    fn range_key_round_trips() {
+        for range in Range::ALL {
+            assert_eq!(Range::from_key(range.key()), range, "{range:?} 键往返");
+        }
+        assert_eq!(Range::from_key(""), Range::default(), "空键回退默认");
+        assert_eq!(Range::from_key("bogus"), Range::default(), "未知键回退默认");
+        assert_eq!(Range::default(), Range::Month, "默认档是本月");
     }
 
     // ---- 趋势图自己的区间 ----

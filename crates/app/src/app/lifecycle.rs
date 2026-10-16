@@ -140,10 +140,16 @@ impl super::App {
         self.reload_for_page(self.current_page, true);
     }
 
-    /// 重新加载路径，同时把「路径属于哪个页面」和「文件实际是什么格式」分开。
+    /// 重新加载路径：文件**内容**决定解析与显示格式（source_format），
+    /// 路径则记到**当前页**（owner）名下，供本次会话内继续解析 / 保存。
     ///
-    /// 只有成功读出并解析文件后才记住路径；实际格式与发起页面不同时，页面跟随
-    /// 文件格式切换，路径只记到检测出的格式。
+    /// 内容检测只用于「这个文件按哪个后端解析」，不用于「路径记到哪一页」——
+    /// 否则在 pi 页打开一个 opencode 内容的文件，路径会被记到 opencode 页，
+    /// 用户在自己页面上的切换就丢了（用户报障）。
+    ///
+    /// 记住的路径**不写进 settings.json**（见 `current_prefs`）：每页启动一律
+    /// 加载官方默认路径，会话内换过的文件重启后不再生效（用户拍板）。
+    /// 只有成功读出并解析文件后才记住路径。
     pub(in crate::app) fn reload_for_page(&mut self, owner: ConfigFormat, remember: bool) {
         if !crate::util::config_exists(&self.config_path) {
             self.source_format = owner;
@@ -155,6 +161,7 @@ impl super::App {
             return;
         }
 
+        // 内容检测：决定这个文件按哪个后端的格式解析与显示。
         let (detected, _) = ConfigPaths::detect_for_path(&self.config_path);
         self.source_format = detected;
         self.apply_load();
@@ -165,16 +172,12 @@ impl super::App {
             return;
         }
 
+        // 页面留在用户操作的 owner 页（不按内容切页）。
+        self.current_page = owner;
         let path = self.config_path.trim().to_string();
         if remember && !path.is_empty() {
-            self.remember_page_path(detected, &path);
-        }
-        if detected != owner {
-            self.status.push_str(&format!(
-                "（检测为 {}，未记作 {} 页路径）",
-                detected.label(),
-                owner.label()
-            ));
+            // 路径记到当前页（owner）名下，仅本次会话生效（不落盘）。
+            self.remember_page_path(owner, &path);
         }
     }
 

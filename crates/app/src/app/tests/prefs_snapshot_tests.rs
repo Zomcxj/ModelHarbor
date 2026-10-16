@@ -1,26 +1,6 @@
 use crate::app::App;
 
 #[test]
-fn path_override_treats_raw_default_as_unmodified_even_when_jsonc_variant_exists() {
-    // 默认 `.json` 不在盘上时解析值会变成 `.jsonc` 变体，界面字段保持原始默认 `.json`；
-    // 两者都不算手动覆盖。
-    use crate::app::ids::override_or_empty;
-    let raw = r"C:\Users\u\.config\mimocode\mimocode.json";
-    let resolved = r"C:\Users\u\.config\mimocode\mimocode.jsonc";
-    // 字段保持原始默认（未手动改过）：不算覆盖
-    assert_eq!(override_or_empty(raw, raw, resolved), "");
-    // 字段被探测解析带成了 .jsonc 变体：也不算覆盖
-    assert_eq!(override_or_empty(resolved, raw, resolved), "");
-    // 用户改了路径：照实记录
-    assert_eq!(
-        override_or_empty(r"D:\custom\mimo.json", raw, resolved),
-        r"D:\custom\mimo.json"
-    );
-    // 空字段：空串，不算覆盖
-    assert_eq!(override_or_empty("  ", raw, resolved), "  ");
-}
-
-#[test]
 fn collapse_state_is_scoped_to_configuration_path() {
     let mut app = App {
         config_path: r"D:\configs\one.json".into(),
@@ -89,6 +69,26 @@ fn pruning_one_configuration_keeps_other_configuration_state() {
     assert!(!app.provider_collapsed("removed"));
     assert!(app.collapsed.contains(&other));
 }
+
+/// 路径覆盖不再持久化：即使会话内切到了别的文件，current_prefs 仍写空覆盖，
+/// 重启后每页回官方默认路径（用户拍板）。
+#[test]
+fn current_prefs_never_persists_path_overrides() {
+    use crate::format::ConfigFormat;
+    let mut app = App::default();
+    // 会话内把 opencode 页切到桌面文件。
+    app.config_paths.set_local_path(
+        ConfigFormat::Opencode,
+        r"C:\Users\u\Desktop\opencodev2.json",
+    );
+    let prefs = app.current_prefs();
+    assert_eq!(
+        prefs.config_paths,
+        crate::prefs::ConfigPathPrefs::default(),
+        "全部覆盖槽位恒为空：路径覆盖不得写进 settings.json"
+    );
+}
+
 #[test]
 fn current_prefs_sorts_collapsed_cards_before_comparison() {
     let mut app = App::default();
@@ -100,4 +100,18 @@ fn current_prefs_sorts_collapsed_cards_before_comparison() {
         app.current_prefs().collapsed,
         vec!["agents/a".to_string(), "providers/z".to_string()]
     );
+}
+
+/// 用量区间被 current_prefs 捕获为稳定键，并能从 Prefs 还原（记住上次选择）。
+#[test]
+fn current_prefs_captures_usage_range() {
+    use crate::app::usage::range::Range;
+    let app = App {
+        usage_range: Range::Week,
+        ..Default::default()
+    };
+    assert_eq!(app.current_prefs().usage_range, "week");
+    // 往返：写进 Prefs 再按键还原，应回到 Week。
+    let prefs = app.current_prefs();
+    assert_eq!(Range::from_key(&prefs.usage_range), Range::Week);
 }

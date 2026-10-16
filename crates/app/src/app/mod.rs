@@ -298,37 +298,19 @@ fn startup_page_with(
         .map(|id| (id, backends::target_path(id, &paths.local_path(id))))
 }
 
-fn startup_format(owner: ConfigFormat, path: &str) -> ConfigFormat {
-    let path = path.trim();
-    if path.is_empty() {
-        return owner;
-    }
-    let readable = if crate::util::is_wsl_path(path) {
-        crate::util::read_wsl_file(path).is_ok()
-    } else {
-        std::fs::read_to_string(path).is_ok()
-    };
-    if !readable {
-        return owner;
-    }
-    ConfigPaths::detect_for_path(path).0
-}
-
 impl Default for App {
     fn default() -> Self {
         let prefs = crate::prefs::Prefs::load();
-        // 路径：先套用 prefs 里用户手动指定过的覆盖，再定位要打开的页面。
-        let mut paths = ConfigPaths::default();
-        paths.apply_overrides(&prefs.config_paths);
+        // 路径：每页一律用官方默认路径。覆盖不再持久化（重启回默认）；
+        // 会话内换到别的文件立即生效、保存到该文件（用户拍板）。
+        let paths = ConfigPaths::default();
         // 启动页跟随顶栏「已安装」段的拖动顺序：第一个是谁就加载谁。
-        // 旧行为按固定后端序探测，命中恒为 opencode（用户报障）。
+        // 不再按文件内容切页：第一个 agent 总是打开自己那页（用户拍板）。
         // 没有已安装页面时退回旧探测。
         let (format, path) =
             startup_page_with(&paths, &prefs.tab_order, |id| paths.validate_target(id))
-                .or_else(|| paths.detect_preferring_overrides(&prefs.config_paths))
+                .or_else(ConfigPaths::detect)
                 .unwrap_or((ConfigFormat::Opencode, String::new()));
-        // 启动探测只按「哪一页有覆盖路径」选后端；方言以文件内容为准。
-        let format = startup_format(format, &path);
         // 各后端内置网关的免费模型：逐后端读一次落盘缓存；缺失或过期的后端
         // 由首帧在后台重取。只对确实有免费层的后端建状态。
         let mut free_models: HashMap<ConfigFormat, FreeModelsState> = HashMap::new();
@@ -400,7 +382,7 @@ impl Default for App {
             guide_dismissed: prefs.guide_dismissed,
             show_health: false,
             main_view: MainView::default(),
-            usage_range: usage::range::Range::default(),
+            usage_range: usage::range::Range::from_key(&prefs.usage_range),
             usage_filter: None,
             usage_chart_kind: usage::ChartKind::default(),
             usage_chart_range: usage::range::ChartRange::default(),
@@ -743,18 +725,9 @@ impl App {
             save_format: self.save_format.key().to_string(),
             theme: self.theme.key().to_string(),
             sync_wsl: self.sync_wsl,
-            config_paths: crate::prefs::ConfigPathPrefs {
-                opencode: self.path_override(ConfigFormat::Opencode),
-                kilocode: self.path_override(ConfigFormat::Kilocode),
-                mimocode: self.path_override(ConfigFormat::Mimocode),
-                pi: self.path_override(ConfigFormat::Pi),
-                oh_my_pi: self.path_override(ConfigFormat::OhMyPi),
-                deepseek_harness: self.path_override(ConfigFormat::DeepSeekHarness),
-                zcode: self.path_override(ConfigFormat::ZCode),
-                workbuddy: self.path_override(ConfigFormat::WorkBuddy),
-                qwen_code: self.path_override(ConfigFormat::QwenCode),
-                kimi_code: self.path_override(ConfigFormat::KimiCode),
-            },
+            // 路径覆盖不再持久化：恒写空值，重启后每页回官方默认路径。
+            // 旧 settings 里的脏值（如误指向桌面文件）会在首次保存时自动清零。
+            config_paths: crate::prefs::ConfigPathPrefs::default(),
             collapsed,
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
             guide_dismissed: self.guide_dismissed,
@@ -762,6 +735,7 @@ impl App {
             glass: self.glass,
             tab_order: self.tab_order.clone(),
             tray_resident: self.tray_resident,
+            usage_range: self.usage_range.key().to_string(),
         }
     }
 
