@@ -27,6 +27,23 @@ pub enum Source {
     Compat,
     /// 令牌额度接口（`/api/usage/token/`，只需 `sk-` key）：无限制站也能读到真实已用。
     Token,
+    /// Sub2API 站点的 `/v1/usage`（只需 `sk-` key）：站点级剩余 / 已用 / 总额。
+    Sub2api,
+}
+
+/// Sub2API `/v1/usage` 的读数（三个读数都可能缺，不同版本给的字段不一样）。
+///
+/// 单位缺省 USD；剩余额度的兜底口径是 `total - used`。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Sub2apiUsage {
+    /// 剩余额度。
+    pub remaining: Option<f64>,
+    /// 已用额度。
+    pub used: Option<f64>,
+    /// 额度上限。
+    pub total: Option<f64>,
+    /// 单位（站点给的；缺省 USD）。
+    pub unit: String,
 }
 
 /// 面板账号额度（`/api/user/self`，填了面板访问令牌才有）：账号级，不是令牌级。

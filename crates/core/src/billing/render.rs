@@ -130,7 +130,7 @@ impl Billing {
     /// 没有账号数据时的短行（令牌额度 / 兼容账单）。
     fn inline_token_or_compat(&self) -> String {
         // 面板账户 / 令牌额度：最多两段，有余额先显余额，其次今日用量。
-        if self.source == Source::Token {
+        if matches!(self.source, Source::Token | Source::Sub2api) {
             let mut parts: Vec<String> = Vec::new();
             match (self.balance_usd, self.used_usd) {
                 (Some(balance), _) => parts.push(format!("余额 {}", money(balance))),
@@ -258,7 +258,7 @@ impl Billing {
         if has_account_side {
             lines.push("—— 本令牌 ——".to_string());
         }
-        if self.source == Source::Token {
+        if matches!(self.source, Source::Token | Source::Sub2api) {
             return self.detail_token(lines);
         }
         self.detail_compat(lines)

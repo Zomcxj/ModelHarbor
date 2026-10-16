@@ -73,3 +73,19 @@ pub fn endpoints_v1(base_url: &str) -> Endpoints {
         None => endpoints(base),
     }
 }
+
+/// Sub2API 用量接口：`{base}/v1/usage`（Bearer sk- key 即可，无需面板令牌）。
+///
+/// 用户填 base 的习惯不统一（`https://host` / `https://host/v1` /
+/// 整条路径都有），与其它端点同一套归一口径：末尾已是 `v1/usage` 就不动，
+/// 已是 `/v1` 只补 `usage`，否则补 `v1/usage`。
+pub fn sub2api_usage_url(base_url: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.ends_with("/v1/usage") {
+        base.to_string()
+    } else if base.ends_with("/v1") {
+        format!("{base}/usage")
+    } else {
+        format!("{base}/v1/usage")
+    }
+}

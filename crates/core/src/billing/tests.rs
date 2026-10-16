@@ -817,3 +817,66 @@ fn checkin_status_has_no_today_amount_when_not_signed_today() {
     .expect("应能解析");
     assert_eq!(shuffled.today_usd, Some(0.5), "取最大日期那条");
 }
+
+#[test]
+fn sub2api_usage_url_normalizes_base() {
+    // 常规：根路径直接补 v1/usage。
+    assert_eq!(
+        crate::billing::sub2api_usage_url("https://sub.example.com"),
+        "https://sub.example.com/v1/usage"
+    );
+    // 已带 /v1：只补 usage。
+    assert_eq!(
+        crate::billing::sub2api_usage_url("https://sub.example.com/v1"),
+        "https://sub.example.com/v1/usage"
+    );
+    // 整条路径：不再重复追加。
+    assert_eq!(
+        crate::billing::sub2api_usage_url("https://sub.example.com/v1/usage"),
+        "https://sub.example.com/v1/usage"
+    );
+    // 末尾斜杠与首尾空白先归一。
+    assert_eq!(
+        crate::billing::sub2api_usage_url("  https://sub.example.com/v1/  "),
+        "https://sub.example.com/v1/usage"
+    );
+}
+
+#[test]
+fn sub2api_usage_parses_quota_remaining_and_unit_variants() {
+    // 完整读数：quota.limit/used + remaining + unit。
+    let full = crate::billing::parse_sub2api_usage(
+        r#"{"quota":{"limit":100.0,"used":37.5},"remaining":62.5,"unit":"USD"}"#,
+    )
+    .expect("完整读数应解析成功");
+    assert_eq!(full.total, Some(100.0));
+    assert_eq!(full.used, Some(37.5));
+    assert_eq!(full.remaining, Some(62.5));
+    assert_eq!(full.unit, "USD");
+
+    // 只有 balance：剩余直接取它，单位缺省 USD。
+    let only_balance = crate::billing::parse_sub2api_usage(r#"{"balance": 12.0}"#).unwrap();
+    assert_eq!(only_balance.remaining, Some(12.0));
+    assert_eq!(only_balance.total, None);
+    assert_eq!(only_balance.unit, "USD");
+
+    // 只有 quota：剩余按 total - used 兜底。
+    let only_quota =
+        crate::billing::parse_sub2api_usage(r#"{"quota":{"limit":50,"used":8}}"#).unwrap();
+    assert_eq!(only_quota.remaining, Some(42.0));
+    assert_eq!(only_quota.total, Some(50.0));
+
+    // 空读数 / 非法 JSON / 别的结构：None。
+    for junk in [
+        "{}",
+        r#"{"unit":"USD"}"#,
+        "not json",
+        "[]",
+        r#"{"quota":{}}"#,
+    ] {
+        assert!(
+            crate::billing::parse_sub2api_usage(junk).is_none(),
+            "{junk}"
+        );
+    }
+}

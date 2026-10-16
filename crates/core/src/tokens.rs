@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 
 const FILE_NAME: &str = "tokens.json";
 /// 写盘用的 schema 版本（读取时忽略）。
-const SCHEMA_VERSION: u64 = 2;
+const SCHEMA_VERSION: u64 = 3;
+
+/// 站点类型标记值：sub2api（直连 `/v1/usage` 查询，无需面板令牌）。
+const KIND_SUB2API: &str = "sub2api";
 
 /// 站点令牌表（键 = 规范化 origin，值 = PAT）。
 ///
@@ -26,6 +29,10 @@ pub struct StationTokens {
     /// 旧版 new-api 要求的用户 ID（`New-Api-User` 头），与 `tokens` 同键。
     /// 新版不需要，大多数站点这里是空的。
     user_ids: BTreeMap<String, String>,
+    /// 站点类型标记（只有非默认值才落盘；缺省 = NewAPI 面板体系）。
+    /// 目前唯一非默认值：`sub2api`——余额直接用 `sk-` key 打 `/v1/usage`，
+    /// 不需要面板令牌与用户 ID。
+    site_kinds: BTreeMap<String, String>,
 }
 
 /// 站点身份：把 baseUrl 归一到「站点根」，作为令牌表的键。
@@ -92,7 +99,29 @@ impl StationTokens {
                     .collect()
             })
             .unwrap_or_default();
-        StationTokens { tokens, user_ids }
+        // 站点类型：只收已知标记值（当前仅 sub2api）；未知值忽略。
+        let site_kinds = root
+            .get("site_kinds")
+            .and_then(Value::as_object)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        let kind = value.as_str()?.trim();
+                        let key = key.trim();
+                        if key.is_empty() || kind != KIND_SUB2API {
+                            return None;
+                        }
+                        Some((key.to_string(), kind.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        StationTokens {
+            tokens,
+            user_ids,
+            site_kinds,
+        }
     }
 
     /// 序列化（键序固定，便于 diff）。
@@ -110,6 +139,12 @@ impl StationTokens {
             user_ids.insert(key.clone(), Value::String(id.clone()));
         }
         root.insert("user_ids".to_string(), Value::Object(user_ids));
+        // 站点类型：只写非默认值，保持文件紧凑。
+        let mut site_kinds = Map::new();
+        for (key, kind) in &self.site_kinds {
+            site_kinds.insert(key.clone(), Value::String(kind.clone()));
+        }
+        root.insert("site_kinds".to_string(), Value::Object(site_kinds));
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -171,11 +206,33 @@ impl StationTokens {
         }
     }
 
-    /// 删除某站点的令牌（连同用户 ID）。
+    /// 该站点是否标记为 sub2api（余额直接用 `sk-` key 查 `/v1/usage`）。
+    pub fn is_sub2api(&self, origin: &str) -> bool {
+        self.site_kinds
+            .get(origin.trim().to_lowercase().as_str())
+            .map(String::as_str)
+            == Some(KIND_SUB2API)
+    }
+
+    /// 写入站点类型；`sub2api = false` 恢复默认（NewAPI 面板体系）并清除标记。
+    pub fn set_site_kind(&mut self, origin: &str, sub2api: bool) {
+        let origin = origin.trim().to_lowercase();
+        if origin.is_empty() {
+            return;
+        }
+        if sub2api {
+            self.site_kinds.insert(origin, KIND_SUB2API.to_string());
+        } else {
+            self.site_kinds.remove(&origin);
+        }
+    }
+
+    /// 删除某站点的令牌（连同用户 ID 与站点类型）。
     pub fn remove(&mut self, origin: &str) {
         let origin = origin.trim().to_lowercase();
         self.tokens.remove(&origin);
         self.user_ids.remove(&origin);
+        self.site_kinds.remove(&origin);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -336,9 +393,46 @@ mod tests {
         assert_eq!(back, tokens);
         // 键序稳定：再次序列化必须完全一致。
         assert_eq!(back.to_json(), text);
-        assert!(text.contains(r#""version": 2"#), "{text}");
-        // 没有用户 ID 时也写出空段。
+        assert!(text.contains(r#""version": 3"#), "{text}");
+        // 没有用户 ID / 站点类型时也写出空段。
         assert!(text.contains(r#""user_ids": {}"#), "{text}");
+        assert!(text.contains(r#""site_kinds": {}"#), "{text}");
+    }
+
+    #[test]
+    fn site_kind_sub2api_round_trips_and_defaults_to_newapi() {
+        let mut tokens = StationTokens::default();
+        assert!(!tokens.is_sub2api("https://a.example.com"), "缺省是 NewAPI");
+
+        tokens.set_site_kind("  https://A.Example.com  ", true);
+        assert!(tokens.is_sub2api("https://a.example.com"), "大小写不敏感");
+        // 落盘后回读保持。
+        let back = StationTokens::parse(&tokens.to_json());
+        assert!(back.is_sub2api("https://a.example.com"));
+
+        // 恢复默认 = 清除标记，文件里不再有该站点。
+        tokens.set_site_kind("https://a.example.com", false);
+        assert!(!tokens.is_sub2api("https://a.example.com"));
+        assert!(
+            !tokens.to_json().contains("a.example.com"),
+            "不应残留空条目"
+        );
+
+        // 未知标记值与空键一律不收。
+        let junk = r#"{"site_kinds":{"https://a.example.com":"openai","https://b.example.com":"sub2api","":"sub2api"}}"#;
+        let parsed = StationTokens::parse(junk);
+        assert!(!parsed.is_sub2api("https://a.example.com"));
+        assert!(parsed.is_sub2api("https://b.example.com"));
+    }
+
+    #[test]
+    fn removing_a_station_also_clears_its_site_kind() {
+        let mut tokens = StationTokens::default();
+        tokens.set("https://a.example.com", "sk-x");
+        tokens.set_site_kind("https://a.example.com", true);
+        tokens.remove("https://a.example.com");
+        assert!(!tokens.is_sub2api("https://a.example.com"));
+        assert!(!tokens.has("https://a.example.com"));
     }
 
     #[test]

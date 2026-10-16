@@ -349,3 +349,43 @@ pub fn summarize_logs(entries: &[LogEntry], from: Option<i64>) -> LogSummary {
     summary.models = per_model;
     summary
 }
+
+/// 解析 Sub2API `/v1/usage` 的响应：`{ quota: {limit, used}, remaining|balance, unit }`。
+///
+/// 三个读数都可能缺（不同版本的 sub2api 给的不一样），读到任意一个就成功；
+/// 剩余额度缺省时按 `total - used` 兜底。结构不符返回 `None`。
+pub fn parse_sub2api_usage(text: &str) -> Option<Sub2apiUsage> {
+    let root = serde_json::from_str::<Value>(text).ok()?;
+    let quota = root.get("quota");
+    let total = quota.and_then(|q| q.get("limit")).and_then(Value::as_f64);
+    let used = quota.and_then(|q| q.get("used")).and_then(Value::as_f64);
+    let remaining = root
+        .get("remaining")
+        .and_then(Value::as_f64)
+        .or_else(|| root.get("balance").and_then(Value::as_f64))
+        .or_else(|| {
+            quota
+                .and_then(|q| q.get("remaining"))
+                .and_then(Value::as_f64)
+        })
+        .or(match (total, used) {
+            (Some(total), Some(used)) => Some(total - used),
+            _ => None,
+        });
+    if remaining.is_none() && total.is_none() && used.is_none() {
+        return None;
+    }
+    let unit = root
+        .get("unit")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("USD")
+        .to_string();
+    Some(Sub2apiUsage {
+        remaining,
+        used,
+        total,
+        unit,
+    })
+}
