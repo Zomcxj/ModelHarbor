@@ -26,7 +26,8 @@ impl App {
             egui::RichText::new(
                 "在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成；\
                  令牌是站点级的，同一站点的多个 provider 共用一份。\
-                 只用于只读查询账号余额。",
+                 只用于只读查询账号余额。\
+                 站点类型可切换：NewAPI 填面板令牌；sub2api 直查无需配置。",
             )
             .small()
             .color(ui.visuals().weak_text_color()),
@@ -62,20 +63,41 @@ impl App {
         let mut save: Option<String> = None;
         let mut remove: Option<String> = None;
         let mut toggle_reveal: Option<String> = None;
+        let mut toggle_kind: Option<String> = None;
         for (origin, keys) in &stations {
+            let is_sub2api = self.tokens.is_sub2api(origin);
             let configured = self.tokens.has(origin);
             let revealed = self.show_api_keys || self.token_reveal.contains(origin);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(origin).monospace());
+                // 站点类型：NewAPI（面板体系）还是 sub2api（直查 /v1/usage）。
+                let kind_button = ui.button(if is_sub2api {
+                    "类型：sub2api"
+                } else {
+                    "类型：NewAPI"
+                });
+                if kind_button.clicked() {
+                    toggle_kind = Some(origin.clone());
+                }
+                kind_button.on_hover_text(
+                    "NewAPI：填面板令牌查账号额度；sub2api：直接用 provider 的 \
+                     sk- key 查询余额，无需面板令牌，点击切换",
+                );
                 let semantics = crate::theme::semantics(ui);
                 ui.label(
-                    egui::RichText::new(if configured { "已设置" } else { "未设置" })
-                        .small()
-                        .color(if configured {
-                            semantics.ok
-                        } else {
-                            semantics.warn
-                        }),
+                    egui::RichText::new(if is_sub2api {
+                        "sub2api 直查"
+                    } else if configured {
+                        "已设置"
+                    } else {
+                        "未设置"
+                    })
+                    .small()
+                    .color(if is_sub2api || configured {
+                        semantics.ok
+                    } else {
+                        semantics.warn
+                    }),
                 );
                 if keys.len() > 1 {
                     ui.label(
@@ -86,64 +108,76 @@ impl App {
                     .on_hover_text(keys.join("、"));
                 }
             });
-            ui.horizontal(|ui| {
-                // 提示文字颜色由主题统一给定（见 `theme::Palette::hint_color`）。
-                if let Some(draft) = self.token_draft.get_mut(origin) {
-                    ui.add(
-                        egui::TextEdit::singleline(draft)
-                            .password(!revealed)
-                            .desired_width(280.0)
-                            .hint_text(if configured {
-                                "留空不改变；要清除请点「删除」"
-                            } else {
-                                "粘贴面板访问令牌"
-                            }),
-                    );
-                }
-                if ui.button(if revealed { "隐藏" } else { "显示" }).clicked() {
-                    toggle_reveal = Some(origin.clone());
-                }
-                if ui.button("保存").clicked() {
-                    save = Some(origin.clone());
-                }
-                if ui
-                    .add_enabled(configured, egui::Button::new("删除"))
-                    .clicked()
-                {
-                    remove = Some(origin.clone());
-                }
-            });
-            // 用户 ID：只有部分站点（旧版 new-api）需要它，所以放在令牌下一行。
-            // 先算好再进闭包：`station_needs_user_id` 借整个 self。
-            let needs_id = self.station_needs_user_id(keys);
-            ui.horizontal(|ui| {
-                ui.add_space(crate::theme::SPACE_2);
-                ui.label(
-                    egui::RichText::new("用户 ID")
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
-                );
-                if let Some(draft) = self.token_uid_draft.get_mut(origin) {
-                    ui.add(
-                        egui::TextEdit::singleline(draft)
-                            .desired_width(90.0)
-                            .hint_text("可留空"),
-                    );
-                }
-                if needs_id {
+            // sub2api 站点无需面板令牌与用户 ID：隐藏两行输入，改显说明。
+            if !is_sub2api {
+                ui.horizontal(|ui| {
+                    // 提示文字颜色由主题统一给定（见 `theme::Palette::hint_color`）。
+                    if let Some(draft) = self.token_draft.get_mut(origin) {
+                        ui.add(
+                            egui::TextEdit::singleline(draft)
+                                .password(!revealed)
+                                .desired_width(280.0)
+                                .hint_text(if configured {
+                                    "留空不改变；要清除请点「删除」"
+                                } else {
+                                    "粘贴面板访问令牌"
+                                }),
+                        );
+                    }
+                    if ui.button(if revealed { "隐藏" } else { "显示" }).clicked() {
+                        toggle_reveal = Some(origin.clone());
+                    }
+                    if ui.button("保存").clicked() {
+                        save = Some(origin.clone());
+                    }
+                    if ui
+                        .add_enabled(configured, egui::Button::new("删除"))
+                        .clicked()
+                    {
+                        remove = Some(origin.clone());
+                    }
+                });
+                // 用户 ID：只有部分站点（旧版 new-api）需要它，所以放在令牌下一行。
+                // 先算好再进闭包：`station_needs_user_id` 借整个 self。
+                let needs_id = self.station_needs_user_id(keys);
+                ui.horizontal(|ui| {
+                    ui.add_space(crate::theme::SPACE_2);
                     ui.label(
-                        egui::RichText::new("上次查询提示缺 New-Api-User，填你的用户 ID")
-                            .small()
-                            .color(crate::theme::semantics(ui).warn),
-                    );
-                } else {
-                    ui.label(
-                        egui::RichText::new("站点提示缺 New-Api-User 时才需填")
+                        egui::RichText::new("用户 ID")
                             .small()
                             .color(ui.visuals().weak_text_color()),
                     );
-                }
-            });
+                    if let Some(draft) = self.token_uid_draft.get_mut(origin) {
+                        ui.add(
+                            egui::TextEdit::singleline(draft)
+                                .desired_width(90.0)
+                                .hint_text("可留空"),
+                        );
+                    }
+                    if needs_id {
+                        ui.label(
+                            egui::RichText::new("上次查询提示缺 New-Api-User，填你的用户 ID")
+                                .small()
+                                .color(crate::theme::semantics(ui).warn),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new("站点提示缺 New-Api-User 时才需填")
+                                .small()
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                    }
+                });
+            } else {
+                // sub2api：余额直连 /v1/usage，面板令牌与用户 ID 都用不上。
+                ui.label(
+                    egui::RichText::new(
+                        "sub2api 站点：余额直接用 provider 的 sk- key 查询 /v1/usage，无需面板令牌与用户 ID",
+                    )
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
+                );
+            }
             ui.add_space(crate::theme::SPACE_1);
         }
 
@@ -151,6 +185,30 @@ impl App {
         if let Some(origin) = toggle_reveal {
             if !self.token_reveal.remove(&origin) {
                 self.token_reveal.insert(origin);
+            }
+        }
+        // 站点类型切换：写盘并丢弃该站点的用量缓存（查询路径变了）。
+        if let Some(origin) = toggle_kind {
+            let next = !self.tokens.is_sub2api(&origin);
+            self.tokens.set_site_kind(&origin, next);
+            match self.tokens.save() {
+                Ok(()) => {
+                    self.status = format!(
+                        "{} 已切换为 {}",
+                        origin,
+                        if next {
+                            "sub2api（直查 /v1/usage）"
+                        } else {
+                            "NewAPI（面板令牌）"
+                        }
+                    );
+                    self.forget_station_balance(&origin);
+                }
+                // 写盘失败回滚内存标记，避免与磁盘不一致。
+                Err(err) => {
+                    self.tokens.set_site_kind(&origin, !next);
+                    self.status = format!("站点类型保存失败：{err}");
+                }
             }
         }
         if let Some(origin) = save {

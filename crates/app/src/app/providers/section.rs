@@ -163,6 +163,8 @@ impl App {
                             pat: self.station_pat(&p.base_url),
                             // 旧版 new-api 要的用户 ID：没填就是空串（不发该头）。
                             user_id: self.station_user_id(&p.base_url),
+                            // sub2api 站点：直连 /v1/usage，跳过面板体系。
+                            sub2api: self.station_is_sub2api(&p.base_url),
                         })
                         .collect();
                     let now = ui.input(|i| i.time);

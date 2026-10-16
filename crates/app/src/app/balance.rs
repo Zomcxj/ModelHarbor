@@ -27,6 +27,9 @@ pub(super) struct Query {
     pub(super) pat: String,
     /// 旧版 new-api 要求的用户 ID（`New-Api-User` 头）；空串 = 不发送该头。
     pub(super) user_id: String,
+    /// 站点标记为 sub2api：直接用 `sk-` key 查 `{base}/v1/usage`，
+    /// 跳过 NewAPI 面板体系（令牌额度 / 兼容账单 / 面板账户）。
+    pub(super) sub2api: bool,
 }
 
 /// 单个 provider 的用户数据查询状态。
@@ -137,7 +140,12 @@ impl BalanceState {
 
 /// 查询一个站点的用量：令牌额度接口优先，失败再退兼容账单；
 /// 填了面板令牌则再补一份账号级额度。
+/// 站点标记为 sub2api 时只查 `{base}/v1/usage`（无需面板令牌）。
 fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
+    // sub2api 站点没有 NewAPI 面板体系，直接走自己的用量接口。
+    if query.sub2api {
+        return fetch_sub2api(&query.base_url, &query.secret);
+    }
     let endpoints = billing::endpoints(&query.base_url);
     // 站点信息（面板名）与换算比，失败可容忍。
     let status = http_get(&endpoints.status, None).ok();
@@ -156,6 +164,28 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
         merge_checkin(&mut result, checkin, panel);
     }
     result
+}
+
+/// Sub2API 站点用量：`GET {base}/v1/usage`（只需 `sk-` key，Bearer 鉴权）。
+///
+/// 返回站点级剩余 / 已用 / 总额；没有面板账户 / 签到概念，也不查 `/api/status`。
+fn fetch_sub2api(base_url: &str, secret: &str) -> Result<billing::Billing, String> {
+    let secret = secret.trim();
+    if secret.is_empty() {
+        return Err("sub2api 站点需要 provider 的 API Key（sk-…）才能查余额".to_string());
+    }
+    let url = billing::sub2api_usage_url(base_url);
+    let text = http_get(&url, Some(secret))?;
+    let usage = billing::parse_sub2api_usage(&text)
+        .ok_or_else(|| "返回内容不是可识别的 sub2api 用量".to_string())?;
+    Ok(billing::Billing {
+        shape: billing::Shape::TokenQuota,
+        source: billing::Source::Sub2api,
+        used_usd: usage.used,
+        limit_usd: usage.total,
+        balance_usd: usage.remaining,
+        ..Default::default()
+    })
 }
 
 /// 站点要求 `New-Api-User`（用户 ID）头时的提示。

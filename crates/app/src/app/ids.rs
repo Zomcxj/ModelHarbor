@@ -27,4 +27,10 @@ impl super::App {
         let key = crate::tokens::station_key(base_url);
         self.tokens.user_id(&key).to_string()
     }
+
+    /// 某 baseUrl 所属站点是否标记为 sub2api（余额直连 `/v1/usage`，无需面板令牌）。
+    pub(in crate::app) fn station_is_sub2api(&self, base_url: &str) -> bool {
+        self.tokens
+            .is_sub2api(&crate::tokens::station_key(base_url))
+    }
 }
