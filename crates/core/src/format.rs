@@ -173,7 +173,7 @@ impl ConfigPaths {
         None
     }
 
-    /// 根据文件内容判别配置格式（无扩展名上下文）。
+    /// 根据文件内容判别配置格式（无扩展名上下文，jsonc 测试用）。
     pub fn detect_from_content(content: &str) -> ConfigFormat {
         backends::detect_format(content, "")
     }

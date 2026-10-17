@@ -2,10 +2,12 @@
 
 use serde_json::{Map, Value};
 
-/// 把攒下的合并组拼成一行：组内每项去掉子缩进，用「, 」连接。
+/// 把攒下的合并组拼成一行：组内每项去掉子缩进，用「, 」连接。空组返回空串。
 fn joined_group(current: &[String], child_indent: &str) -> String {
-    let first = &current[0];
-    let rest: Vec<&str> = current[1..]
+    let Some((first, rest)) = current.split_first() else {
+        return String::new();
+    };
+    let rest: Vec<&str> = rest
         .iter()
         .map(|f| f.strip_prefix(child_indent).unwrap_or(f.as_str()))
         .collect();
