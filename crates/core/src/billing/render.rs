@@ -54,6 +54,15 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
             .map(|(name, quota)| (name.clone(), to_money(*quota)))
             .collect(),
         week_usd: (week.count > 0).then(|| to_money(week.quota)),
+        // 到期：0 / 负值（无期限）不算到期；标签应用层填。
+        expires: inputs
+            .usage
+            .and_then(|usage| usage.expires_at)
+            .filter(|ts| *ts > 0.0)
+            .map(|ts| KeyExpiry {
+                ts: ts as i64,
+                ..Default::default()
+            }),
         unit_assumed: inputs.units.assumed,
         note: inputs.note,
         ..Default::default()
@@ -100,6 +109,17 @@ impl Billing {
         }
     }
 
+    /// 把到期紧迫度接到摘要行末尾；只在临近（≤7 天）或已过期时才占一格。
+    fn push_expiry(&self, parts: &mut Vec<String>) {
+        if let Some(expiry) = &self.expires {
+            match expiry.days_left {
+                Some(n) if n < 0 => parts.push("已过期".to_string()),
+                Some(n) if (0..=7).contains(&n) => parts.push(format!("{n} 天后到期")),
+                _ => {}
+            }
+        }
+    }
+
     /// 有账号数据时的摘要各段：账号余额 + 已用（没余额时单说已用 / 请求数），其次今日。
     fn account_parts(&self, account: &AccountInfo) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
@@ -124,6 +144,8 @@ impl Billing {
             parts.push(format!("近 7 天 {}", money(week)));
         }
         self.push_checkin(&mut parts);
+        self.push_expiry(&mut parts);
+        // 到期紧迫度：只在临近（≤7 天）或已过期时才占一格。
         parts
     }
 
@@ -147,6 +169,7 @@ impl Billing {
                 (None, _) => {}
             }
             self.push_checkin(&mut parts);
+            self.push_expiry(&mut parts);
             if parts.is_empty() {
                 return "未返回额度信息".to_string();
             }
@@ -339,6 +362,16 @@ impl Billing {
         }
         if let Some(limit) = self.limit_usd {
             lines.push(format!("额度：{}", money(limit)));
+        }
+        if let Some(expiry) = &self.expires {
+            if !expiry.label.is_empty() {
+                let tail = match expiry.days_left {
+                    Some(n) if n < 0 => "（已过期）".to_string(),
+                    Some(n) if (0..=7).contains(&n) => format!("（{n} 天后到期）"),
+                    _ => String::new(),
+                };
+                lines.push(format!("到期：{}{tail}", expiry.label));
+            }
         }
         match (self.today_usd, self.today_calls) {
             (Some(today), Some(calls)) => {

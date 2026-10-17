@@ -23,7 +23,7 @@ pub use parse::{
     LogSummary, MODEL_TOP,
 };
 pub use render::{parse_token_billing, TokenInputs};
-pub use shape::{AccountInfo, Billing, PanelDay, Shape, Source, Sub2apiUsage};
+pub use shape::{AccountInfo, Billing, KeyExpiry, PanelDay, Shape, Source, Sub2apiUsage};
 pub use units::{
     parse_token_usage, parse_units, TokenUsage, Units, LOG_PAGE_LIMIT, PLACEHOLDER_LIMIT_USD,
     QUOTA_PER_USD,

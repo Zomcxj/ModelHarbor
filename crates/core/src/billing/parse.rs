@@ -81,6 +81,15 @@ pub fn parse(
             out.balance_usd = Some(balance);
         }
     }
+    // 订阅到期（`access_until`，-1 / 0 = 无期限）。
+    out.expires = sub
+        .get("access_until")
+        .and_then(Value::as_f64)
+        .filter(|ts| *ts > 0.0)
+        .map(|ts| KeyExpiry {
+            ts: ts as i64,
+            ..Default::default()
+        });
     out.shape = if out.limit_usd.is_some() || out.used_usd.is_some() {
         Shape::Subscription
     } else {

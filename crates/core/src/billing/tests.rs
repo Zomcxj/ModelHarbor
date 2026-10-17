@@ -922,3 +922,40 @@ fn data_self_url_carries_range() {
         "https://api.x.com/api/data/self?start_timestamp=100&end_timestamp=200"
     );
 }
+
+#[test]
+fn token_usage_expiry_flows_into_billing() {
+    let units = parse_units(Some(STATUS_UNITS));
+    let usage = parse_token_usage(
+        r#"{"code":true,"data":{"object":"token_usage","name":"t","unlimited_quota":false,"total_granted":1000000,"total_used":100000,"total_available":900000,"expires_at":1789546200}}"#,
+    )
+    .expect("应能解析");
+    assert_eq!(usage.expires_at, Some(1_789_546_200.0));
+    let logs = parse_token_logs(TOKEN_LOGS);
+    let mut info = parse_token_billing(TokenInputs {
+        usage: Some(&usage),
+        logs: &logs,
+        units: &units,
+        status_json: Some(STATUS_UNITS),
+        now: 1_789_437_000,
+        today_from: 1_789_430_000,
+        note: None,
+    });
+    // 应用层未填标签前：只有 ts，悬停里不展示到期行。
+    {
+        let expiry = info.expires.as_ref().expect("到期要透传");
+        assert_eq!(expiry.ts, 1_789_546_200);
+        assert!(expiry.label.is_empty(), "标签由应用层填");
+    }
+    {
+        let expiry = info.expires.as_mut().expect("到期要透传");
+        expiry.label = "2026-09-17".to_string();
+        expiry.days_left = Some(3);
+    }
+    assert!(
+        info.detail().contains("到期：2026-09-17"),
+        "{}",
+        info.detail()
+    );
+    assert!(info.inline().contains("3 天后到期"), "{}", info.inline());
+}

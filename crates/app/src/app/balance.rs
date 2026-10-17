@@ -165,6 +165,8 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
         merge_checkin(&mut result, checkin, panel);
         merge_panel_days(&mut result, panel_days);
     }
+    // 到期标签与紧迫度：令牌路径与兼容账单路径都补。
+    fill_expiry_labels(&mut result);
     result
 }
 
@@ -274,44 +276,45 @@ fn merge_panel_days(
         return;
     };
     days.reverse();
-    let today = local_midnight_unix();
+    let offset = local_utc_offset_secs();
+    let now_idx = crate::app::usage::aggregate::local_day_index(unix_now(), offset);
     for day in &mut days {
-        day.date = panel_day_label(day.day_ts, today);
+        day.date = panel_day_label(
+            crate::app::usage::aggregate::local_day_index(day.day_ts, offset) - now_idx,
+            now_idx,
+        );
     }
     if let Ok(info) = result.as_mut() {
         info.panel_days = days;
     }
 }
 
-/// `day_ts`（站点按天聚合的 0 点时间戳）→ 展示标签：今天 / 昨天 / N 天前 / MM-DD。
-///
-/// 站点聚合时区与本地一致时（国内部署常态）相对标签准确；不一致时误差
-/// 不足一天，落在 MM-DD 上仍可读。
-fn panel_day_label(day_ts: i64, today_midnight: Option<i64>) -> String {
-    if let Some(today) = today_midnight {
-        match (today - day_ts).div_euclid(86_400) {
-            0 => return "今天".to_string(),
-            1 => return "昨天".to_string(),
-            n @ 2..=6 => return format!("{n} 天前"),
-            _ => {}
-        }
+/// 天数差（相对今天：0 = 今天，负 = 过去）→ 标签：今天 / 昨天 / N 天前 / MM-DD。
+fn panel_day_label(day_delta: i64, now_idx: i64) -> String {
+    match day_delta {
+        0 => return "今天".to_string(),
+        -1 => return "昨天".to_string(),
+        -6..=-2 => return format!("{} 天前", -day_delta),
+        _ => {}
     }
-    let (_y, m, d) = civil_date(day_ts);
+    let (_y, m, d) = crate::app::usage::aggregate::civil_from_days(now_idx + day_delta);
     format!("{m:02}-{d:02}")
 }
 
-/// Unix 秒 → 公历日（Howard Hinnant 算法；不引时区库，按 UTC 口径）。
-fn civil_date(unix_secs: i64) -> (i64, i64, i64) {
-    let z = unix_secs.div_euclid(86_400) + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
+/// 给到期信息补本地标签与紧迫度（`ts` 由 core 解析，标签应用层填）。
+fn fill_expiry_labels(result: &mut Result<billing::Billing, String>) {
+    let Ok(info) = result.as_mut() else {
+        return;
+    };
+    let Some(expiry) = info.expires.as_mut() else {
+        return;
+    };
+    let offset = local_utc_offset_secs();
+    let now_idx = crate::app::usage::aggregate::local_day_index(unix_now(), offset);
+    let exp_idx = crate::app::usage::aggregate::local_day_index(expiry.ts, offset);
+    let (y, m, d) = crate::app::usage::aggregate::civil_from_days(exp_idx);
+    expiry.label = format!("{y:04}-{m:02}-{d:02}");
+    expiry.days_left = Some(exp_idx - now_idx);
 }
 
 /// `New-Api-User` 头的取值：空串（没填）表示不发这个头。
@@ -855,6 +858,23 @@ mod tests {
         let info = result.expect("应保持成功");
         assert!(info.panel_days.is_empty());
         assert!(!info.detail().contains("面板按天"));
+    }
+
+    #[test]
+    fn expiry_labels_use_local_calendar() {
+        let today = local_midnight_unix().unwrap_or(1_800_000_000);
+        let mut result: Result<billing::Billing, String> = Ok(billing::Billing {
+            expires: Some(billing::KeyExpiry {
+                ts: today + 3 * 86_400,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        fill_expiry_labels(&mut result);
+        let info = result.expect("应保持成功");
+        let expiry = info.expires.as_ref().expect("到期要保留");
+        assert!(!expiry.label.is_empty(), "本地日期标签要填上");
+        assert_eq!(expiry.days_left, Some(3), "本地日历日差");
     }
 
     #[test]

@@ -110,6 +110,23 @@ pub struct Billing {
     /// 面板聚合覆盖全部来源（含非本机）；只进卡片悬停，不并入账本，
     /// 避免与本地扫描双重计数。
     pub panel_days: Vec<PanelDay>,
+    /// 令牌 / 订阅到期（`/api/usage/token` 的 `expires_at`、兼容账单的
+    /// `access_until`）；0 / 负值（无期限）为 `None`。
+    pub expires: Option<KeyExpiry>,
+}
+
+/// 令牌 / 订阅到期信息。
+///
+/// `ts` 由 core 解析填写；`label` / `days_left` 由应用层按本地时区补全
+/// （未填时悬停里不展示该行）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeyExpiry {
+    /// 到期时刻（Unix 秒）。
+    pub ts: i64,
+    /// 本地日期标签（`YYYY-MM-DD`），应用层填。
+    pub label: String,
+    /// 距到期的本地日历日差；已过期为负。应用层填。
+    pub days_left: Option<i64>,
 }
 
 /// 面板侧一天的用量聚合（`/api/data/self` 的 `data` 行按日合并）。
