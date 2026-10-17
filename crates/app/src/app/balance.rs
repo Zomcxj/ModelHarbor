@@ -30,8 +30,6 @@ pub(super) struct Query {
     /// 站点标记为 sub2api：直接用 `sk-` key 查 `{base}/v1/usage`，
     /// 跳过 NewAPI 面板体系（令牌额度 / 兼容账单 / 面板账户）。
     pub(super) sub2api: bool,
-    /// 该 provider 配置里声明的模型 id：价格表按它过滤展示。
-    pub(super) models: Vec<String>,
 }
 
 /// 单个 provider 的用户数据查询状态。
@@ -152,7 +150,7 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
     // 站点信息（面板名）与换算比，失败可容忍。
     let status = http_get(&endpoints.status, None).ok();
     let units = billing::parse_units(status.as_deref());
-    let pricing = fetch_pricing(&endpoints, &units, &query.models);
+    let pricing = fetch_pricing(&endpoints, &units);
     let mut result = match fetch_token(&endpoints, &units, &query.secret, status.as_deref()) {
         Some(info) => Ok(info),
         None => fetch_compat(&query.base_url, &query.secret, status.as_deref()),
@@ -204,22 +202,12 @@ pub(super) const ACCOUNT_NEEDS_USER_ID: &str =
 pub(super) const NEEDS_USER_ID_MARK: &str = "New-Api-User";
 
 /// 站点模型价格表：`GET {origin}/api/pricing`（免鉴权；失败可容忍）。
-///
-/// 只保留 provider 配置里声明过的模型（最多 4 个），全不在表里时返回 `None`。
 fn fetch_pricing(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
-    wanted: &[String],
 ) -> Option<billing::Pricing> {
     let body = http_get(&endpoints.pricing(), None).ok()?;
-    let mut pricing = billing::parse_pricing(&body, units)?;
-    if !wanted.is_empty() {
-        pricing
-            .models
-            .retain(|row| wanted.iter().any(|id| id == &row.model));
-    }
-    pricing.models.truncate(4);
-    (!pricing.models.is_empty()).then_some(pricing)
+    billing::parse_pricing(&body, units)
 }
 
 /// 把价格表并进结果：只用于展示今日模型单价；sub2api / 非面板站读不到就不写。

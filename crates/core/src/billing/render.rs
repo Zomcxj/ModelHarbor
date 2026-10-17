@@ -388,15 +388,11 @@ impl Billing {
                 .map(|(name, usd)| format!("{} {}", name, money(*usd)))
                 .collect();
             lines.push(format!("今日模型：{}", models.join("、")));
-        }
-        // 站点价格表（/api/pricing）：独立成节，不依赖今日有用量——
-        // 有价格表但日志不可用的站（如只支持兼容账单的变体）也能看单价。
-        if let Some(pricing) = &self.pricing {
-            if !pricing.models.is_empty() {
-                lines.push("站点单价".to_string());
-                for row in &pricing.models {
-                    if let Some(price) = pricing.unit_price(&row.model) {
-                        lines.push(format!("  {}：{price}", row.model));
+            // 站点给了价格表：给今日模型附单价（美元 / 1M tokens 或 / 次）。
+            if let Some(pricing) = &self.pricing {
+                for (name, _) in &self.today_models {
+                    if let Some(price) = pricing.unit_price(name) {
+                        lines.push(format!("  {name} 单价：{price}"));
                     }
                 }
             }

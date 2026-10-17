@@ -165,8 +165,6 @@ impl App {
                             user_id: self.station_user_id(&p.base_url),
                             // sub2api 站点：直连 /v1/usage，跳过面板体系。
                             sub2api: self.station_is_sub2api(&p.base_url),
-                            // 价格表按配置里的模型过滤展示。
-                            models: p.models.iter().map(|m| m.id.clone()).collect(),
                         })
                         .collect();
                     let now = ui.input(|i| i.time);
