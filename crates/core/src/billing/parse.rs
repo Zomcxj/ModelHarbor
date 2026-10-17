@@ -359,6 +359,75 @@ pub fn summarize_logs(entries: &[LogEntry], from: Option<i64>) -> LogSummary {
     summary
 }
 
+/// 解析 `GET /api/pricing`：站点模型单价表。
+///
+/// 按量（`quota_type=0`）：1 倍率 = 1M tokens × 倍率 × 分组倍率 的 quota，
+/// 按 [`Units`] 换算美元 —— 默认口径下 1 倍率 = $2 / 1M tokens；输出在输入
+/// 基础上乘补全倍率（站点没给为 0，展示层只显输入）。按次（`quota_type=1`）：
+/// `model_price` × 分组倍率。分组倍率取 `group_ratio.default`（缺省 1）。
+pub fn parse_pricing(json: &str, units: &Units) -> Option<Pricing> {
+    let root = serde_json::from_str::<Value>(json).ok()?;
+    if root.get("success").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
+    let rows = root.get("data")?.as_array()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let per_m_factor = 1_000_000.0 / units.quota_per_unit;
+    let group_ratio = root
+        .get("group_ratio")
+        .and_then(Value::as_object)
+        .and_then(|groups| groups.get("default"))
+        .and_then(Value::as_f64)
+        .filter(|ratio| *ratio > 0.0)
+        .unwrap_or(1.0);
+    let mut models = Vec::new();
+    for row in rows {
+        let Some(model) = row.get("model_name").and_then(Value::as_str) else {
+            continue;
+        };
+        let quota_type = row.get("quota_type").and_then(Value::as_i64).unwrap_or(0);
+        let ratio = row
+            .get("model_ratio")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let completion = row
+            .get("completion_ratio")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let price = row
+            .get("model_price")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let (kind, input_per_m, output_per_m, per_call) = if quota_type == 1 {
+            (PriceKind::PerCall, 0.0, 0.0, price * group_ratio)
+        } else {
+            if ratio <= 0.0 {
+                continue;
+            }
+            (
+                PriceKind::Metered,
+                ratio * group_ratio * per_m_factor,
+                ratio * completion * group_ratio * per_m_factor,
+                0.0,
+            )
+        };
+        models.push(ModelUnitPrice {
+            model: model.to_string(),
+            kind,
+            input_per_m,
+            output_per_m,
+            per_call,
+        });
+    }
+    if models.is_empty() {
+        return None;
+    }
+    models.sort_by(|a, b| a.model.cmp(&b.model));
+    Some(Pricing { models })
+}
+
 /// 解析 `GET /api/data/self`：按天 × 模型的用量数组。
 ///
 /// 返回按日期升序的单日聚合（模型行合并成当天合计 + 消耗最大的模型名）；

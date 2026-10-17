@@ -959,3 +959,35 @@ fn token_usage_expiry_flows_into_billing() {
     );
     assert!(info.inline().contains("3 天后到期"), "{}", info.inline());
 }
+
+#[test]
+fn parse_pricing_computes_unit_prices() {
+    let units = parse_units(None);
+    let payload = r#"{"success":true,"data":[
+        {"model_name":"gpt-4o","quota_type":0,"model_ratio":1.25,"model_price":0,"completion_ratio":4,"enable_groups":["default"]},
+        {"model_name":"gpt-4o-mini","quota_type":0,"model_ratio":0.075,"completion_ratio":4,"enable_groups":["default"]},
+        {"model_name":"midjourney","quota_type":1,"model_ratio":0,"model_price":0.1,"enable_groups":["default"]},
+        {"model_name":"broken","quota_type":0,"model_ratio":0}
+    ],"group_ratio":{"default":1.0,"vip":0.8}}"#;
+    let pricing = parse_pricing(payload, &units).expect("应能解析");
+    assert_eq!(pricing.models.len(), 3, "倍率为 0 的坏行剔除");
+    assert_eq!(
+        pricing.unit_price("gpt-4o").unwrap(),
+        "$2.50/M 输入 · $10.00/M 输出",
+        "1.25 倍率 = $2.5/M，输出 ×4"
+    );
+    assert_eq!(
+        pricing.unit_price("gpt-4o-mini").unwrap(),
+        "$0.15/M 输入 · $0.60/M 输出"
+    );
+    assert_eq!(pricing.unit_price("midjourney").unwrap(), "$0.10/次");
+    assert!(pricing.unit_price("nope").is_none());
+
+    for junk in [
+        "not json",
+        r#"{"success":false}"#,
+        r#"{"success":true,"data":[]}"#,
+    ] {
+        assert!(parse_pricing(junk, &units).is_none(), "{junk}");
+    }
+}

@@ -388,6 +388,14 @@ impl Billing {
                 .map(|(name, usd)| format!("{} {}", name, money(*usd)))
                 .collect();
             lines.push(format!("今日模型：{}", models.join("、")));
+            // 站点给了价格表：给今日模型附单价（美元 / 1M tokens 或 / 次）。
+            if let Some(pricing) = &self.pricing {
+                for (name, _) in &self.today_models {
+                    if let Some(price) = pricing.unit_price(name) {
+                        lines.push(format!("  {name} 单价：{price}"));
+                    }
+                }
+            }
         }
         if let Some(week) = self.week_usd {
             lines.push(format!("近 7 天：{}", money(week)));

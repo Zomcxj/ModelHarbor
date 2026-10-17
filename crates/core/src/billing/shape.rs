@@ -113,6 +113,8 @@ pub struct Billing {
     /// 令牌 / 订阅到期（`/api/usage/token` 的 `expires_at`、兼容账单的
     /// `access_until`）；0 / 负值（无期限）为 `None`。
     pub expires: Option<KeyExpiry>,
+    /// 站点模型价格表（`/api/pricing`，免鉴权）：用于今日模型单价展示。
+    pub pricing: Option<Pricing>,
 }
 
 /// 令牌 / 订阅到期信息。
@@ -127,6 +129,54 @@ pub struct KeyExpiry {
     pub label: String,
     /// 距到期的本地日历日差；已过期为负。应用层填。
     pub days_left: Option<i64>,
+}
+
+/// 站点模型价格表（`GET /api/pricing`，免鉴权）：只留展示需要的字段。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pricing {
+    /// 按模型名排序，供查找。
+    pub models: Vec<ModelUnitPrice>,
+}
+
+/// 单个模型的单价。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelUnitPrice {
+    pub model: String,
+    pub kind: PriceKind,
+    /// 按量：输入单价（美元 / 1M tokens）。
+    pub input_per_m: f64,
+    /// 按量：输出单价（美元 / 1M tokens）；站点没给补全倍率时为 0。
+    pub output_per_m: f64,
+    /// 按次：美元 / 次。
+    pub per_call: f64,
+}
+
+/// 计费类型（站点的 `quota_type` 语义）。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum PriceKind {
+    /// 按量（token 计费）。
+    #[default]
+    Metered,
+    /// 按次。
+    PerCall,
+}
+
+impl Pricing {
+    /// 模型的展示单价：按量「$x/M 输入 · $y/M 输出」（站点没给补全倍率时只显
+    /// 输入），按次「$z/次」；模型不在表里返回 `None`。
+    pub fn unit_price(&self, model: &str) -> Option<String> {
+        let row = self.models.iter().find(|m| m.model == model)?;
+        Some(match row.kind {
+            PriceKind::Metered if row.output_per_m > 0.0 => {
+                format!(
+                    "${:.2}/M 输入 · ${:.2}/M 输出",
+                    row.input_per_m, row.output_per_m
+                )
+            }
+            PriceKind::Metered => format!("${:.2}/M 输入", row.input_per_m),
+            PriceKind::PerCall => format!("${:.2}/次", row.per_call),
+        })
+    }
 }
 
 /// 面板侧一天的用量聚合（`/api/data/self` 的 `data` 行按日合并）。

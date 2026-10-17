@@ -150,10 +150,12 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
     // 站点信息（面板名）与换算比，失败可容忍。
     let status = http_get(&endpoints.status, None).ok();
     let units = billing::parse_units(status.as_deref());
+    let pricing = fetch_pricing(&endpoints, &units);
     let mut result = match fetch_token(&endpoints, &units, &query.secret, status.as_deref()) {
         Some(info) => Ok(info),
         None => fetch_compat(&query.base_url, &query.secret, status.as_deref()),
     };
+    merge_pricing(&mut result, pricing);
     // 面板令牌为可选增强：失败只往详情里补一行说明。
     let pat = query.pat.trim();
     if !pat.is_empty() {
@@ -198,6 +200,22 @@ pub(super) const ACCOUNT_NEEDS_USER_ID: &str =
 
 /// 账号查询因缺 `New-Api-User` 头失败时，错误文本里包含的标记。
 pub(super) const NEEDS_USER_ID_MARK: &str = "New-Api-User";
+
+/// 站点模型价格表：`GET {origin}/api/pricing`（免鉴权；失败可容忍）。
+fn fetch_pricing(
+    endpoints: &billing::Endpoints,
+    units: &billing::Units,
+) -> Option<billing::Pricing> {
+    let body = http_get(&endpoints.pricing(), None).ok()?;
+    billing::parse_pricing(&body, units)
+}
+
+/// 把价格表并进结果：只用于展示今日模型单价；sub2api / 非面板站读不到就不写。
+fn merge_pricing(result: &mut Result<billing::Billing, String>, pricing: Option<billing::Pricing>) {
+    if let (Ok(info), Some(pricing)) = (result.as_mut(), pricing) {
+        info.pricing = Some(pricing);
+    }
+}
 
 /// 面板账号额度：`GET {origin}/api/user/self`（需面板访问令牌 PAT）。
 ///

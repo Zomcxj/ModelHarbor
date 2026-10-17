@@ -42,6 +42,11 @@ impl Endpoints {
             self.origin
         )
     }
+
+    /// 站点模型价格表（`GET /api/pricing`，无需鉴权）。
+    pub fn pricing(&self) -> String {
+        format!("{}/api/pricing", self.origin)
+    }
 }
 
 /// 推导端点：`base` 去掉末尾斜杠；`origin` 只保留 scheme + host。
