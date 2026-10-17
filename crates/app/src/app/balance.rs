@@ -159,9 +159,11 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
     if !pat.is_empty() {
         let account = fetch_account(&endpoints, &units, pat, &query.user_id);
         let checkin = fetch_checkin(&endpoints, &units, pat, &query.user_id);
+        let panel_days = fetch_panel_days(&endpoints, &units, pat, &query.user_id);
         let panel = billing::parse_panel(status.as_deref());
         merge_account(&mut result, account, panel.clone());
         merge_checkin(&mut result, checkin, panel);
+        merge_panel_days(&mut result, panel_days);
     }
     result
 }
@@ -245,6 +247,71 @@ fn merge_checkin(
             });
         }
     }
+}
+
+/// 面板按天用量：`GET {origin}/api/data/self`（近 7 天；需面板访问令牌）。
+///
+/// 面板聚合覆盖全部来源的用量（含非本机、已被清理的会话），与本地扫描
+/// 互补；只进卡片悬停，不并入账本（避免与本地扫描双重计数）。
+fn fetch_panel_days(
+    endpoints: &billing::Endpoints,
+    units: &billing::Units,
+    pat: &str,
+    user_id: &str,
+) -> Option<Vec<billing::PanelDay>> {
+    let end = unix_now();
+    let start = end - 7 * 86_400;
+    let body = account_get(&endpoints.data_self(start, end), pat, user_id).ok()?;
+    billing::parse_data_self(&body, units)
+}
+
+/// 把面板按天用量并进结果：近期在前，日期标签本地化；读不到不写。
+fn merge_panel_days(
+    result: &mut Result<billing::Billing, String>,
+    days: Option<Vec<billing::PanelDay>>,
+) {
+    let Some(mut days) = days else {
+        return;
+    };
+    days.reverse();
+    let today = local_midnight_unix();
+    for day in &mut days {
+        day.date = panel_day_label(day.day_ts, today);
+    }
+    if let Ok(info) = result.as_mut() {
+        info.panel_days = days;
+    }
+}
+
+/// `day_ts`（站点按天聚合的 0 点时间戳）→ 展示标签：今天 / 昨天 / N 天前 / MM-DD。
+///
+/// 站点聚合时区与本地一致时（国内部署常态）相对标签准确；不一致时误差
+/// 不足一天，落在 MM-DD 上仍可读。
+fn panel_day_label(day_ts: i64, today_midnight: Option<i64>) -> String {
+    if let Some(today) = today_midnight {
+        match (today - day_ts).div_euclid(86_400) {
+            0 => return "今天".to_string(),
+            1 => return "昨天".to_string(),
+            n @ 2..=6 => return format!("{n} 天前"),
+            _ => {}
+        }
+    }
+    let (_y, m, d) = civil_date(day_ts);
+    format!("{m:02}-{d:02}")
+}
+
+/// Unix 秒 → 公历日（Howard Hinnant 算法；不引时区库，按 UTC 口径）。
+fn civil_date(unix_secs: i64) -> (i64, i64, i64) {
+    let z = unix_secs.div_euclid(86_400) + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 /// `New-Api-User` 头的取值：空串（没填）表示不发这个头。
@@ -757,6 +824,37 @@ mod tests {
         assert!(info.is_displayable());
         assert_eq!(info.panel, "TestPanel", "面板名照旧要带上");
         assert!(info.inline().contains("签到 今日已签"), "{}", info.inline());
+    }
+
+    #[test]
+    fn panel_days_rides_along_and_gets_local_labels() {
+        let mut result = Ok(token_side_result());
+        let today = local_midnight_unix().unwrap_or(1_800_000_000);
+        let days = vec![
+            billing::PanelDay {
+                day_ts: today - 86_400,
+                ..Default::default()
+            },
+            billing::PanelDay {
+                day_ts: today,
+                ..Default::default()
+            },
+        ];
+        merge_panel_days(&mut result, Some(days));
+        let info = result.expect("应保持成功");
+        assert_eq!(info.panel_days.len(), 2);
+        assert_eq!(info.panel_days[0].date, "今天");
+        assert_eq!(info.panel_days[1].date, "昨天");
+        assert!(info.detail().contains("面板按天"), "{}", info.detail());
+    }
+
+    #[test]
+    fn missing_panel_days_changes_nothing() {
+        let mut result = Ok(token_side_result());
+        merge_panel_days(&mut result, None);
+        let info = result.expect("应保持成功");
+        assert!(info.panel_days.is_empty());
+        assert!(!info.detail().contains("面板按天"));
     }
 
     #[test]

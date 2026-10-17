@@ -250,7 +250,20 @@ impl Billing {
         if let Some(status) = &self.checkin {
             lines.push(format!("签到：{}", checkin_long(status)));
         }
-        let has_account_side = self.account.is_some() || self.checkin.is_some();
+        // 面板按天用量（/api/data/self）：含非本机用量，注明口径。
+        if !self.panel_days.is_empty() {
+            lines.push("面板按天（站点统计，含非本机用量）".to_string());
+            for day in &self.panel_days {
+                let label = if day.date.is_empty() {
+                    format!("ts {}", day.day_ts)
+                } else {
+                    day.date.clone()
+                };
+                lines.push(format!("  {label}：{}（{} 次）", money(day.usd), day.calls));
+            }
+        }
+        let has_account_side =
+            self.account.is_some() || self.checkin.is_some() || !self.panel_days.is_empty();
         if has_account_side && !self.has_token_side() {
             // 只有账号 / 签到数据：不写空的「本令牌」分节。
             return lines.join("\n");

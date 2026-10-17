@@ -31,6 +31,17 @@ impl Endpoints {
             self.origin
         )
     }
+
+    /// 用户级按天用量统计（`GET /api/data/self`，需面板访问令牌）。
+    ///
+    /// 返回按天 × 模型的 `{model_name, count, quota, token_used, created_at}`；
+    /// 面板聚合覆盖全部来源的用量（含非本机），与本地扫描互补。
+    pub fn data_self(&self, start: i64, end: i64) -> String {
+        format!(
+            "{}/api/data/self?start_timestamp={start}&end_timestamp={end}",
+            self.origin
+        )
+    }
 }
 
 /// 推导端点：`base` 去掉末尾斜杠；`origin` 只保留 scheme + host。

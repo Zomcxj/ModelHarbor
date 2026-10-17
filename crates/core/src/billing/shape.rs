@@ -105,4 +105,26 @@ pub struct Billing {
     pub note: Option<String>,
     /// 面板账号额度（`/api/user/self`）：填了面板访问令牌才有；有它时余额以它为准。
     pub account: Option<AccountInfo>,
+    /// 面板按天用量（`/api/data/self`，需面板访问令牌）：近期在前。
+    ///
+    /// 面板聚合覆盖全部来源（含非本机）；只进卡片悬停，不并入账本，
+    /// 避免与本地扫描双重计数。
+    pub panel_days: Vec<PanelDay>,
+}
+
+/// 面板侧一天的用量聚合（`/api/data/self` 的 `data` 行按日合并）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PanelDay {
+    /// 站点按天聚合的 0 点时间戳（秒）。
+    pub day_ts: i64,
+    /// 展示标签（今天 / 昨天 / N 天前 / MM-DD），由应用层填。
+    pub date: String,
+    /// 当天消耗（美元，按站点 quota_per_unit 换算）。
+    pub usd: f64,
+    /// 当天请求数。
+    pub calls: u64,
+    /// 当天 token 量。
+    pub tokens: i64,
+    /// 当天消耗最大的模型名。
+    pub top_model: String,
 }

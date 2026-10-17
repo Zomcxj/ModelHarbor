@@ -880,3 +880,45 @@ fn sub2api_usage_parses_quota_remaining_and_unit_variants() {
         );
     }
 }
+
+#[test]
+fn parse_data_self_aggregates_days_and_models() {
+    let units = crate::billing::parse_units(None);
+    let payload = r#"{"success":true,"data":[
+        {"model_name":"gpt-5","count":3,"quota":500000,"token_used":100,"created_at":1767225600},
+        {"model_name":"claude","count":1,"quota":250000,"token_used":50,"created_at":1767225600},
+        {"model_name":"gpt-5","count":2,"quota":100000,"token_used":20,"created_at":1767139200}
+    ]}"#;
+    let days = crate::billing::parse_data_self(payload, &units).unwrap();
+    assert_eq!(days.len(), 2, "按天聚合");
+    let late = &days[1];
+    assert_eq!(late.day_ts, 1767225600);
+    let expect_usd = 750_000.0 / units.quota_per_unit;
+    assert!((late.usd - expect_usd).abs() < 1e-9);
+    assert_eq!(late.calls, 4);
+    assert_eq!(late.tokens, 150);
+    assert_eq!(late.top_model, "gpt-5", "取消耗最大的模型");
+    assert!((days[0].usd - 100_000.0 / units.quota_per_unit).abs() < 1e-9);
+
+    // 空数组 / success:false / 非法 JSON / 缺 data：None。
+    for junk in [
+        r#"{"success":true,"data":[]}"#,
+        r#"{"success":false,"data":[]}"#,
+        "not json",
+        r#"{"success":true}"#,
+    ] {
+        assert!(
+            crate::billing::parse_data_self(junk, &units).is_none(),
+            "{junk}"
+        );
+    }
+}
+
+#[test]
+fn data_self_url_carries_range() {
+    let e = crate::billing::endpoints("https://api.x.com");
+    assert_eq!(
+        e.data_self(100, 200),
+        "https://api.x.com/api/data/self?start_timestamp=100&end_timestamp=200"
+    );
+}

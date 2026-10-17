@@ -350,6 +350,66 @@ pub fn summarize_logs(entries: &[LogEntry], from: Option<i64>) -> LogSummary {
     summary
 }
 
+/// 解析 `GET /api/data/self`：按天 × 模型的用量数组。
+///
+/// 返回按日期升序的单日聚合（模型行合并成当天合计 + 消耗最大的模型名）；
+/// `success:false`、`data` 缺失 / 为空 / 结构不认识返回 `None`。
+/// `created_at` 是站点按天聚合的 0 点时间戳，日期标签由应用层填。
+pub fn parse_data_self(json: &str, units: &Units) -> Option<Vec<PanelDay>> {
+    let root = serde_json::from_str::<Value>(json).ok()?;
+    if root.get("success").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
+    let rows = root.get("data")?.as_array()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let to_money = |points: f64| points / units.quota_per_unit;
+    // (日时间戳) → (美元, 次数, tokens, 模型 → quota)
+    let mut acc: std::collections::BTreeMap<
+        i64,
+        (f64, u64, i64, std::collections::BTreeMap<String, f64>),
+    > = std::collections::BTreeMap::new();
+    for row in rows {
+        let day_ts = row.get("created_at").and_then(Value::as_i64)?;
+        let quota = row.get("quota").and_then(Value::as_f64).unwrap_or(0.0);
+        let calls = row.get("count").and_then(value_as_u64).unwrap_or(0);
+        let tokens = row.get("token_used").and_then(Value::as_i64).unwrap_or(0);
+        let model = row
+            .get("model_name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let entry = acc.entry(day_ts).or_default();
+        entry.0 += to_money(quota);
+        entry.1 += calls;
+        entry.2 += tokens;
+        entry
+            .3
+            .entry(model)
+            .and_modify(|sum| *sum += quota)
+            .or_insert(quota);
+    }
+    Some(
+        acc.into_iter()
+            .map(|(day_ts, (usd, calls, tokens, models))| {
+                let (top_model, _) = models
+                    .into_iter()
+                    .max_by(|a, b| a.1.total_cmp(&b.1))
+                    .unwrap_or_default();
+                PanelDay {
+                    day_ts,
+                    usd,
+                    calls,
+                    tokens,
+                    top_model,
+                    ..PanelDay::default()
+                }
+            })
+            .collect(),
+    )
+}
+
 /// 解析 Sub2API `/v1/usage` 的响应：`{ quota: {limit, used}, remaining|balance, unit }`。
 ///
 /// 三个读数都可能缺（不同版本的 sub2api 给的不一样），读到任意一个就成功；
