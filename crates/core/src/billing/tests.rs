@@ -961,6 +961,27 @@ fn token_usage_expiry_flows_into_billing() {
 }
 
 #[test]
+fn detail_lists_site_pricing_independently_of_today_models() {
+    let info = Billing {
+        source: Source::Token,
+        shape: Shape::TokenQuota,
+        pricing: Some(Pricing {
+            models: vec![ModelUnitPrice {
+                model: "gpt-4o".into(),
+                kind: PriceKind::Metered,
+                input_per_m: 2.5,
+                output_per_m: 10.0,
+                per_call: 0.0,
+            }],
+        }),
+        ..Default::default()
+    };
+    let detail = info.detail();
+    assert!(detail.contains("站点单价"), "{}", detail);
+    assert!(detail.contains("gpt-4o：$2.50/M 输入"), "{}", detail);
+}
+
+#[test]
 fn parse_pricing_computes_unit_prices() {
     let units = parse_units(None);
     let payload = r#"{"success":true,"data":[
