@@ -7,7 +7,7 @@ Rust + egui 构建，单文件可执行程序，无需安装运行时。
 <table>
   <tr>
     <td align="center"><img src="docs/images/providers.png" alt="提供商管理" width="97%" /></td>
-    <td align="center"><img src="docs/images/usage.png" alt="本机用量" width="97%" /></td>
+    <td align="center"><img src="docs/images/usage-overview.png" alt="本机用量·总览与趋势" width="97%" /><br /><img src="docs/images/usage-tables.png" alt="本机用量·热力图与明细" width="97%" /></td>
   </tr>
 </table>
 
