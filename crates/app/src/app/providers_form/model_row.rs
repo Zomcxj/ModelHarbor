@@ -56,7 +56,9 @@ pub(super) fn model_core_fields_row(
             field_label(ui, 120.0, "name:");
             ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(120.0));
         }
-        if on(flags.show_model_reasoning) && (flags.show_oc || !flags.show_dsh) {
+        // v2 schema 无 reasoning 键：即使新增表单（relaxed）也不显示；
+        // 跨版本写到 v1 目标时由默认勾选值落 reasoning: true。
+        if on(flags.show_model_reasoning) && !flags.oc_v2 && (flags.show_oc || !flags.show_dsh) {
             ui.checkbox(&mut m.reasoning, "reasoning");
         }
         if on(flags.show_model_tool_call) && flags.show_oc {
@@ -151,6 +153,8 @@ pub(super) fn new_model_subform(
 ) {
     // `show_key` 逐表单唯一（编辑表单带 provider key），用作预设下拉的 id 盐。
     // 新增表单不提供同步，故传入的 sync 出参恒为 None。
+    // 草稿 schema 对齐所在 provider：v2 文件下新条目不落 v1 形状。
+    p.new_model.schema = p.schema;
     model_core_fields_row(ui, &mut p.new_model, flags, true, None, show_key, &mut None);
     model_modalities_row(ui, &mut p.new_model, flags, variants, true);
     ui.horizontal(|ui| {

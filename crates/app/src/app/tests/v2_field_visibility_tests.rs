@@ -76,6 +76,8 @@ fn v2_page_shows_all_mapped_fields_with_v2_labels() {
     assert!(flags.show_model_store, "v2 页应显示 store（body.store）");
     // v2 无 reasoning 键：推理开关不显示（符合「v2 不写回 reasoning」的决策）。
     assert!(!flags.show_model_reasoning, "v2 页不该显示推理开关");
+    // v2 门控：新增表单（relaxed）也不得放宽 reasoning。
+    assert!(flags.oc_v2, "v2 页应置 oc_v2 门控");
     // 标签跟随 v2 键名。
     assert_eq!(flags.base_label, "settings.baseURL");
     assert_eq!(flags.api_key_label, "settings.apiKey");
@@ -96,6 +98,7 @@ fn v1_page_keeps_v1_field_visibility_and_labels() {
         flags.show_model_reasoning,
         "v1 有 reasoning 键应显示推理开关"
     );
+    assert!(!flags.oc_v2, "v1 页不得置 v2 门控");
     assert_eq!(flags.base_label, "options.baseURL");
     assert_eq!(flags.api_key_label, "options.apiKey");
     assert_eq!(flags.input_label, "modalities.input");

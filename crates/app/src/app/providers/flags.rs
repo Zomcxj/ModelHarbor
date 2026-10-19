@@ -44,6 +44,9 @@ pub(super) struct CardActions {
 #[derive(Clone, Copy)]
 pub(in crate::app) struct ProviderFormFlags {
     pub(in crate::app) show_oc: bool,
+    /// opencode 页且加载内容含 v2 条目：隐藏 v1 独有控件（reasoning），
+    /// 新增表单也不放宽（v2 schema 无此键）。
+    pub(in crate::app) oc_v2: bool,
     pub(in crate::app) show_omp: bool,
     pub(in crate::app) show_dsh: bool,
     pub(in crate::app) show_zcode: bool,
@@ -86,11 +89,7 @@ impl ProviderFormFlags {
         let show_oc = app.current_page.is_opencode_family();
         // v2 只是 opencode 本家的演进：只有 opencode 页显示 v2 键名标签，
         // kilo / mimo 两页永远 v1（settings.* / capabilities.* 是 opencode 独有）。
-        let oc_v2 = app.current_page == ConfigFormat::Opencode
-            && app
-                .providers
-                .iter()
-                .any(|p| p.schema == OpencodeSchemaVersion::V2);
+        let oc_v2 = app.current_opencode_schema() == OpencodeSchemaVersion::V2;
         let show_dsh = app.current_page == ConfigFormat::DeepSeekHarness;
         let show_zcode = app.current_page == ConfigFormat::ZCode;
         let show_wb = app.current_page == ConfigFormat::WorkBuddy;
@@ -98,6 +97,7 @@ impl ProviderFormFlags {
         let show_kimi = app.current_page == ConfigFormat::KimiCode;
         Self {
             show_oc,
+            oc_v2,
             show_omp: app.current_page == ConfigFormat::OhMyPi,
             show_dsh,
             show_zcode,

@@ -35,6 +35,9 @@ pub(super) use popup::*;
 
 impl App {
     pub(super) fn ui_new_provider_form(&mut self, ui: &mut egui::Ui) {
+        // 草稿 schema 对齐当前文件版本：v2 文件下协议包下拉拼 v2 包名，
+        // 确认添加的条目不再以 v1 形状混进 v2 文件。
+        self.new_provider.schema = self.current_opencode_schema();
         let (variants_label, variant_names) = self.dialect_variants();
         let flags = ProviderFormFlags::new(self);
         ui.group(|ui| {

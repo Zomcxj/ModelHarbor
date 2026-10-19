@@ -17,6 +17,24 @@ use eframe::egui;
 use std::collections::HashSet;
 
 impl App {
+    /// 当前 opencode 页的 schema 版本：加载内容含 v2 条目即 v2，否则 v1。
+    ///
+    /// 新增 provider / 模型的草稿按它取版本，避免 v2 文件里混进 v1 形状的
+    /// 新条目（协议包名拼成 `@ai-sdk/*`、出现 v1 独有控件）。kilo / mimo 页
+    /// 永远返回 v1。
+    pub(in crate::app) fn current_opencode_schema(&self) -> crate::model::OpencodeSchemaVersion {
+        let v2 = self.current_page == ConfigFormat::Opencode
+            && self
+                .providers
+                .iter()
+                .any(|p| p.schema == crate::model::OpencodeSchemaVersion::V2);
+        if v2 {
+            crate::model::OpencodeSchemaVersion::V2
+        } else {
+            crate::model::OpencodeSchemaVersion::V1
+        }
+    }
+
     /// 当前页面的思考档位标签：字段名 + 可选值。
     pub(super) fn dialect_variants(&self) -> (&'static str, &'static [&'static str]) {
         match self.current_page {
