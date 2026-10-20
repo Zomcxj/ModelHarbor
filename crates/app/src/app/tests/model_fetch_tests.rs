@@ -264,6 +264,9 @@ fn probe_user_agent_matches_whitelisted_clients() {
     assert!(probe_user_agent(api_wire("openai-completions")).starts_with("opencode/"));
     assert!(probe_user_agent(api_wire("openai-responses")).starts_with("opencode/"));
     assert!(probe_user_agent(api_wire("google-generative-ai")).starts_with("opencode/"));
+    // 版本号跟随主流在用版本：不能还是旧的 1.18。
+    assert!(!probe_user_agent(api_wire("openai-completions")).contains("1.18"));
+    assert!(!probe_user_agent(api_wire("anthropic-messages")).contains("1.18"));
 }
 
 #[test]

@@ -116,13 +116,27 @@ pub(crate) fn with_query_key(url: &str, auth: AuthKind, secret: &str) -> String 
 
 /// 探测请求的 User-Agent：按协议伪装成主流客户端。
 ///
-/// 中转站只放行白名单客户端，版本号不被校验。
+/// 中转站只放行白名单客户端，版本号不被校验；取值跟随当前主流在用的版本
+/// （opencode 取本机实际安装版本）。
 pub(crate) fn probe_user_agent(wire: ApiWire) -> &'static str {
-    match wire {
-        // Anthropic 系中转站本来就用 Claude Code 的身份
-        ApiWire::AnthropicMessages | ApiWire::PiMessages => "claude-cli/1.18.30 (external, cli)",
-        // 其余用 opencode 的身份
-        _ => "opencode/1.18.30",
+    // Anthropic 系中转站本来就用 Claude Code 的身份，其余用 opencode 的身份。
+    if matches!(wire, ApiWire::AnthropicMessages | ApiWire::PiMessages) {
+        "claude-cli/2.0.28 (external, cli)"
+    } else {
+        "opencode/2.0.32"
+    }
+}
+
+/// 给探测请求套上客户端标识头：UA + 附加头。
+///
+/// 真实 Claude Code 的请求总带 `x-app: cli`（纯标识，无行为副作用），带上更像。
+/// `anthropic-beta` 特性串**不仿**：过时 / 不匹配的 beta 声明反而可能改变上游行为。
+pub(crate) fn apply_client_headers(request: ureq::Request, wire: ApiWire) -> ureq::Request {
+    let request = request.set("User-Agent", probe_user_agent(wire));
+    if matches!(wire, ApiWire::AnthropicMessages | ApiWire::PiMessages) {
+        request.set("X-App", "cli")
+    } else {
+        request
     }
 }
 
@@ -157,10 +171,7 @@ pub(crate) fn authed_get(
     secret: &str,
 ) -> ureq::Request {
     apply_auth(
-        agent
-            .get(target)
-            .set("User-Agent", probe_user_agent(wire))
-            .set("Accept", "application/json"),
+        apply_client_headers(agent.get(target).set("Accept", "application/json"), wire),
         auth,
         secret,
     )
@@ -371,11 +382,13 @@ pub(crate) fn measure_model_latency(
     let started = std::time::Instant::now();
     // Accept 与主流 SDK 的流式口径一致；UA 伪装成白名单客户端（见 `probe_user_agent`）。
     let result = apply_auth(
-        agent
-            .post(&url)
-            .set("User-Agent", probe_user_agent(wire))
-            .set("Accept", "text/event-stream")
-            .set("Content-Type", "application/json"),
+        apply_client_headers(
+            agent
+                .post(&url)
+                .set("Accept", "text/event-stream")
+                .set("Content-Type", "application/json"),
+            wire,
+        ),
         auth,
         secret,
     )
