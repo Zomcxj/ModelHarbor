@@ -2,7 +2,7 @@ use crate::app::preview::PREVIEW_RESIZER_ORDER;
 use crate::app::App;
 use eframe::egui;
 
-/// 预览分隔条低于令牌悬浮窗。
+/// The preview splitter sits below the token popover.
 #[test]
 fn preview_resizer_sits_below_the_tokens_window() {
     let resizer = PREVIEW_RESIZER_ORDER;
@@ -11,8 +11,8 @@ fn preview_resizer_sits_below_the_tokens_window() {
         resizer < window,
         "分隔条层级 {resizer:?} 不低于令牌窗层级 {window:?}"
     );
-    // 悬停提示显示在窗上面。
+    // Hover tips display above the window.
     assert!(window < egui::Order::Tooltip);
-    // 分隔条要能接住拖拽，不能掉到背景层（预览面板本身在 background）。
+    // The splitter must catch drags — it can't sink to the background layer (the preview panel itself is background).
     assert!(resizer > egui::Order::Background);
 }

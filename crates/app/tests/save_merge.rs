@@ -5,14 +5,14 @@ use serde_json::json;
 
 #[test]
 fn merge_preserves_target_agents_and_other_fields() {
-    // 目标 opencode 文件已有 agents / mcp / provider
+    // The target opencode file already has agents / mcp / provider
     let target = json!({
         "agent": { "writer": { "mode": "subagent", "model": "p/m" } },
         "provider": { "old": { "npm": "@ai-sdk/x", "models": {} } },
         "mcp": { "server": { "command": "node" } },
         "providers": { "unknown_field": true }
     });
-    // 来源为 pi：UI agents 为空、providers 为转换后的条目
+    // Source is pi: UI agents empty, providers the converted entries
     let providers = vec![ProviderRow::from(
         "newpi",
         &json!({ "npm": "", "options": { "baseURL": "https://x", "apiKey": "k" }, "models": {} }),
@@ -42,7 +42,7 @@ fn merge_preserves_target_agents_and_other_fields() {
 
 #[test]
 fn current_file_save_replaces_agent_map() {
-    // 当前文件语义：UI 删除的 agent 不因 upsert 复活。
+    // Current-file semantics: UI-deleted agents don't revive through upsert.
     let target = json!({ "agent": { "gone": { "mode": "subagent" } } });
     let merged = merge_opencode_root(&target, &[], &[]);
     assert!(
@@ -66,7 +66,7 @@ fn merge_upserts_ui_agent_over_target() {
 
 #[test]
 fn pi_merge_preserves_target_extras() {
-    // 模拟 save_pi_to 的跨目标合并：目标 root 取目标文件自身，仅重写 providers 中的条目。
+    // Simulating save_pi_to's cross-target merge: the target root is the target file itself, rewriting only entries within providers.
     let mut p = std::env::temp_dir();
     p.push("opencode_test_pi_merge.json");
     let target = json!({
@@ -98,7 +98,7 @@ fn pi_merge_preserves_target_extras() {
 
 #[test]
 fn pi_merge_preserves_target_unknown_fields_on_same_key() {
-    // 同名 provider：目标未编辑字段（cost）保留，来源字段（baseUrl）生效。
+    // Same-named provider: the target's unedited field (cost) stays; the source's field (baseUrl) takes effect.
     let target = json!({
         "providers": {
             "demo": {
@@ -120,8 +120,8 @@ fn pi_merge_preserves_target_unknown_fields_on_same_key() {
 
 #[test]
 fn opencode_merge_preserves_target_model_options() {
-    // 跨格式保存到 opencode 目标：同名 provider 的模型 options 等非编辑内容保留；
-    // 目标独有模型也保留。
+    // Cross-format save to an opencode target: same-named providers keep non-edited content like model options;
+    // target-only models stay too.
     let target = json!({
         "provider": {
             "demo": {
@@ -141,7 +141,7 @@ fn opencode_merge_preserves_target_model_options() {
             "models": {"m1": {"name": "M1", "limit": {"context": 1000}}}
         }),
     );
-    // 模拟来自其他格式：跨格式转换后 options.store 不存在于来源
+    // Simulating another format: after cross-format conversion, options.store doesn't exist in the source
     let merged = merge_opencode_root(&target, &[], &[p]);
     let demo = &merged["provider"]["demo"];
     assert_eq!(
@@ -154,7 +154,7 @@ fn opencode_merge_preserves_target_model_options() {
     );
 }
 
-// ---------- 跨格式转换：目标文件的 provider / agent 容器由界面接管 ----------
+// ---------- Cross-format conversion: the target file's provider / agent containers are UI-managed ----------
 
 use model_harbor_app::app::strip_cross_format_containers;
 use model_harbor_core::backends;
@@ -182,7 +182,7 @@ fn ui_providers(keys: &[&str]) -> Vec<ProviderRow> {
 
 #[test]
 fn strip_drops_managed_containers_per_format() {
-    // opencode：provider 与 agent 由界面接管，其他顶层字段保留
+    // opencode: provider and agent are UI-managed; other top-level fields kept
     let mut oc = json!({
         "provider": { "old": {} },
         "agent": { "writer": {} },
@@ -193,7 +193,7 @@ fn strip_drops_managed_containers_per_format() {
     assert!(oc.get("agent").is_none());
     assert!(oc["mcp"]["srv"].is_object());
 
-    // 界面没有 agents 数据（来源为 pi / omp / DSH）时不得接管 agent 容器
+    // With no agents data in the UI (a pi / omp / DSH source), the agent container must not be claimed
     let mut oc_no_agents = json!({
         "provider": { "old": {} },
         "agent": { "writer": {} },
@@ -207,7 +207,7 @@ fn strip_drops_managed_containers_per_format() {
     );
     assert!(oc_no_agents["mcp"]["srv"].is_object());
 
-    // pi / omp：providers 由界面接管，其他顶层字段保留
+    // pi / omp: providers are UI-managed; other top-level fields kept
     for fmt in [ConfigFormat::Pi, ConfigFormat::OhMyPi] {
         let mut root = json!({ "providers": { "old": {} }, "defaultModel": "x" });
         strip_cross_format_containers(fmt, &mut root, false);
@@ -215,7 +215,7 @@ fn strip_drops_managed_containers_per_format() {
         assert_eq!(root["defaultModel"], "x", "{:?}", fmt);
     }
 
-    // DSH：只剔除 llm-pi-ai.providers，同级其他设置保留
+    // DSH: only llm-pi-ai.providers is evicted; sibling settings are kept
     let mut dsh = json!({
         "llm-pi-ai": { "providers": { "old": {} }, "timeoutMs": 10000 },
         "other": 1
@@ -228,7 +228,7 @@ fn strip_drops_managed_containers_per_format() {
 
 #[test]
 fn cross_format_pi_doc_takes_ui_providers_and_order() {
-    // 目标 pi 文件已有 old 厂商 + 其他顶层字段
+    // The target pi file already has the old vendor + other top-level fields
     let mut target = json!({
         "providers": { "old": { "baseUrl": "https://old/v1" } },
         "defaultProvider": "old"
@@ -279,8 +279,8 @@ fn cross_format_opencode_doc_takes_ui_providers_and_order() {
 
 #[test]
 fn cross_format_opencode_save_keeps_target_agents_when_ui_has_none() {
-    // 回归：加载 pi / omp / DSH 后保存到 opencode，界面没有 agents 数据时，
-    // 目标文件里已有的 agents 不得被清空。
+    // Regression: after loading pi / omp / DSH and saving to opencode with no agents data in the UI,
+    // the target file's existing agents must not be wiped.
     let mut target = json!({
         "provider": { "old": {} },
         "agent": { "writer": {}, "reviewer": {} },

@@ -1,8 +1,8 @@
-//! 响应解析：兼容账单、面板状态、账号、签到、调用日志。
+//! Response parsing: compatible billing, panel status, account, check-in, call logs.
 use super::*;
 use serde_json::Value;
 
-/// 解析 `/api/status` 的面板名（`system_name` + 版本），失败返回空串。
+/// Parse `/api/status`'s panel name (`system_name` + version); an empty string on failure.
 pub fn parse_panel(status_json: Option<&str>) -> String {
     let Some(text) = status_json else {
         return String::new();
@@ -25,7 +25,7 @@ pub fn parse_panel(status_json: Option<&str>) -> String {
     }
 }
 
-/// 汇总解析订阅 + 用量 + 站点信息。
+/// Aggregate parsing of subscription + usage + station info.
 pub fn parse(
     subscription_json: &str,
     usage_json: Option<&str>,
@@ -39,7 +39,7 @@ pub fn parse(
         return out;
     };
 
-    // 非标准形状：直接展示原值，不做单位换算。
+    // Non-standard shape: display the raw value directly, no unit conversion.
     if sub.get("object").and_then(Value::as_str) == Some("credit_summary")
         || sub.get("total_granted").is_some()
     {
@@ -53,8 +53,8 @@ pub fn parse(
         return out;
     }
 
-    // 常规 OpenAI 兼容账单。
-    // `hard_limit_usd` 为 0 / 缺失表示无硬上限，此时 `limit_usd` 为 `None`。
+    // The regular OpenAI-compatible billing.
+    // `hard_limit_usd` of 0 / missing means no hard cap, so `limit_usd` is `None`.
     out.limit_usd = sub
         .get("hard_limit_usd")
         .and_then(Value::as_f64)
@@ -63,25 +63,25 @@ pub fn parse(
     out.placeholder_limit = out
         .limit_usd
         .is_some_and(|limit| limit >= PLACEHOLDER_LIMIT_USD);
-    // 占位额度不产生余额数字。
+    // Placeholder quotas produce no balance number.
     if out.placeholder_limit {
         out.limit_usd = None;
     }
     if let Some(text) = usage_json {
-        // total_usage 单位是美分。
+        // total_usage's unit is cents.
         out.used_usd = serde_json::from_str::<Value>(text)
             .ok()
             .and_then(|usage| usage.get("total_usage").and_then(Value::as_f64))
             .map(|cents| cents / 100.0);
     }
     if let (Some(limit), Some(used)) = (out.limit_usd, out.used_usd) {
-        // 额度比已用小（数据不一致或已超支）时不算余额。
+        // Quota smaller than usage (inconsistent data or overspent) yields no balance.
         let balance = limit - used;
         if balance >= 0.0 {
             out.balance_usd = Some(balance);
         }
     }
-    // 订阅到期（`access_until`，-1 / 0 = 无期限）。
+    // Subscription expiry (`access_until`, -1 / 0 = no expiry).
     out.expires = sub
         .get("access_until")
         .and_then(Value::as_f64)
@@ -98,19 +98,19 @@ pub fn parse(
     out
 }
 
-/// 解析 `/api/user/self`（需要面板访问令牌/PAT）。
+/// Parse `/api/user/self` (requires the panel access token / PAT).
 ///
-/// `data.quota` 是剩余额度、`used_quota` 是累计已用，两者都是 quota 点，
-/// 按 `/api/status` 给出的 [`Units`] 换算成金额。
+/// `data.quota` is remaining quota and `used_quota` is lifetime used; both are quota points, converted to
+/// money via the [`Units`] given by `/api/status`.
 ///
-/// 以下情况返回 `None`：不是 JSON / 根不是对象；`success` 显式为 `false`；
-/// 一个可用字段都没有（只有 `group` 这类非数字字段不算数据）。
+/// Returns `None` when: not JSON / root isn't an object; `success` explicitly false; or not a single usable
+/// field exists (non-numeric fields like `group` don't count as data).
 pub fn parse_account_self(json: &str, units: &Units) -> Option<AccountInfo> {
     let root = serde_json::from_str::<Value>(json).ok()?;
     if root.get("success").and_then(Value::as_bool) == Some(false) {
         return None;
     }
-    // 站点都在 `data` 下返回；少数变体把字段放在根上。
+    // Stations return fields under `data`; a few variants put them at the root.
     let data = root
         .get("data")
         .filter(|value| value.is_object())
@@ -120,9 +120,9 @@ pub fn parse_account_self(json: &str, units: &Units) -> Option<AccountInfo> {
     }
     let quota = data.get("quota").and_then(Value::as_f64);
     let used = data.get("used_quota").and_then(Value::as_f64);
-    // 次数容忍整数 / 浮点两种写法。
+    // Counts tolerate both integer and float spellings.
     let requests = data.get("request_count").and_then(value_as_u64);
-    // 全是 None 说明这不是一份可用的账号数据。
+    // All None means this isn't usable account data.
     if quota.is_none() && used.is_none() && requests.is_none() {
         return None;
     }
@@ -139,38 +139,37 @@ pub fn parse_account_self(json: &str, units: &Units) -> Option<AccountInfo> {
     })
 }
 
-/// 读一个非负整数（容忍整数 / 浮点两种写法）。
+/// Read one non-negative integer (tolerating both integer and float spellings).
 fn value_as_u64(value: &Value) -> Option<u64> {
     value
         .as_u64()
         .or_else(|| value.as_f64().filter(|n| *n >= 0.0).map(|n| n as u64))
 }
 
-/// 签到状态（`GET /api/user/checkin`，只需面板令牌/PAT，只读）。
+/// Check-in status (`GET /api/user/checkin`; only the panel token / PAT, read-only).
 ///
-/// 未启用时站点用 `200 + success:false` 报错，[`parse_checkin_status`] 会把原话
-/// 作为错误返回。
+/// Disabled stations answer `200 + success:false`; [`parse_checkin_status`] returns the station's own words as the error.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CheckinStatus {
-    /// 站点是否启用签到。
+    /// Whether the station enables check-in.
     pub enabled: bool,
-    /// 今天是否已签到。
+    /// Whether today is already checked in.
     pub today: bool,
-    /// 今天签到的额度（美元）：站点只在 `records` 里逐日给，取最大日期那条。
-    /// 今天没签（或站点没给明细）时为 `None`。
+    /// Today's check-in amount (USD): the station gives per-day entries only in `records`; take the greatest date.
+    /// `None` when today isn't checked in (or the station gives no details).
     pub today_usd: Option<f64>,
-    /// 本月签到次数。
+    /// Check-ins this month.
     pub month_count: u64,
-    /// 累计签到次数。
+    /// Lifetime check-ins.
     pub total_count: u64,
-    /// 累计获得的额度（美元）；站点没给就是 `None`。
+    /// Lifetime amount earned (USD); `None` when the station doesn't say.
     pub total_usd: Option<f64>,
-    /// 单次签到额度区间（美元）；站点未配置（0）时为 `None`。
+    /// Per-check-in amount range (USD); `None` when unconfigured (0).
     pub min_usd: Option<f64>,
     pub max_usd: Option<f64>,
 }
 
-/// 取站点自己给的错误消息（`message` 字段），取不到就用一句兜底。
+/// Take the station's own error message (`message` field), with a fallback line when absent.
 fn site_message(root: &Value, fallback: &str) -> String {
     root.get("message")
         .and_then(Value::as_str)
@@ -180,9 +179,9 @@ fn site_message(root: &Value, fallback: &str) -> String {
         .to_string()
 }
 
-/// 解析 `GET /api/user/checkin`。
+/// Parse `GET /api/user/checkin`.
 ///
-/// 失败情形一律返回 `Err`（而不是 `None`）：未启用、被拒绝、结构不认识。
+/// All failure modes return `Err` (not `None`): disabled, rejected, unrecognized structure.
 pub fn parse_checkin_status(json: &str, units: &Units) -> Result<CheckinStatus, String> {
     let root = serde_json::from_str::<Value>(json).map_err(|_| "返回内容不是 JSON".to_string())?;
     if !root.is_object() {
@@ -207,8 +206,8 @@ pub fn parse_checkin_status(json: &str, units: &Units) -> Result<CheckinStatus, 
         .and_then(|stats| stats.get("checked_in_today"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    // 今日金额：取 `records` 里最大日期那条（`YYYY-MM-DD` 字典序即时间序），
-    // 且只在 `checked_in_today` 为真时才算「今天」。
+    // Today's amount: the `records` entry with the greatest date (`YYYY-MM-DD` lexicographic = chronological),
+    // and "today" counts only when `checked_in_today` is true.
     let today_usd = if today {
         stats
             .and_then(|stats| stats.get("records"))
@@ -228,7 +227,7 @@ pub fn parse_checkin_status(json: &str, units: &Units) -> Result<CheckinStatus, 
     } else {
         None
     };
-    // 0 表示站点没配置这一项，不当作额度。
+    // 0 means the station didn't configure this — not an amount.
     let positive_usd = |key: &str| {
         data.get(key)
             .and_then(Value::as_f64)
@@ -254,9 +253,9 @@ pub fn parse_checkin_status(json: &str, units: &Units) -> Result<CheckinStatus, 
     })
 }
 
-/// 签到状态的短描述（卡片那一行里用）。
+/// Short description of check-in status (for the card's line).
 ///
-/// 站点没给的数字一律不提。
+/// Numbers the station didn't provide are never mentioned.
 pub fn checkin_short(status: &CheckinStatus) -> String {
     if !status.enabled {
         return "未启用".to_string();
@@ -270,7 +269,7 @@ pub fn checkin_short(status: &CheckinStatus) -> String {
     }
 }
 
-/// 签到状态的完整描述（悬停说明里用）。
+/// Full description of check-in status (for the hover note).
 pub fn checkin_long(status: &CheckinStatus) -> String {
     if !status.enabled {
         return "该站点未启用签到".to_string();
@@ -289,16 +288,16 @@ pub fn checkin_long(status: &CheckinStatus) -> String {
     text
 }
 
-/// 一条调用日志（只留统计要用的字段）。#[derive(Clone, Debug, PartialEq)]
+/// One call-log entry (only the fields statistics need).#[derive(Clone, Debug, PartialEq)]
 pub struct LogEntry {
-    /// 发生时间（秒级 Unix 时间戳）。
+    /// When it happened (second-resolution Unix timestamp).
     pub at: i64,
-    /// 消耗（quota 点）。
+    /// The spend (quota points).
     pub quota: f64,
     pub model: String,
 }
 
-/// 解析 `/api/log/token` 的日志列表（`{success, data:[...]}`；`data` 缺失时为空表）。
+/// Parse `/api/log/token`'s log list (`{success, data:[...]}`; missing `data` is an empty table).
 pub fn parse_token_logs(json: &str) -> Vec<LogEntry> {
     let Ok(root) = serde_json::from_str::<Value>(json) else {
         return Vec::new();
@@ -323,21 +322,21 @@ pub fn parse_token_logs(json: &str) -> Vec<LogEntry> {
         .collect()
 }
 
-/// 日志聚合结果（`from` 为 `None` 表示全部）。
+/// Log aggregation result (`from` of `None` = everything).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LogSummary {
     pub count: usize,
     pub calls: u64,
-    /// 区间内消耗（quota 点）。
+    /// In-range spend (quota points).
     pub quota: f64,
-    /// 按模型汇总（quota 降序，最多 [`MODEL_TOP`] 项）。
+    /// Per-model summary (quota descending, at most [`MODEL_TOP`] entries).
     pub models: Vec<(String, f64)>,
 }
 
-/// 悬停里最多列几个模型。
+/// Max models listed in the hover.
 pub const MODEL_TOP: usize = 3;
 
-/// 按时间下限汇总日志（时间戳全为秒）。
+/// Aggregate logs by a time floor (all timestamps in seconds).
 pub fn summarize_logs(entries: &[LogEntry], from: Option<i64>) -> LogSummary {
     let mut summary = LogSummary::default();
     let mut per_model: Vec<(String, f64)> = Vec::new();
@@ -359,11 +358,11 @@ pub fn summarize_logs(entries: &[LogEntry], from: Option<i64>) -> LogSummary {
     summary
 }
 
-/// 解析 `GET /api/data/self`：按天 × 模型的用量数组。
+/// Parse `GET /api/data/self`: the per-day × model usage array.
 ///
-/// 返回按日期升序的单日聚合（模型行合并成当天合计 + 消耗最大的模型名）；
-/// `success:false`、`data` 缺失 / 为空 / 结构不认识返回 `None`。
-/// `created_at` 是站点按天聚合的 0 点时间戳，日期标签由应用层填。
+/// Returns single-day aggregates in ascending date order (model rows merged into the day's total + the
+/// heaviest model's name); `success:false`, missing / empty / unrecognized `data` returns `None`.
+/// `created_at` is the station's per-day midnight timestamp; date labels are filled by the app layer.
 pub fn parse_data_self(json: &str, units: &Units) -> Option<Vec<PanelDay>> {
     let root = serde_json::from_str::<Value>(json).ok()?;
     if root.get("success").and_then(Value::as_bool) == Some(false) {
@@ -374,7 +373,7 @@ pub fn parse_data_self(json: &str, units: &Units) -> Option<Vec<PanelDay>> {
         return None;
     }
     let to_money = |points: f64| points / units.quota_per_unit;
-    // (日时间戳) → (美元, 次数, tokens, 模型 → quota)
+    // (day timestamp) → (USD, count, tokens, model → quota)
     let mut acc: std::collections::BTreeMap<
         i64,
         (f64, u64, i64, std::collections::BTreeMap<String, f64>),
@@ -419,10 +418,10 @@ pub fn parse_data_self(json: &str, units: &Units) -> Option<Vec<PanelDay>> {
     )
 }
 
-/// 解析 Sub2API `/v1/usage` 的响应：`{ quota: {limit, used}, remaining|balance, unit }`。
+/// Parse Sub2API's `/v1/usage` response: `{ quota: {limit, used}, remaining|balance, unit }`.
 ///
-/// 三个读数都可能缺（不同版本的 sub2api 给的不一样），读到任意一个就成功；
-/// 剩余额度缺省时按 `total - used` 兜底。结构不符返回 `None`。
+/// All three readings may be missing (sub2api versions differ); any one suffices for success;
+/// a missing remaining falls back to `total - used`. Unrecognized structures return `None`.
 pub fn parse_sub2api_usage(text: &str) -> Option<Sub2apiUsage> {
     let root = serde_json::from_str::<Value>(text).ok()?;
     let quota = root.get("quota");

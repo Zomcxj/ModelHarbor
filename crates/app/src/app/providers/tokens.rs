@@ -2,13 +2,14 @@ use crate::app::App;
 use eframe::egui;
 
 impl App {
-    /// 令牌面板内容：列出当前页面所有站点（按 origin 归并），填 / 改 / 删面板访问令牌。
+    /// The token panel's content: lists the current page's every station (merged by origin), with add / edit /
+    /// delete for panel access tokens.
     ///
-    /// 令牌是**站点级**的：同一站点的多个 provider 共用一份，这里按站点一行并标注
-    /// 哪些 provider 在用。只用于只读查询，不写进任何 agent 配置文件。
-    /// 由 [`super::App::ui_tokens_window`] 装进悬浮窗渲染。
+    /// Tokens are **station-level**: several providers on one station share one; rows are per station, noting
+    /// which providers use them. Read-only queries only — never written into any agent config file.
+    /// Rendered inside a popover by [`super::App::ui_tokens_window`].
     pub(in crate::app) fn ui_tokens_panel(&mut self, ui: &mut egui::Ui) {
-        // 站点 → 使用它的 provider key（按首次出现顺序）。
+        // Station → the provider keys using it (in first-seen order).
         let mut stations: Vec<(String, Vec<String>)> = Vec::new();
         for provider in &self.providers {
             let origin = crate::tokens::station_key(&provider.base_url);
@@ -21,7 +22,7 @@ impl App {
             }
         }
 
-        // 标题由悬浮窗提供，此处不重复。
+        // The popover supplies the title; no duplicate here.
         ui.label(
             egui::RichText::new(
                 "在站点面板「个人设置 → 安全设置 → 系统访问令牌」生成；\
@@ -47,7 +48,7 @@ impl App {
             return;
         }
 
-        // 打开面板时按已保存值补齐草稿（掩码显示；缺省为空 = 未设置）。
+        // On open, drafts fill from saved values (masked display; empty default = unset).
         for (origin, _) in &stations {
             if !self.token_draft.contains_key(origin) {
                 let existing = self.tokens.get(origin).to_string();
@@ -59,7 +60,7 @@ impl App {
             }
         }
 
-        // 按钮动作先收集、循环后统一写入 self。
+        // Button actions collect first and write back to self uniformly after the loop.
         let mut save: Option<String> = None;
         let mut remove: Option<String> = None;
         let mut toggle_reveal: Option<String> = None;
@@ -70,7 +71,7 @@ impl App {
             let revealed = self.show_api_keys || self.token_reveal.contains(origin);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(origin).monospace());
-                // 站点类型：NewAPI（面板体系）还是 sub2api（直查 /v1/usage）。
+                // Station kind: NewAPI (the panel system) or sub2api (querying /v1/usage directly).
                 let kind_button = ui.button(if is_sub2api {
                     "类型：sub2api"
                 } else {
@@ -108,10 +109,10 @@ impl App {
                     .on_hover_text(keys.join("、"));
                 }
             });
-            // sub2api 站点无需面板令牌与用户 ID：隐藏两行输入，改显说明。
+            // sub2api stations need no panel token or user ID: hide those two inputs and show the note instead.
             if !is_sub2api {
                 ui.horizontal(|ui| {
-                    // 提示文字颜色由主题统一给定（见 `theme::Palette::hint_color`）。
+                    // The hint text's color comes from the theme (`theme::Palette::hint_color`).
                     if let Some(draft) = self.token_draft.get_mut(origin) {
                         ui.add(
                             egui::TextEdit::singleline(draft)
@@ -137,8 +138,8 @@ impl App {
                         remove = Some(origin.clone());
                     }
                 });
-                // 用户 ID：只有部分站点（旧版 new-api）需要它，所以放在令牌下一行。
-                // 先算好再进闭包：`station_needs_user_id` 借整个 self。
+                // User ID: only some stations (older new-api) need it, so it sits under the token.
+                // Compute before entering the closure: `station_needs_user_id` borrows all of self.
                 let needs_id = self.station_needs_user_id(keys);
                 ui.horizontal(|ui| {
                     ui.add_space(crate::theme::SPACE_2);
@@ -169,7 +170,7 @@ impl App {
                     }
                 });
             } else {
-                // sub2api：余额直连 /v1/usage，面板令牌与用户 ID 都用不上。
+                // sub2api: balances query /v1/usage directly — panel tokens and user IDs are useless here.
                 ui.label(
                     egui::RichText::new(
                         "sub2api 站点：余额直接用 provider 的 sk- key 查询 /v1/usage，无需面板令牌与用户 ID",
@@ -181,13 +182,13 @@ impl App {
             ui.add_space(crate::theme::SPACE_1);
         }
 
-        // 单条显隐：与全局「显示密钥」是「或」的关系。
+        // Per-row visibility: an "or" with the global "show keys".
         if let Some(origin) = toggle_reveal {
             if !self.token_reveal.remove(&origin) {
                 self.token_reveal.insert(origin);
             }
         }
-        // 站点类型切换：写盘并丢弃该站点的用量缓存（查询路径变了）。
+        // Station-kind switch: persists and drops the station's usage cache (the query path changed).
         if let Some(origin) = toggle_kind {
             let next = !self.tokens.is_sub2api(&origin);
             self.tokens.set_site_kind(&origin, next);
@@ -204,7 +205,7 @@ impl App {
                     );
                     self.forget_station_balance(&origin);
                 }
-                // 写盘失败回滚内存标记，避免与磁盘不一致。
+                // A failed write rolls the in-memory flag back, keeping it consistent with disk.
                 Err(err) => {
                     self.tokens.set_site_kind(&origin, !next);
                     self.status = format!("站点类型保存失败：{err}");
@@ -222,7 +223,7 @@ impl App {
                 self.status = format!("{} 的令牌为空：要清除请点「删除」", origin);
             } else {
                 self.tokens.set(&origin, &token);
-                // 用户 ID 是可选项：空串 = 不发 New-Api-User。
+                // The user ID is optional: an empty string = don't send New-Api-User.
                 self.tokens.set_user_id(&origin, &uid);
                 let with_uid = !uid.trim().is_empty();
                 match self.tokens.save() {
@@ -234,7 +235,7 @@ impl App {
                         };
                         self.forget_station_balance(&origin);
                     }
-                    // 错误只带路径，不带令牌内容（见 tokens::save_to）。
+                    // Errors carry paths only, never token content (see tokens::save_to).
                     Err(err) => self.status = format!("令牌保存失败：{err}"),
                 }
             }
@@ -253,9 +254,9 @@ impl App {
         }
     }
 
-    /// 该站点的上次查询是否回了「缺 New-Api-User」。
+    /// Whether the station's last query replied "missing New-Api-User".
     ///
-    /// 从已有的用量结果推导：错误可能落在 `Err` 或成功结果的 `note` 两处。
+    /// Derived from existing usage results: the error may sit in `Err` or in a success result's `note`.
     pub(in crate::app) fn station_needs_user_id(&self, provider_keys: &[String]) -> bool {
         provider_keys.iter().any(|key| {
             self.balance
@@ -271,7 +272,7 @@ impl App {
         })
     }
 
-    /// 令牌变更后丢弃该站点各 provider 的用量缓存。
+    /// After a token change, drop the station's providers' usage caches.
     fn forget_station_balance(&mut self, origin: &str) {
         let affected: Vec<String> = self
             .providers

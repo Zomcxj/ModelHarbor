@@ -1,16 +1,17 @@
-//! HTTP 状态码的「人话解释」：在状态码后面补上原因和处理建议。
+//! Human explanations for HTTP status codes: the reason and suggested handling appended to the code.
 //!
-//! 用于延迟 / 连通性探测、拉取模型列表失败提示、卡片与列表里的单行错误摘要。
-//! 4xx 归请求侧，5xx 归中转站 / 网关 / 上游侧；未收录的状态码只显示数字。
+//! Used by latency / connectivity probes, model-list fetch failure hints, and one-line error summaries in
+//! cards and lists. 4xx is request-side, 5xx is relay / gateway / upstream side; unlisted codes show only
+//! the number.
 
-/// 一条状态码解释：`reason` 用于单行摘要，`hint` 用于悬停提示 / 弹层里的建议。
+/// One status explanation: `reason` for one-line summaries, `hint` for hover tips / popover advice.
 struct Entry {
     code: u16,
     reason: &'static str,
     hint: &'static str,
 }
 
-/// 常见状态码表（按码值升序；单测会校验有序、无重复、文案非空）。
+/// Common status table (ascending by code; unit tests check ordering, uniqueness, and non-empty text).
 const ENTRIES: &[Entry] = &[
     Entry {
         code: 400,
@@ -163,7 +164,7 @@ fn entry(code: u16) -> Option<&'static Entry> {
     ENTRIES.iter().find(|e| e.code == code)
 }
 
-/// 单行摘要：`HTTP 503 服务临时不可用`；未收录的状态码只给数字。
+/// One-line summary: `HTTP 503 service temporarily unavailable`; unlisted codes show only the number.
 pub fn label(code: u16) -> String {
     match entry(code) {
         Some(e) => format!("HTTP {} {}", code, e.reason),
@@ -171,7 +172,7 @@ pub fn label(code: u16) -> String {
     }
 }
 
-/// 悬停提示用的完整说明：`HTTP 503 服务临时不可用：上游繁忙、维护或过载；稍后重试…`。
+/// Full explanation for hover tips: `HTTP 503 service temporarily unavailable: upstream busy, maintenance, or overloaded; retry later…`.
 pub fn detail(code: u16) -> String {
     match entry(code) {
         Some(e) => format!("{}：{}", label(code), e.hint),
@@ -179,12 +180,12 @@ pub fn detail(code: u16) -> String {
     }
 }
 
-/// 处理建议；未收录的状态码返回 `None`。
+/// Suggested handling; unlisted codes return `None`.
 pub fn hint(code: u16) -> Option<&'static str> {
     entry(code).map(|e| e.hint)
 }
 
-/// 成因归类：4xx = 请求侧，5xx = 中转站 / 网关 / 上游侧，其余为未知。
+/// Cause classification: 4xx = request side, 5xx = relay / gateway / upstream side, else unknown.
 pub fn side(code: u16) -> &'static str {
     if (400..500).contains(&code) {
         "请求侧"
@@ -216,16 +217,16 @@ mod tests {
         for e in ENTRIES {
             assert!(!e.reason.is_empty(), "{} 缺 reason", e.code);
             assert!(!e.hint.is_empty(), "{} 缺 hint", e.code);
-            // 单行摘要要短：reason 不超过 16 个字符
+            // One-line summaries stay short: reasons never exceed 16 characters
             assert!(
                 e.reason.chars().count() <= 16,
                 "{} 的 reason 太长（{} 字符），卡片上会挤",
                 e.code,
                 e.reason.chars().count()
             );
-            // 只收错误码
+            // Only error codes are collected
             assert!((400..600).contains(&e.code), "{} 不是错误码", e.code);
-            // 建议里不再嵌套全角冒号，避免 detail 出现两个冒号
+            // Advice no longer nests full-width colons, keeping details to one colon
             assert!(
                 !e.hint.contains('：'),
                 "{} 的 hint 不要用全角冒号，改用分号：{}",
@@ -265,7 +266,7 @@ mod tests {
         assert_eq!(side(200), "未知");
     }
 
-    /// 429 / 5xx 可重试，401 / 404 重试无用。
+    /// 429 / 5xx are retryable; retrying 401 / 404 is pointless.
     #[test]
     fn retry_semantics_are_documented() {
         for code in [500, 502, 503, 504, 529, 429] {

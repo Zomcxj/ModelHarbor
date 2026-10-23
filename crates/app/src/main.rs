@@ -7,9 +7,9 @@ const ICON_BYTES: &[u8] = include_bytes!("../assets/icon_rgba.bin");
 const ICON_W: u32 = 256;
 const ICON_H: u32 = 256;
 
-/// 把 panic 的位置与消息追加到 `<配置目录>/crash.log`。
+/// Append a panic's location and message to `<config dir>/crash.log`.
 ///
-/// 写不进去就安静放弃。
+/// If it can't be written, give up quietly.
 fn install_crash_logger() {
     std::panic::set_hook(Box::new(|info| {
         let location = info
@@ -39,8 +39,8 @@ fn main() -> eframe::Result {
             .with_inner_size([1250.0, 820.0])
             .with_min_inner_size([970.0, 660.0])
             .with_title("ModelHarbor")
-            // 恒为透明窗口：亚克力档需要 alpha 通道，而 eframe 的 glow 后端只在
-            // 建窗时读 `transparent`；关闭亚克力时靠不透明的清屏色盖满。
+            // Always a transparent window: the acrylic tier needs an alpha channel, and eframe's glow backend reads
+            // `transparent` only at window creation; with acrylic off, an opaque clear color fills it.
             .with_transparent(true)
             .with_icon(egui::IconData {
                 rgba: ICON_BYTES.to_vec(),
@@ -54,7 +54,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_fonts(build_cjk_fonts());
-            // 主题不在这里写死，由 App 第一帧按 prefs 里保存的主题套用。
+            // The theme isn't hard-coded here; App's first frame applies the theme saved in prefs.
             #[cfg(target_os = "windows")]
             {
                 use raw_window_handle::HasWindowHandle;
@@ -64,7 +64,7 @@ fn main() -> eframe::Result {
                             let hwnd = w.hwnd.get() as *mut core::ffi::c_void;
                             model_harbor_app::cursor::init_cursors(hwnd);
                         }
-                        // 窗口外观（DWM 背景 / 圆角）需要句柄，这里登记一次。
+                        // Window appearance (DWM backdrop / corners) needs the handle — registered once here.
                         model_harbor_app::windowfx::set_main_hwnd(w.hwnd.get());
                         model_harbor_app::windowfx::set_rounded_corners();
                     }

@@ -5,15 +5,16 @@ use crate::app::App;
 use crate::ui::{card_frame, move_item, DragHandle};
 use eframe::egui;
 
-/// 卡片头右组的余额展示，供 `Sides` 的右闭包使用。
+/// The card head's right group's balance display, for `Sides`'s right closure.
 ///
-/// 右组数据先算成自有值：`Sides::show` 的两个闭包同时存活，左闭包要可变借用 `self`。
+/// Right-group data computes into owned values first: `Sides::show`'s two closures live simultaneously,
+/// and the left closure needs the mutable `self` borrow.
 enum BalanceDisplay {
-    /// 正在查询（转圈 + 「查询中…」）。
+    /// Querying (spinner + "querying…").
     Loading,
-    /// 查询完成且有可展示数据（主数字 / 其余数字 / 悬停详情）。
+    /// Query finished with presentable data (headline / remaining numbers / hover details).
     ///
-    /// `headline` 非可选：没有主数字时构造处直接返回 `None`。
+    /// `headline` is non-optional: the construction site returns `None` directly when there's no headline.
     Info {
         headline: String,
         rest: String,
@@ -39,18 +40,19 @@ impl App {
         };
         let card_id = egui::Id::new(("provider_card", key.clone()));
         let resp = card_frame(ui, open, highlight, card_id, |ui| {
-            // 头部一行分左右两组：左组（拖柄 / 折叠 / 厂商名 / baseUrl 提示 / 连通性
-            // 结果）内容不定长，右组（删除 / 复制 / 余额）贴在卡片右缘。
+            // The head row splits into left and right groups: the left (grab handle / collapse / vendor name /
+            // baseUrl note / connectivity result) is variable-length; the right (delete / duplicate / balance)
+            // hugs the card's right edge.
             //
-            // 用 `Sides::shrink_left().truncate()`：先量右组，再把左组限制在剩余宽度内
-            // 并按需截断。
+            // Uses `Sides::shrink_left().truncate()`: measure the right group first, then constrain the left group
+            // to the remaining width, truncating as needed.
             let balance_display = self.balance.get(&key).and_then(|state| {
                 let display_result =
                     state.display_result(crate::app::balance::local_midnight_unix());
                 match (&state.rx, display_result.as_ref()) {
                     (Some(_), _) => Some(BalanceDisplay::Loading),
                     (None, Some(Ok(info))) if info.is_displayable() => Some(BalanceDisplay::Info {
-                        // 没有主数字就不显示。
+                        // No headline means nothing displays.
                         headline: info.headline()?,
                         rest: info.inline_rest(),
                         detail: info.detail(),
@@ -91,7 +93,7 @@ impl App {
                         self.set_provider_collapsed(&key, open);
                     }
                     ui.strong(&self.providers[idx].key);
-                    // baseUrl 体检提示：`//v1` 这类笔误在卡片上可见（只提示，不自动改写）。
+                    // The baseUrl health note: typos like `//v1` are visible on the card (a hint only, never auto-rewritten).
                     let suspicions = crate::util::url_suspicions(&self.providers[idx].base_url);
                     if !suspicions.is_empty() {
                         ui.label(
@@ -106,7 +108,7 @@ impl App {
                             self.providers[idx].base_url
                         ));
                     }
-                    // 连通性测试结果：显示在厂商名字右侧，卡片收起时也可见。
+                    // The connectivity test's result: shown right of the vendor name, visible even when the card is collapsed.
                     if let Some(state) = self.latency.get(&key) {
                         if state.provider_rx.is_some() {
                             matrix_label(ui, &key);
@@ -136,12 +138,12 @@ impl App {
                     if ui.button("复制").clicked() {
                         actions.copy = Some(idx);
                     }
-                    // 查询结果紧挨「复制」左侧：余额 / 已用 / 今日 / 签到状态都在这行里。
-                    // 查不到的站点不显示，也不显示占位余额。
+                    // The query result sits right of "duplicate": balance / used / today / check-in status all live on this line.
+                    // Unqueryable stations show nothing — never a placeholder balance.
                     match &balance_display {
                         Some(BalanceDisplay::Loading) => {
                             ui.add(egui::Spinner::new().size(14.0));
-                            // 字号与连通性结果（`123ms`）一致。
+                            // The font size matches the connectivity result (`123ms`).
                             ui.label(egui::RichText::new("查询中…").weak());
                         }
                         Some(BalanceDisplay::Info {
@@ -149,7 +151,7 @@ impl App {
                             rest,
                             detail,
                         }) => {
-                            // 主数字加粗，其余数字为淡色小字；两段仍在同一行。
+                            // The headline is bold; the rest are faint small text — both on one line.
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(headline)
@@ -175,7 +177,7 @@ impl App {
                     }
                 },
             );
-            // 折叠 / 展开带高度动画；动画 id 按 key 派生。
+            // Collapse / expand with height animation; the animation id derives from the key.
             crate::motion::animated_collapse(ui, card_id, open, |ui| {
                 self.render_provider_form(
                     ui,

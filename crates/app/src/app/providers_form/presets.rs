@@ -1,40 +1,39 @@
 use super::*;
 
-/// 上下文（输入）的常用预设值，单位为 **k（1000）**。
+/// Common preset values for context (input), in units of **k (1000)**.
 ///
-/// 数值按 1000 进制：`262k` → `262000`，`1024k` → `1024000`。
+/// Values are decimal: `262k` → `262000`, `1024k` → `1024000`.
 pub(super) const CONTEXT_PRESETS: [u32; 7] = [128, 200, 262, 300, 400, 500, 1024];
 
-/// 最大输出（output）的常用预设值，单位同上（k = 1000）。
+/// Common preset values for max output, same units (k = 1000).
 ///
-/// `131` / `262` 对应厂商声明的 `131072` / `262144`，按 1000 进制落成
-/// `131000` / `262000`。
+/// `131` / `262` match vendors' stated `131072` / `262144`, landing as `131000` / `262000` decimal.
 pub(super) const OUTPUT_PRESETS: [u32; 4] = [32, 64, 131, 262];
 
-/// 预设值的显示文本（`128k`）。
+/// A preset value's display text (`128k`).
 pub(super) fn preset_label(k: u32) -> String {
     format!("{}k", k)
 }
 
-/// 预设值的实际写入值（`128000`）。
+/// A preset value's actual written value (`128000`).
 pub(super) fn preset_value(k: u32) -> String {
     (k as u64 * 1000).to_string()
 }
 
-/// 当前值在预设表里的下标；不在表里（手填的任意数字、空、非法）返回 `None`。
+/// The current value's index in the preset table; `None` when absent (hand-typed numbers, empty, invalid).
 pub(super) fn preset_index(value: &str, presets: &[u32]) -> Option<usize> {
     presets
         .iter()
         .position(|k| preset_value(*k) == value.trim())
 }
 
-/// 数值字段右侧的预设下拉：选一项就把该值填进字段。
+/// The preset dropdown beside a numeric field: picking one fills the value in.
 ///
-/// 只**填值**、不锁定，填完仍可继续手动编辑。选中项按当前值反查，
-/// 手填的非预设值显示为 `选择...`。
+/// Only **fills** — never locks; the field stays hand-editable after. The selected item reverse-looks-up
+/// from the current value; hand-typed non-preset values show the unselected placeholder.
 ///
-/// `sync_tooltip` 为 `Some` 时，下拉首项额外加一个「同步」：点击不改本字段，
-/// 而是返回 `true`，由调用方把当前值刷到本页全部模型。
+/// With `sync_tooltip` set, the dropdown's first item adds "sync": clicking doesn't change this field but
+/// returns `true`, letting the caller brush the value onto every model on the page.
 pub(super) fn preset_combo(
     ui: &mut egui::Ui,
     value: &mut String,
@@ -43,20 +42,20 @@ pub(super) fn preset_combo(
     tooltip: &str,
     sync_tooltip: Option<&str>,
 ) -> bool {
-    // 当前值恰好等于某个预设时，把下拉显示成那一项；否则显示占位文案。
+    // When the current value exactly equals a preset, the dropdown shows that item; otherwise the placeholder.
     let selected = preset_index(value, presets);
     let text = match selected {
         Some(i) => preset_label(presets[i]),
         None => "选择...".to_string(),
     };
-    // 只有真正点了某一项才写回：初值取 `None`，避免未选也走一次赋值。
+    // Write back only on a real pick: initial `None`, so an unselection never triggers an assignment.
     let mut picked: Option<usize> = None;
     let mut sync_clicked = false;
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(text)
         .width(72.0)
         .show_ui(ui, |ui| {
-            // 首项「同步」：把当前模型的本字段值刷到本页所有模型。
+            // The first item, "sync": brush this model's field value onto every model on the page.
             if let Some(st) = sync_tooltip {
                 if ui
                     .selectable_label(false, "同步")

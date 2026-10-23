@@ -1,8 +1,8 @@
-//! 配置序列化：Compact / Pretty 两种 JSON 输出风格的排版实现。
+//! Config serialization: the layout implementations of Compact / Pretty JSON output styles.
 
 use serde_json::{Map, Value};
 
-/// 把攒下的合并组拼成一行：组内每项去掉子缩进，用「, 」连接。空组返回空串。
+/// Join the accumulated merge groups into one line: each item loses its sub-indent, joined with ", ". Empty groups return an empty string.
 fn joined_group(current: &[String], child_indent: &str) -> String {
     let Some((first, rest)) = current.split_first() else {
         return String::new();
@@ -239,8 +239,8 @@ pub fn serialize_object(object: &Map<String, Value>, level: usize, role: Compact
 
 pub(super) fn child_role(parent: CompactRole, key: &str) -> CompactRole {
     match (parent, key) {
-        // 单数是 v1、复数是 v2；pi / omp 的顶层复数 providers 也命中，
-        // 但配合数组 item 角色转换（见 array_item_role），它们的输出不变。
+        // Singular is v1, plural is v2; pi / omp's top-level plural providers also hit,
+        // but with the array item-role conversion (see array_item_role) their output is unchanged.
         (CompactRole::Normal, "agent" | "agents") => CompactRole::AgentContainer,
         (CompactRole::Normal, "provider" | "providers") => CompactRole::ProviderContainer,
         (CompactRole::ProviderContainer, _) => CompactRole::ProviderEntry,
@@ -250,8 +250,8 @@ pub(super) fn child_role(parent: CompactRole, key: &str) -> CompactRole {
     }
 }
 
-/// 对象数组的 item 角色：容器角色下的数组（如 pi 的 models 数组）条目
-/// 按 Target 处理，保持字段分组；其余继承父角色。
+/// Object arrays' item role: arrays under a container role (like pi's models array) treat entries as
+/// Target, keeping field grouping; the rest inherit the parent role.
 fn array_item_role(parent: CompactRole) -> CompactRole {
     match parent {
         CompactRole::AgentContainer
@@ -320,8 +320,8 @@ pub(super) fn serialize_fields(
     let fields: Vec<_> = object.iter().collect();
 
     for (index, (key, value)) in fields.iter().enumerate() {
-        // 档位表（v1 对象 / v2 `[{id}]` 数组）一律单行；先于嵌套对象数组判定，
-        // 避免 v2 的数组形状被多行展开。
+        // Tier tables (v1 object / v2 `[{id}]` array) are always single-line; judged before nested object arrays
+        // so v2's array shape never multi-line-expands.
         if *key == "variants" {
             let single = compact_variants(value);
             let prefix = format!("{}: ", json_string(key));
@@ -430,7 +430,7 @@ pub(super) fn compact_json_value(value: &Value) -> String {
 
 pub(super) fn compact_variants(value: &Value) -> String {
     match value {
-        // v1：对象档位表单行化。
+        // v1: object tier tables single-line.
         Value::Object(object) => {
             let entries: Vec<String> = object
                 .iter()
@@ -438,7 +438,7 @@ pub(super) fn compact_variants(value: &Value) -> String {
                 .collect();
             format!("{{ {} }}", entries.join(", "))
         }
-        // v2：`[{id}]` 数组单行化；项不是对象时退回原始紧凑形态。
+        // v2: `[{id}]` arrays single-line; non-object items fall back to the original compact form.
         Value::Array(items) => {
             let entries: Vec<String> = items
                 .iter()
@@ -462,7 +462,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// v2 形状的 root：复数顶层键 + package/settings + capabilities + variants 数组。
+    /// A v2-shaped root: plural top-level keys + package/settings + capabilities + a variants array.
     fn v2_root() -> Value {
         json!({
             "agents": {
@@ -491,7 +491,7 @@ mod tests {
         })
     }
 
-    /// pi 形状的 root：顶层复数 providers + models 为对象数组。
+    /// A pi-shaped root: top-level plural providers + models as an object array.
     fn pi_root() -> Value {
         json!({
             "providers": {
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn pi_models_array_entries_stay_field_grouped() {
-        // pi 的 models 是对象数组：条目内字段仍按 150 字符分组（不逐字段一行）。
+        // pi's models is an object array: entries' fields still group at 150 characters (not one field per line).
         let text = compact_json(&pi_root());
         let model_line = text
             .lines()
@@ -549,14 +549,14 @@ mod tests {
             model_line.contains("\"contextWindow\""),
             "模型字段应分组在同一行：{model_line}"
         );
-        // 顶层复数 providers 与单数 provider 一样走容器角色：条目独立成块。
+        // The top-level plural providers takes the container role like the singular: entries become blocks.
         assert!(text.contains("  \"providers\": {"));
         assert!(text.contains("    \"sensenova\": {"));
     }
 
     #[test]
     fn v1_singular_keys_still_get_container_roles() {
-        // 模型表整体超过单行阈值时逐模型成块，v1 档位对象单行化。
+        // When the model table exceeds the single-line threshold, each model becomes a block; v1 tier objects single-line.
         let root = json!({
             "agent": { "a": { "mode": "subagent", "model": "x/y", "system": "s" } },
             "provider": {
@@ -578,7 +578,7 @@ mod tests {
             }
         });
         let text = compact_json(&root);
-        // v1 档位对象单行化：首个模型的档位表按序单行展开。
+        // v1 tier objects single-line: the first model's tier table expands in order on one line.
         let variants_line = text
             .lines()
             .find(|l| l.contains("\"variants\""))
@@ -587,7 +587,7 @@ mod tests {
             variants_line.trim(),
             "\"variants\": { \"medium\": {}, \"high\": {} }"
         );
-        // 两个模型各自成块（不是整表挤一行）。
+        // The two models each become blocks (never the whole table crammed onto one line).
         assert!(text.contains("\"flash-lite\": {"));
         assert!(text.contains("\"flash-pro\": {"));
     }

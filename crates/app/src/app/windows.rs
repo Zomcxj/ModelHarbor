@@ -1,37 +1,37 @@
 use super::*;
 
 impl super::App {
-    /// 站点面板令牌的悬浮窗外壳（内容见 `ui_tokens_panel`）。
+    /// The station token popover's shell (content in `ui_tokens_panel`).
     ///
-    /// 窗口被限制在主窗口内，高度固定、内容超出用滚轮。
+    /// The window is confined inside the main window, with fixed height and internal scrolling for overflow.
     pub(in crate::app) fn ui_tokens_window(&mut self, ctx: &egui::Context) {
         if !self.show_tokens {
             return;
         }
-        // 固定高度：站点多了也不让窗口无限撑高，内容交给内部滚动区。
-        // 上限取当前窗口高度减去边距。
+        // Fixed height: many stations must not stretch the window unboundedly — content goes to the internal scroll area.
+        // The cap is the current window height minus margins.
         let area = ctx.content_rect();
         let height = (area.height() - 140.0).clamp(240.0, 520.0);
-        // `.open()` 要借一个局部变量。
+        // `.open()` borrows a local.
         let mut open = true;
-        // 每帧居中：`default_pos` 只在首次生效，每帧居中用 `current_pos`。
-        // 窗口尺寸固定，左上角由内容区算出。
+        // Centered every frame: `default_pos` only applies the first time; per-frame centering uses `current_pos`.
+        // With fixed window size, the top-left derives from the content area.
         let size = egui::vec2(620.0, height);
         let centered = area.center() - size / 2.0;
         egui::Window::new("站点面板令牌")
-            // 提到 Foreground：预览分隔条在 Middle 层，分割线不横穿悬浮窗。
+            // Raised to Foreground: the preview splitter lives on Middle — the splitter line must not cross the popover.
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .order(Self::TOKENS_WINDOW_ORDER)
             .fixed_size(size)
-            // 不允许拖到主窗口外。
+            // No dragging outside the main window.
             .constrain_to(area)
             .current_pos(centered)
             .frame(self.floating_window_frame(ctx))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
-                    // 撑满固定高度，滚动条只内容超出时出现。
+                    // Fill the fixed height; the scrollbar appears only when content overflows.
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         self.ui_tokens_panel(ui);
@@ -42,9 +42,9 @@ impl super::App {
         }
     }
 
-    /// 配置体检悬浮窗：把各类检查汇总成一张清单（内容见 [`crate::app::health`]）。
+    /// The config health popover: gathers the various checks into one list (content in [`crate::app::health`]).
     ///
-    /// 只读清单，**不提供一键修复**。
+    /// A read-only list — **no one-click fixes**.
     pub(in crate::app) fn ui_health_window(&mut self, ctx: &egui::Context) {
         if !self.show_health {
             return;
@@ -75,8 +75,8 @@ impl super::App {
         }
     }
 
-    /// 悬浮窗统一的边框样式：比卡片更大的圆角与内边距。
-    /// 圆角在形状预设基础上加一档（上限 20）。
+    /// The popovers' shared border style: larger corner radius and padding than cards.
+    /// The radius adds one step over the shape preset (capped at 20).
     pub(in crate::app) fn floating_window_frame(&self, ctx: &egui::Context) -> egui::Frame {
         let mut frame = egui::Frame::window(&ctx.style());
         let extra = crate::theme::RADIUS_LG - crate::theme::RADIUS_MD;
@@ -85,7 +85,7 @@ impl super::App {
         frame
     }
 
-    /// 体检清单的内容。每帧重算：只遍历内存里的 providers / agents。
+    /// The health list's content. Recomputed every frame: only walks in-memory providers / agents.
     pub(in crate::app) fn ui_health_panel(&mut self, ui: &mut egui::Ui) {
         let input = health::HealthInput {
             page: self.current_page,
@@ -137,7 +137,7 @@ impl super::App {
                         .color(color),
                 );
             });
-            // 详情缩进一行，与标题分开，长文本自动换行。
+            // Details indent one line, apart from the title, with long text wrapping.
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(crate::theme::SPACE_4);
                 ui.add(egui::Label::new(egui::RichText::new(&issue.detail).small().weak()).wrap());

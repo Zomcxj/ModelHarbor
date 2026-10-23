@@ -1,11 +1,11 @@
-//! 预览语法高亮：JSON(C) / YAML / TOML 的轻量 tokenizer（VSCode Dark+ 配色）。
+//! Preview syntax highlighting: a lightweight tokenizer for JSON(C) / YAML / TOML (VSCode Dark+ palette).
 
 use eframe::egui;
 
-// ---------- 预览语法高亮（VSCode Dark+ 配色） ----------
+// ---------- Preview syntax highlighting (VSCode Dark+ palette) ----------
 
-/// 预览文本语法：opencode 系 / pi / ZCode / WorkBuddy / QwenCode 为 JSON(C)，
-/// omp / DSH 为 YAML，kimi-code 为 TOML。
+/// The preview text's syntax: opencode family / pi / ZCode / WorkBuddy / QwenCode are JSON(C);
+/// omp / DSH are YAML; kimi-code is TOML.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum PreviewSyntax {
     Json,
@@ -13,7 +13,7 @@ pub(super) enum PreviewSyntax {
     Toml,
 }
 
-/// 一套语法配色（深浅两套，按当前主题的背景亮度选）。
+/// One syntax palette (light and dark sets, picked by the current theme's background lightness).
 #[derive(Clone, Copy)]
 pub(super) struct SyntaxPalette {
     pub(super) key: egui::Color32,
@@ -22,17 +22,17 @@ pub(super) struct SyntaxPalette {
     pub(super) literal: egui::Color32,
     pub(super) comment: egui::Color32,
     pub(super) punct: egui::Color32,
-    /// 查找命中（当前那一处）的底色与其上的文字色。
+    /// The current find hit's background and its text color.
     pub(super) find_current_bg: egui::Color32,
     pub(super) find_current_fg: egui::Color32,
-    /// 查找命中的底色与其上的文字色。
+    /// A find hit's background and its text color.
     pub(super) find_other_bg: egui::Color32,
     pub(super) find_other_fg: egui::Color32,
-    /// 预览解析出错时的提示色。
+    /// The hint color when preview parsing fails.
     pub(super) error: egui::Color32,
 }
 
-/// 深色主题用的那套（VSCode Dark+）。
+/// The set for dark themes (VSCode Dark+).
 pub(super) const SYN_DARK: SyntaxPalette = SyntaxPalette {
     key: egui::Color32::from_rgb(0x9C, 0xDC, 0xFE),
     string: egui::Color32::from_rgb(0xCE, 0x91, 0x78),
@@ -47,7 +47,7 @@ pub(super) const SYN_DARK: SyntaxPalette = SyntaxPalette {
     error: egui::Color32::from_rgb(0xFF, 0x8A, 0x80),
 };
 
-/// 浅色主题用的那套（VSCode Light+ 的色相，压深到浅底上读得清）。
+/// The set for light themes (VSCode Light+'s hues, deepened to read on pale backgrounds).
 pub(super) const SYN_LIGHT: SyntaxPalette = SyntaxPalette {
     key: egui::Color32::from_rgb(0x04, 0x51, 0xA5),
     string: egui::Color32::from_rgb(0xA3, 0x15, 0x15),
@@ -63,7 +63,7 @@ pub(super) const SYN_LIGHT: SyntaxPalette = SyntaxPalette {
 };
 
 impl SyntaxPalette {
-    /// 按主题是否为深色选一套。
+    /// Pick a set by whether the theme is dark.
     pub(super) fn for_dark(dark: bool) -> Self {
         if dark {
             SYN_DARK
@@ -73,7 +73,7 @@ impl SyntaxPalette {
     }
 }
 
-/// 按语法扫描文本，返回 `(字节起, 字节止, 颜色)` 段落（边界均在字符边界上）。
+/// Scan text per syntax; returns `(byte start, byte end, color)` segments (boundaries all on character edges).
 pub(super) fn syntax_tokens_with(
     text: &str,
     syntax: PreviewSyntax,
@@ -86,7 +86,7 @@ pub(super) fn syntax_tokens_with(
     }
 }
 
-/// JSON / JSONC：字符串（键与值分开着色）、注释、数字、字面量、标点。
+/// JSON / JSONC: strings (keys and values colored separately), comments, numbers, literals, punctuation.
 pub(super) fn json_tokens_with(
     text: &str,
     pal: SyntaxPalette,
@@ -111,7 +111,7 @@ pub(super) fn json_tokens_with(
     out
 }
 
-/// 扫描一个 JSON 字符串（含两侧引号）并着色，返回结束位置。
+/// Scan and color one JSON string (both quotes included); returns the end position.
 fn json_string_at(
     b: &[u8],
     start: usize,
@@ -130,7 +130,7 @@ fn json_string_at(
         }
     }
     let end = i.min(b.len());
-    // 后面紧跟冒号则为对象键。
+    // A following colon makes it an object key.
     let color = if json_followed_by_colon(b, end) {
         pal.key
     } else {
@@ -140,7 +140,7 @@ fn json_string_at(
     end
 }
 
-/// 跳过空白后是否为 `:`：用于判断字符串是对象键还是普通值。
+/// After skipping whitespace, is the next char `:`: decides whether a string is an object key or a plain value.
 fn json_followed_by_colon(b: &[u8], from: usize) -> bool {
     let mut j = from;
     while j < b.len() && (b[j] as char).is_ascii_whitespace() {
@@ -149,7 +149,7 @@ fn json_followed_by_colon(b: &[u8], from: usize) -> bool {
     b.get(j) == Some(&b':')
 }
 
-/// `//` 行注释：着色到行尾（不含换行）。
+/// `//` line comment: colored to end of line (newline excluded).
 fn json_line_comment_at(
     b: &[u8],
     start: usize,
@@ -164,7 +164,7 @@ fn json_line_comment_at(
     i
 }
 
-/// `/* ... */` 块注释：未闭合时着色到文本末尾。
+/// `/* ... */` block comment: unclosed ones color to the text's end.
 fn json_block_comment_at(
     b: &[u8],
     start: usize,
@@ -180,7 +180,7 @@ fn json_block_comment_at(
     end
 }
 
-/// 数字（含前导 `-` 与指数部分）。
+/// Numbers (leading `-` and exponent included).
 fn json_number_at(
     b: &[u8],
     start: usize,
@@ -199,7 +199,7 @@ fn json_number_at(
     i
 }
 
-/// 字面量 `true` / `false` / `null`；未命中则前进一个字节。
+/// Literals `true` / `false` / `null`; on no match, advance one byte.
 fn json_literal_at(
     text: &str,
     i: usize,
@@ -216,7 +216,7 @@ fn json_literal_at(
     i + 1
 }
 
-/// YAML：注释、`---` 文档标记、列表项、键、引号/裸标量、数字、布尔。
+/// YAML: comments, `---` document markers, list items, keys, quoted/bare scalars, numbers, booleans.
 pub(super) fn yaml_tokens_with(
     text: &str,
     pal: SyntaxPalette,
@@ -237,7 +237,7 @@ pub(super) fn yaml_tokens_with(
     out
 }
 
-/// 当前行换行符位置（无换行则为文本末尾）。
+/// The current line's newline position (text end when there is none).
 fn yaml_line_end(b: &[u8], line_start: usize) -> usize {
     b[line_start..]
         .iter()
@@ -246,7 +246,7 @@ fn yaml_line_end(b: &[u8], line_start: usize) -> usize {
         .unwrap_or(b.len())
 }
 
-/// 跳过行首空格 / 制表符后的位置。
+/// The position after skipping leading spaces / tabs.
 fn yaml_indent_end(b: &[u8], line_start: usize, line_end: usize) -> usize {
     let mut i = line_start;
     while i < line_end && (b[i] == b' ' || b[i] == b'\t') {
@@ -255,7 +255,7 @@ fn yaml_indent_end(b: &[u8], line_start: usize, line_end: usize) -> usize {
     i
 }
 
-/// 行首标记：`---` / `...` 文档标记、`- ` 列表项、`key:` 键；返回值扫描起点。
+/// Line-start markers: `---` / `...` document markers, `- ` list items, `key:` keys; returns the scan start.
 fn yaml_head_token(
     b: &[u8],
     i: usize,
@@ -271,12 +271,12 @@ fn yaml_head_token(
         return i;
     }
     let mut i = i;
-    // 列表项 "- "
+    // List item "- "
     if b[i] == b'-' && (i + 1 >= line_end || b[i + 1] == b' ' || b[i + 1] == b'\t') {
         out.push((i, i + 1, pal.punct));
         i += 1;
     }
-    // 键：到 ':' 为止（行内 '#' 起为注释）
+    // Key: up to ':' (an inline '#' starts a comment)
     if let Some(colon) = yaml_key_colon(b, i, line_end) {
         if colon > i {
             out.push((i, colon, pal.key));
@@ -287,7 +287,7 @@ fn yaml_head_token(
     i
 }
 
-/// 行内第一个键分隔冒号；遇到注释起点则视为无键。
+/// The line's first key-separator colon; a comment start before it means no key.
 fn yaml_key_colon(b: &[u8], from: usize, line_end: usize) -> Option<usize> {
     let mut j = from;
     while j < line_end {
@@ -302,7 +302,7 @@ fn yaml_key_colon(b: &[u8], from: usize, line_end: usize) -> Option<usize> {
     None
 }
 
-/// 行内值部分：空白、注释、引号标量、数字、裸标量。
+/// The line's value part: whitespace, comments, quoted scalars, numbers, bare scalars.
 fn yaml_value_tokens(
     text: &str,
     b: &[u8],
@@ -326,7 +326,7 @@ fn yaml_value_tokens(
     }
 }
 
-/// 引号标量：`"` 支持反斜杠转义，`'` 不支持；未闭合时着色到行尾。
+/// Quoted scalars: `"` supports backslash escapes, `'` doesn't; unclosed colors to end of line.
 fn yaml_quoted_at(
     b: &[u8],
     start: usize,
@@ -351,7 +351,7 @@ fn yaml_quoted_at(
     i
 }
 
-/// 数字（含前导 `-` 与指数部分）。
+/// Numbers (leading `-` and exponent included).
 fn yaml_number_at(
     b: &[u8],
     start: usize,
@@ -372,7 +372,7 @@ fn yaml_number_at(
     i
 }
 
-/// 裸标量：布尔 / null / `~` 等着色为字面量，其余为字符串。
+/// Bare scalars: booleans / null / `~` etc. color as literals, the rest as strings.
 fn yaml_plain_scalar(
     text: &str,
     b: &[u8],
@@ -397,9 +397,9 @@ fn yaml_plain_scalar(
     i
 }
 
-/// TOML：`[表头]`、`[[数组表头]]`、`key = value`、注释、引号字符串、数组、数字、布尔。
+/// TOML: `[table headers]`, `[[array headers]]`, `key = value`, comments, quoted strings, arrays, numbers, booleans.
 ///
-/// 注释符为 `#`（行内任意位置），键值分隔符为 `=`，表头用方括号。
+/// The comment marker is `#` (anywhere inline), the key-value separator is `=`, and headers use brackets.
 pub(super) fn toml_tokens_with(
     text: &str,
     pal: SyntaxPalette,
@@ -410,7 +410,7 @@ pub(super) fn toml_tokens_with(
     while line_start <= b.len() {
         let line_end = toml_line_end(b, line_start);
         let i = toml_indent_end(b, line_start, line_end);
-        // 整行注释 / 空行
+        // Whole-line comment / empty line
         if i >= line_end || b[i] == b'#' {
             if i < line_end {
                 out.push((i, line_end, pal.comment));
@@ -437,7 +437,7 @@ pub(super) fn toml_tokens_with(
     out
 }
 
-/// 当前行换行符位置（无换行则为文本末尾）。
+/// The current line's newline position (text end when there is none).
 fn toml_line_end(b: &[u8], line_start: usize) -> usize {
     b[line_start..]
         .iter()
@@ -446,7 +446,7 @@ fn toml_line_end(b: &[u8], line_start: usize) -> usize {
         .unwrap_or(b.len())
 }
 
-/// 跳过行首空格 / 制表符后的位置。
+/// The position after skipping leading spaces / tabs.
 fn toml_indent_end(b: &[u8], line_start: usize, line_end: usize) -> usize {
     let mut i = line_start;
     while i < line_end && (b[i] == b' ' || b[i] == b'\t') {
@@ -455,10 +455,10 @@ fn toml_indent_end(b: &[u8], line_start: usize, line_end: usize) -> usize {
     i
 }
 
-/// 表头 `[…]` / `[[…]]`：括号着色为标点，表名着色为键。
+/// Headers `[…]` / `[[…]]`: brackets color as punctuation, table names as keys.
 ///
-/// 表名可以是裸键（`providers.sensenova`）或带引号的键；引号内的 `]` 不结束表头，
-/// 引号内的 `#` 也不是注释。
+/// Table names may be bare keys (`providers.sensenova`) or quoted; a `]` inside quotes doesn't end the
+/// header, and a `#` inside quotes isn't a comment.
 fn toml_table_header(
     b: &[u8],
     start: usize,
@@ -498,7 +498,7 @@ fn toml_table_header(
     if i > name_start {
         out.push((name_start, i, pal.key));
     }
-    // 收尾的 `]` / `]]`
+    // The closing `]` / `]]`
     let close = i.min(line_end);
     if close < line_end {
         let n = if double && b.get(close + 1) == Some(&b']') {
@@ -510,13 +510,13 @@ fn toml_table_header(
     }
 }
 
-/// 表头行里 `]` 之后的位置（理论上只剩空白与注释）。
+/// The position after `]` in a header line (theoretically only whitespace and comments remain).
 fn toml_after_header(b: &[u8], start: usize, line_end: usize) -> usize {
     let mut i = start;
     while i < line_end && b[i] == b'[' {
         i += 1;
     }
-    // 找第一个不在引号内的 `]`
+    // Find the first `]` outside quotes
     let mut in_quote: Option<u8> = None;
     while i < line_end {
         let c = b[i];
@@ -546,8 +546,8 @@ fn toml_after_header(b: &[u8], start: usize, line_end: usize) -> usize {
     i
 }
 
-/// 行首的键与 `=`：键着色为 key（含引号键与点号分隔的多段键），`=` 着色为标点。
-/// 返回值的扫描起点（`=` 之后）。
+/// A line-leading key and `=`: the key colors as key (quoted keys and dot-separated multi-segment keys included),
+/// `=` as punctuation. Returns the scan start (after the `=`).
 fn toml_key_and_eq(
     b: &[u8],
     start: usize,
@@ -560,11 +560,11 @@ fn toml_key_and_eq(
         i += 1;
     }
     if i >= line_end {
-        // 没有 `=` 的行（畸形输入）：整行按字符串着色。
+        // Lines without `=` (malformed input): the whole line colors as a string.
         out.push((start, line_end, pal.string));
         return line_end;
     }
-    // 键部分：去掉右侧空白再着色。
+    // The key part: trim right-side whitespace before coloring.
     let mut key_end = i;
     while key_end > start && (b[key_end - 1] == b' ' || b[key_end - 1] == b'\t') {
         key_end -= 1;
@@ -576,7 +576,7 @@ fn toml_key_and_eq(
     i + 1
 }
 
-/// 行内值部分：空白、注释、引号串、数组 / 内联表、数字、布尔与日期。
+/// The line's value part: whitespace, comments, quoted strings, arrays / inline tables, numbers, booleans, and dates.
 fn toml_value_tokens(
     text: &str,
     b: &[u8],
@@ -605,7 +605,7 @@ fn toml_value_tokens(
     }
 }
 
-/// 引号串：`"` 支持反斜杠转义，`'` 不支持；未闭合时着色到行尾。
+/// Quoted strings: `"` supports backslash escapes, `'` doesn't; unclosed colors to end of line.
 fn toml_quoted_at(
     b: &[u8],
     start: usize,
@@ -630,7 +630,7 @@ fn toml_quoted_at(
     i
 }
 
-/// 数字（含前导符号、小数、指数、下划线分隔、日期里的 `-` / `:`）。
+/// Numbers (leading sign, decimals, exponents, underscore separators, and `-` / `:` inside dates).
 fn toml_number_at(
     b: &[u8],
     start: usize,
@@ -651,7 +651,7 @@ fn toml_number_at(
     i
 }
 
-/// 裸值：`true` / `false` 着色为字面量，其余按字符串。
+/// Bare values: `true` / `false` color as literals, the rest as strings.
 fn toml_bare_at(
     text: &str,
     b: &[u8],
@@ -675,9 +675,9 @@ fn toml_bare_at(
     i
 }
 
-/// 把查找命中的底色叠加到已按语法着色的 LayoutJob 上（按 section 拆分）。
+/// Overlay find-hit backgrounds onto an already syntax-colored LayoutJob (splitting by section).
 ///
-/// 命中区同时换成配套的前景色。
+/// The hit region also switches to the matching foreground color.
 pub(super) fn apply_find_background(
     job: &mut egui::text::LayoutJob,
     matches: &[(usize, usize)],

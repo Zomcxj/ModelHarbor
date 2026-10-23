@@ -1,4 +1,4 @@
-//! oh-my-pi 后端：双方言加载 / thinking 翻译 / raw 保留 / YAML 往返。
+//! The oh-my-pi backend: dual-dialect loading / thinking translation / raw preservation / YAML round trips.
 
 use model_harbor_core::backends;
 use model_harbor_core::backends::oh_my_pi::{model_to_omp, provider_to_omp};
@@ -57,22 +57,22 @@ fn load_omp(content: &str) -> model_harbor_core::backends::BackendLoad {
 #[test]
 fn detect_yml_files_as_oh_my_pi() {
     let b = backends::backend(ConfigFormat::OhMyPi);
-    // .yml + YAML 语法
+    // .yml + YAML syntax
     assert!(b.detect("providers:\n  a:\n", "models.yml"));
-    // .yml + JSON 语法
+    // .yml + JSON syntax
     assert!(b.detect("{\"providers\": {}}", "models.yml"));
-    // .json 归 pi
+    // .json goes to pi
     assert!(!b.detect("{\"providers\": {}}", "models.json"));
-    // 无扩展名：JSON 语法归 pi，纯 YAML 归 omp
+    // No extension: JSON syntax → pi, pure YAML → omp
     assert!(!b.detect("{\"providers\": {}}", ""));
     assert!(b.detect("providers:\n  a:\n", ""));
-    // 无 providers 键
+    // No providers key
     assert!(!b.detect("foo: bar\n", "models.yml"));
 }
 
 #[test]
 fn detect_format_registry_order() {
-    // 注册表顺序：omp 在 pi 前，.yml 命中 omp
+    // Registry order: omp before pi, so .yml hits omp
     assert_eq!(
         backends::detect_format("{\"providers\": {}}", "models.yml"),
         ConfigFormat::OhMyPi
@@ -92,16 +92,16 @@ fn parse_omp_thinking_block_into_variants() {
     let load = load_omp(&omp_yaml());
     assert_eq!(load.providers.len(), 1);
     let m = &load.providers[0].models[0];
-    // efforts（无 effortMap）→ variants
+    // efforts (no effortMap) → variants
     assert_eq!(m.variants, "medium, high, xhigh, max");
-    // omp 扩展字段保留在 raw
+    // omp extension fields stay in raw
     assert!(m.raw.get("cost").is_some());
     assert!(m.raw["thinking"]["defaultLevel"].is_string());
 }
 
 #[test]
 fn parse_pi_dialect_thinking_level_map_in_yaml() {
-    // YAML 中的 pi 风格 thinkingLevelMap 也能读
+    // A pi-style thinkingLevelMap in YAML reads too
     let content = "providers:\n  p:\n    baseUrl: https://x/v1\n    api: openai-completions\n    apiKey: k\n    models:\n    - id: m\n      reasoning: true\n      thinkingLevelMap:\n        high: max\n";
     let load = load_omp(content);
     let m = &load.providers[0].models[0];
@@ -113,7 +113,7 @@ fn omp_round_trip_preserves_thinking_block() {
     let load = load_omp(&omp_yaml());
     let b = backends::backend(ConfigFormat::OhMyPi);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
-    // 整块保留（含 defaultLevel）
+    // Preserved whole (defaultLevel included)
     let t = &root["providers"]["gw"]["models"][0]["thinking"];
     assert_eq!(t["mode"], json!("effort"));
     assert_eq!(t["defaultLevel"], json!("high"));
@@ -122,7 +122,7 @@ fn omp_round_trip_preserves_thinking_block() {
 
 #[test]
 fn pi_asymmetric_map_translates_to_effort_map() {
-    // pi 方言 {high: max} → omp {mode: effort, efforts: [high], effortMap: {high: max}}
+    // The pi dialect {high: max} → omp {mode: effort, efforts: [high], effortMap: {high: max}}
     let content = "providers:\n  p:\n    baseUrl: https://x/v1\n    api: openai-completions\n    apiKey: k\n    models:\n    - id: m\n      reasoning: true\n      thinkingLevelMap:\n        high: max\n";
     let load = load_omp(content);
     let m = &load.providers[0].models[0];
@@ -130,7 +130,7 @@ fn pi_asymmetric_map_translates_to_effort_map() {
     assert_eq!(out["thinking"]["mode"], json!("effort"));
     assert_eq!(out["thinking"]["efforts"], json!(["high"]));
     assert_eq!(out["thinking"]["effortMap"], json!({"high": "max"}));
-    // pi 方言键不得残留
+    // No pi-dialect keys may remain
     assert!(out.get("thinkingLevelMap").is_none());
 }
 
@@ -152,7 +152,7 @@ fn omp_asymmetric_effort_map_translates_back_to_pi() {
 
 #[test]
 fn omp_symmetric_map_omits_effort_map() {
-    // 对称 thinkingLevelMap {medium: medium} → efforts: [medium]
+    // A symmetric thinkingLevelMap {medium: medium} → efforts: [medium]
     let mut m = ModelRow::new();
     m.id = "m".into();
     m.variants = "medium".into();
@@ -170,20 +170,20 @@ fn provider_raw_fields_preserved_on_save() {
     let load = load_omp(&omp_yaml());
     let p = &load.providers[0];
     let out = provider_to_omp(p);
-    // omp 扩展字段原样保留
+    // omp extension fields preserved verbatim
     assert_eq!(out["authHeader"], json!(true));
     assert_eq!(out["headers"]["X-Team"], json!("platform"));
     assert_eq!(out["discovery"]["type"], json!("openai-models-list"));
-    // compat：false 时写入，保留其他 compat 键
+    // compat: written when false, other compat keys kept
     assert_eq!(out["compat"]["supportsDeveloperRole"], json!(false));
     assert_eq!(out["compat"]["maxTokensField"], json!("max_tokens"));
-    // 模型扩展字段（cost）保留
+    // Model extension fields (cost) preserved
     assert!(out["models"][0]["cost"].is_object());
 }
 
 #[test]
 fn omp_requires_reasoning_content_written_from_opencode_source() {
-    // 加载 opencode（无该字段）→ omp 页面默认不勾选，保存时写入 false
+    // Loaded from opencode (field absent) → the omp page defaults unchecked, saving writes false
     let raw = json!({
         "options": {"baseURL": "https://x/v1", "apiKey": "sk-test"},
         "models": {}
@@ -211,14 +211,14 @@ fn provider_compat_true_removes_flag_keeps_other_keys() {
         "compat": {"supportsDeveloperRole": false, "extraBody": {"gw": "m1"}}
     });
     let out = provider_to_omp(&p);
-    // UI compat=true → 移除 supportsDeveloperRole，保留 extraBody
+    // UI compat=true → removes supportsDeveloperRole, keeps extraBody
     assert!(out["compat"].get("supportsDeveloperRole").is_none());
     assert_eq!(out["compat"]["extraBody"]["gw"], json!("m1"));
 }
 
 #[test]
 fn opencode_source_builds_fresh_omp_objects() {
-    // opencode 方言 raw（options/limit/variants）不得泄漏进 omp 输出
+    // opencode-dialect raw (options/limit/variants) must not leak into omp output
     let mut p = ProviderRow::new();
     p.key = "p".into();
     p.base_url = "https://x/v1".into();
@@ -265,7 +265,7 @@ fn yaml_render_round_trip_with_special_ids() {
     let load = load_omp(&omp_yaml());
     let b = backends::backend(ConfigFormat::OhMyPi);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
-    // 注入需要引号的 id（裸 [ 开头是 YAML 流序列）
+    // Inject an id needing quotes (a bare [ opening is a YAML flow sequence)
     let mut root2 = root;
     root2["providers"]["gw"]["models"][0]["id"] = json!("[次]m1");
     let yaml_text = b.render(&root2, false).expect("YAML 渲染失败");
@@ -308,7 +308,7 @@ fn load_backend_reads_yaml_file() {
 
 #[test]
 fn real_user_models_yml_round_trip() {
-    // 开发机冒烟：真实用户配置往返（路径按环境变量取，文件不存在则跳过）
+    // Dev-machine smoke test: a real user config round trip (path from env; skipped when the file is missing)
     let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) else {
         return;
     };
@@ -320,7 +320,7 @@ fn real_user_models_yml_round_trip() {
     let b = backends::backend(ConfigFormat::OhMyPi);
     let load = b.parse(&content).expect("真实 models.yml 解析失败");
     assert!(!load.providers.is_empty());
-    // 所有模型的 thinking 块必须能读入 variants 且往返保留
+    // Every model's thinking block must parse into variants and survive the round trip
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
     for (key, pv) in root["providers"].as_object().unwrap() {
         for mv in pv["models"].as_array().unwrap() {
@@ -348,14 +348,14 @@ fn real_user_models_yml_round_trip() {
             }
         }
     }
-    // 渲染为合法 YAML
+    // Renders as valid YAML
     let yaml_text = b.render(&root, false).expect("渲染失败");
     parse_yaml_content(&yaml_text).expect("渲染结果必须可回读");
 }
 
 #[test]
 fn provider_to_omp_places_compat_between_api_and_models() {
-    // 与 pi 一致：compat 跟在 api 之后、models 之前。
+    // Same as pi: compat after api, before models.
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
     provider.base_url = "https://example.com/v1".into();
@@ -377,7 +377,7 @@ fn provider_to_omp_places_compat_between_api_and_models() {
 
 #[test]
 fn omp_variants_written_in_canonical_order() {
-    // omp 的 thinking.efforts 同样按规范档位顺序写出。
+    // omp's thinking.efforts also writes in canonical tier order.
     let mut model = model_harbor_core::model::ModelRow::new();
     model.id = "m".into();
     model.variants = "max, minimal, high".into();

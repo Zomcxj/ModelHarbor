@@ -1,28 +1,28 @@
-//! 汇总成 [`Billing`]，以及卡片主行与悬停详情的文案。
+//! Aggregate into [`Billing`], plus the card's main line and hover detail text.
 use super::*;
 
-/// [`parse_token_billing`] 的输入。
+/// Input of [`parse_token_billing`].
 pub struct TokenInputs<'a> {
-    /// 令牌额度接口的结果；该接口不存在时为 `None`。
+    /// The token-quota endpoint's result; `None` when the endpoint doesn't exist.
     pub usage: Option<&'a TokenUsage>,
     pub logs: &'a [LogEntry],
     pub units: &'a Units,
     pub status_json: Option<&'a str>,
-    /// 当前时间（秒级 Unix 时间戳）。
+    /// Current time (second-resolution Unix timestamp).
     pub now: i64,
-    /// 本地时区今天 0 点。
+    /// The local timezone's midnight today.
     pub today_from: i64,
     pub note: Option<String>,
 }
 
-/// 汇总「令牌额度 + 调用日志 + 站点单位」→ 卡片摘要。
+/// Aggregate "token quota + call logs + station units" → card summary.
 pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
     let unit = inputs.units.quota_per_unit;
     let to_money = |points: f64| points / unit;
     let today = summarize_logs(inputs.logs, Some(inputs.today_from));
     let week = summarize_logs(inputs.logs, Some(inputs.now - 7 * 86_400));
-    // 只请求首个分页，今日 / 近 7 天统计可能偏小。
-    // 额度接口缺失时日志统计照常出，额度三项留空。
+    // Only the first page is requested, so today / last-7-days stats may undercount.
+    // When the quota endpoint is missing, log stats still emit with the three quota fields left empty.
     let unlimited = inputs.usage.is_some_and(|usage| usage.unlimited);
     Billing {
         panel: parse_panel(inputs.status_json),
@@ -33,7 +33,7 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
             Some(_) => Shape::TokenQuota,
         },
         used_usd: inputs.usage.and_then(|usage| usage.used).map(to_money),
-        // 不限额度时没有余额与上限。
+        // Unlimited quota has no balance or cap.
         balance_usd: inputs
             .usage
             .filter(|usage| !usage.unlimited)
@@ -54,7 +54,7 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
             .map(|(name, quota)| (name.clone(), to_money(*quota)))
             .collect(),
         week_usd: (week.count > 0).then(|| to_money(week.quota)),
-        // 到期：0 / 负值（无期限）不算到期；标签应用层填。
+        // Expiry: 0 / negative (no expiry) doesn't count; labels are filled by the app layer.
         expires: inputs
             .usage
             .and_then(|usage| usage.expires_at)
@@ -70,7 +70,7 @@ pub fn parse_token_billing(inputs: TokenInputs<'_>) -> Billing {
 }
 
 impl Billing {
-    /// 跨日本地快照隐藏“今日”字段，保留累计、余额与近 7 天。
+    /// A local midnight rollover hides the "today" fields, keeping lifetime, balance, and last-7-days.
     pub fn expire_today(&mut self) {
         self.today_usd = None;
         self.today_calls = None;
@@ -78,9 +78,9 @@ impl Billing {
         self.today_stale = true;
     }
 
-    /// 是否一个可用数字都没有（没余额、没已用、没今日、没原值）。
+    /// Whether not a single usable number exists (no balance, no usage, no today, no raw values).
     ///
-    /// 界面用它配合 [`Shape::Unknown`] 把这类站点隐掉。
+    /// The UI uses it with [`Shape::Unknown`] to hide such stations.
     pub fn is_empty(&self) -> bool {
         self.used_usd.is_none()
             && self.balance_usd.is_none()
@@ -88,9 +88,9 @@ impl Billing {
             && self.raw_credit.is_none()
     }
 
-    /// 卡片上的一行摘要。
+    /// One summary line on the card.
     pub fn inline(&self) -> String {
-        // 账号级数据优先。
+        // Account-level data wins.
         if let Some(account) = &self.account {
             let parts = self.account_parts(account);
             return if parts.is_empty() {
@@ -102,14 +102,14 @@ impl Billing {
         self.inline_token_or_compat()
     }
 
-    /// 把签到段接到摘要行末尾；没数据则不接。
+    /// Append the check-in segment to the summary line's end; skipped when there's no data.
     fn push_checkin(&self, parts: &mut Vec<String>) {
         if let Some(status) = &self.checkin {
             parts.push(format!("签到 {}", checkin_short(status)));
         }
     }
 
-    /// 把到期紧迫度接到摘要行末尾；只在临近（≤7 天）或已过期时才占一格。
+    /// Append expiry urgency to the summary line's end; takes a slot only when near (≤7 days) or expired.
     fn push_expiry(&self, parts: &mut Vec<String>) {
         if let Some(expiry) = &self.expires {
             match expiry.days_left {
@@ -120,12 +120,12 @@ impl Billing {
         }
     }
 
-    /// 有账号数据时的摘要各段：账号余额 + 已用（没余额时单说已用 / 请求数），其次今日。
+    /// Summary segments when account data exists: account balance + used (usage / request count alone when there's no balance), then today.
     fn account_parts(&self, account: &AccountInfo) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
         if let Some(balance) = account.balance_usd {
             parts.push(format!("账号余额 {}", money(balance)));
-            // 已用紧跟余额。
+            // Used follows the balance.
             if let Some(used) = account.used_usd {
                 parts.push(format!("已用 {}", money(used)));
             }
@@ -145,24 +145,24 @@ impl Billing {
         }
         self.push_checkin(&mut parts);
         self.push_expiry(&mut parts);
-        // 到期紧迫度：只在临近（≤7 天）或已过期时才占一格。
+        // Expiry urgency: takes a slot only when near (≤7 days) or expired.
         parts
     }
 
-    /// 没有账号数据时的短行（令牌额度 / 兼容账单）。
+    /// The short line without account data (token quota / compatible billing).
     fn inline_token_or_compat(&self) -> String {
-        // 面板账户 / 令牌额度：最多两段，有余额先显余额，其次今日用量。
+        // Panel account / token quota: at most two segments — balance first when present, then today's usage.
         if matches!(self.source, Source::Token | Source::Sub2api) {
             let mut parts: Vec<String> = Vec::new();
             match (self.balance_usd, self.used_usd) {
                 (Some(balance), _) => parts.push(format!("余额 {}", money(balance))),
-                // 不限额度站只显已用。
+                // Unlimited stations show usage only.
                 (None, Some(used)) => parts.push(format!("已用 {}", money(used))),
                 (None, None) => {}
             }
             match (self.today_usd, self.used_usd) {
                 (Some(today), _) => parts.push(format!("今日 {}", money(today))),
-                // 拿不到今日时用累计，只在已有余额时补。
+                // Without today's data, lifetime substitutes — appended only when a balance already shows.
                 (None, Some(used)) if self.balance_usd.is_some() => {
                     parts.push(format!("累计 {}", money(used)))
                 }
@@ -188,20 +188,20 @@ impl Billing {
         }
     }
 
-    /// 是否有可展示的用量结果（Unknown / 空数据隐藏）。
+    /// Whether there's a presentable usage result (Unknown / empty data hides).
     ///
-    /// 账号数据单独就能让卡片显示。
+    /// Account data alone can make the card display.
     pub fn is_displayable(&self) -> bool {
-        // 签到状态也算可展示数据。
+        // Check-in status also counts as presentable data.
         self.has_token_side() || self.account.is_some() || self.checkin.is_some()
     }
 
-    /// 令牌侧（令牌额度 / 兼容账单）是否真有可展示数据。
+    /// Whether the token side (token quota / compatible billing) truly has presentable data.
     fn has_token_side(&self) -> bool {
         self.shape != Shape::Unknown && !self.is_empty()
     }
 
-    /// 卡片上的一行完整用量，列出能拿到的字段（余额 / 累计 / 今日 + 请求数 / 近 7 天）。
+    /// One full usage line on the card, listing every obtainable field (balance / lifetime / today + requests / last 7 days).
     pub fn inline_full(&self) -> String {
         let parts = self.summary_parts();
         if parts.is_empty() {
@@ -210,14 +210,14 @@ impl Billing {
         parts.join(" · ")
     }
 
-    /// 卡片主行要突出的那一个数字（余额优先，其次已用）。
+    /// The number the card's main line highlights (balance first, then usage).
     ///
-    /// 取不到时返回 `None`。
+    /// Returns `None` when nothing is available.
     pub fn headline(&self) -> Option<String> {
         self.summary_parts().into_iter().next()
     }
 
-    /// 主行除 [`Billing::headline`] 之外的其余数字（字号降一档显示）。
+    /// The main line's remaining numbers besides [`Billing::headline`] (displayed one font size smaller).
     pub fn inline_rest(&self) -> String {
         let parts = self.summary_parts();
         if parts.len() <= 1 {
@@ -226,9 +226,9 @@ impl Billing {
         parts[1..].join(" · ")
     }
 
-    /// 摘要各段，顺序即优先级（第一段作为主数字）。
+    /// The summary's segments, in priority order (the first is the headline number).
     fn summary_parts(&self) -> Vec<String> {
-        // 账号级余额优先。
+        // Account-level balance wins.
         if let Some(account) = &self.account {
             return Self::account_parts(self, account);
         }
@@ -259,21 +259,21 @@ impl Billing {
         parts
     }
 
-    /// 悬停提示：完整说明与口径来源。
+    /// The hover tip: full explanation and the data's provenance.
     pub fn detail(&self) -> String {
         let mut lines: Vec<String> = Vec::new();
         if !self.panel.is_empty() {
             lines.push(format!("面板：{}", self.panel));
         }
-        // 账号数据与令牌数据是两套口径，同时存在时分节列出。
+        // Account and token data are two accounting systems; listed in sections when both exist.
         if let Some(account) = &self.account {
             lines.extend(Self::account_lines(account));
         }
-        // 签到也是账号级信息，跟账号那节排在一起。
+        // Check-in is also account-level info, grouped with the account section.
         if let Some(status) = &self.checkin {
             lines.push(format!("签到：{}", checkin_long(status)));
         }
-        // 面板按天用量（/api/data/self）：含非本机用量，注明口径。
+        // Panel per-day usage (/api/data/self): includes non-local usage — the accounting is noted.
         if !self.panel_days.is_empty() {
             lines.push("面板按天（站点统计，含非本机用量）".to_string());
             for day in &self.panel_days {
@@ -288,7 +288,7 @@ impl Billing {
         let has_account_side =
             self.account.is_some() || self.checkin.is_some() || !self.panel_days.is_empty();
         if has_account_side && !self.has_token_side() {
-            // 只有账号 / 签到数据：不写空的「本令牌」分节。
+            // Account / check-in data only: don't write an empty "this token" section.
             return lines.join("\n");
         }
         if has_account_side {
@@ -300,9 +300,9 @@ impl Billing {
         self.detail_compat(lines)
     }
 
-    /// 账号级额度（`/api/user/self`）的悬停说明。
+    /// The hover note for account-level quota (`/api/user/self`).
     ///
-    /// 每项合并成「额度一行、计数与分组一行」，「同站点共用」在标题里标出。
+    /// Items merge into "quota on one line, counts and group on another"; "shared per station" is flagged in the title.
     fn account_lines(account: &AccountInfo) -> Vec<String> {
         let mut lines = vec!["账号级额度（面板访问令牌，同站点共用）".to_string()];
         let mut amounts: Vec<String> = Vec::new();
@@ -328,7 +328,7 @@ impl Billing {
         lines
     }
 
-    /// 兼容账单（`/dashboard/billing/*`）的悬停说明。
+    /// The hover note for compatible billing (`/dashboard/billing/*`).
     fn detail_compat(&self, mut lines: Vec<String>) -> String {
         if let Some(used) = self.used_usd {
             lines.push(format!("已用：{}", money(used)));
@@ -348,9 +348,9 @@ impl Billing {
         lines.join("\n")
     }
 
-    /// 令牌额度（`/api/usage/token/` + `/api/log/token`）的悬停详情。
+    /// The hover details for token quota (`/api/usage/token/` + `/api/log/token`).
     fn detail_token(&self, mut lines: Vec<String>) -> String {
-        // 额度接口缺失（`Shape::TokenLogsOnly`）时不写额度行。
+        // With the quota endpoint missing (`Shape::TokenLogsOnly`), no quota line is written.
         if self.unlimited {
             lines.push("额度：不限".to_string());
         }

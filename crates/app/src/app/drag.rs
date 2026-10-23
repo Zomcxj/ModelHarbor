@@ -1,9 +1,9 @@
 use super::*;
 
 impl super::App {
-    /// 是否有任意拖动源正在拖拽。
+    /// Whether any drag source is currently dragging.
     ///
-    /// 页签（后端图标）也是拖动源；自定义抓取光标整窗生效。
+    /// Tabs (backend icons) are drag sources too; the custom grab cursor takes effect window-wide.
     pub(in crate::app) fn is_dragging_anything(&self) -> bool {
         self.agent_drag_src.is_some()
             || self.provider_drag_src.is_some()

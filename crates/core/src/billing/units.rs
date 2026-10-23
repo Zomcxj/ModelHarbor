@@ -1,27 +1,27 @@
-//! 单位与额度：`quota` ↔ 美元、令牌额度接口、站点换算比。
+//! Units and quota: `quota` ↔ USD, the token-quota endpoint, the station's conversion ratio.
 use serde_json::Value;
 
-/// 额度 ≥ 该值即视为占位。
+/// A quota at or above this counts as a placeholder.
 pub const PLACEHOLDER_LIMIT_USD: f64 = 1_000_000.0;
 
-/// 面板账户的额度单位：`quota` ÷ 该值 = 美元（New-API / one-api 固定 500000）。
+/// The panel account's quota unit: `quota` ÷ this = USD (New-API / one-api fix it at 500000).
 pub const QUOTA_PER_USD: f64 = 500_000.0;
 
-/// 站点日志接口单页最多返回的条数；达到该数认为统计可能偏小。
+/// The max entries the station's log endpoint returns per page; reaching it means stats may undercount.
 pub const LOG_PAGE_LIMIT: usize = 1000;
 
-/// 站点单位设置（`/api/status`）：quota 点 ↔ 货币的换算依据。
+/// The station's unit settings (`/api/status`): the basis for converting quota points ↔ currency.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Units {
-    /// 1 单位货币 = 多少 quota 点（站点可改，默认 500000）。
+    /// How many quota points one currency unit is (station-configurable, default 500000).
     pub quota_per_unit: f64,
-    /// 展示币种（`USD` / `CNY` / 空）。
+    /// The display currency (`USD` / `CNY` / empty).
     pub currency: String,
-    /// 站点未给换算比时为 `true`。
+    /// `true` when the station gave no conversion ratio.
     pub assumed: bool,
 }
 
-/// 解析 `/api/status` 里的换算字段（拿不到就给默认值并标记 `assumed`）。
+/// Parse the conversion fields in `/api/status` (defaults + `assumed` when unavailable).
 pub fn parse_units(status_json: Option<&str>) -> Units {
     let fallback = Units {
         quota_per_unit: QUOTA_PER_USD,
@@ -50,21 +50,21 @@ pub fn parse_units(status_json: Option<&str>) -> Units {
     }
 }
 
-/// 令牌额度信息（`/api/usage/token/`，**只需 `sk-` key**）；数值单位是 quota 点。
+/// Token quota info (`/api/usage/token/`, **only needs the `sk-` key**); values are quota points.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TokenUsage {
-    /// 令牌名（面板里显示的名字）。
+    /// The token's name (as shown in the panel).
     pub name: String,
-    /// 不计额度；此时只有 `used` 有意义。
+    /// Quota-free; only `used` is meaningful then.
     pub unlimited: bool,
     pub granted: Option<f64>,
     pub used: Option<f64>,
     pub available: Option<f64>,
-    /// 到期时间（秒级 Unix 时间戳，0 表示无期限）。
+    /// The expiry time (second-resolution Unix timestamp, 0 = no expiry).
     pub expires_at: Option<f64>,
 }
 
-/// 解析令牌额度；没有可用字段时返回 `None`（视为该站不支持）。
+/// Parse the token quota; `None` when no usable field exists (the station doesn't support it).
 pub fn parse_token_usage(json: &str) -> Option<TokenUsage> {
     let root = serde_json::from_str::<Value>(json).ok()?;
     let data = root.get("data")?;

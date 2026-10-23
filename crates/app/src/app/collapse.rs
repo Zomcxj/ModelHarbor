@@ -1,12 +1,12 @@
 use super::*;
 
 impl super::App {
-    /// provider 卡片是否处于折叠状态。
+    /// Whether a provider card is collapsed.
     pub(in crate::app) fn provider_collapsed(&self, key: &str) -> bool {
         self.collapsed.contains(&self.card_id("providers", key))
     }
 
-    /// 设置 provider 卡片折叠状态。
+    /// Set a provider card's collapsed state.
     pub(in crate::app) fn set_provider_collapsed(&mut self, key: &str, collapsed: bool) {
         let id = self.card_id("providers", key);
         if collapsed {
@@ -16,7 +16,7 @@ impl super::App {
         }
     }
 
-    /// 当前页所有 provider 卡片：折叠或展开。
+    /// Every provider card on the current page: collapsed or expanded.
     pub(in crate::app) fn set_all_providers_collapsed(&mut self, collapsed: bool) {
         let keys: Vec<String> = self.providers.iter().map(|p| p.key.clone()).collect();
         for key in keys {
@@ -24,12 +24,12 @@ impl super::App {
         }
     }
 
-    /// agent 卡片是否处于折叠状态。
+    /// Whether an agent card is collapsed.
     pub(in crate::app) fn agent_collapsed(&self, key: &str) -> bool {
         self.collapsed.contains(&self.card_id("agents", key))
     }
 
-    /// 设置 agent 卡片折叠状态。
+    /// Set an agent card's collapsed state.
     pub(in crate::app) fn set_agent_collapsed(&mut self, key: &str, collapsed: bool) {
         let id = self.card_id("agents", key);
         if collapsed {
@@ -39,7 +39,7 @@ impl super::App {
         }
     }
 
-    /// 当前页所有 agent 卡片：折叠或展开。
+    /// Every agent card on the current page: collapsed or expanded.
     pub(in crate::app) fn set_all_agents_collapsed(&mut self, collapsed: bool) {
         let keys: Vec<String> = self.agents.iter().map(|a| a.key.clone()).collect();
         for key in keys {
@@ -47,7 +47,7 @@ impl super::App {
         }
     }
 
-    /// 卡片改名后同步折叠状态。
+    /// Sync collapse state after a card rename.
     pub(in crate::app) fn rename_collapsed_card(&mut self, kind: &str, old: &str, new: &str) {
         let from = self.card_id(kind, old);
         if self.collapsed.remove(&from) {
@@ -55,7 +55,7 @@ impl super::App {
         }
     }
 
-    /// 把 v2 全局折叠键迁到当前首次成功加载的配置身份。
+    /// Migrate the v2 global collapse keys onto the first successfully loaded config's identity.
     pub(in crate::app) fn migrate_legacy_collapsed(&mut self) {
         let config_id = self.config_id();
         for (kind, key) in self
@@ -72,7 +72,7 @@ impl super::App {
         }
     }
 
-    /// 只清理当前配置身份下已经不存在的折叠记录；其他配置不受影响。
+    /// Prune only collapse records under the current config identity that no longer exist; other configs are unaffected.
     pub(in crate::app) fn prune_collapsed(&mut self) {
         let config_id = self.config_id();
         let prefix = format!("{config_id}/");

@@ -1,7 +1,7 @@
-//! Providers 区块：厂商卡片列表、拖拽落点聚合、表单字段可见性标志与思考档位方言。
+//! The Providers block: vendor card list, drag-drop target aggregation, form field visibility flags, and reasoning-tier dialects.
 //!
-//! 子模块：`flags` 表单字段可见性标志与卡片动作聚合、`section` 区块 glue（吸顶标题行
-//! + 卡片列表 + 批量按钮）、`card` 单张厂商卡片、`tokens` 令牌 / 用户数据面板。
+//! Submodules: `flags` for form field visibility and card action aggregation, `section` for the block glue
+//! (sticky title row + card list + batch buttons), `card` for one vendor card, `tokens` for the token / user-data panel.
 
 mod card;
 mod flags;
@@ -17,11 +17,10 @@ use eframe::egui;
 use std::collections::HashSet;
 
 impl App {
-    /// 当前 opencode 页的 schema 版本：加载内容含 v2 条目即 v2，否则 v1。
+    /// The current opencode page's schema version: v2 when the loaded content holds v2 entries, else v1.
     ///
-    /// 新增 provider / 模型的草稿按它取版本，避免 v2 文件里混进 v1 形状的
-    /// 新条目（协议包名拼成 `@ai-sdk/*`、出现 v1 独有控件）。kilo / mimo 页
-    /// 永远返回 v1。
+    /// New provider / model drafts take their version from it, keeping v1-shaped new entries (protocol
+    /// packages assembled as `@ai-sdk/*`, v1-only controls) out of v2 files. kilo / mimo pages always return v1.
     pub(in crate::app) fn current_opencode_schema(&self) -> crate::model::OpencodeSchemaVersion {
         let v2 = self.current_page == ConfigFormat::Opencode
             && self
@@ -35,10 +34,10 @@ impl App {
         }
     }
 
-    /// 当前页面的思考档位标签：字段名 + 可选值。
+    /// The current page's reasoning-tier label: field name + allowed values.
     pub(super) fn dialect_variants(&self) -> (&'static str, &'static [&'static str]) {
         match self.current_page {
-            // opencode 系三者档位字段名相同。
+            // The opencode family's three share the tier field name.
             ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => (
                 "variants",
                 &["none", "low", "medium", "high", "xhigh", "max", "ultra"],
@@ -57,22 +56,22 @@ impl App {
                 "reasoningEfforts",
                 &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
             ),
-            // ZCode 的档位存在 optionSpecs.reasoningLevel.values，词表与内置库一致。
+            // ZCode's tiers live in optionSpecs.reasoningLevel.values, with the same vocabulary as the built-in library.
             ConfigFormat::ZCode => (
                 "optionSpecs.reasoningLevel.values",
                 &["minimal", "low", "medium", "high", "xhigh", "max"],
             ),
-            // WorkBuddy 没有档位清单，只有 supportsReasoning 布尔。
+            // WorkBuddy has no tier list, only the supportsReasoning boolean.
             ConfigFormat::WorkBuddy => ("supportsReasoning", &[]),
-            // QwenCode 的档位是 capabilities.reasoning.efforts。
+            // QwenCode's tiers are capabilities.reasoning.efforts.
             ConfigFormat::QwenCode => ("efforts", &["low", "medium", "high", "xhigh", "max"]),
-            // KimiCode 的档位是 `support_efforts` 数组，官方无固定词表：这里只是
-            // 一组常见值供快速点选，用户填任意字符串都会原样写入，不做校验。
+            // KimiCode's tiers are the `support_efforts` array with no official fixed vocabulary: these are just
+            // common values for quick picking — the user may enter any string, written verbatim, unvalidated.
             ConfigFormat::KimiCode => ("support_efforts", &["low", "medium", "high", "max"]),
         }
     }
 
-    /// 首次使用引导条：三步上手 + 一句查余额前提，可关闭（状态存 settings.json）。
+    /// The first-use guidance bar: three steps + one balance-query prerequisite, dismissible (state in settings.json).
     fn ui_first_run_guide(&mut self, ui: &mut egui::Ui) {
         if self.guide_dismissed {
             return;
@@ -111,9 +110,9 @@ impl App {
         ui.add_space(crate::theme::SPACE_2);
     }
 
-    /// 让 `(provider 下标, 模型下标)` 成为其模型 id 下唯一启用的条目。
+    /// Make `(provider index, model index)` the only enabled entry for its model id.
     ///
-    /// WorkBuddy 的选择器按裸 model id 全局去重，同 id 只认第一条。
+    /// WorkBuddy's selector dedupes globally by bare model id, honoring only the first per id.
     fn enable_model_exclusively(&mut self, picked: (usize, usize)) {
         let (pi, mi) = picked;
         let Some(target) = self
@@ -130,23 +129,23 @@ impl App {
         for (i, p) in self.providers.iter_mut().enumerate() {
             for (j, m) in p.models.iter_mut().enumerate() {
                 if m.id.trim() == target {
-                    // 按下标比对：同一张卡片里也可能有两条同 id 的条目。
+                    // Compare by index: one card may hold two entries with the same id.
                     m.disabled = (i, j) != picked;
                 }
             }
         }
     }
 
-    /// 进入 WorkBuddy 页时，把「同一 id 多条都启用」收敛成「只留第一条启用」。
+    /// Entering the WorkBuddy page: converge "multiple enabled per id" to "only the first enabled".
     ///
-    /// WorkBuddy 的选择器按裸 id 全局去重，同一 id 至多一条启用；收敛幂等，
-    /// 再跑一次不改动任何东西。
+    /// WorkBuddy's selector dedupes globally by bare id — at most one enabled per id. Convergence is idempotent;
+    /// running it again changes nothing.
     pub(super) fn normalize_workbuddy_enable_flags(&mut self) {
         let mut seen: HashSet<String> = HashSet::new();
         for p in self.providers.iter_mut() {
             for m in p.models.iter_mut() {
                 let id = m.id.trim().to_string();
-                // 空 id 的行保存时回落到 provider key，跳过。
+                // Rows with empty ids fall back to the provider key at save; skip them.
                 if id.is_empty() || m.disabled {
                     continue;
                 }
@@ -159,13 +158,13 @@ impl App {
 }
 
 impl App {
-    /// provider key 重命名后同步 UI 状态（卡片折叠集合 + 弹窗键）。
+    /// Sync UI state (the card-collapse set + popover keys) after a provider key rename.
     pub(super) fn sync_provider_rename(&mut self, old: &str, new: &str) {
         if old == new || new.is_empty() {
             return;
         }
         self.rename_collapsed_card("providers", old, new);
-        // 下标型弹窗键直接关闭，需要时重新打开即可
+        // Index-keyed popovers just close; reopen when needed
         let variant_prefix = format!("variant_open_{}_", old);
         let show_key = format!("show_new_model_{}", old);
         let new_variant_key = format!("new_model_variant_{}", old);

@@ -70,13 +70,13 @@ fn pruning_one_configuration_keeps_other_configuration_state() {
     assert!(app.collapsed.contains(&other));
 }
 
-/// 路径覆盖不再持久化：即使会话内切到了别的文件，current_prefs 仍写空覆盖，
-/// 重启后每页回官方默认路径（用户拍板）。
+/// Path overrides no longer persist: even after switching to another file within a session, current_prefs
+/// still writes empty overrides, so every page returns to its official default after restart (user decision).
 #[test]
 fn current_prefs_never_persists_path_overrides() {
     use crate::format::ConfigFormat;
     let mut app = App::default();
-    // 会话内把 opencode 页切到桌面文件。
+    // Within the session, switch the opencode page to a desktop file.
     app.config_paths.set_local_path(
         ConfigFormat::Opencode,
         r"C:\Users\u\Desktop\opencodev2.json",
@@ -102,7 +102,7 @@ fn current_prefs_sorts_collapsed_cards_before_comparison() {
     );
 }
 
-/// 用量区间被 current_prefs 捕获为稳定键，并能从 Prefs 还原（记住上次选择）。
+/// The usage range is captured by current_prefs as a stable key and restorable from Prefs (remembering the last choice).
 #[test]
 fn current_prefs_captures_usage_range() {
     use crate::app::usage::range::Range;
@@ -111,7 +111,7 @@ fn current_prefs_captures_usage_range() {
         ..Default::default()
     };
     assert_eq!(app.current_prefs().usage_range, "week");
-    // 往返：写进 Prefs 再按键还原，应回到 Week。
+    // Round trip: written into Prefs then restored by key, it should return to Week.
     let prefs = app.current_prefs();
     assert_eq!(Range::from_key(&prefs.usage_range), Range::Week);
 }

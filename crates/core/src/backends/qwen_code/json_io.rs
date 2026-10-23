@@ -1,16 +1,16 @@
 use super::*;
 
-/// `modelProviders` 对象；不是对象时返回 None。
+/// The `modelProviders` object; `None` when it isn't one.
 pub(crate) fn providers_map(root: &Value) -> Option<&Map<String, Value>> {
     root.get("modelProviders").and_then(Value::as_object)
 }
 
-/// 顶层 `providerProtocol` 映射；缺失 / 不是对象时返回 None。
+/// The top-level `providerProtocol` mapping; `None` when missing or not an object.
 pub(crate) fn provider_protocols(root: &Value) -> Option<&Map<String, Value>> {
     root.get("providerProtocol").and_then(Value::as_object)
 }
 
-/// 条目的可用 `id`（空白不算）。
+/// An entry's usable `id` (whitespace doesn't count).
 pub(crate) fn entry_id(entry: &Value) -> Option<&str> {
     entry
         .get("id")
@@ -19,7 +19,7 @@ pub(crate) fn entry_id(entry: &Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
-/// 某个 pid 的条目数组；值不是数组时返回空。
+/// A pid's entry array; an empty vec when the value isn't an array.
 pub(crate) fn entries_of_pid<'a>(root: &'a Value, pid: &str) -> &'a [Value] {
     providers_map(root)
         .and_then(|m| m.get(pid))
@@ -28,10 +28,10 @@ pub(crate) fn entries_of_pid<'a>(root: &'a Value, pid: &str) -> &'a [Value] {
         .unwrap_or_default()
 }
 
-/// 文件里的全部条目，按**文件顺序**：`(pid, 条目)`。
+/// Every entry in the file, in **file order**: `(pid, entry)`.
 ///
-/// 跳过 `qwen-oauth`（只读，不进界面）与没有 `id` 的条目
-/// （后者由 [`unmanaged_of`] 原样保留）。
+/// Skips `qwen-oauth` (read-only, never in the UI) and entries without an `id`
+/// (the latter preserved verbatim by [`unmanaged_of`]).
 pub(crate) fn entries_from(root: &Value) -> Vec<(String, Value)> {
     let mut out: Vec<(String, Value)> = Vec::new();
     let Some(m) = providers_map(root) else {
@@ -50,7 +50,7 @@ pub(crate) fn entries_from(root: &Value) -> Vec<(String, Value)> {
     out
 }
 
-/// 能解析成整数才写入；解析不了（含空串）就删除该键。
+/// Written only when it parses as an integer; unparseable (empty strings included) deletes the key.
 pub(crate) fn set_num(obj: &mut Map<String, Value>, key: &str, text: &str) {
     match text.parse::<i64>() {
         Ok(n) => {

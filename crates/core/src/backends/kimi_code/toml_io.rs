@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-/// TOML 文本 → Value。空文本视为空对象。
+/// TOML text → Value. Empty text counts as an empty object.
 pub(crate) fn parse_toml(content: &str) -> Result<Value, String> {
     if content.trim().is_empty() {
         return Ok(Value::Object(Map::new()));
@@ -8,15 +8,15 @@ pub(crate) fn parse_toml(content: &str) -> Result<Value, String> {
     toml::from_str(content).map_err(|e| format!("解析失败: {}", e))
 }
 
-/// Value → TOML 文本。
+/// Value → TOML text.
 ///
-/// 写之前先递归剔除 `null`：TOML 没有 null 类型。
+/// Recursively strips `null` before writing: TOML has no null type.
 pub(crate) fn to_toml_string(root: &Value) -> Result<String, String> {
     let cleaned = strip_nulls(root);
     toml::to_string(&cleaned).map_err(|e| format!("序列化失败: {}", e))
 }
 
-/// 递归删掉所有 `null` 值（对象里删键，数组里删元素）。
+/// Recursively delete every `null` value (keys in objects, elements in arrays).
 pub(crate) fn strip_nulls(value: &Value) -> Value {
     match value {
         Value::Null => Value::Null,
@@ -45,7 +45,7 @@ pub(crate) fn models_map(root: &Value) -> Option<&Map<String, Value>> {
     root.get("models").and_then(Value::as_object)
 }
 
-/// provider 条目的 `type`（Kimi 必填字段）。
+/// A provider entry's `type` (required by Kimi).
 pub(crate) fn provider_type(entry: &Value) -> &str {
     entry
         .get("type")
@@ -54,9 +54,9 @@ pub(crate) fn provider_type(entry: &Value) -> &str {
         .trim()
 }
 
-/// 非空字符串：`Some` 表示这个键确实被设置了。
+/// A non-empty string: `Some` means the key was genuinely set.
 ///
-/// 空串视同未设置。
+/// Empty strings count as unset.
 pub(crate) fn non_empty_str(value: Option<&Value>) -> Option<&str> {
     value
         .and_then(Value::as_str)
@@ -64,7 +64,7 @@ pub(crate) fn non_empty_str(value: Option<&Value>) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
-/// 能解析成 ≥1 的整数才写入；否则删键。
+/// Written only when it parses to an integer ≥1; otherwise the key is deleted.
 pub(crate) fn set_num_min1(obj: &mut Map<String, Value>, key: &str, text: &str) {
     match text.parse::<i64>() {
         Ok(n) if n >= 1 => {
@@ -76,7 +76,7 @@ pub(crate) fn set_num_min1(obj: &mut Map<String, Value>, key: &str, text: &str) 
     }
 }
 
-/// 空表不写出来。
+/// Empty tables aren't written out.
 pub(crate) fn set_or_drop_table(
     root: &mut Map<String, Value>,
     key: &str,

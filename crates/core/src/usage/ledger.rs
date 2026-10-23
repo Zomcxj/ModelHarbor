@@ -1,24 +1,26 @@
-//! 用量账本 —— 让**已删除的会话**的用量永久保留。
+//! Usage ledger — makes usage of **deleted sessions** persist forever.
 //!
-//! 问题：opencode / workbuddy 的会话被删后，其用量从源文件里消失；只读源会让
-//! 历史总量凭空缩水。
+//! Problem: once an opencode / workbuddy session is deleted, its usage vanishes from the source files;
+//! reading sources alone would silently shrink historical totals.
 //!
-//! 做法（照 token-monitor 的 `sessionUsageArchive`）：每次扫描后把会话快照并进账本；
-//! 源里已消失的标记 [`SessionSnapshot::archived`] —— 它们**不进列表**（会话表只呈现
-//! agent 自己库里还在的会话），但用量留在聚合里，总量不缩水。
+//! Approach (mirroring token-monitor's `sessionUsageArchive`): after every scan, merge session
+//! snapshots into the ledger; sessions gone from the sources are flagged [`SessionSnapshot::archived`] —
+//! they **don't appear in the list** (the session table only shows sessions still present in the agent's
+//! own store), but their usage stays in the aggregates, so totals never shrink.
 //!
-//! 账本分两层，生命周期不同：
-//! - **聚合**（按天合计与 agent / 模型 / 交叉分解）：只增不减，永久保留；
-//! - **明细**（会话快照与逐日 `by_session`）：源里消失后只服用于合计；用户主动
-//!   删除则真删（[`Ledger::ignore_session`]）。
+//! The ledger has two layers with different lifecycles:
+//! - **Aggregates** (daily totals and agent / model / cross breakdowns): append-only, kept forever;
+//! - **Details** (session snapshots and per-day `by_session`): only feed aggregates once gone from the
+//!   sources; user-initiated deletion really deletes ([`Ledger::ignore_session`]).
 //!
-//! 三条硬约束：
-//! - **原子写**：写临时文件再 rename，中途崩溃不会留下半个文件；
-//! - **差异写**：只落盘变化的条目，不是每次全量重写；
-//! - **静默恢复**：文件损坏 / 读失败 → 当作空账本重建，绝不让账本问题导致功能不可用。
+//! Three hard constraints:
+//! - **Atomic writes**: write a temp file then rename — a crash mid-way never leaves half a file;
+//! - **Delta writes**: only changed entries hit disk, not a full rewrite each time;
+//! - **Silent recovery**: corrupted / unreadable file → rebuild as an empty ledger; ledger problems must
+//!   never take the feature down.
 //!
-//! 用户主动删除的会话另走一条路（[`Ledger::ignore_session`]）：
-//! **明细收走、聚合留下** —— 与 cc-switch / token-monitor 同构。
+//! User-initiated session deletion takes a separate path ([`Ledger::ignore_session`]):
+//! **details withdrawn, aggregates kept** — isomorphic to cc-switch / token-monitor.
 
 use crate::format::ConfigFormat;
 use crate::usage::daily::{DailyBucket, DailyMap};
@@ -26,52 +28,52 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-/// 一个会话在某一时刻的用量快照。
+/// A session's usage snapshot at one point in time.
 ///
-/// 字段口径与 tokscale 一致：`input` 是**新鲜输入**（已排除缓存读），
-/// `cache_write_1h` 是 `cache_write` 的子集、**不参与合计**。
+/// Field semantics match tokscale: `input` is **fresh input** (cache reads already excluded),
+/// `cache_write_1h` is a subset of `cache_write` and **excluded from totals**.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionSnapshot {
     pub client: ConfigFormat,
     pub session_id: String,
-    /// 最后一次见到的模型名（同一会话可能中途换模型，取最近一条）。
+    /// The last model name seen (a session may switch models mid-way; take the most recent).
     pub model_id: String,
-    /// 所属项目（工作区）：tokscale 解析出的 `workspace_label`，缺了退回
-    /// `workspace_key`。旧账本条目没有这个字段，为 `None`。
+    /// The owning project (workspace): tokscale's parsed `workspace_label`, falling back to `workspace_key`
+    /// when absent. Old ledger entries lack this field — `None`.
     pub project: Option<String>,
-    /// 会话名：源里存了名字的客户端（opencode 系的 `session.title`）取原文，
-    /// 没存的（pi）取首条用户消息的开头。见 [`crate::usage::titles`]。
+    /// Session title: clients that store names (opencode family's `session.title`) take the original text;
+    /// those that don't (pi) take the opening of the first user message. See [`crate::usage::titles`].
     ///
-    /// 与 `project` 一样落盘：名字来自单独的采集通道，不参与消息汇总，
-    /// 重扫之间靠账本带着走。旧账本条目没有这个字段，为 `None`。
+    /// Persisted like `project`: names come from a separate collection channel, take no part in message
+    /// aggregation, and ride along in the ledger between rescans. Old ledger entries lack this field — `None`.
     pub title: Option<String>,
     pub input: i64,
     pub output: i64,
     pub cache_read: i64,
     pub cache_write: i64,
     pub reasoning: i64,
-    /// 会话内消息条数。
+    /// Message count within the session.
     pub message_count: i64,
-    /// 折算费用（美元）：上游实报或按本机定价缓存现算。旧账本条目没有，为 0。
+    /// Converted cost (USD): as reported upstream, or computed from the local pricing cache. Old entries have none — 0.
     pub cost: f64,
-    /// 首次见到该会话的时间（Unix 毫秒）。
+    /// When the session was first seen (Unix millis).
     pub first_seen_ms: i64,
-    /// 最后一次见到该会话的时间（Unix 毫秒）。
+    /// When the session was last seen (Unix millis).
     pub last_seen_ms: i64,
-    /// 该会话是否已从源文件里消失（被删除或源侧滚动清理），用量由账本保留。
+    /// Whether the session has vanished from the source files (deleted, or rolled off source-side), its usage kept by the ledger.
     ///
-    /// 这个标记**落盘**（见 `to_json` / `from_json`）：不落盘的话，每次重启
-    /// 账本里那些源里早已消失的会话会被当成实时结果列出来。
+    /// This flag **persists** (see `to_json` / `from_json`): without it, every restart would list the ledger's
+    /// long-gone sessions as if they were live results.
     pub archived: bool,
 }
 
 impl SessionSnapshot {
-    /// 账本键：`client:session_id`（与 token-monitor 的 `sessionKey` 同构）。
+    /// Ledger key: `client:session_id` (isomorphic to token-monitor's `sessionKey`).
     pub fn key(client: ConfigFormat, session_id: &str) -> String {
         format!("{}:{}", client.label(), session_id)
     }
 
-    /// 从扫描结果里的一条消息建快照。
+    /// Build a snapshot from one message of a scan result.
     pub fn new(client: ConfigFormat, session_id: &str, model_id: &str) -> Self {
         Self {
             client,
@@ -92,9 +94,9 @@ impl SessionSnapshot {
         }
     }
 
-    /// 并入一条消息的用量。
+    /// Absorb one message's usage.
     ///
-    /// 时间取 min/max（同一会话的消息可能乱序）；模型取时间最新的那条。
+    /// Times take min/max (a session's messages may arrive out of order); the model takes the newest message's.
     pub fn absorb(&mut self, message: &tokscale_core::ParsedMessage) {
         self.input = self.input.saturating_add(message.input);
         self.output = self.output.saturating_add(message.output);
@@ -114,7 +116,7 @@ impl SessionSnapshot {
                 self.model_id = message.model_id.clone();
             }
         }
-        // 项目跟着消息走：会话不会挪工作区，扫到就补上（旧账本条目没有）。
+        // Project follows the message: a session never changes workspace, so fill it on first sight (old entries lack it).
         if message.workspace_label.is_some() || message.workspace_key.is_some() {
             self.project = message
                 .workspace_label
@@ -123,9 +125,9 @@ impl SessionSnapshot {
         }
     }
 
-    /// 合计 token（口径与 tokscale 的 `TokenBreakdown::total` 一致）。
+    /// Total tokens (same accounting as tokscale's `TokenBreakdown::total`).
     ///
-    /// `cache_write_1h` **不计入**：它是 `cache_write` 的子集。
+    /// `cache_write_1h` is **excluded**: it is a subset of `cache_write`.
     pub fn total(&self) -> i64 {
         self.input
             .saturating_add(self.output)
@@ -134,7 +136,7 @@ impl SessionSnapshot {
             .saturating_add(self.reasoning)
     }
 
-    /// 该快照是否有实际用量（全 0 的不值得进账本）。
+    /// Whether this snapshot carries real usage (all-zero entries aren't worth the ledger).
     pub fn has_usage(&self) -> bool {
         self.total() > 0
     }
@@ -163,7 +165,7 @@ impl SessionSnapshot {
         let client_label = value.get("client")?.as_str()?;
         let client = client_format_from_label(client_label)?;
         let session_id = value.get("session_id")?.as_str()?.to_string();
-        // 键与内容不一致的条目视为损坏，丢弃（不让脏数据污染统计）。
+        // Entries whose key and content disagree count as corrupt and are dropped (dirty data must not pollute stats).
         if Self::key(client, &session_id) != key {
             return None;
         }
@@ -204,9 +206,10 @@ impl SessionSnapshot {
                 .get("last_seen_ms")
                 .and_then(Value::as_i64)
                 .unwrap_or(i64::MIN),
-            // 旧账本没有这个键：当作「源里已消失」。缺这个键的账本来自只存合计的
-            // 版本，其中哪些会话在源里仍在无从得知，而会话表只列活会话 ——
-            // 宁可不列（下一轮扫描立刻会把活会话补回来），不能把已消失的列出去。
+            // Old ledgers lack this key: treat as "gone from the sources". Ledgers missing the key come from the
+            // totals-only era, where which sessions still existed in the sources was unknowable — and the session
+            // table only lists live sessions. Better to list none (the next scan immediately backfills live ones)
+            // than to list vanished ones as live.
             archived: value
                 .get("archived")
                 .and_then(Value::as_bool)
@@ -215,7 +218,7 @@ impl SessionSnapshot {
     }
 }
 
-/// `ConfigFormat::label()` → 枚举。账本用 label 落盘（可读、可手改）。
+/// `ConfigFormat::label()` → enum. The ledger persists labels (readable, hand-editable).
 fn client_format_from_label(label: &str) -> Option<ConfigFormat> {
     crate::backends::BACKENDS
         .iter()
@@ -223,14 +226,14 @@ fn client_format_from_label(label: &str) -> Option<ConfigFormat> {
         .find(|format| format.label() == label)
 }
 
-/// 账本当前 schema 版本。格式变更时 +1，旧版本整体丢弃重建。
+/// Current ledger schema version. Bump on format changes; older versions are dropped and rebuilt.
 ///
-/// 新增可选的 `daily` 字段**不**升版本：旧账本没有这个键时按空处理，
-/// 下一轮扫描会补回来；而升版本会丢掉已攒下的会话历史（已删会话的用量
-/// 无法重扫回来，那是账本存在的意义）。
+/// Adding an optional `daily` field does **not** bump the version: when an old ledger lacks the key it
+/// is treated as empty and the next scan backfills it; bumping the version would throw away accumulated
+/// session history (usage of deleted sessions can never be rescanned — that's the ledger's whole point).
 const LEDGER_VERSION: u32 = 1;
 
-/// 账本落盘内容的反序列化产物：会话快照、按天分桶、忽略名单、数据时刻。
+/// Deserialized ledger file: session snapshots, daily buckets, ignore list, data timestamp.
 type LoadedLedger = (
     HashMap<String, SessionSnapshot>,
     DailyMap,
@@ -238,45 +241,45 @@ type LoadedLedger = (
     Option<i64>,
 );
 
-/// 用量账本。
+/// The usage ledger.
 ///
-/// 内存里持有全部会话快照；[`Ledger::merge_scan`] 并入新扫描结果，
-/// [`Ledger::view`] 产出「实时 ∪ 已归档」的展示视图。
+/// Holds all session snapshots in memory; [`Ledger::merge_scan`] merges new scan results,
+/// [`Ledger::view`] produces the "live ∪ archived" display view.
 #[derive(Debug, Default)]
 pub struct Ledger {
-    /// `client:session_id` → 快照（含已归档的；用户主动删除的不在）。
+    /// `client:session_id` → snapshot (archived included; user-deleted ones are absent).
     entries: HashMap<String, SessionSnapshot>,
-    /// 按本地日历日分桶（聚合与各分解保留已删会话的用量，会话明细不含它）。
+    /// Buckets per local calendar day (aggregates and breakdowns keep deleted sessions' usage; session details don't).
     daily: DailyMap,
-    /// 被用户删除并**永久忽略**的会话键：之后的扫描不再把它们并回来。
+    /// Keys of sessions the user deleted and **permanently ignored**: later scans never merge them back.
     ignored: BTreeSet<String>,
-    /// 上次落盘后发生变化的会话键。
+    /// Session keys changed since the last flush.
     dirty: Vec<String>,
-    /// 上次落盘后发生变化的日期键。
+    /// Date keys changed since the last flush.
     dirty_days: Vec<String>,
-    /// 账本文件路径；`None` = 纯内存（测试 / 落盘不可用时）。
+    /// Ledger file path; `None` = purely in-memory (tests / disk unavailable).
     path: Option<PathBuf>,
-    /// 数据落盘时刻（unix 毫秒）：缓存秒显用它标注「更新于多久前」。
-    /// 旧格式文件没有这个键时回落文件 mtime；`None` = 未知。
+    /// Data flush timestamp (unix millis): the instant-display cache uses it for the "updated how long ago" note.
+    /// Old-format files lacking the key fall back to file mtime; `None` = unknown.
     saved_at: Option<i64>,
 }
 
 impl Ledger {
-    /// 账本文件名（放在 [`crate::prefs::Prefs::config_dir`] 下，与 settings.json /
-    /// tokens.json 同目录）。
+    /// Ledger file name (under [`crate::prefs::Prefs::config_dir`], same directory as settings.json /
+    /// tokens.json).
     pub const FILE_NAME: &'static str = "usage-ledger.json";
 
-    /// 默认账本路径：`~/.modelharbor/usage-ledger.json`。
+    /// Default ledger path: `~/.modelharbor/usage-ledger.json`.
     pub fn default_path() -> PathBuf {
         crate::prefs::Prefs::config_dir().join(Self::FILE_NAME)
     }
 
-    /// 打开默认位置的账本。
+    /// Open the ledger at its default location.
     pub fn open_default() -> Self {
         Self::open(Self::default_path())
     }
 
-    /// 打开账本：读取落盘文件，损坏 / 版本不符时按空账本重建。
+    /// Open the ledger: read the persisted file; corrupt / wrong-version rebuilds as empty.
     pub fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let (entries, daily, ignored, saved_at) = Self::load(&path).unwrap_or_default();
@@ -291,17 +294,17 @@ impl Ledger {
         }
     }
 
-    /// 纯内存账本（不落盘）。
+    /// Purely in-memory ledger (never flushed).
     pub fn in_memory() -> Self {
         Self::default()
     }
 
-    /// 账本条目数（含已归档）。
+    /// Ledger entry count (archived included).
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// 数据落盘时刻（unix 毫秒）；`None` = 从未落盘 / 未知。
+    /// Data flush timestamp (unix millis); `None` = never flushed / unknown.
     pub fn saved_at(&self) -> Option<i64> {
         self.saved_at
     }
@@ -310,38 +313,39 @@ impl Ledger {
         self.entries.is_empty()
     }
 
-    /// 源里已消失、只存在于账本里的会话条数。
+    /// Count of sessions gone from the sources, existing only in the ledger.
     ///
-    /// 界面用它说明「总里为何比会话表里的行更早的会话也算进去了」：这些会话
-    /// 不占列表，用量仍计入合计。
+    /// The UI uses it to explain "why totals include sessions older than anything in the session table": those
+    /// sessions take no list rows, but their usage still counts toward totals.
     pub fn archived_len(&self) -> usize {
         self.entries.values().filter(|entry| entry.archived).count()
     }
 
-    /// 是否有未落盘的改动。
+    /// Whether there are unflushed changes.
     pub fn is_dirty(&self) -> bool {
         !self.dirty.is_empty() || !self.dirty_days.is_empty()
     }
 
-    /// 被删除并永久忽略的会话键（扫描线程据此跳过这些会话）。
+    /// Keys of deleted, permanently ignored sessions (the scan thread skips these).
     pub fn ignored(&self) -> &BTreeSet<String> {
         &self.ignored
     }
 
-    /// 删除一个会话：账本里**摘掉它的全部明细**并加入忽略名单 ——
-    /// 之后的扫描不再把它并回来。
+    /// Delete a session: withdraw **all of its details** from the ledger and add the key to the ignore list —
+    /// later scans never merge it back.
     ///
-    /// 摘掉的是明细（会话快照 + 每天的 `by_session` 条目）；按天桶里的
-    /// 合计与 agent / 模型 / 交叉分解**原样保留**，总量、热力图与时间表
-    /// 不因删除缩水。这与 cc-switch（`usage_daily_rollups` 不带会话维度，
-    /// 删会话只删 `session_log_sync` 的书签行）和 token-monitor（剪枝只删
-    /// `periods` 的 today / month 窗口，`allTime` 永久保留）一致：
-    /// **聚合留下、明细收走**。
+    /// What's withdrawn is the details (the session snapshot + each day's `by_session` entries); the daily
+    /// bucket's totals and agent / model / cross breakdowns **stay untouched**, so totals, the heatmap, and
+    /// the time table don't shrink from deletion. This matches cc-switch (`usage_daily_rollups` carries no
+    /// session dimension; deleting a session only removes the `session_log_sync` bookmark row) and
+    /// token-monitor (pruning drops only `periods`' today / month windows while `allTime` persists):
+    /// **aggregates stay, details go**.
     ///
-    /// 明细必须真删：留着它账本会随会话数无上限增长，而它对界面已无作用
-    /// （会话表以 `by_session` 为行来源，但以账本快照为模板，快照已在此移除）。
+    /// Details must really be deleted: keeping them would grow the ledger without bound as sessions
+    /// accumulate, and they no longer serve the UI (the session table takes rows from `by_session` but
+    /// templates from ledger snapshots — snapshots are removed here).
     ///
-    /// 返回是否有改动（重复删同一个键时为 `false`）。
+    /// Returns whether anything changed (`false` when deleting the same key twice).
     pub fn ignore_session(&mut self, key: &str) -> bool {
         if !self.ignored.insert(key.to_string()) {
             return false;
@@ -356,25 +360,26 @@ impl Ledger {
         true
     }
 
-    /// 并入一次扫描结果。
+    /// Merge one scan result.
     ///
-    /// - 新会话 → 新增；
-    /// - 已有会话 → 用量取**较大值**（token 只增不减；源里偶发的重扫回退不应让总量缩水）；
-    /// - 账本里有、本次扫描没有 → 标记 [`SessionSnapshot::archived`]：既不上列表，
-    ///   用量也仍留在聚合里。
+    /// - New sessions → added;
+    /// - Existing sessions → usage takes the **larger** value (tokens only grow; an occasional source-side
+    ///   rescan dip must not shrink totals);
+    /// - In the ledger but not this scan → flagged [`SessionSnapshot::archived`]: neither listed, nor removed
+    ///   from the aggregates.
     pub fn merge_scan(&mut self, scanned: HashMap<String, SessionSnapshot>) {
-        // 本次见到的键：末尾要靠它区分「没见到」与「刚见到」。
+        // Keys seen this round: needed at the end to tell "not seen" from "just seen".
         let seen: BTreeSet<String> = scanned.keys().cloned().collect();
         for (key, fresh) in scanned {
             if self.ignored.contains(&key) {
-                // 用户删掉的会话：扫到也不并回。
+                // User-deleted sessions: seen in the scan, never merged back.
                 continue;
             }
             match self.entries.get_mut(&key) {
                 Some(existing) => {
                     let changed = existing.absorb_update(&fresh);
-                    // 从「已消失」回到「在源里」也要落盘：状态翻了但不标脏，
-                    // 下一次重启就又把活会话当成已消失的。
+                    // Returning from "gone" to "in the sources" must also flush: the state flipped but wouldn't be marked dirty,
+                    // and the next restart would treat live sessions as gone again.
                     let reappeared = existing.archived;
                     existing.archived = false;
                     if changed || reappeared {
@@ -389,7 +394,7 @@ impl Ledger {
                 }
             }
         }
-        // 本次没见到的：翻成「已消失」并落盘（已是这个状态的不重复标脏）。
+        // Not seen this round: flip to "gone" and persist (already-gone ones aren't re-marked dirty).
         for (key, entry) in &mut self.entries {
             if seen.contains(key) || entry.archived {
                 continue;
@@ -399,16 +404,16 @@ impl Ledger {
         }
     }
 
-    /// 并入一次扫描的按天分桶。
+    /// Merge one scan's daily buckets.
     ///
-    /// 与会话快照分开合并：两者服务于不同视图（会话明细 vs 热力图 /
-    /// 时间范围筛选），一条会话被删后它的合计仍要留着。
-    /// 同一天重复扫描时逐字段取较大值，token 只增不减。
+    /// Merged separately from session snapshots: the two serve different views (session details vs the
+    /// heatmap / time-range filters), and a deleted session's totals must survive. Repeated scans of the
+    /// same day take the larger value per field — tokens only grow.
     pub fn merge_daily(&mut self, mut scanned: DailyMap) {
-        // 在途扫描的明细裁剪：本轮扫描起飞时拿到的忽略名单还不含本次删掉的
-        // 键（用户在本轮扫描进行中点了删除），结果里会带着已删会话的明细。
-        // 合计与分解照并（token 计数不缩水），明细按当前名单摘掉 ——
-        // 否则删除会被一轮旧扫描悄悄复活。
+        // In-flight scan detail pruning: the ignore list this scan took off with didn't yet contain keys deleted
+        // mid-flight (the user clicked delete while the scan ran), so results carry deleted sessions' details.
+        // Totals and breakdowns merge as usual (token counts don't shrink); details are withdrawn per the
+        // current list — otherwise one stale scan would quietly resurrect a deletion.
         for bucket in scanned.values_mut() {
             for key in &self.ignored {
                 bucket.remove_session_detail(key);
@@ -431,16 +436,16 @@ impl Ledger {
         }
     }
 
-    /// 按天分桶（热力图与「今日 / 本周 / 本月 / 总计」的数据源）。
+    /// Daily buckets (the heatmap's and "today / week / month / total" data source).
     pub fn daily(&self) -> &DailyMap {
         &self.daily
     }
 
-    /// 展示视图：**源里仍在的会话**，按最近活动倒序。
+    /// Display view: **sessions still in the sources**, most recent activity first.
     ///
-    /// 源里已消失的（[`SessionSnapshot::archived`]）不列：会话表只呈现 agent
-    /// 自己库里还存在的会话，否则列表里绝大部分是从磁盘上早已消失的幽灵行。
-    /// 它们的用量仍留在 [`Self::daily`] 的合计与各分解里 —— 少的是行，不是数。
+    /// Sessions gone from the sources ([`SessionSnapshot::archived`]) are not listed: the session table only
+    /// presents sessions still in the agent's own store, otherwise most rows would be ghosts long gone from
+    /// disk. Their usage remains in [`Self::daily`]'s totals and breakdowns — rows are lost, never numbers.
     pub fn view(&self) -> Vec<SessionSnapshot> {
         let mut out: Vec<SessionSnapshot> = self
             .entries
@@ -448,7 +453,7 @@ impl Ledger {
             .filter(|entry| !entry.archived)
             .cloned()
             .collect();
-        // 稳定排序：按最近活动倒序，其次按会话 id，保证 UI 不跳动。
+        // Stable sort: most recent activity first, then by session id, so the UI doesn't jump.
         out.sort_by(|a, b| {
             b.last_seen_ms
                 .cmp(&a.last_seen_ms)
@@ -457,9 +462,9 @@ impl Ledger {
         out
     }
 
-    /// 落盘（差异写 + 原子写）。
+    /// Flush (delta write + atomic write).
     ///
-    /// 无改动时直接返回，不产生 IO。
+    /// Returns immediately with no changes — no IO.
     pub fn save(&mut self) -> std::io::Result<()> {
         if self.dirty.is_empty() && self.dirty_days.is_empty() {
             return Ok(());
@@ -493,15 +498,15 @@ impl Ledger {
         Ok(())
     }
 
-    /// 读取落盘内容。返回 `None` = 文件不存在 / 不可读 / 损坏。
+    /// Read the persisted content. `None` = missing / unreadable / corrupt file.
     ///
-    /// `daily` 缺失时按空处理而不是丢掉整个账本：`daily` 是后来加的字段，
-    /// 升级时不该把已经攒下的会话历史一起丢掉，下一轮扫描会把它补回来。
+    /// A missing `daily` is treated as empty rather than discarding the whole ledger: `daily` was added later,
+    /// and upgrading must not throw away accumulated session history — the next scan backfills it.
     fn load(path: &Path) -> Option<LoadedLedger> {
         let text = std::fs::read_to_string(path).ok()?;
         let value: Value = serde_json::from_str(&text).ok()?;
         if value.get("version").and_then(Value::as_u64)? != u64::from(LEDGER_VERSION) {
-            // 版本不符：整体丢弃重建（宁可丢历史，不要脏数据）。
+            // Version mismatch: discard and rebuild wholesale (better to lose history than keep dirty data).
             return Some((HashMap::new(), DailyMap::new(), BTreeSet::new(), None));
         }
         let sessions = value.get("sessions")?.as_object()?;
@@ -519,7 +524,7 @@ impl Ledger {
             .map(|obj| {
                 obj.iter()
                     .filter(|(_, v)| {
-                        // 全 0 的日期桶不值得占地方。
+                        // All-zero day buckets aren't worth the space.
                         !DailyBucket::from_json("", v).totals.is_empty()
                     })
                     .map(|(date, v)| (date.clone(), DailyBucket::from_json(date, v)))
@@ -537,15 +542,15 @@ impl Ledger {
                     .collect()
             })
             .unwrap_or_default();
-        // 读取时按忽略名单收一遍明细：早期版本只藏行不摘明细，旧账本里会
-        // 残留已删会话的 `by_session` 条目。此处自愈，不升版本（升版本会把
-        // 历史一起丢掉）。合计与各分解不动，与删除时的语义一致。
+        // On read, withdraw details per the ignore list: early versions only hid rows without withdrawing details,
+        // so old ledgers carry deleted sessions' `by_session` entries. Self-healing here, without a version
+        // bump (bumping would throw history away). Totals and breakdowns untouched — same semantics as deletion.
         for key in &ignored {
             for bucket in daily.values_mut() {
                 bucket.remove_session_detail(key);
             }
         }
-        // saved_at 是缓存秒显加的新键：旧格式没有时回落文件 mtime，不升版本。
+        // saved_at is a new key added for the instant-display cache: old formats fall back to file mtime, no version bump.
         let saved_at = value
             .get("saved_at")
             .and_then(Value::as_i64)
@@ -554,7 +559,7 @@ impl Ledger {
     }
 }
 
-/// 当前 unix 毫秒；时钟异常时按 0 处理（只影响「更新于」的显示）。
+/// Current unix millis; treated as 0 when the clock misbehaves (only affects the "updated at" display).
 fn unix_now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -562,7 +567,7 @@ fn unix_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 文件修改时刻（unix 毫秒）：旧格式账本没有 `saved_at` 键时的回落。
+/// File modification time (unix millis): fallback for old ledgers without a `saved_at` key.
 fn file_mtime_ms(path: &Path) -> Option<i64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     Some(
@@ -574,9 +579,9 @@ fn file_mtime_ms(path: &Path) -> Option<i64> {
 }
 
 impl SessionSnapshot {
-    /// 用新快照更新自己。返回是否发生变化。
+    /// Update self with a new snapshot. Returns whether anything changed.
     ///
-    /// 用量取较大值：token 只会增长，源里偶发的重扫回退不该让总量缩水。
+    /// Usage takes the larger value: tokens only grow, and an occasional source-side rescan dip must not shrink totals.
     fn absorb_update(&mut self, fresh: &SessionSnapshot) -> bool {
         let before = self.clone();
         self.input = self.input.max(fresh.input);
@@ -591,11 +596,11 @@ impl SessionSnapshot {
         if fresh.last_seen_ms >= before.last_seen_ms && !fresh.model_id.is_empty() {
             self.model_id = fresh.model_id.clone();
         }
-        // 项目取新快照的：它来自扫描，永远是最新解析结果。
+        // Project takes the new snapshot's: it comes from the scan, always the newest parse.
         if fresh.project.is_some() {
             self.project = fresh.project.clone();
         }
-        // 会话名同理：采集通道每轮重读源，新值优先（用户可能在 agent 里改了名）。
+        // Same for the title: the collection channel re-reads sources each round and new values win (the user may have renamed it in the agent).
         if fresh.title.is_some() {
             self.title = fresh.title.clone();
         }
@@ -603,17 +608,17 @@ impl SessionSnapshot {
     }
 }
 
-/// 原子写：先写同目录临时文件，再 rename 覆盖。
+/// Atomic write: write a temp file in the same directory, then rename over the target.
 ///
-/// rename 在同一文件系统内是原子的：要么看到旧内容，要么看到完整新内容，
-/// 不会出现半个文件。临时文件名带进程 id，避免并发写互相踩。
+/// Rename is atomic within one filesystem: readers see either the old content or the complete new
+/// content, never half a file. The temp name carries the process id so concurrent writers don't stomp.
 fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     std::fs::write(&tmp, text)?;
-    // Windows 上 rename 不覆盖已存在的目标，先删（失败也无妨，rename 会再报错）。
+    // On Windows rename doesn't overwrite an existing target — delete first (failure is fine; rename will error again).
     if path.exists() {
         let _ = std::fs::remove_file(path);
     }
@@ -631,7 +636,7 @@ mod tests {
     use super::*;
     use tokscale_core::ParsedMessage;
 
-    /// 临时账本路径：进程 id + 原子计数器，避免并行测试撞目录。
+    /// Temp ledger path: process id + atomic counter, so parallel tests don't collide.
     fn temp_path(name: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -671,7 +676,7 @@ mod tests {
             .collect()
     }
 
-    /// 构造按天分桶：`(日期, input, output)`。
+    /// Build a daily bucket: `(date, input, output)`.
     fn daily_of(days: &[(&str, i64, i64)]) -> DailyMap {
         let mut out = DailyMap::new();
         for (date, input, output) in days {
@@ -684,7 +689,7 @@ mod tests {
         out
     }
 
-    /// 键格式：`client_label:session_id`。
+    /// Key format: `client_label:session_id`.
     #[test]
     fn key_is_client_label_colon_session() {
         assert_eq!(
@@ -697,7 +702,7 @@ mod tests {
         );
     }
 
-    /// 合计不含 cache_write_1h 那类子集（此处用字段验证口径）。
+    /// Totals exclude cache_write_1h-style subsets (the field verifies the accounting here).
     #[test]
     fn total_sums_every_bucket_except_subsets() {
         let mut s = snapshot("a", 100, 20);
@@ -707,7 +712,7 @@ mod tests {
         assert_eq!(s.total(), 1175);
     }
 
-    /// 新会话进账本。
+    /// A new session enters the ledger.
     #[test]
     fn new_session_is_recorded() {
         let mut ledger = Ledger::in_memory();
@@ -718,7 +723,7 @@ mod tests {
         assert!(!view[0].archived);
     }
 
-    /// 用量增长被并入。
+    /// Usage growth is merged in.
     #[test]
     fn growing_session_updates_in_place() {
         let mut ledger = Ledger::in_memory();
@@ -729,7 +734,7 @@ mod tests {
         assert_eq!(ledger.view()[0].output, 40);
     }
 
-    /// **核心需求**：会话从源里消失后，账本仍保留其用量，但**不进展示视图**。
+    /// **The core requirement**: once a session vanishes from the sources, the ledger keeps its usage but **keeps it out of the display view**.
     #[test]
     fn deleted_session_survives_in_ledger() {
         let mut ledger = Ledger::in_memory();
@@ -737,7 +742,7 @@ mod tests {
             snapshot("keep", 100, 10),
             snapshot("gone", 500, 50),
         ]));
-        // 下一轮扫描：gone 消失了
+        // Next scan: gone vanished
         ledger.merge_scan(scan_of(vec![snapshot("keep", 150, 15)]));
 
         assert_eq!(ledger.len(), 2, "两条都还在账本里");
@@ -748,7 +753,7 @@ mod tests {
         assert!(!view[0].archived, "仍在源里的不应标记");
     }
 
-    /// 已归档的会话重新出现 → 回到列表里。
+    /// An archived session reappearing → back in the list.
     #[test]
     fn reappearing_session_clears_archived() {
         let mut ledger = Ledger::in_memory();
@@ -762,7 +767,7 @@ mod tests {
         assert_eq!(ledger.archived_len(), 0);
     }
 
-    /// 源里的回退（重扫读到更小值）不让总量缩水。
+    /// Source-side dips (a rescan reading smaller values) don't shrink totals.
     #[test]
     fn shrinking_scan_does_not_reduce_totals() {
         let mut ledger = Ledger::in_memory();
@@ -773,7 +778,7 @@ mod tests {
         assert_eq!(view[0].output, 100);
     }
 
-    /// 多个 agent 的同名 session_id 互不干扰。
+    /// Same session_id across agents never interfere.
     #[test]
     fn same_session_id_under_different_clients_stay_separate() {
         let mut ledger = Ledger::in_memory();
@@ -785,7 +790,7 @@ mod tests {
         assert_eq!(ledger.len(), 2);
     }
 
-    /// 落盘 → 重开：已删会话的用量仍在。
+    /// Flush → reopen: deleted sessions' usage survives.
     #[test]
     fn ledger_persists_across_reopen() {
         let path = temp_path("persist");
@@ -799,10 +804,10 @@ mod tests {
         }
         {
             let mut ledger = Ledger::open(&path);
-            // 重开后落盘的 archived 要读回来：源里已消失的那条不该上列表。
+            // The archived flag written before reopening must read back: the source-vanished one stays off the list.
             assert_eq!(ledger.view().len(), 2, "两条都还在源里");
             assert_eq!(ledger.archived_len(), 0, "重开时两条都是活的");
-            // 新的一轮：gone 已从源里消失
+            // A new round: gone has vanished from the sources
             ledger.merge_scan(scan_of(vec![snapshot("keep", 100, 10)]));
             let view = ledger.view();
             assert_eq!(view.len(), 1, "源里已消失的不进列表");
@@ -813,7 +818,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 落盘要记下数据时刻：缓存秒显的「更新于」靠它。
+    /// Flushing records the data timestamp: the instant-display cache's "updated" note depends on it.
     #[test]
     fn save_records_saved_at() {
         let path = temp_path("saved-at");
@@ -827,13 +832,13 @@ mod tests {
             saved > now - 60_000 && saved <= now,
             "数据时刻应是刚刚: {saved}"
         );
-        // 重开能读回。
+        // Reopen reads it back.
         let reopened = Ledger::open(&path);
         assert_eq!(reopened.saved_at(), Some(saved));
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 旧格式（无 saved_at 键）回落文件 mtime：升级不丢「更新于」，不升版本。
+    /// Old format (no saved_at key) falls back to file mtime: upgrading keeps the "updated" note, no version bump.
     #[test]
     fn legacy_ledger_without_saved_at_falls_back_to_mtime() {
         let path = temp_path("legacy-saved-at");
@@ -847,7 +852,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 按天分桶能跨重开保留（热力图数据不能因为重启就没了）。
+    /// Daily buckets survive reopen (heatmap data must not vanish on restart).
     #[test]
     fn daily_buckets_persist_across_reopen() {
         let path = temp_path("daily-persist");
@@ -869,10 +874,10 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 旧账本（没有 `daily` 键）不该丢掉会话历史。
+    /// Old ledgers (without the `daily` key) must not lose session history.
     ///
-    /// 已删会话的用量无法重扫回来，那是账本存在的意义；新增可选的 `daily`
-    /// 字段只能追加，不能靠升版本号把老数据洗掉。
+    /// Deleted sessions' usage can never be rescanned — that's the ledger's whole point; the newly added
+    /// optional `daily` field may only be appended, never washed away by a version bump.
     #[test]
     fn legacy_ledger_without_daily_keeps_sessions() {
         let path = temp_path("legacy-no-daily");
@@ -896,7 +901,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 同一天重扫取较大值：源里偶发的回退不让历史缩水。
+    /// Rescanning the same day takes the larger value: occasional source-side dips don't shrink history.
     #[test]
     fn daily_merge_never_shrinks() {
         let mut ledger = Ledger::in_memory();
@@ -905,7 +910,7 @@ mod tests {
         assert_eq!(ledger.daily()["2026-01-01"].totals.input, 1000);
     }
 
-    /// 已有 daily 且无新变化时，`save` 不产生 IO（差异写）。
+    /// With daily present and no new changes, `save` performs no IO (delta write).
     #[test]
     fn daily_unchanged_scan_does_not_dirty() {
         let mut ledger = Ledger::in_memory();
@@ -913,12 +918,12 @@ mod tests {
         ledger.save().expect("内存账本落盘应成功");
         assert!(!ledger.is_dirty(), "落盘后应变干净");
 
-        // 同一天同样的数据再来一遍：不算变化。
+        // The same day's identical data again: not a change.
         ledger.merge_daily(daily_of(&[("2026-01-01", 100, 10)]));
         assert!(!ledger.is_dirty(), "无变化不应标脏");
     }
 
-    /// 账本文件损坏 → 静默重建，不 panic。
+    /// Corrupt ledger file → silent rebuild, no panic.
     #[test]
     fn corrupt_ledger_recovers_silently() {
         let path = temp_path("corrupt");
@@ -926,17 +931,17 @@ mod tests {
         let ledger = Ledger::open(&path);
         assert!(ledger.is_empty(), "损坏文件应被当成空账本");
 
-        // 截断的 JSON 同样处理
+        // Truncated JSON gets the same treatment
         std::fs::write(&path, "{\"version\":1,\"sessions\":{\"a\":").unwrap();
         assert!(Ledger::open(&path).is_empty());
 
-        // 二进制垃圾
+        // Binary garbage
         std::fs::write(&path, [0u8, 159, 146, 150]).unwrap();
         assert!(Ledger::open(&path).is_empty());
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 版本不符 → 丢弃重建（不尝试迁移脏数据）。
+    /// Version mismatch → discard and rebuild (dirty data is never migrated).
     #[test]
     fn version_mismatch_discards_old_ledger() {
         let path = temp_path("version");
@@ -949,7 +954,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 键与内容不一致的条目被丢弃。
+    /// Entries whose key and content disagree are dropped.
     #[test]
     fn mismatched_key_is_dropped() {
         let path = temp_path("mismatch");
@@ -962,7 +967,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 无改动时不落盘（不产生 IO）。
+    /// No changes → no flush (no IO).
     #[test]
     fn save_is_noop_when_clean() {
         let path = temp_path("clean");
@@ -971,7 +976,7 @@ mod tests {
         assert!(!path.exists(), "无改动不应创建文件");
     }
 
-    /// 原子写：落盘后目录里不残留临时文件。
+    /// Atomic write: no temp files left in the directory after flushing.
     #[test]
     fn atomic_write_leaves_no_temp_file() {
         let path = temp_path("atomic");
@@ -984,7 +989,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 目录不存在时自动创建。
+    /// Missing directories are created automatically.
     #[test]
     fn save_creates_missing_parent_dir() {
         let dir =
@@ -997,7 +1002,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 展示视图按最近活动倒序。
+    /// The display view sorts by most recent activity.
     #[test]
     fn view_is_sorted_by_recency() {
         let mut ledger = Ledger::in_memory();
@@ -1010,7 +1015,7 @@ mod tests {
         assert_eq!(view[0].session_id, "new", "最近的排前面");
     }
 
-    /// 零用量会话不进账本（避免堆积空条目）。
+    /// Zero-usage sessions stay out of the ledger (no piling up empty entries).
     #[test]
     fn zero_usage_session_is_not_persisted() {
         let path = temp_path("zero");
@@ -1024,7 +1029,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 落盘后可读：JSON 里能看到 client / session_id。
+    /// Readable after flushing: client / session_id visible in the JSON.
     #[test]
     fn persisted_json_is_readable() {
         let path = temp_path("readable");
@@ -1037,7 +1042,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 删除会话：从账本移除、进忽略名单，下一轮扫描不再并回。
+    /// Delete a session: removed from the ledger, into the ignore list, never merged back by later scans.
     #[test]
     fn ignore_session_removes_and_blocks_resurrection() {
         let mut ledger = Ledger::in_memory();
@@ -1051,7 +1056,7 @@ mod tests {
         assert!(ledger.ignored().contains(&key));
         assert!(!ledger.ignore_session(&key), "重复删同一键返回 false");
 
-        // 下一轮扫描仍扫到它：不许复活。
+        // The next scan still sees it: no revival allowed.
         ledger.merge_scan(scan_of(vec![
             snapshot("keep", 100, 10),
             snapshot("gone", 500, 50),
@@ -1060,8 +1065,8 @@ mod tests {
         assert!(!ledger.view().iter().any(|s| s.session_id == "gone"));
     }
 
-    /// 删除会话：明细（快照 + 逐日 `by_session`）真删，
-    /// 合计与各分解保留 —— 总量不因删除缩水，账本也不因会话数无限膨胀。
+    /// Delete a session: details (snapshot + per-day `by_session`) really deleted,
+    /// totals and breakdowns kept — totals don't shrink from deletion, and the ledger doesn't bloat with session count.
     #[test]
     fn ignore_session_keeps_daily_contribution() {
         let mut ledger = Ledger::in_memory();
@@ -1097,8 +1102,8 @@ mod tests {
         );
     }
 
-    /// 在途扫描的明细裁剪：扫描起飞时名单还不含本次删掉的键，
-    /// 结果里的明细也不许把删除冲掉；合计照并。
+    /// In-flight scan detail pruning: the scan's ignore list didn't yet contain the key deleted mid-flight,
+    /// and the result's details must not wash the deletion away; totals merge as usual.
     #[test]
     fn merge_daily_drops_ignored_session_details() {
         let mut ledger = Ledger::in_memory();
@@ -1106,7 +1111,7 @@ mod tests {
         ledger.merge_scan(scan_of(vec![snapshot("gone", 500, 50)]));
         ledger.ignore_session(&key);
 
-        // 模拟一轮在途扫描的结果：明细仍在，合计仍是该会话的量。
+        // Simulate an in-flight scan's result: details still present, totals still the session's usage.
         let mut bucket = DailyBucket::new("2026-01-02");
         bucket.totals.input = 500;
         bucket.totals.messages = 1;
@@ -1125,7 +1130,7 @@ mod tests {
         );
     }
 
-    /// 忽略名单落盘：重启后依然生效。
+    /// The ignore list persists: still effective after restart.
     #[test]
     fn ignored_list_survives_a_roundtrip() {
         let path = temp_path("ignored");
@@ -1145,7 +1150,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 项目字段：absorb 从消息的工作区补齐，落盘往返不丢。
+    /// The project field: absorb backfills from the message's workspace, and the JSON round trip keeps it.
     #[test]
     fn project_flows_from_message_through_json() {
         let message_with = |label: Option<&str>, key: Option<&str>| ParsedMessage {
@@ -1194,7 +1199,7 @@ mod tests {
         assert_eq!(back.project, snap.project);
     }
 
-    /// 成本：absorb 累加、JSON 往返保留；旧条目（无 cost 键）按 0 读回。
+    /// Cost: absorbed additively, preserved through the JSON round trip; old entries (no cost key) read back as 0.
     #[test]
     fn cost_flows_through_absorb_and_json() {
         let mut snap = snapshot("costly", 1, 1);
@@ -1231,7 +1236,7 @@ mod tests {
         .expect("往返应可读");
         assert!((back.cost - 1.5).abs() < 1e-9);
 
-        // 旧账本条目没有 cost 键：按 0 读回，不报损坏。
+        // Old ledger entries lack the cost key: read back as 0, not flagged corrupt.
         let mut legacy = snap.to_json();
         legacy.as_object_mut().unwrap().remove("cost");
         let old =

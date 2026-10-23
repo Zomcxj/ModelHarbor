@@ -1,16 +1,16 @@
 use eframe::egui;
 
-/// 本帧请求的自定义抓取光标。
+/// This frame's requested custom grab cursor.
 ///
-/// 控件只提出请求，由 `App::update` 在帧末统一落到 Win32
-/// （见 `crate::cursor::set_custom_cursor`）。
+/// Widgets only raise requests; `App::update` lands them on Win32 at frame end
+/// (see `crate::cursor::set_custom_cursor`).
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum GrabCursor {
     #[default]
     None,
-    /// 悬停在可拖动处：系统自带的手形光标（`IDC_HAND`）。
+    /// Hovering something draggable: the system's own hand cursor (`IDC_HAND`).
     Palm,
-    /// 已按住：握起的拳头。
+    /// Held down: the closed fist.
     Fist,
 }
 
@@ -18,7 +18,7 @@ fn grab_cursor_id() -> egui::Id {
     egui::Id::new("model_harbor_grab_cursor")
 }
 
-/// 请求本帧的抓取光标。同一帧里取更强的一态（Fist > Palm > None）。
+/// Request this frame's grab cursor. Within one frame, the stronger state wins (Fist > Palm > None).
 pub fn request_grab_cursor(ctx: &egui::Context, want: GrabCursor) {
     if want == GrabCursor::None {
         return;
@@ -36,7 +36,7 @@ pub fn request_grab_cursor(ctx: &egui::Context, want: GrabCursor) {
     });
 }
 
-/// 取出并清空本帧请求（帧末调用一次，避免状态泄漏到下一帧）。
+/// Take and clear this frame's request (called once at frame end, so state never leaks into the next).
 pub fn take_grab_cursor(ctx: &egui::Context) -> GrabCursor {
     ctx.data_mut(|d| {
         let cur = d
@@ -47,10 +47,10 @@ pub fn take_grab_cursor(ctx: &egui::Context) -> GrabCursor {
     })
 }
 
-/// 悬停态：手掌；按下态：拳头。
+/// Hovering: palm; pressed: fist.
 ///
-/// 用于拖动把手这类「按下才开始拖」的控件，按下即用
-/// `is_pointer_button_down_on()` 判为 Fist，不等 `dragged()` 越过拖动阈值。
+/// For widgets like drag handles that start dragging on press — a press immediately judges Fist via
+/// `is_pointer_button_down_on()`, never waiting for `dragged()` to cross the drag threshold.
 pub fn grab_cursor_for(resp: &egui::Response) -> GrabCursor {
     if resp.is_pointer_button_down_on() || resp.dragged() {
         GrabCursor::Fist

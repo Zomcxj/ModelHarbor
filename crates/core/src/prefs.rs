@@ -1,17 +1,17 @@
-//! 工具自身设置持久化：家目录下的 `.modelharbor/settings.json`
-//! （Windows：`C:\Users\<用户名>\.modelharbor\settings.json`）。
+//! The tool's own settings persistence: `.modelharbor/settings.json` under the home directory
+//! (Windows: `C:\Users\<user>\.modelharbor\settings.json`).
 //!
-//! 只存界面选择（密钥显隐、保存格式、主题、同步 WSL、卡片折叠、各页配置路径覆盖），
-//! 不存密钥、模型与配置内容。
+//! Stores only UI choices (key visibility, save format, theme, WSL sync, card collapse, per-page config
+//! path overrides) — never keys, models, or config contents.
 //!
-//! 文件不存在 / 读不出 / 解析失败都用默认值；空字符串表示「没设置过」。
-//! 读取按「新名字 → 旧名字」「家目录 → %APPDATA%」逐个回退，写盘只写新名字，
-//! 并在首次写入后清掉同目录的旧文件。
+//! Missing / unreadable / unparseable files all yield defaults; empty strings mean "never set".
+//! Reads fall back through "new name → old name" and "home → %APPDATA%"; writes only produce the new
+//! name, and the old file in the same directory is cleaned up after the first write.
 
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
-/// 读取 `root.a.b` 形式的嵌套字符串（类型不符视为空）。
+/// Read a nested string of the form `root.a.b` (type mismatches count as empty).
 fn nested_str(root: &Value, outer: &str, inner: &str) -> String {
     root.get(outer)
         .and_then(|value| value.get(inner))
@@ -20,15 +20,15 @@ fn nested_str(root: &Value, outer: &str, inner: &str) -> String {
         .to_string()
 }
 
-/// 配置目录名（家目录下的点目录）。
+/// Config directory name (a dot-directory under home).
 pub const DIR_NAME: &str = ".modelharbor";
 const FILE_NAME: &str = "settings.json";
-/// 旧文件名：只用于读取时回退与写入后清理。
+/// Old file name: only for read fallback and post-write cleanup.
 const LEGACY_FILE_NAME: &str = "prefs.json";
-/// 崩溃日志文件名。
+/// Crash log file name.
 const CRASH_FILE_NAME: &str = "crash.log";
 
-/// 家目录：Windows 用 `USERPROFILE`，其他平台用 `HOME`。
+/// Home directory: `USERPROFILE` on Windows, `HOME` elsewhere.
 pub fn home_dir() -> Option<PathBuf> {
     ["USERPROFILE", "HOME"]
         .into_iter()
@@ -36,17 +36,17 @@ pub fn home_dir() -> Option<PathBuf> {
         .filter(|dir| !dir.as_os_str().is_empty())
 }
 
-/// 配置目录（家目录下的 `.modelharbor`）：设置、凭证与崩溃日志都放这里。
+/// Config directory (`.modelharbor` under home): settings, credentials, and the crash log live here.
 pub fn config_dir() -> Option<PathBuf> {
     home_dir().map(|home| home.join(DIR_NAME))
 }
 
-/// 崩溃日志路径（`<配置目录>/crash.log`）。
+/// Crash log path (`<config dir>/crash.log`).
 pub fn crash_log_path() -> Option<PathBuf> {
     config_dir().map(|dir| dir.join(CRASH_FILE_NAME))
 }
 
-/// 把一段记录追加到指定文件：父目录不存在则创建，写失败返回 `false`。
+/// Append one record to the given file: creates the parent directory when missing; returns `false` on write failure.
 fn append_line(path: &Path, entry: &str) -> bool {
     if let Some(dir) = path.parent() {
         if std::fs::create_dir_all(dir).is_err() {
@@ -64,18 +64,18 @@ fn append_line(path: &Path, entry: &str) -> bool {
     file.write_all(entry.as_bytes()).is_ok() && file.flush().is_ok()
 }
 
-/// 把一段崩溃记录追加到 `crash.log`：返回是否写入成功；本身不会 panic。
+/// Append one crash record to `crash.log`: returns whether the write succeeded; never panics itself.
 pub fn append_crash_log(entry: &str) -> bool {
     crash_log_path().is_some_and(|path| append_line(&path, entry))
 }
 
-/// 旧位置（`%APPDATA%` 下同名目录）。
+/// Old location (the same-named directory under `%APPDATA%`).
 fn legacy_dir() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join(DIR_NAME))
 }
 
-/// 读取候选路径，按优先级排列：
-/// 家目录 settings.json → 家目录 prefs.json → %APPDATA% 下两者。
+/// Read candidate paths in priority order:
+/// home settings.json → home prefs.json → both under %APPDATA%.
 fn read_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(home) = home_dir() {
@@ -90,7 +90,7 @@ fn read_candidates() -> Vec<PathBuf> {
     out
 }
 
-/// 清掉同目录下的旧文件名；失败不影响本次保存。
+/// Remove old file names in the same directory; failures don't affect the current save.
 fn remove_legacy_next_to(path: &Path) {
     let Some(dir) = path.parent() else {
         return;
@@ -101,10 +101,10 @@ fn remove_legacy_next_to(path: &Path) {
     }
 }
 
-/// 写盘用的 schema 版本（读取时忽略）。
+/// Schema version for the written file (ignored on read).
 const SCHEMA_VERSION: u64 = 12;
 
-/// 配置身份：规范化路径后的稳定 FNV-1a 哈希。
+/// Config identity: a stable FNV-1a hash of the normalized path.
 pub fn config_identity(path: &str) -> String {
     let normalized = path.trim().replace('\\', "/").to_lowercase();
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
@@ -115,17 +115,17 @@ pub fn config_identity(path: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// 折叠状态的持久化键：`配置身份/类别/名字`。
+/// Persistence key for collapse state: `config identity/category/name`.
 pub fn collapsed_id(config_id: &str, kind: &str, key: &str) -> String {
     format!("{config_id}/{kind}/{key}")
 }
 
-/// v2 折叠键：`类别/名字`（仅供首次成功加载时迁移）。
+/// v2 collapse key: `category/name` (only for migration on first successful load).
 pub fn legacy_collapsed_id(kind: &str, key: &str) -> String {
     format!("{kind}/{key}")
 }
 
-/// 各后端的配置路径覆盖（空字符串 = 不覆盖，用启动时自动探测到的默认路径）。
+/// Per-backend config path overrides (empty string = no override, use the default path auto-detected at startup).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConfigPathPrefs {
     pub opencode: String,
@@ -141,7 +141,7 @@ pub struct ConfigPathPrefs {
 }
 
 impl ConfigPathPrefs {
-    /// 按后端取值。
+    /// Per-backend lookup.
     pub fn get(&self, format: crate::format::ConfigFormat) -> &str {
         match format {
             crate::format::ConfigFormat::Opencode => &self.opencode,
@@ -157,7 +157,7 @@ impl ConfigPathPrefs {
         }
     }
 
-    /// 按后端写入（空串 = 清除覆盖）。
+    /// Per-backend write (empty string = clear the override).
     pub fn set(&mut self, format: crate::format::ConfigFormat, path: &str) {
         let slot = match format {
             crate::format::ConfigFormat::Opencode => &mut self.opencode,
@@ -175,40 +175,40 @@ impl ConfigPathPrefs {
     }
 }
 
-/// 界面偏好。
+/// UI preferences.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefs {
-    /// 是否显示全部 API Key 明文。
+    /// Whether all API keys show plaintext.
     pub show_api_keys: bool,
-    /// 保存格式标识（`current` / `compact`；空 = 用 App 默认）。
+    /// Save-format identifier (`current` / `compact`; empty = the App default).
     pub save_format: String,
-    /// 主题标识（`dark` / `light` / `ocean` / `nord` / `rose`；空 = 用 App 默认）。
+    /// Theme identifier (`dark` / `light` / `ocean` / `nord` / `rose`; empty = the App default).
     pub theme: String,
-    /// 是否同步写入 WSL 侧路径。
+    /// Whether to sync writes to the WSL-side paths.
     pub sync_wsl: bool,
-    /// 各后端自己的配置路径覆盖（用户手动指定过才非空）。
+    /// Each backend's own config path override (non-empty only when the user specified one).
     pub config_paths: ConfigPathPrefs,
-    /// 已折叠的卡片（`配置身份/类别/名字`；不在表里的即展开）。
-    /// v2 的 `类别/名字` 旧键会在首次成功加载配置后迁入当前配置身份。
+    /// Collapsed cards (`config identity/category/name`; anything absent from the map is expanded).
+    /// v2's old `category/name` keys migrate into the current config identity after the first successful load.
     pub collapsed: Vec<String>,
-    /// 检测到系统代理 / VPN 时是否仍允许「模型延迟测试」。
+    /// Whether "model latency tests" stay allowed when a system proxy / VPN is detected.
     ///
-    /// 默认 `false`；只影响延迟测试，不影响连通性测试与用量查询。
+    /// Defaults to `false`; affects latency tests only — not connectivity tests or usage queries.
     pub allow_model_test_with_proxy: bool,
-    /// 是否已经关掉首次使用引导条。
+    /// Whether the first-use guidance bar has been dismissed.
     pub guide_dismissed: bool,
-    /// 界面形状标识（`soft` / `compact` / `slab` / `sharp` / `panel` / `pill`；空 = 用默认档）。
+    /// UI shape identifier (`soft` / `compact` / `slab` / `sharp` / `panel` / `pill`; empty = the default tier).
     pub ui_style: String,
-    /// 亚克力：面板 / 卡片半透明，透出 DWM 亚克力模糊（正交于主题与形状）。
+    /// Acrylic: translucent panels / cards revealing DWM acrylic blur (orthogonal to theme and shape).
     pub glass: bool,
-    /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
-    /// 只对已安装的那一组生效，未安装的页面排在后面并按字母序。
+    /// The top bar's installed-page drag order (backend identifiers; unlisted ones append alphabetically).
+    /// Applies to the installed group only; uninstalled pages trail in alphabetical order.
     pub tab_order: Vec<String>,
-    /// 常驻任务栏：点 X 只把主窗口收进托盘，托盘图标可唤回 / 退出。
+    /// Resident taskbar: clicking X only tucks the main window into the tray; the tray icon restores / quits.
     ///
-    /// 旧设置文件没有这个字段时默认开启（用户要求默认常驻点亮）。
+    /// Old settings without the field default to on (user asked for resident-by-default).
     pub tray_resident: bool,
-    /// 用量页记住的时间区间键（`today` / `week` / `month` / `all`；空 = 用 App 默认）。
+    /// The usage page's remembered range key (`today` / `week` / `month` / `all`; empty = the App default).
     pub usage_range: String,
 }
 
@@ -226,7 +226,7 @@ impl Default for Prefs {
             ui_style: String::new(),
             glass: false,
             tab_order: Vec::new(),
-            // 默认常驻点亮（用户要求）。
+            // Resident-by-default, lit (user request).
             tray_resident: true,
             usage_range: String::new(),
         }
@@ -234,10 +234,10 @@ impl Default for Prefs {
 }
 
 impl Prefs {
-    /// 工具设置目录（家目录下的 `.modelharbor`）：自有文件都集中在这里
-    /// （`settings.json` 与站点令牌 `tokens.json`），不写进任何 agent 配置目录。
+    /// The tool's settings directory (`.modelharbor` under home): all self-owned files concentrate here
+    /// (`settings.json` and the station tokens `tokens.json`), never inside any agent's config directory.
     ///
-    /// 取不到家目录时回退 `%APPDATA%\.modelharbor`，再回退程序同级目录。
+    /// Without a home directory, falls back to `%APPDATA%\.modelharbor`, then the executable's own directory.
     pub fn config_dir() -> PathBuf {
         if let Some(home) = home_dir() {
             return home.join(DIR_NAME);
@@ -250,14 +250,14 @@ impl Prefs {
         })
     }
 
-    /// 设置文件路径（家目录下的 `.modelharbor/settings.json`）。
+    /// Settings file path (`.modelharbor/settings.json` under home).
     pub fn path() -> PathBuf {
         Self::config_dir().join(FILE_NAME)
     }
 
-    /// 从默认路径加载。
+    /// Load from the default path.
     ///
-    /// 按 [`read_candidates`] 顺序逐个回退，全读不到即默认值。
+    /// Falls back through [`read_candidates`] in order; nothing readable yields defaults.
     pub fn load() -> Prefs {
         for candidate in read_candidates() {
             if let Ok(text) = std::fs::read_to_string(&candidate) {
@@ -267,7 +267,7 @@ impl Prefs {
         Prefs::default()
     }
 
-    /// 解析已有内容（供加载与单测使用）。
+    /// Parse existing content (used by loading and unit tests).
     pub fn parse(text: &str) -> Prefs {
         let Ok(root) = serde_json::from_str::<Value>(text) else {
             return Prefs::default();
@@ -278,7 +278,7 @@ impl Prefs {
                 .unwrap_or("")
                 .to_string()
         };
-        // 读取字符串数组字段（折叠表 / 签到授权）。
+        // Read a string-array field (the collapse table / check-in grants).
         let get_list = |key: &str| {
             root.get(key)
                 .and_then(Value::as_array)
@@ -315,21 +315,21 @@ impl Prefs {
                 kimi_code: nested_str(&root, "config_paths", "kimi_code"),
             },
             collapsed: get_list("collapsed"),
-            // 只有真正的布尔 true 才放行：缺字段、字符串 "true" 都按拦截处理。
+            // Only a genuine boolean true passes: missing fields and the string "true" both count as blocked.
             allow_model_test_with_proxy: root
                 .get("allow_model_test_with_proxy")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            // 缺字段 = 没关过 = 显示引导。
+            // Missing field = never dismissed = show the guidance.
             guide_dismissed: root
                 .get("guide_dismissed")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             ui_style: get_str("ui_style"),
-            // 只有真正的布尔 true 才开亚克力：缺字段、字符串 "true" 都按关闭处理。
+            // Only a genuine boolean true enables acrylic: missing fields and the string "true" both count as off.
             glass: root.get("glass").and_then(Value::as_bool).unwrap_or(false),
             tab_order: get_list("tab_order"),
-            // 缺字段 = 旧设置文件：默认开启（用户要求默认常驻点亮）。
+            // Missing field = old settings file: default on (user asked for resident-by-default).
             tray_resident: root
                 .get("tray_resident")
                 .and_then(Value::as_bool)
@@ -338,7 +338,7 @@ impl Prefs {
         }
     }
 
-    /// 序列化（固定字段顺序）。
+    /// Serialize (fixed field order).
     pub fn to_json(&self) -> String {
         let mut root = Map::new();
         root.insert("version".to_string(), Value::Number(SCHEMA_VERSION.into()));
@@ -365,7 +365,7 @@ impl Prefs {
             paths.insert(key.to_string(), Value::String(value.clone()));
         }
         root.insert("config_paths".to_string(), Value::Object(paths));
-        // 两个字符串数组都排序去重后写出。
+        // Both string arrays are sorted and deduped before writing.
         let sorted_array = |items: &[String]| {
             let mut list: Vec<&String> = items.iter().collect();
             list.sort();
@@ -387,7 +387,7 @@ impl Prefs {
         );
         root.insert("ui_style".to_string(), Value::String(self.ui_style.clone()));
         root.insert("glass".to_string(), Value::Bool(self.glass));
-        // 顶栏顺序按原样写出：顺序本身就是这个键的内容，不做排序去重。
+        // The top-bar order is written as-is: the order itself IS this key's content — no sorting or dedup.
         root.insert(
             "tab_order".to_string(),
             Value::Array(
@@ -405,7 +405,7 @@ impl Prefs {
         serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// 落盘到默认路径，并清掉同目录下的旧文件名。
+    /// Flush to the default path and clean up the old file name in the same directory.
     pub fn save(&self) -> Result<(), String> {
         let path = Self::path();
         let result = self.save_to(&path);
@@ -415,9 +415,9 @@ impl Prefs {
         result
     }
 
-    /// 落盘到指定路径（单测用）。
+    /// Flush to a given path (unit tests).
     ///
-    /// 原子写：先写同目录临时文件并同步，再替换正式文件；替换失败保留原设置。
+    /// Atomic write: a same-directory temp file first with sync, then replace; a failed replace keeps the original settings.
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
         crate::util::atomic_write_text(path, &self.to_json())
     }
@@ -468,7 +468,7 @@ mod tests {
                 qwen_code: String::new(),
                 kimi_code: String::new(),
             },
-            // 按字母序给出，to_json 会排序写出。
+            // Given alphabetically; to_json sorts on write.
             collapsed: vec![
                 collapsed_id("cfg", "agents", "build"),
                 collapsed_id("cfg", "providers", "openai"),
@@ -476,17 +476,17 @@ mod tests {
             allow_model_test_with_proxy: true,
             guide_dismissed: true,
             ui_style: "slab".to_string(),
-            // 非默认值，覆盖亚克力档的读写。
+            // Non-default value, overriding the acrylic tier's read/write.
             glass: true,
             tab_order: vec!["pi".to_string(), "zcode".to_string()],
             tray_resident: false,
-            // 非默认值，覆盖用量区间的读写。
+            // Non-default value, overriding the usage range's read/write.
             usage_range: "week".to_string(),
         };
         assert_eq!(Prefs::parse(&prefs.to_json()), prefs);
     }
 
-    /// 顶栏顺序按原样写出，不排序。
+    /// The top-bar order is written as-is, unsorted.
     #[test]
     fn tab_order_is_written_verbatim_not_sorted() {
         let prefs = Prefs {
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(text.matches("b/2").count(), 1, "不应重复：{text}");
         let back = Prefs::parse(&text);
         assert_eq!(back.collapsed, vec!["a/1".to_string(), "b/2".to_string()]);
-        // 再次写出应完全相同。
+        // Writing again must be byte-identical.
         assert_eq!(back.to_json(), text);
     }
 
@@ -553,7 +553,7 @@ mod tests {
             prefs.collapsed,
             vec!["providers/p".to_string(), "agents/a".to_string()]
         );
-        // 写出的版本号跟当前 schema 走。
+        // The written version follows the current schema.
         assert!(
             prefs
                 .to_json()
@@ -565,9 +565,9 @@ mod tests {
 
     #[test]
     fn glass_defaults_off_and_round_trips() {
-        // 默认关闭。
+        // Off by default.
         assert!(!Prefs::default().glass);
-        // 只有真正的布尔 true 才开：缺字段、字符串 "true" 都按关闭处理。
+        // Only a genuine boolean true enables: missing fields and the string "true" both count as off.
         assert!(!Prefs::parse(r#"{"version":3,"show_api_keys":true}"#).glass);
         assert!(!Prefs::parse(r#"{"glass":"true"}"#).glass);
         assert!(Prefs::parse(r#"{"glass":true}"#).glass);
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn proxy_model_test_override_defaults_off_and_round_trips() {
-        // 缺字段时默认拦截。
+        // Missing field defaults to blocking.
         assert!(
             !Prefs::default().allow_model_test_with_proxy,
             "默认要保持拦截"
@@ -676,7 +676,7 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        // 前两个候选：家目录的新名字 → 家目录的旧名字。
+        // The first two candidates: home's new name → home's old name.
         assert_eq!(candidates.first().map(String::as_str), Some(FILE_NAME));
         assert_eq!(
             candidates.get(1).map(String::as_str),
@@ -723,7 +723,7 @@ mod tests {
         for forbidden in [".config", ".pi", ".omp", ".dsh", "opencode"] {
             assert!(!text.contains(forbidden), "不应写进 agent 配置：{text}");
         }
-        // 有家目录时必须在家里。
+        // With a home directory, it must live at home.
         let has_home =
             std::env::var_os("USERPROFILE").is_some() || std::env::var_os("HOME").is_some();
         if has_home {
@@ -736,10 +736,10 @@ mod tests {
 
     #[test]
     fn guide_shows_until_it_is_dismissed() {
-        // 缺字段 = 没关过 = 显示引导。
+        // Missing field = never dismissed = show the guidance.
         assert!(!Prefs::default().guide_dismissed);
         assert!(!Prefs::parse(r#"{"version":6}"#).guide_dismissed);
-        // 字符串 "true" 不算关闭，只认真布尔。
+        // The string "true" doesn't count as dismissed — only genuine booleans do.
         assert!(!Prefs::parse(r#"{"guide_dismissed":"true"}"#).guide_dismissed);
         assert!(Prefs::parse(r#"{"guide_dismissed":true}"#).guide_dismissed);
     }
@@ -758,10 +758,10 @@ mod tests {
 
     #[test]
     fn ui_style_defaults_to_empty_and_round_trips() {
-        // 空字符串 = 用默认档。
+        // Empty string = use the default tier.
         assert_eq!(Prefs::default().ui_style, "");
         assert_eq!(Prefs::parse(r#"{"ui_style":"slab"}"#).ui_style, "slab");
-        // 类型不对按没设置过处理。
+        // A type mismatch counts as never-set.
         assert_eq!(Prefs::parse(r#"{"ui_style":3}"#).ui_style, "");
         let prefs = Prefs {
             ui_style: "band".to_string(),

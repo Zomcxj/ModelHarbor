@@ -1,8 +1,8 @@
-//! oh-my-pi（omp）后端：`~/.omp/agent/models.yml`（YAML）。
+//! The oh-my-pi (omp) backend: `~/.omp/agent/models.yml` (YAML).
 //!
-//! schema 与 pi 同族（顶层 `providers` + extras）：思考档位用 `thinking` 块；
-//! provider/model 的扩展字段保存时以 raw 为基底原样保留，仅重写 UI 管理的字段。
-//! 加载时 `thinking` 与 `thinkingLevelMap` 都能读入 IR variants。
+//! Schema is pi's sibling (top-level `providers` + extras): reasoning tiers use the `thinking` block;
+//! provider/model extension fields keep raw as their base at save, rewriting only UI-managed fields.
+//! On load, both `thinking` and `thinkingLevelMap` parse into IR variants.
 
 use super::{Backend, BackendLoad};
 use crate::convert::{
@@ -25,16 +25,16 @@ fn default_local_path() -> String {
     format!("{}\\.omp\\agent\\models.yml", home_dir_string())
 }
 
-/// 模型 → omp 方言对象（保留 raw 中的未知字段，思考档位输出 thinking 块）。
+/// Model → the omp dialect object (keeping raw's unknown fields; tiers output as the thinking block).
 pub fn model_to_omp(m: &ModelRow) -> Value {
-    // opencode / DSH 来源全新构造；pi/omp 来源以 raw 为基底保留扩展字段
+    // opencode / DSH sources build fresh; pi/omp sources keep extension fields over raw as the base
     let mut obj: Map<String, Value> =
         if is_opencode_shaped_model(&m.raw) || is_dsh_shaped_model(&m.raw) {
             Map::new()
         } else {
             m.raw.as_object().cloned().unwrap_or_default()
         };
-    // pi 方言思考键统一转为 thinking 块
+    // The pi dialect's thinking keys unify into the thinking block
     obj.remove("thinkingLevelMap");
 
     obj.insert("id".into(), Value::String(m.id.clone()));
@@ -75,10 +75,10 @@ pub fn model_to_omp(m: &ModelRow) -> Value {
     Value::Object(obj)
 }
 
-/// 构造 omp thinking 块（variants 非空时调用）：
-/// 1. omp 原生往返：raw.thinking 的档位值集合与当前一致 → 整块保留；
-/// 2. pi 方言翻译：raw.thinkingLevelMap 值集合一致 → efforts=键集合，非对称时附 effortMap；
-/// 3. 新建对称块。
+/// Assemble omp's thinking block (called when variants are non-empty):
+/// 1. omp native round trip: raw.thinking's tier value set matches the current one → the block is kept whole;
+/// 2. pi-dialect translation: raw.thinkingLevelMap's value set matches → efforts = the key set, with effortMap attached when asymmetric;
+/// 3. build a new symmetric block.
 fn omp_thinking(m: &ModelRow) -> Option<Value> {
     let names: Vec<String> = crate::model::ordered_variants_text(&m.variants);
     let cur: HashSet<String> = names.iter().cloned().collect();
@@ -89,7 +89,7 @@ fn omp_thinking(m: &ModelRow) -> Option<Value> {
             .collect()
     };
 
-    // 1) omp 原生
+    // 1) omp native
     if let Some(t) = m.raw.get("thinking").and_then(|v| v.as_object()) {
         let raw_vals = t
             .get("effortMap")
@@ -110,7 +110,7 @@ fn omp_thinking(m: &ModelRow) -> Option<Value> {
         }
     }
 
-    // 2) pi 方言翻译
+    // 2) pi-dialect translation
     if let Some(tlm) = m.raw.get("thinkingLevelMap").and_then(|v| v.as_object()) {
         let tlm_vals = vals_of(tlm);
         if tlm_vals == cur {
@@ -130,14 +130,14 @@ fn omp_thinking(m: &ModelRow) -> Option<Value> {
         }
     }
 
-    // 3) 新建对称
+    // 3) new symmetric
     Some(json!({
         "mode": "effort",
         "efforts": names,
     }))
 }
 
-/// Provider → omp 方言对象（raw 基底保留 headers/auth/discovery/modelOverrides 等）。
+/// Provider → the omp dialect object (raw as base keeping headers/auth/discovery/modelOverrides etc.).
 pub fn provider_to_omp(p: &ProviderRow) -> Value {
     let mut obj: Map<String, Value> =
         if is_opencode_shaped_provider(&p.raw) || is_dsh_shaped_provider(&p.raw) {
@@ -149,7 +149,7 @@ pub fn provider_to_omp(p: &ProviderRow) -> Value {
     let api = p.effective_api();
 
     if !p.base_url.is_empty() {
-        // 与 pi / dsh 同一套归一化：messages 协议的 base 不带 /v1。
+        // The same normalization as pi / dsh: a messages protocol's base carries no /v1.
         let save_url = convert::without_v1_for_messages(&api, &p.base_url);
         obj.insert("baseUrl".into(), Value::String(save_url));
     } else {
@@ -162,7 +162,7 @@ pub fn provider_to_omp(p: &ProviderRow) -> Value {
     }
     obj.insert("api".into(), Value::String(api));
 
-    // compat 仅管理 supportsDeveloperRole，其余键保留
+    // compat manages only supportsDeveloperRole; other keys are kept
     if !p.compat {
         let mut c = obj
             .get("compat")
@@ -177,8 +177,8 @@ pub fn provider_to_omp(p: &ProviderRow) -> Value {
             obj.remove("compat");
         }
     }
-    // requiresReasoningContentForAllAssistantTurns：同格式未修改时保留 raw 原样；
-    // 跨格式或用户改动时写出当前值。
+    // requiresReasoningContentForAllAssistantTurns: an unmodified same-format save keeps raw as-is;
+    // cross-format or user-modified writes the current value.
     let native_omp = matches!(
         p.source_format,
         Some(crate::format::ConfigFormat::Pi) | Some(crate::format::ConfigFormat::OhMyPi)
@@ -220,14 +220,14 @@ impl Backend for OhMyPiBackend {
     fn detect(&self, content: &str, path: &str) -> bool {
         let lower = path.to_lowercase();
         if lower.ends_with(".json") || lower.ends_with(".jsonc") {
-            return false; // JSON 文件归 pi 处理
+            return false; // JSON files go to pi
         }
         let ext_yml = lower.ends_with(".yml") || lower.ends_with(".yaml");
-        // 空内容（新建场景）：仅凭 .yml 扩展名归 omp
+        // Empty content (creation scenario): the .yml extension alone assigns omp
         if content.trim().is_empty() {
             return ext_yml;
         }
-        // 无扩展名上下文时，JSON 语法内容让位给 pi（JSON 是 YAML 子集）
+        // Without extension context, JSON-syntax content yields to pi (JSON is a YAML subset)
         if !ext_yml
             && parse_config_content(content)
                 .map(|v| v.get("providers").and_then(|x| x.as_object()).is_some())
@@ -262,8 +262,8 @@ impl Backend for OhMyPiBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
-        // 跨格式目标：extras 取目标文件自身的顶层字段，仅重写 providers。
-        // 目标已有同名 provider 时做保守合并；目标独有 provider 一律保留。
+        // Cross-format target: extras take the target file's own top-level fields, rewriting only providers.
+        // A same-named target provider merges conservatively; target-only providers are always kept.
         let base = match target_root {
             Some(target) => target,
             None => extras,
@@ -287,7 +287,7 @@ impl Backend for OhMyPiBackend {
     }
 
     fn load_target_root(&self, path: &str) -> Result<Value, String> {
-        // 跨格式目标保存需要目标文件完整的 providers。
+        // Cross-format target saves need the target file's complete providers.
         super::load_target_root_with(path, parse_yaml_content, || Value::Object(Map::new()))
     }
 

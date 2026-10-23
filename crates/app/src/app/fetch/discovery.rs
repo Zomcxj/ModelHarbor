@@ -1,11 +1,12 @@
-//! 模型探测（Provider 表单内的「探测模型」）：一键探测 `/models` 端点并勾选新增。
+//! Model discovery (the "discover models" action in the provider form): probe the `/models` endpoint in one click and check the new finds.
 //!
-//! 架构照搬同目录的延迟测试：阻塞的 [`probe`] 在后台线程执行，结果经通道回传、
-//! 每帧轮询（[`App::poll_discovery`]），探测中用 `request_repaint_after` 保帧。
-//! 取消用 generation counter：发起与取消都自增，回包 gen 不符即整个丢弃。
-//! 候选端点回退与错误分级都在 core::discovery——`probe` 内部对 404/405 自动
-//! 换下一个候选、全部候选失败才返回 `NotFound`，这里不再做上层候选循环。
-//! 探测前先查 [`DiscoveryCache`]：24 小时内同 base_url 直接命中，不再发请求。
+//! Architecture mirrors the latency test in this directory: the blocking [`probe`] runs on a background
+//! thread, results come back over a channel and are polled each frame ([`App::poll_discovery`]), with
+//! `request_repaint_after` keeping frames alive during the probe. Cancellation uses a generation counter:
+//! both start and cancel bump it; a reply with a stale gen is discarded wholesale. Candidate fallback and
+//! error classification live in core::discovery — inside `probe`, 404/405 automatically advance to the next
+//! candidate and `NotFound` only returns after all candidates fail, so no upper-level candidate loop here.
+//! Before probing, [`DiscoveryCache`] is consulted: the same base_url within 24 hours hits directly, no request.
 
 use super::*;
 use crate::app::providers_form::{fetch_grid_columns, FETCH_GRID_GAP_X};
@@ -15,51 +16,51 @@ use model_harbor_core::discovery::{
     merge_missing, models_endpoint_candidates, probe, DiscoveryCache, ProbeAuth, ProbeOutcome,
 };
 
-/// 单次探测的超时：与「获取模型」同量级的宽松值（模型列表可能来自很慢的中转站）。
+/// Timeout of one probe: as generous as "fetch models" (model lists may come from very slow relay stations).
 pub(crate) const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// 一次成功探测的结果面板数据：发现的模型列表 + 每项的勾选状态。
+/// Panel data of one successful probe: discovered model list + each item's checked state.
 #[derive(Default)]
 pub(crate) struct DiscoveryFound {
-    /// 发现的模型 id（保持响应顺序）。
+    /// The discovered model ids (response order preserved).
     pub(crate) models: Vec<String>,
-    /// 每个模型是否被勾选（种子见 [`seed_checked`]：新增项全选）。
+    /// Whether each model is checked (seeding in [`seed_checked`]: new finds all selected).
     pub(crate) checked: Vec<bool>,
 }
 
-/// 一个 provider 的「探测模型」状态（key → 状态；存在即结果面板开着）。
+/// One provider's "discover models" state (key → state; existing = the result panel is open).
 #[derive(Default)]
 pub(crate) struct DiscoveryState {
-    /// 发起 / 取消时自增；回包 gen 不符即整个丢弃（含缓存写入）。
+    /// Bumped on start / cancel; a reply with a mismatched gen is discarded wholesale (cache writes included).
     pub(crate) generation: u64,
-    /// 后台探测回传通道（`Some` = 正在飞）。
+    /// The background probe's reply channel (`Some` = in flight).
     pub(crate) rx: Option<std::sync::mpsc::Receiver<(u64, ProbeOutcome)>>,
-    /// 发起探测时的 base_url（trim 过；探测成功后写缓存的键）。
+    /// The base_url at probe start (trimmed; the cache key written on success).
     pub(crate) base_url: String,
-    /// 最近一次失败的分级原因（`ProbeError` 的 Display 人话；成功后清空）。
+    /// The last failure's classified reason (`ProbeError`'s Display, human-readable; cleared on success).
     pub(crate) error: Option<String>,
-    /// 成功发现的结果面板数据（失败时清空）。
+    /// The successful discovery's panel data (cleared on failure).
     pub(crate) found: Option<DiscoveryFound>,
 }
 
 impl DiscoveryState {
-    /// 是否有探测在飞。
+    /// Whether a probe is in flight.
     pub(crate) fn in_flight(&self) -> bool {
         self.rx.is_some()
     }
 
-    /// 结果面板是否开着（有可展示的内容：成功列表或失败原因）。
+    /// Whether the result panel is open (presentable content exists: a success list or a failure reason).
     pub(crate) fn has_result(&self) -> bool {
         self.found.is_some() || self.error.is_some()
     }
 }
 
 // ---------------------------------------------------------------------------
-// 纯逻辑（配单测，见 app/tests/discovery_tests.rs）
+// Pure logic (with unit tests, see app/tests/discovery_tests.rs)
 // ---------------------------------------------------------------------------
 
-/// 探测鉴权：填了 key 用 Bearer（OpenAI 兼容网关的默认形态），没填就不带
-/// 鉴权头——服务端的 401 由 core 归类为「未配置 API Key」，文案更准。
+/// Probe auth: with a key use Bearer (the default shape of OpenAI-compatible gateways); without one, send
+/// no auth header — the server's 401 is classified by core as "API key not configured", which reads truer.
 pub(crate) fn probe_auth_for_secret(secret: &str) -> ProbeAuth {
     if secret.trim().is_empty() {
         ProbeAuth::None
@@ -68,12 +69,12 @@ pub(crate) fn probe_auth_for_secret(secret: &str) -> ProbeAuth {
     }
 }
 
-/// 这次点击能否直接用缓存：不在飞、且结果面板还没开着（面板开着 = 用户想刷新）。
+/// Can this click use the cache directly: nothing in flight, and the result panel not yet open (panel open = the user wants a refresh).
 pub(crate) fn should_use_cache(in_flight: bool, panel_open: bool) -> bool {
     !in_flight && !panel_open
 }
 
-/// 「探测模型」按钮的悬停文案：列出将依次尝试的候选端点（404/405 自动回退）。
+/// Hover text of the "discover models" button: lists the candidate endpoints tried in order (404/405 auto-fallback).
 pub(crate) fn probe_candidates_label(base_url: &str) -> String {
     let candidates = models_endpoint_candidates(base_url, None);
     if candidates.is_empty() {
@@ -85,7 +86,7 @@ pub(crate) fn probe_candidates_label(base_url: &str) -> String {
     )
 }
 
-/// 是否已有该模型：大小写不敏感、忽略首尾空白，与 [`merge_missing`] 的去重口径一致。
+/// Whether a model already exists: case-insensitive, whitespace-trimmed — same dedup criteria as [`merge_missing`].
 pub(crate) fn is_existing_model(existing: &[String], id: &str) -> bool {
     let trimmed = id.trim();
     !trimmed.is_empty()
@@ -94,15 +95,15 @@ pub(crate) fn is_existing_model(existing: &[String], id: &str) -> bool {
             .any(|known| known.trim().eq_ignore_ascii_case(trimmed))
 }
 
-/// 默认勾选：全部不勾，由用户手动挑选（已有项画成禁用勾选框，本就不可勾）。
+/// Default checks: all unchecked, picked manually by the user (existing items render as disabled checkboxes — uncheckable anyway).
 pub(crate) fn seed_checked(discovered: &[String], existing: &[String]) -> Vec<bool> {
     let _ = existing;
     vec![false; discovered.len()]
 }
 
-/// 结果 → 将新增的模型列表：只取勾选项，交给 [`merge_missing`] 只填空。
+/// Result → models to be added: only checked items, handed to [`merge_missing`] as fill-only.
 ///
-/// 返回值正是写盘时会同顺序追加的那批 id（与 merge 的尾部逐条一致）。
+/// The return value is exactly the batch that will be appended in the same order at write time (matching the merge's tail item by item).
 pub(crate) fn planned_additions(
     existing: &[String],
     discovered: &[String],
@@ -118,15 +119,15 @@ pub(crate) fn planned_additions(
     merged.split_off(existing.len())
 }
 
-/// 探测结果的状态栏摘要：成功带模型数，失败带原因。
+/// Status-line summary of a probe result: success carries the model count, failure the reason.
 pub(crate) enum ProbeSummary {
-    /// 成功发现 N 个模型。
+    /// Discovered N models successfully.
     Success(usize),
-    /// 失败原因（`ProbeError` 的 Display 人话）。
+    /// The failure reason (`ProbeError`'s Display, human-readable).
     Failure(String),
 }
 
-/// 底部状态栏的「最近探测」文案。
+/// The status bar's "last discovery" text.
 pub(crate) fn probe_status_text(hhmm: &str, summary: &ProbeSummary) -> String {
     match summary {
         ProbeSummary::Success(count) => format!("最近获取：{hhmm}（成功 {count} 个）"),
@@ -134,33 +135,33 @@ pub(crate) fn probe_status_text(hhmm: &str, summary: &ProbeSummary) -> String {
     }
 }
 
-/// HH:MM（两位数；超出范围的值夹回合法区间）。
+/// HH:MM (two digits; out-of-range values clamp back into range).
 pub(crate) fn format_hhmm(hour: i64, minute: i64) -> String {
     format!("{:02}:{:02}", hour.clamp(0, 23), minute.clamp(0, 59))
 }
 
-/// Unix 秒 → 当日 HH:MM（UTC）。
+/// Unix seconds → that day's HH:MM (UTC).
 ///
-/// 仅在非 Windows 运行分支（`probe_clock_hhmm` 的回退路径）与测试中编译：
-/// Windows 走 GetLocalTime 本地时间，不需要它，不加 `cfg` 会在 Windows
-/// 非 test 构建下触发 dead_code（`-D warnings` 直接拦）。
+/// Compiled only in the non-Windows branch (`probe_clock_hhmm`'s fallback path) and in tests:
+/// Windows uses GetLocalTime local time and doesn't need it; without `cfg`, Windows non-test builds
+/// would raise dead_code (blocked outright by `-D warnings`).
 #[cfg(any(not(windows), test))]
 pub(crate) fn hhmm_from_unix_utc(secs: i64) -> String {
     let rem = secs.rem_euclid(86_400);
     format_hhmm(rem / 3_600, rem % 3_600 / 60)
 }
 
-/// 最近探测的完成时刻 HH:MM。
+/// HH:MM of the last discovery's completion.
 ///
-/// Windows 直接读本地时间（GetLocalTime，与 core::billing 的本地 0 点同源）；
-/// 其余平台拿不到本地时区（见 `balance::local_midnight_unix` 的先例），退回 UTC。
+/// Windows reads local time directly (GetLocalTime, same source as core::billing's local midnight); other
+/// platforms can't get the local timezone (see the precedent in `balance::local_midnight_unix`) and fall back to UTC.
 pub(crate) fn probe_clock_hhmm() -> String {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::SYSTEMTIME;
         use windows_sys::Win32::System::SystemInformation::GetLocalTime;
         let mut local = SYSTEMTIME::default();
-        // SAFETY: `GetLocalTime` 只写这一个结构体。
+        // SAFETY: `GetLocalTime` writes only this one struct.
         unsafe { GetLocalTime(&mut local) };
         format_hhmm(i64::from(local.wHour), i64::from(local.wMinute))
     }
@@ -175,13 +176,14 @@ pub(crate) fn probe_clock_hhmm() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 发起 / 取消（只吃状态表，不碰 App，便于在表单借用中调用）
+// Start / cancel (consumes only the state table, never App — callable inside form borrows)
 // ---------------------------------------------------------------------------
 
-/// 发起一次模型探测（后台线程跑 [`probe`]）。
+/// Start one model discovery ([`probe`] runs on a background thread).
 ///
-/// 探测前先查 24 小时缓存：命中且结果面板还没开着就直接用缓存（不发请求）；
-/// 面板开着说明用户想刷新，走网络重新探测。返回需要写入底部状态栏的消息。
+/// The 24-hour cache is consulted first: a hit with the result panel still closed uses the cache directly
+/// (no request); an open panel means the user wants a refresh, so the network is probed again. Returns
+/// the message to write into the bottom status bar.
 pub(crate) fn start_discovery(
     states: &mut HashMap<String, DiscoveryState>,
     cache: &mut DiscoveryCache,
@@ -192,12 +194,12 @@ pub(crate) fn start_discovery(
 ) -> Option<String> {
     let base = base_url.trim().to_string();
     let state = states.entry(key.to_string()).or_default();
-    // 正在飞：按钮已禁用，防御性忽略重复点击。
+    // In flight: the button is disabled; defensively ignore duplicate clicks.
     if state.in_flight() {
         return None;
     }
     state.base_url = base.clone();
-    // 面板还关着（首次探测 / 关闭过面板）→ 先查 24 小时内的缓存。
+    // The panel is still closed (first probe / panel was closed) → check the 24-hour cache first.
     if should_use_cache(state.in_flight(), state.has_result()) {
         if let Some((models, _)) = cache.fresh(&base, None) {
             let models = models.clone();
@@ -210,7 +212,7 @@ pub(crate) fn start_discovery(
             return Some(format!("命中 24 小时内的获取缓存：{count} 个模型"));
         }
     }
-    // 走网络重新探测：gen 自增让旧回包作废，清掉上一轮的面板内容。
+    // Re-probe over the network: bump gen to invalidate old replies, clearing the last round's panel.
     state.generation += 1;
     let generation = state.generation;
     state.found = None;
@@ -230,9 +232,9 @@ pub(crate) fn start_discovery(
     None
 }
 
-/// 取消进行中的探测：自增 generation 让回包作废，并丢弃通道。
+/// Cancel an in-flight discovery: bump the generation to invalidate replies, and drop the channel.
 ///
-/// 返回需要写入状态栏的消息（没有在飞的探测时不打扰状态栏）。
+/// Returns the message to write into the status bar (untouched when nothing is in flight).
 pub(crate) fn cancel_discovery(
     states: &mut HashMap<String, DiscoveryState>,
     key: &str,
@@ -247,12 +249,12 @@ pub(crate) fn cancel_discovery(
 }
 
 // ---------------------------------------------------------------------------
-// 每帧轮询
+// Per-frame polling
 // ---------------------------------------------------------------------------
 
 impl App {
-    /// 每帧轮询模型探测结果：gen 不符即丢弃；成功写缓存并打开结果面板，
-    /// 失败在面板与状态栏给分级原因。
+    /// Poll model-probe results each frame: mismatched gens are discarded; success writes the cache and opens
+    /// the result panel; failure shows the classified reason in the panel and status bar.
     pub(in crate::app) fn poll_discovery(&mut self) {
         let mut finished: Vec<(String, u64, String, ProbeOutcome)> = Vec::new();
         for (key, state) in self.discovery.iter_mut() {
@@ -263,12 +265,12 @@ impl App {
                     finished.push((key.clone(), generation, state.base_url.clone(), outcome));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                // 探测线程异常退出 / 通道被丢弃（取消）：终止等待。
+                // The probe thread died / the channel was dropped (cancel): end the wait.
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => state.rx = None,
             }
         }
         for (key, generation, base_url, outcome) in finished {
-            // 已取消或被更新的探测取代：整个丢弃（缓存也不写）。
+            // Cancelled or superseded by a newer probe: discard wholesale (the cache isn't written either).
             if self
                 .discovery
                 .get(&key)
@@ -280,7 +282,7 @@ impl App {
             match outcome {
                 ProbeOutcome::Success { models, .. } => {
                     let count = models.len();
-                    // 面板被关掉也照写缓存与状态栏；面板还在则打开结果列表。
+                    // A closed panel still gets the cache write and status note; an open one opens the result list.
                     self.discovery_cache.insert(&base_url, None, models.clone());
                     let existing = self.existing_model_ids(&key);
                     if let Some(state) = self.discovery.get_mut(&key) {
@@ -304,8 +306,8 @@ impl App {
         }
     }
 
-    /// 种子勾选用的「已有模型 id」：新增表单用 new_provider，其余按 key 找
-    /// （找不到——比如表单已关——视为全部新增）。
+    /// The "existing model ids" seeding checks against: the add form uses new_provider; others look up by key
+    /// (not found — e.g. the form closed — counts as all-new).
     fn existing_model_ids(&self, key: &str) -> Vec<String> {
         let models = if key == NEW_PROVIDER_FETCH_KEY {
             Some(&self.new_provider.models)
@@ -322,21 +324,21 @@ impl App {
 }
 
 // ---------------------------------------------------------------------------
-// 结果面板
+// Result panel
 // ---------------------------------------------------------------------------
 
-/// 结果面板一帧的交互结果：是否点了「关闭」、要写入状态栏的消息。
+/// One frame's interaction result of the panel: whether "close" was clicked, plus the message for the status bar.
 pub(crate) struct DiscoveryPanelAction {
-    /// 用户点了「关闭」，调用方移除该 provider 的探测状态。
+    /// The user clicked "close"; the caller removes this provider's discovery state.
     pub(crate) close: bool,
-    /// 需要写入底部状态栏的消息（如「已添加 N 个模型」）。
+    /// The message to write into the bottom status bar (e.g. "added N models").
     pub(crate) status: Option<String>,
 }
 
-/// 探测结果面板：头部统计 + 勾选网格 + 底部「添加 N 个」。
+/// Discovery result panel: header stats + check grid + bottom "add N".
 ///
-/// 探测中显示 spinner；失败显示分级原因；成功列出全部发现项，
-/// 已有项画成禁用勾选框（不会重复添加）。
+/// Probing shows a spinner; failure shows the classified reason; success lists every find, with existing
+/// items rendered as disabled checkboxes (never added twice).
 pub(crate) fn discovery_panel(
     ui: &mut egui::Ui,
     state: &mut DiscoveryState,
@@ -392,7 +394,7 @@ pub(crate) fn discovery_panel(
     DiscoveryPanelAction { close, status }
 }
 
-/// 成功结果的勾选网格与底部「添加 N 个」按钮。
+/// The success result's check grid and bottom "add N" button.
 fn render_found(
     ui: &mut egui::Ui,
     found: &mut DiscoveryFound,
@@ -407,8 +409,8 @@ fn render_found(
         return;
     }
     ui.label(egui::RichText::new("勾选要新增的模型（已配置的画成禁用，不会重复添加）：").weak());
-    // 区域高度固定为 12 行左右，超出部分在区域内垂直滚动。
-    // 列数在滚动区内部按可用宽度计算，以扣除滚动条占用的宽度。
+    // The area's height is fixed at about 12 rows, scrolling vertically inside for overflow. Column count
+    // computes inside the scroll area from the available width, deducting the scrollbar's width.
     let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
     egui::ScrollArea::vertical()
         .id_salt(scroll_salt)
@@ -422,7 +424,7 @@ fn render_found(
                 ui.spacing_mut().item_spacing.x = FETCH_GRID_GAP_X;
                 for ci in 0..cols {
                     ui.vertical(|ui| {
-                        // 定宽列 + 截断：超长模型名悬停看全名，不把列撑宽。
+                        // Fixed-width columns + truncation: over-long model names show in full on hover, never widening the column.
                         ui.set_width(col_w);
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         for (i, id) in found
@@ -451,7 +453,7 @@ fn render_found(
                 }
             });
         });
-    // 「添加 N 个」：N 与实际会同顺序追加的条数一致（merge_missing 只填空）。
+    // "Add N": N matches the count that will actually be appended in the same order (merge_missing is fill-only).
     let additions = planned_additions(existing, &found.models, &found.checked);
     let count = additions.len();
     if ui

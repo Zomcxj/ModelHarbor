@@ -29,7 +29,7 @@ use save::SaveTarget;
 
 pub use save::{load_opencode_result, load_or_empty, strip_cross_format_containers};
 
-/// 选择配置文件（JSON / YAML / TOML）。依赖 rfd，属 UI，故在 app 而非 core。
+/// Pick a config file (JSON / YAML / TOML). Depends on rfd, which is UI — hence app, not core.
 pub(crate) fn show_file_dialog() -> Option<String> {
     rfd::FileDialog::new()
         .set_title("选择配置文件")
@@ -53,7 +53,7 @@ enum SaveFormat {
 }
 
 impl SaveFormat {
-    /// 切到另一种保存格式。
+    /// Switch to the other save format.
     fn toggled(self) -> Self {
         match self {
             SaveFormat::Current => SaveFormat::Compact,
@@ -68,7 +68,7 @@ impl SaveFormat {
         }
     }
 
-    /// 持久化用的稳定标识。
+    /// Stable identifier for persistence.
     fn key(self) -> &'static str {
         match self {
             Self::Current => "current",
@@ -76,7 +76,7 @@ impl SaveFormat {
         }
     }
 
-    /// 由持久化标识还原；未知 / 空值回落默认格式。
+    /// Restore from a persistence identifier; unknown / empty values fall back to the default format.
     fn from_key(key: &str) -> SaveFormat {
         match key {
             "current" => Self::Current,
@@ -85,16 +85,16 @@ impl SaveFormat {
     }
 }
 
-/// 中央区域显示哪一块：用量统计还是提供商管理。
+/// Which slice the central area shows: usage statistics or provider management.
 ///
-/// 这是**视图**切换，与顶栏的 `current_page`（agent 页签）正交：
-/// 换页签不改变当前视图，换视图也不改变当前页签。
+/// This is a **view** switch, orthogonal to the top bar's `current_page` (agent tabs): switching tabs
+/// doesn't change the view, and switching views doesn't change the tab.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(in crate::app) enum MainView {
-    /// 提供商管理（既有界面，默认）。
+    /// Provider management (the existing UI, default).
     #[default]
     Providers,
-    /// 本机用量四维统计。
+    /// Local usage, four-dimension statistics.
     Usage,
 }
 
@@ -114,13 +114,13 @@ pub struct App {
     new_agent: AgentRow,
     new_provider: ProviderRow,
     config_path: String,
-    /// 最近一次实际加载的路径；与 `config_path` 不等时按“未加载”处理。
+    /// The path actually loaded last; treated as "not loaded" when it differs from `config_path`.
     loaded_path: String,
     status: String,
     show_new_agent: bool,
     show_new_provider: bool,
-    /// 已折叠的卡片（`页面/类别/名字`，见 `prefs::collapsed_id`）。
-    /// 新加载进来的卡片默认展开。
+    /// Collapsed cards (`page/category/name`, see `prefs::collapsed_id`).
+    /// Newly loaded cards default to expanded.
     collapsed: HashSet<String>,
     variant_open: HashSet<String>,
     agent_drag_src: Option<String>,
@@ -129,163 +129,165 @@ pub struct App {
     provider_drag_target: Option<String>,
     model_drag_src: Option<String>,
     model_drag_target: Option<String>,
-    /// 正在拖动的顶栏页面（已安装的那一段内换位）。
+    /// The top-bar page currently being dragged (reordering within the installed segment).
     tab_drag_src: Option<ConfigFormat>,
-    /// 每个 provider 的「探测模型」状态（key → 状态；存在即结果面板开着）。
+    /// Each provider's "discover models" state (key → state; existing = the result panel is open).
     discovery: HashMap<String, fetch::DiscoveryState>,
-    /// 探测结果缓存：24 小时内同 base_url 直接命中，不再发请求（不含任何凭据）。
+    /// Discovery-result cache: the same base_url within 24 hours hits directly, no request (holds no credentials).
     discovery_cache: model_harbor_core::discovery::DiscoveryCache,
-    /// 各后端内置网关的免费模型（后端 → 状态）。
+    /// Each backend's built-in gateway free models (backend → state).
     ///
-    /// opencode 与 kilocode 各有自己的网关与列表，mimocode 没有免费层（不进这张表）。
-    /// 启动先用落盘缓存填充，缓存缺失或过期才在后台重新拉取。
+    /// opencode and kilocode each have their own gateway and list; mimocode has no free tier (absent from
+    /// this table). Startup fills from the persisted cache; only missing or expired entries refetch in the background.
     free_models: HashMap<ConfigFormat, FreeModelsState>,
-    /// 各 opencode 系页面**各自**的 agent model 视图记忆：
-    /// **（文件身份，页面） → agent key → model**。
+    /// Each opencode-family page's **own** agent model view memory:
+    /// **(file identity, page) → agent key → model**.
     ///
-    /// 只在**离开**页面时写入；当前页的权威值永远是 `agents` 本身。
-    /// 键带 [`App::config_id`]（文件身份），换文件后旧记忆失配即跳过。
+    /// Written only when **leaving** a page; the current page's authoritative value is always `agents` itself.
+    /// Keys carry [`App::config_id`] (file identity); after switching files, mismatched old memories are skipped.
     agent_models_by_page: HashMap<(String, ConfigFormat), HashMap<String, String>>,
-    /// 首帧需要自动后台拉取的后端（缓存缺失 / 过期）；拉过即清空。
+    /// Backends needing an automatic background fetch on the first frame (cache missing / expired); cleared once fetched.
     free_models_auto: Vec<ConfigFormat>,
-    /// 每个 provider 的延迟测试状态（key → 状态）。
+    /// Each provider's latency-test state (key → state).
     latency: HashMap<String, LatencyState>,
-    /// 每个 provider 的「已用 / 余额」查询状态（key → 状态）。
+    /// Each provider's "used / balance" query state (key → state).
     balance: HashMap<String, balance::BalanceState>,
-    /// 正在跑「一键查询用户数据」批次：全部结束后在状态栏给一条汇总。
+    /// A "query user data for all" batch is running: one summary lands in the status bar when everything finishes.
     balance_batch: bool,
-    /// 站点面板访问令牌（PAT，`.modelharbor/tokens.json`）：站点级，多个 provider 共用。
+    /// Station panel access tokens (PAT, `.modelharbor/tokens.json`): station-level, shared by several providers.
     tokens: crate::tokens::StationTokens,
-    /// 「令牌」管理面板是否展开。
+    /// Whether the token management panel is expanded.
     show_tokens: bool,
-    /// 令牌面板里正在编辑的文本（键 = 站点 origin），未保存的草稿。
+    /// Text being edited in the token panel (key = station origin), unsaved drafts.
     token_draft: HashMap<String, String>,
-    /// 令牌面板里「用户 ID」的草稿（`New-Api-User` 头，可留空）。
+    /// Drafts of the token panel's "user ID" (the `New-Api-User` header; may stay empty).
     token_uid_draft: HashMap<String, String>,
-    /// 已点「显示」的站点（单条掩码开关，默认跟随全局「显示密钥」）。
+    /// Stations whose "show" was clicked (per-row mask toggle, defaulting to the global "show keys").
     token_reveal: HashSet<String>,
-    /// 模型延迟探测的节流与串行状态（纯内存，重启清零）。
+    /// Throttle and serialization state for model latency probes (in-memory only, reset on restart).
     probe: ProbeGate,
-    /// 网络守卫结论：`Some(reason)` 表示检测到系统代理 / VPN，模型延迟测试被禁用。
+    /// Network-guard verdict: `Some(reason)` = a system proxy / VPN was detected and model latency tests are disabled.
     net_guard: Option<String>,
-    /// 检测到代理时是否仍允许模型延迟测试（来自 settings.json，默认拦截）。
+    /// Whether model latency tests are still allowed when a proxy is detected (from settings.json; block by default).
     allow_model_test_with_proxy: bool,
-    /// 首次使用引导条是否已被关掉（来自 settings.json）。
+    /// Whether the first-use guidance bar was dismissed (from settings.json).
     guide_dismissed: bool,
-    /// 配置体检悬浮窗是否打开（见 [`crate::app::health`]）。
+    /// Whether the config health popover is open (see [`crate::app::health`]).
     show_health: bool,
-    /// 中央区域当前显示哪一块（用量 / 提供商管理）。
+    /// Which slice the central area currently shows (usage / provider management).
     main_view: MainView,
-    /// 用量视图的时间区间（今日 / 本周 / 本月 / 全部）。
+    /// The usage view's time range (today / week / month / all).
     usage_range: usage::range::Range,
-    /// 用量视图的 agent 筛选：`None` = 全部 agent。
+    /// The usage view's agent filter: `None` = all agents.
     ///
-    /// 与 `current_page` 分开存：用量视图下点页签是筛选，不该改动配置页状态
-    /// （切回提供商管理时用户应看到原来那一页）。
+    /// Stored separately from `current_page`: clicking a tab under the usage view is a filter and must not
+    /// touch the config page's state (switching back to provider management should show the page the user left).
     usage_filter: Option<ConfigFormat>,
-    /// 趋势图的画法（柱状 / 曲线，默认柱状）。
+    /// The trend chart's mode (bars / lines, bars by default).
     usage_chart_kind: usage::ChartKind,
-    /// 趋势图自己的时间区间（7 天 / 30 天 / 90 天 / 一年 / 全部）。
+    /// The trend chart's own time range (7 / 30 / 90 days / a year / all).
     ///
-    /// 与全局 `usage_range` 分开：趋势图回答「最近一段的走势」，固定窗口比
-    /// 今日 / 本周这种自然区间更合适；后者还管着总览卡与四张表。
+    /// Separate from the global `usage_range`: the chart answers "the recent trend", where a fixed window fits
+    /// better than natural ranges like today / week; those still govern the overview card and the four tables.
     usage_chart_range: usage::range::ChartRange,
-    /// 会话表里点了「删除」还没确认的行（账本键）。
+    /// Session-table rows where "delete" was clicked but not yet confirmed (ledger keys).
     ///
-    /// 两段式确认防误触：第一击标待确认，再击同一行才真删。
+    /// Two-step confirmation against mis-clicks: first click arms, clicking the same row again really deletes.
     usage_delete_pending: Option<String>,
-    /// 删除会话时源侧的错误（进程在跑 / 路径不在了 / 写库失败）。
+    /// Source-side errors while deleting a session (process running / path gone / database write failed).
     ///
-    /// 源删不掉时账本仍会收走明细（不让界面卡在「删了又回来」），
-    /// 所以这个提示与「已从统计里移除」同时成立。
+    /// When the source can't be deleted, the ledger still withdraws details (so the UI never sticks at
+    /// "deleted but came back"), so this notice and "removed from statistics" hold simultaneously.
     usage_source_error: Option<String>,
-    /// 用量表格的排序（各维度共用一份：默认「合计降序」）。
+    /// The usage tables' sort state (shared across dimensions: default "total descending").
     usage_sort: usage::view::SortState,
-    /// 本机用量扫描状态（见 [`crate::app::usage`]）。
+    /// Local usage scan state (see [`crate::app::usage`]).
     usage: usage::UsageState,
-    /// 界面形状预设（圆角默认值 + 描边宽度）。
+    /// UI shape presets (default corner radius + border width).
     ui_style: crate::theme::UiStyle,
-    /// 亚克力：面板 / 卡片半透明 + DWM 亚克力模糊（正交于主题与形状）。
+    /// Acrylic: translucent panels / cards + DWM acrylic blur (orthogonal to theme and shape).
     glass: bool,
-    /// 顶栏已安装页面的拖动顺序（后端标识；未列出的按名字首字母补在其后）。
+    /// The top bar's installed-page drag order (backend identifiers; unlisted ones append alphabetically).
     tab_order: Vec<String>,
-    /// 常驻任务栏：点 X 只把主窗口收进托盘，托盘图标可唤回 / 退出。
+    /// Resident taskbar: clicking X only tucks the main window into the tray; the tray icon can restore / quit.
     ///
-    /// 默认开启（用户要求默认常驻点亮）；开关在顶栏外观按钮左侧。
+    /// On by default (user asked for resident-by-default); the toggle sits left of the top bar's appearance button.
     tray_resident: bool,
-    /// 上次网络守卫检测时刻（egui 秒）。
+    /// When the network guard last checked (egui seconds).
     net_guard_at: f64,
     theme: Theme,
-    /// 已应用到 egui 的主题（主题 + 形状 + 亚克力）。
+    /// The theme already applied to egui (theme + shape + acrylic).
     applied_theme: Option<(Theme, crate::theme::UiStyle, bool)>,
     save_format: SaveFormat,
-    /// 滚轮切换保存格式的门门：一次连续滚动手势只切换一次。
+    /// The scroll-wheel format-switch latch: one continuous scroll gesture switches once.
     save_format_wheel_latch: bool,
     source_format: ConfigFormat,
     config_paths: ConfigPaths,
     targets: Vec<SaveTarget>,
     current_page: ConfigFormat,
     sync_wsl: bool,
-    /// 全局 API Key 显隐：一键控制所有密钥输入框的明文/掩码显示。
+    /// Global API-key visibility: one switch for every key input's plaintext/masked display.
     show_api_keys: bool,
-    /// 已落盘的界面偏好快照；与当前值不同就写盘。
+    /// The persisted UI-preferences snapshot; differs from current values → write to disk.
     prefs_saved: crate::prefs::Prefs,
-    /// 右侧配置预览/编辑面板是否打开。
+    /// Whether the right-side config preview / editor panel is open.
     show_preview: bool,
-    /// 预览面板宽度占窗口宽度的比例（拖动分隔条调整；窗口缩放时按此比例适配）。
+    /// The preview panel's width as a share of window width (drag the splitter; window resizes scale by this ratio).
     preview_ratio: f32,
-    /// 预览文本框是否持有焦点（编辑中以文本为准，失焦后以组件状态为准）。
+    /// Whether the preview text box holds focus (while editing, text wins; after blur, component state wins).
     preview_focused: bool,
-    /// 预览文本框缓冲（待保存文档；失焦时由组件状态实时重写）。
+    /// The preview text box buffer (the pending document; rewritten live from component state on blur).
     preview_draft: String,
-    /// 最近一次文本编辑的时间点（ctx 时间），用于防抖自动保存。
+    /// The moment of the last text edit (ctx time), for debounced auto-save.
     preview_dirty_at: Option<f64>,
-    /// 用户最近一次在预览框内输入的帧时间。
+    /// The frame time of the user's most recent input in the preview box.
     preview_edit_at: Option<f64>,
-    /// 最近一次文本解析是否成功；失败时不写盘、不覆盖文本。
+    /// Whether the last text parse succeeded; on failure nothing is written to disk nor over the text.
     preview_parse_ok: bool,
-    /// 最近一次预览文本解析失败的报错（成功时为 None），用于面板内红字提示。
+    /// The last preview parse failure's error (`None` on success), for the in-panel red hint.
     preview_parse_error: Option<String>,
-    /// 预览 Ctrl+F 查找：查询词、是否打开、当前命中下标。
+    /// Preview Ctrl+F find: query, open flag, current hit index.
     preview_find: String,
     preview_find_active: bool,
     preview_find_index: usize,
-    /// 下一帧需要给查找框抢焦点。
+    /// The find box needs focus stolen next frame.
     preview_find_focus: bool,
-    /// 待跳转的命中字节偏移（Enter/按钮跳转后用光标滚动到该处）。
+    /// The hit's byte offset pending a jump (Enter / button jumps and scrolls the cursor there).
     preview_find_jump: Option<usize>,
-    /// 对比视图：显示「磁盘上的目标文件 → 待保存文档」的逐行改动。
+    /// Diff view: shows "target file on disk → pending document" line-by-line changes.
     ///
-    /// 只读视图：对比模式下不渲染文本框。
+    /// Read-only: the text box doesn't render in diff mode.
     preview_diff_mode: bool,
-    /// 对比结果缓存（签名 → 显示行与统计）。
+    /// Diff result cache (signature → display lines and stats).
     preview_diff_cache: Option<(u64, Vec<diff::DiffLine>, diff::DiffSummary)>,
-    /// 待重算的对比签名与它首次出现的时刻（见 `ui_preview_diff` 的防抖）。
+    /// The diff signature pending recomputation and its first-seen moment (see `ui_preview_diff`'s debounce).
     preview_diff_pending: Option<(u64, f64)>,
-    /// 成功写盘的次数；并进对比缓存的签名，写盘后缓存作废。
+    /// Successful disk-write count; folded into the diff cache signature — a write invalidates the cache.
     save_serial: u64,
-    /// 光标所在行（1-based；失焦时保留最后位置）。
+    /// The cursor's line (1-based; the last position is kept on blur).
     preview_cursor_line: usize,
     load_error: Option<String>,
     pi_extras: Value,
-    /// 各后端官方图标纹理（与 BACKENDS 顺序对齐，首帧惰性加载）。
+    /// Each backend's official icon textures (aligned with BACKENDS order; lazily loaded on the first frame).
     backend_icons: Vec<Option<egui::TextureHandle>>,
-    /// 顶部工具栏图标纹理（Lucide SVG 栅格化，首帧惰性加载）。
+    /// Top toolbar icon textures (Lucide SVG rasterized; lazily loaded on the first frame).
     toolbar_icons: ToolbarIcons,
-    /// 各目标文件最近一次自动快照的内容 hash（路径 → hash），供「外部改动」判定。
+    /// Each target file's last auto-snapshot content hash (path → hash), for "external modification" detection.
     snapshot_hashes: HashMap<String, String>,
-    /// 自动快照目录覆盖（单测注入 tempdir 用；None = 配置目录下的 backups/）。
+    /// Auto-snapshot directory override (tests inject a tempdir; None = backups/ under the config dir).
     snapshots_root: Option<std::path::PathBuf>,
 }
 
-/// 启动时的方言判定：以**文件内容**为准，路径所属页面只作回退。
+/// Startup dialect detection: **file content** wins; the page owning the path is only a fallback.
 ///
-/// 文件读不出内容时保持页面推断。
-/// 启动页：跟随顶栏「已安装」段的显示顺序（可拖动换位），取第一个已安装页面。
+/// Keeps the page-based inference when the file can't be read.
+/// Startup page: follows the top bar's "installed" segment display order (drag to reorder), taking the
+/// first installed page.
 ///
-/// 与顶栏同一套 `tab_order` 排序，所见即所得：用户把哪个页签拖到最前，
-/// 启动就加载哪个的默认路径。没有已安装页面时返回 `None`，调用方退回
-/// 旧的内容探测。判定谓词可注入，测试借此模拟安装集合。
+/// Sorts with the same `tab_order` as the top bar — what you see is what loads: whichever tab the user
+/// dragged to the front is the one whose default path loads at startup. With no installed pages it
+/// returns `None` and the caller falls back to content sniffing. The detection predicate is injectable
+/// so tests can simulate installed sets.
 fn startup_page_with(
     paths: &ConfigPaths,
     tab_order: &[String],
@@ -301,18 +303,18 @@ fn startup_page_with(
 impl Default for App {
     fn default() -> Self {
         let prefs = crate::prefs::Prefs::load();
-        // 路径：每页一律用官方默认路径。覆盖不再持久化（重启回默认）；
-        // 会话内换到别的文件立即生效、保存到该文件（用户拍板）。
+        // Paths: every page uses the official default path. Overrides no longer persist (restart returns to defaults);
+        // switching to another file within a session takes effect immediately and saves to that file (user decision).
         let paths = ConfigPaths::default();
-        // 启动页跟随顶栏「已安装」段的拖动顺序：第一个是谁就加载谁。
-        // 不再按文件内容切页：第一个 agent 总是打开自己那页（用户拍板）。
-        // 没有已安装页面时退回旧探测。
+        // The startup page follows the top bar's "installed" segment drag order: whoever is first loads.
+        // No more content-based page switching: the first agent always opens its own page (user decision).
+        // With no installed pages, fall back to the old sniffing.
         let (format, path) =
             startup_page_with(&paths, &prefs.tab_order, |id| paths.validate_target(id))
                 .or_else(ConfigPaths::detect)
                 .unwrap_or((ConfigFormat::Opencode, String::new()));
-        // 各后端内置网关的免费模型：逐后端读一次落盘缓存；缺失或过期的后端
-        // 由首帧在后台重取。只对确实有免费层的后端建状态。
+        // Each backend's built-in gateway free models: read the persisted cache once per backend; missing or expired
+        // ones are refetched in the background on the first frame. State is created only for backends with a real free tier.
         let mut free_models: HashMap<ConfigFormat, FreeModelsState> = HashMap::new();
         let mut free_models_auto: Vec<ConfigFormat> = Vec::new();
         for format in [
@@ -364,7 +366,7 @@ impl Default for App {
             model_drag_target: None,
             discovery: HashMap::new(),
             discovery_cache: model_harbor_core::discovery::DiscoveryCache::default(),
-            // 免费模型：先用落盘缓存，缺失 / 过期由第一帧的后台刷新补上。
+            // Free models: the persisted cache first; missing / expired ones are filled by the first frame's background refresh.
             free_models,
             free_models_auto,
             agent_models_by_page: HashMap::new(),
@@ -395,9 +397,9 @@ impl Default for App {
             tab_order: prefs.tab_order.clone(),
             tray_resident: prefs.tray_resident,
             net_guard_at: 0.0,
-            // 界面设置来自家目录 .modelharbor/settings.json。
+            // UI settings come from the home directory's .modelharbor/settings.json.
             theme: Theme::from_key(&prefs.theme),
-            // 交给第一帧的 apply_theme_if_changed 应用
+            // Handed to the first frame's apply_theme_if_changed
             applied_theme: None,
             save_format: SaveFormat::from_key(&prefs.save_format),
             prefs_saved: prefs.clone(),
@@ -433,11 +435,11 @@ impl Default for App {
             snapshot_hashes: HashMap::new(),
             snapshots_root: None,
         };
-        // WSL 总闸与同步勾选同步初始化。
+        // The WSL master switch and the sync checkbox initialize together.
         crate::util::wsl_set_enabled(prefs.sync_wsl);
         app.apply_load();
-        // 常驻任务栏：默认开启，启动即建托盘图标（用户要求默认常驻点亮）。
-        // 测试环境不建真实托盘，避免离屏测试挂起。
+        // Resident taskbar: on by default, tray icon created at startup (user asked for resident-by-default).
+        // Tests don't create a real tray, keeping offscreen tests from hanging.
         #[cfg(all(target_os = "windows", not(test)))]
         if app.tray_resident {
             crate::tray::ensure();
@@ -447,7 +449,7 @@ impl Default for App {
 }
 
 impl eframe::App for App {
-    /// 窗口清屏色：亚克力档返回透明，非亚克力档返回主题面板色。
+    /// Window clear color: the acrylic tier returns transparent, non-acrylic tiers return the theme's panel color.
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         if self.glass {
             egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
@@ -456,16 +458,16 @@ impl eframe::App for App {
         }
     }
 
-    /// 常驻任务栏：拦截关闭事件 + 消费托盘菜单事件。
+    /// Resident taskbar: intercept close events + consume tray menu events.
     ///
-    /// 常驻模式下点 X 不退出，只把窗口收进托盘；托盘菜单「退出」才真关。
+    /// In resident mode, clicking X doesn't quit — the window tucks into the tray; only the tray menu's "quit" really closes.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         #[cfg(target_os = "windows")]
         {
-            // 常驻模式：拦截关闭，改为隐藏窗口。
-            // `close_requested` 在 hook 之前已被捕获，无法从输入里抠掉事件；
-            // eframe 以输出命令里有没有 `CancelClose` 为准，发它就够。
-            // 托盘菜单点过「退出」则放行（`PostMessageW(WM_CLOSE)` 走的就是这条路）。
+            // Resident mode: intercept the close and hide the window instead.
+            // `close_requested` is captured before hooks can act; the event can't be plucked out of the input,
+            // and eframe decides by whether the output commands contain `CancelClose` — sending it suffices.
+            // A tray-menu "quit" click lets it through (`PostMessageW(WM_CLOSE)` takes exactly this path).
             if self.tray_resident
                 && !crate::tray::exit_requested()
                 && raw_input.viewport().close_requested()
@@ -478,7 +480,7 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 第一件事就是套用主题：启动时与切换主题后都走这里。
+        // The very first thing: apply the theme. Both startup and theme switches come through here.
         self.apply_theme_if_changed(ctx);
         let dropped = ctx.input(|i| {
             i.raw
@@ -490,31 +492,31 @@ impl eframe::App for App {
             self.config_path = path;
             self.reload();
         }
-        // 每 5 秒复查一次系统代理 / VPN，结论用于禁用模型延迟测试。
+        // Recheck the system proxy / VPN every 5 seconds; the verdict disables model latency tests.
         let frame_time = ctx.input(|i| i.time);
         if frame_time - self.net_guard_at >= 5.0 {
             self.net_guard = crate::netguard::detect();
             self.net_guard_at = frame_time;
         }
-        // 首帧惰性加载各后端官方图标和顶部工具栏图标
+        // Lazily load backend icons and toolbar icons on the first frame
         self.load_backend_icons(ctx);
         self.load_toolbar_icons(ctx);
         self.poll_discovery();
         self.poll_latency();
         self.poll_balance();
-        // 本机用量：后台扫描 + 3 秒增量检测（空闲时不扫）。
+        // Local usage: background scan + 3s change detection (no scanning while idle).
         self.poll_usage(ctx);
         self.poll_free_models();
-        // 首次启动 / 缓存过期：只自动拉一次（拉过即清空），用户可手动重取。
+        // First launch / cache expired: auto-fetch once only (cleared once fetched); the user can refetch manually.
         for format in std::mem::take(&mut self.free_models_auto) {
             self.start_free_models_fetch(format);
         }
         self.persist_prefs_if_changed();
         self.ui_top_bar(ctx);
         self.ui_status_bar(ctx);
-        // 右侧配置预览/编辑面板：宽度由 preview_ratio 控制，窗口缩放时按该比例适配；
-        // 下限 220px，组件区至少 320px。`show_animated` 在打开 / 隐藏期间保留侧栏
-        // 占位并补间宽度；动画结束后才挂载真实预览内容。
+        // The right-side config preview / editor panel: width is governed by preview_ratio, scaling with window resizes;
+        // 220px floor, components keep at least 320px. `show_animated` keeps the sidebar placeholder and tweens
+        // the width while opening / hiding; the real preview content mounts only after the animation ends.
         let screen_w = ctx.content_rect().width().max(1.0);
         let max_w = (screen_w - 320.0).max(220.0);
         let preview_w = (screen_w * self.preview_ratio).clamp(220.0, max_w);
@@ -524,14 +526,14 @@ impl eframe::App for App {
                 self.ui_preview_panel(ui);
             });
         if let Some(side) = side {
-            // 分隔条注册在 Foreground 层的独立热区。
+            // The splitter registers as its own hot zone on the Foreground layer.
             self.ui_preview_resizer(ctx, side.response.rect, screen_w);
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             self.ui_page_header(ui);
-            // 用量视图的状态行（筛选 / 新鲜度 / 错误 + 区间切换）画在滚动区
-            // 之外：固定在顶部，不跟随页面滚动（用户要求）。滚到长表里也能
-            // 看到当前区间与筛选条件。
+            // The usage view's status line (filter / freshness / errors + range switch) paints outside the scroll
+            // area: pinned to the top, not scrolling with the page (user request). Even deep in a long table, the
+            // current range and filter stay visible.
             if matches!(self.main_view, MainView::Usage) {
                 self.ui_usage_status(ui);
                 ui.add_space(crate::theme::SPACE_4);
@@ -545,8 +547,7 @@ impl eframe::App for App {
                 })
                 .show(ui, |ui| match self.main_view {
                     MainView::Providers => {
-                        // Providers 在上、Agents 在下；Agents 只属于 opencode
-                        // 页面，且只影响界面顺序。
+                        // Providers on top, Agents below; Agents belong only to the opencode page and affect UI order only.
                         self.ui_providers_section(ui);
                         ui.add_space(crate::theme::SPACE_2);
                         if self.current_page.is_opencode_family() {
@@ -554,18 +555,18 @@ impl eframe::App for App {
                             ui.add_space(crate::theme::SPACE_2);
                         }
                     }
-                    // 用量视图与当前页签无关：它统计的是本机全部 agent。
+                    // The usage view is independent of the current tab: it counts every agent on this machine.
                     MainView::Usage => self.ui_usage_section(ui),
                 });
         });
-        // 令牌管理：独立悬浮窗（可拖动 / 可关闭），不占正文布局。
+        // Token management: an independent popover (draggable / closable), outside the main layout.
         self.ui_tokens_window(ctx);
-        // 配置体检：同样是独立悬浮窗，保存前想核对一遍时打开。
+        // Config health: also an independent popover, opened to double-check before saving.
         self.ui_health_window(ctx);
         self.paint_drag_ghost(ctx);
-        // 抓取光标：控件绘制时只提出请求，这里帧末统一提交。
+        // Grab cursor: widgets only express wishes while drawing; this commits them at frame end.
         //
-        // 拖动中即便没有任何热区报状态，也保持拳头。
+        // Even with no hot zone reporting a state mid-drag, the fist is kept.
         let mut want = crate::ui::take_grab_cursor(ctx);
         if self.is_dragging_anything() {
             want = crate::ui::GrabCursor::Fist;
@@ -599,12 +600,12 @@ struct ToolbarIcons {
     bot: Option<egui::TextureHandle>,
     server: Option<egui::TextureHandle>,
     zap: Option<egui::TextureHandle>,
-    /// 常驻任务栏开关（点亮态图标）。
+    /// The resident-taskbar toggle (lit-state icon).
     pin: Option<egui::TextureHandle>,
 }
 
 impl App {
-    /// 惰性加载各后端官方图标（首帧一次）。
+    /// Lazily load each backend's official icons (once, on the first frame).
     fn load_backend_icons(&mut self, ctx: &egui::Context) {
         if !self.backend_icons.is_empty() {
             return;
@@ -625,7 +626,7 @@ impl App {
             .collect();
     }
 
-    /// 惰性加载顶部工具栏图标：SVG 资源栅格化后交给 egui 纹理系统。
+    /// Lazily load toolbar icons: SVG assets rasterized and handed to egui's texture system.
     fn load_toolbar_icons(&mut self, ctx: &egui::Context) {
         if self.toolbar_icons.panel_right.is_some() {
             return;
@@ -716,7 +717,7 @@ impl App {
 }
 
 impl App {
-    /// 当前界面偏好。
+    /// The current UI preferences.
     fn current_prefs(&self) -> crate::prefs::Prefs {
         let mut collapsed: Vec<String> = self.collapsed.iter().cloned().collect();
         collapsed.sort();
@@ -725,8 +726,8 @@ impl App {
             save_format: self.save_format.key().to_string(),
             theme: self.theme.key().to_string(),
             sync_wsl: self.sync_wsl,
-            // 路径覆盖不再持久化：恒写空值，重启后每页回官方默认路径。
-            // 旧 settings 里的脏值（如误指向桌面文件）会在首次保存时自动清零。
+            // Path overrides no longer persist: always written as empty, so every page returns to its official default after restart.
+            // Dirty values in old settings (e.g. accidentally pointing at a desktop file) clear on the first save.
             config_paths: crate::prefs::ConfigPathPrefs::default(),
             collapsed,
             allow_model_test_with_proxy: self.allow_model_test_with_proxy,
@@ -739,19 +740,19 @@ impl App {
         }
     }
 
-    /// 站点面板令牌悬浮窗所在的层级。
+    /// The layer hosting the station token popover.
     ///
-    /// 用 `Foreground`：高于预览分隔条所在的 `Middle`，又低于 `Tooltip`。
+    /// `Foreground`: above the preview splitter's `Middle`, below `Tooltip`.
     const TOKENS_WINDOW_ORDER: egui::Order = egui::Order::Foreground;
 
-    /// 按格式取官方图标纹理（图标未加载时返回 None）。
+    /// Take a format's official icon texture (`None` when not yet loaded).
     fn icon_for(&self, fmt: ConfigFormat) -> Option<&egui::TextureHandle> {
         let idx = backends::BACKENDS.iter().position(|b| b.id() == fmt)?;
         self.backend_icons.get(idx).and_then(|o| o.as_ref())
     }
 }
 
-// ---------- 兼容再导出：保持既有外部路径可用 ----------
+// ---------- Compat re-exports: keep existing external paths working ----------
 pub use crate::backends::opencode::merge_opencode_root;
 pub use crate::util::parse_config_content;
 

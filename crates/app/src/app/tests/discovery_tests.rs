@@ -1,8 +1,8 @@
-//! 模型探测（A-2）的纯逻辑与调度测试：鉴权选择、候选文案、勾选种子、
-//! 只填空新增计算、状态栏文案、HH:MM 与缓存命中。
+//! Model discovery (A-2)'s pure logic and scheduling tests: auth choice, candidate wording, check seeding,
+//! fill-only-add computation, status wording, HH:MM, and cache hits.
 //!
-//! 全部不联网：只用空 base_url（`probe` 在本地即判 `BadBaseUrl`）、本地非法
-//! URL（解析阶段即失败）与缓存命中路径，不起任何网络请求。
+//! All offline: only an empty base_url (`probe` judges `BadBaseUrl` locally), locally malformed URLs (failing
+//! at parse), and cache-hit paths — no network requests at all.
 
 use crate::app::fetch::{
     cancel_discovery, format_hhmm, hhmm_from_unix_utc, is_existing_model, planned_additions,
@@ -16,24 +16,24 @@ use std::collections::HashMap;
 fn empty_secret_probes_without_auth_headers() {
     assert_eq!(probe_auth_for_secret(""), ProbeAuth::None);
     assert_eq!(probe_auth_for_secret("   "), ProbeAuth::None);
-    // 填了 key：按 OpenAI 兼容网关的默认形态只发 Bearer。
+    // With a key: only Bearer is sent, per the OpenAI-compatible gateway default shape.
     assert_eq!(probe_auth_for_secret("sk-xxx"), ProbeAuth::Bearer);
 }
 
 #[test]
 fn candidates_label_lists_fallback_endpoints() {
-    // 普通域名：先 /v1/models，失败退 /models。
+    // An ordinary domain: /v1/models first, falling back to /models.
     let label = probe_candidates_label("https://api.example.com");
     assert!(
         label.contains("https://api.example.com/v1/models"),
         "{label}"
     );
     assert!(label.contains("https://api.example.com/models"), "{label}");
-    // 已带 /v1 的 base 只有一个候选，没有回退箭头。
+    // A base already carrying /v1 has one candidate and no fallback arrow.
     let label = probe_candidates_label("https://api.example.com/v1");
     assert!(label.contains("/v1/models"), "{label}");
     assert!(!label.contains(" → "), "{label}");
-    // 未填地址：提示先填，而不是列空候选。
+    // No address filled: prompt for one rather than listing empty candidates.
     assert!(probe_candidates_label("  ").contains("Base URL"));
 }
 
@@ -41,9 +41,9 @@ fn candidates_label_lists_fallback_endpoints() {
 fn seed_checked_defaults_to_unchecked() {
     let existing = vec!["GPT-4o".to_string()];
     let discovered = vec![
-        "gpt-4o".to_string(),   // 已有（大小写不敏感）→ 不勾（面板里禁用）
-        "o4-mini".to_string(),  // 新增 → 默认不勾，用户手动选
-        "claude-x".to_string(), // 新增 → 默认不勾，用户手动选
+        "gpt-4o".to_string(), // Existing (case-insensitive) → unchecked (disabled in the panel)
+        "o4-mini".to_string(), // New → unchecked by default; the user picks
+        "claude-x".to_string(), // New → unchecked by default; the user picks
     ];
     assert_eq!(
         seed_checked(&discovered, &existing),
@@ -57,7 +57,7 @@ fn existing_model_check_is_case_insensitive_and_trimmed() {
     assert!(is_existing_model(&existing, "gpt-4o"));
     assert!(is_existing_model(&existing, "GPT-4O"));
     assert!(!is_existing_model(&existing, "gpt-4o-mini"));
-    // 空白 id 不算已有（merge 侧会丢弃它）。
+    // Whitespace-only ids don't count as existing (the merge side drops them).
     assert!(!is_existing_model(&existing, "  "));
 }
 
@@ -65,12 +65,12 @@ fn existing_model_check_is_case_insensitive_and_trimmed() {
 fn planned_additions_keep_order_and_skip_existing_unchecked_blank() {
     let existing = vec!["GPT-4o".to_string()];
     let discovered = vec![
-        "gpt-4o".to_string(),   // 已有（大小写不敏感）→ 排除
-        "o4-mini".to_string(),  // 勾选 → 新增
-        "claude-x".to_string(), // 未勾选 → 排除
-        "  ".to_string(),       // 空白 → 丢弃
-        "GPT-4O".to_string(),   // 与已有项大小写重复 → 排除
-        "o3".to_string(),       // 勾选 → 新增
+        "gpt-4o".to_string(),   // Existing (case-insensitive) → excluded
+        "o4-mini".to_string(),  // Checked → added
+        "claude-x".to_string(), // Unchecked → excluded
+        "  ".to_string(),       // Whitespace → dropped
+        "GPT-4O".to_string(),   // Case-duplicate of an existing one → excluded
+        "o3".to_string(),       // Checked → added
     ];
     let checked = vec![true, true, false, true, true, true];
     assert_eq!(
@@ -81,8 +81,8 @@ fn planned_additions_keep_order_and_skip_existing_unchecked_blank() {
 
 #[test]
 fn planned_additions_equals_merge_missing_tail() {
-    // 「添加」按钮点下去实际追加的条数与内容，必须与直接跑 merge_missing 的
-    // 尾部完全一致（按钮上的 N 才不会说谎）。
+    // What the "add" button actually appends — count and content — must match running merge_missing's tail
+    // exactly (so the button's N never lies).
     let existing = vec!["a".to_string()];
     let discovered = vec!["b".to_string(), "a".to_string(), "c".to_string()];
     let checked = vec![true, true, true];
@@ -90,7 +90,7 @@ fn planned_additions_equals_merge_missing_tail() {
     let merged = merge_missing(&existing, discovered.clone());
     assert_eq!(&merged[existing.len()..], &planned[..]);
     assert_eq!(planned, ["b".to_string(), "c".to_string()]);
-    // 勾选位数少于发现列表时按未勾选处理，不 panic。
+    // Fewer check bits than discovered entries count as unchecked, no panic.
     let short = planned_additions(&existing, &discovered, &[true]);
     assert_eq!(short, ["b".to_string()]);
 }
@@ -114,12 +114,12 @@ fn status_text_reports_success_count_or_failure_reason() {
 fn hhmm_formats_utc_wall_clock() {
     assert_eq!(hhmm_from_unix_utc(0), "00:00");
     assert_eq!(hhmm_from_unix_utc(86_399), "23:59");
-    // 2023-11-14 22:13:20 UTC。
+    // 2023-11-14 22:13:20 UTC.
     assert_eq!(hhmm_from_unix_utc(1_700_000_000), "22:13");
-    // 时钟回拨之类的负值也不 panic，按当日余数理解。
+    // Negative values (clock rollback etc.) don't panic either — read as the day's remainder.
     assert_eq!(hhmm_from_unix_utc(-1), "23:59");
     assert_eq!(format_hhmm(7, 5), "07:05");
-    // 超出范围的值夹回合法区间（防御外部时钟异常）。
+    // Out-of-range values clamp back into range (defending against external clock oddities).
     assert_eq!(format_hhmm(25, 61), "23:59");
     assert_eq!(format_hhmm(-1, -1), "00:00");
 }
@@ -142,7 +142,7 @@ fn cache_hit_opens_panel_without_network() {
         vec!["m-1".to_string(), "m-2".to_string()],
     );
     let existing = vec!["m-2".to_string()];
-    // 首尾空白不影响缓存键。
+    // Leading/trailing whitespace doesn't affect the cache key.
     let msg = start_discovery(
         &mut states,
         &mut cache,
@@ -158,10 +158,10 @@ fn cache_hit_opens_panel_without_network() {
     assert!(!state.in_flight());
     let found = state.found.as_ref().unwrap();
     assert_eq!(found.models, ["m-1".to_string(), "m-2".to_string()]);
-    // 默认全部不勾：新增项由用户手动挑选（m-2 已有，面板里禁用）。
+    // Defaults all unchecked: new finds are picked manually by the user (m-2 exists — disabled in the panel).
     assert_eq!(found.checked, [false, false]);
-    // 面板开着 = 用户想刷新：不再查缓存，直接起后台线程
-    // （本地非法 URL 在解析阶段即失败，无网络 IO）。
+    // Panel open = the user wants a refresh: no cache check, straight to a background thread
+    // (a locally malformed URL fails at parse — no network IO).
     let msg = start_discovery(&mut states, &mut cache, "k", "not-a-url", "", &existing);
     assert_eq!(msg, None);
     assert!(states.get("k").unwrap().in_flight());
@@ -171,7 +171,7 @@ fn cache_hit_opens_panel_without_network() {
 fn start_and_cancel_bump_generation_to_invalidate_replies() {
     let mut states: HashMap<String, _> = HashMap::new();
     let mut cache = DiscoveryCache::default();
-    // 空 base_url：probe 在本地即失败（BadBaseUrl），不起任何网络请求。
+    // Empty base_url: probe fails locally (BadBaseUrl), no network request at all.
     assert_eq!(
         start_discovery(&mut states, &mut cache, "k", "", "", &[]),
         None
@@ -181,7 +181,7 @@ fn start_and_cancel_bump_generation_to_invalidate_replies() {
         assert!(state.in_flight());
         assert_eq!(state.generation, 1);
     }
-    // 取消：gen 自增 + 丢弃通道；之后回传的 gen=1 会被轮询整体丢弃。
+    // Cancel: gen bumps + the channel drops; a later gen=1 reply is discarded wholesale by polling.
     assert_eq!(
         cancel_discovery(&mut states, "k").as_deref(),
         Some("已取消模型获取")
@@ -191,9 +191,9 @@ fn start_and_cancel_bump_generation_to_invalidate_replies() {
         assert!(!state.in_flight());
         assert_eq!(state.generation, 2);
     }
-    // 没在飞时点取消：不打扰状态栏。
+    // Cancel with nothing in flight: the status bar is untouched.
     assert_eq!(cancel_discovery(&mut states, "k"), None);
-    // 再次探测：gen 继续前进；取消过的旧回包永远不会被当成新结果。
+    // Probe again: gen keeps advancing; a cancelled old reply can never pass as a new result.
     assert_eq!(
         start_discovery(&mut states, &mut cache, "k", "", "", &[]),
         None
@@ -209,7 +209,7 @@ fn start_ignores_clicks_while_probe_in_flight() {
         start_discovery(&mut states, &mut cache, "k", "", "", &[]),
         None
     );
-    // 通道还在（无论线程是否已回包）：按钮已禁用，防御性忽略重复点击。
+    // The channel still exists (whether or not the thread replied): the button is disabled — defensively ignore duplicate clicks.
     assert_eq!(
         start_discovery(&mut states, &mut cache, "k", "", "", &[]),
         None
@@ -219,7 +219,7 @@ fn start_ignores_clicks_while_probe_in_flight() {
 
 #[test]
 fn cache_hit_seeds_checked_for_new_provider_form_key() {
-    // 新增表单的固定 key（__new_provider__）与普通 provider key 走同一套状态表。
+    // The add form's fixed key (__new_provider__) shares the state table with ordinary provider keys.
     let mut states: HashMap<String, _> = HashMap::new();
     let mut cache = DiscoveryCache::default();
     cache.insert("https://api.example.com", None, vec!["m-1".to_string()]);

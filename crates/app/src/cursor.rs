@@ -22,7 +22,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 #[cfg(debug_assertions)]
 static DEBUG_FILE: OnceLock<std::sync::Mutex<Option<std::fs::File>>> = OnceLock::new();
 
-/// 仅 debug 构建写调试日志（临时目录），release 构建为空操作。
+/// Debug builds write a debug log (temp directory); release builds no-op.
 #[cfg(debug_assertions)]
 fn debug_log(msg: &str) {
     let guard = DEBUG_FILE.get_or_init(|| std::sync::Mutex::new(None));
@@ -40,27 +40,27 @@ fn debug_log(msg: &str) {
 #[cfg(not(debug_assertions))]
 fn debug_log(_msg: &str) {}
 
-/// 当前要用的自定义光标：悬停为张开的手掌，按住为握起的拳头。
+/// The custom cursor to use now: an open palm on hover, a closed fist while held.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CustomCursor {
-    /// 不接管光标，交给 egui / 系统。
+    /// Don't manage the cursor; hand it back to egui / the system.
     None,
-    /// 悬停态：系统自带的手形光标（`IDC_HAND`）。
+    /// Hover state: the system's own hand cursor (`IDC_HAND`).
     Palm,
-    /// 已按住拖动中：握起的拳头。
+    /// Held mid-drag: the closed fist.
     Fist,
 }
 
 static CUSTOM_CURSOR: AtomicU8 = AtomicU8::new(CustomCursor::None as u8);
-/// 系统手形光标句柄（`LoadCursorW(null, IDC_HAND)`）。
+/// The system hand-cursor handle (`LoadCursorW(null, IDC_HAND)`).
 ///
-/// 共享资源，不属于本进程，不得 `DestroyIcon`。
+/// A shared resource owned by the system, not this process — never `DestroyIcon`.
 static PALM_HANDLE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static FIST_HANDLE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-/// 设置当前自定义光标，并立即应用一次（`None` 时交回 egui / 系统）。
+/// Set the current custom cursor, applying it once immediately (`None` hands it back to egui / the system).
 ///
-/// 状态存在原子量里，子类过程每次 `WM_SETCURSOR` 按它挑句柄。
+/// State lives in an atomic; the subclass proc picks the handle by it on every `WM_SETCURSOR`.
 pub fn set_custom_cursor(cursor: CustomCursor) {
     CUSTOM_CURSOR.store(cursor as u8, Ordering::Relaxed);
     let ptr = match cursor {
@@ -69,8 +69,8 @@ pub fn set_custom_cursor(cursor: CustomCursor) {
         CustomCursor::Fist => FIST_HANDLE.load(Ordering::Relaxed),
     };
     if !ptr.is_null() {
-        // SAFETY: `ptr` 只在 `init_cursors` 里由 `CreateIconIndirect` 的返回值写入，
-        // 此处已排除空指针；非空即为本进程拥有的 HICON，`SetCursor` 只读取它。
+        // SAFETY: `ptr` is written only by `init_cursors` from `CreateIconIndirect`'s return value;
+        // nulls are excluded here; non-null means an HICON this process owns, which `SetCursor` only reads.
         unsafe {
             debug_log(&format!("Win32 SetCursor custom {:?}\r\n", ptr));
             SetCursor(ptr);
@@ -83,18 +83,20 @@ const CURSOR_H: i32 = 20;
 const CURSOR_HX: i32 = 10;
 const CURSOR_HY: i32 = 10;
 
-/// 拳头（按下拖动中）的 RGBA 像素数据。
+/// The fist (held mid-drag)'s RGBA pixel data.
 const FIST_RGBA: &[u8] = include_bytes!("../assets/grab_rgba.bin");
 
 /// Create a cursor from BGRA pixel data using Win32 GDI.
 ///
 /// # Safety
 ///
-/// `rgba` 必须有至少 `w * h * 4` 字节；不足时只拷贝实际长度（GDI 缓冲区剩余部分保持零初始化）。
-/// 返回的 HICON 归调用方所有，不再使用时需 `DestroyIcon`。
+/// `rgba` must hold at least `w * h * 4` bytes; short buffers copy only their actual length (the rest of
+/// GDI's buffer stays zero-initialized). The returned HICON belongs to the caller — `DestroyIcon` when
+/// done.
 unsafe fn create_icon_from_rgba(rgba: &[u8], w: i32, h: i32, hx: i32, hy: i32) -> *mut c_void {
-    // SAFETY: 入参已保证像素缓冲区长度；每个 GDI 句柄在函数内成对释放（`DeleteObject` /
-    // `ReleaseDC`），`GetDC(null)` 取的是屏幕 DC，因此配对的 `ReleaseDC` 也传空窗口。
+    // SAFETY: the inputs guarantee the pixel buffer's length; every GDI handle is released in pairs inside
+    // the function (`DeleteObject` / `ReleaseDC`), and `GetDC(null)` takes the screen DC, so the paired
+    // `ReleaseDC` also passes a null window.
     unsafe {
         let hdc = GetDC(std::ptr::null_mut());
 
@@ -164,9 +166,9 @@ unsafe extern "system" fn cursor_subclass_proc(
     _uid_subclass: usize,
     _dw_ref_data: usize,
 ) -> LRESULT {
-    // SAFETY: 本函数只由 `SetWindowSubclass` 在 `hwnd` 的消息循环里调用，
-    // `hwnd` 与 `l_param` 由系统按窗口消息约定传入。
-    // 命中 WM_SETCURSOR 且处于自定义光标态时，按状态挑手掌 / 拳头。
+    // SAFETY: this function is called only by `SetWindowSubclass` inside `hwnd`'s message loop;
+    // `hwnd` and `l_param` arrive from the system per the window-message contract.
+    // On WM_SETCURSOR while a custom cursor is active, pick palm / fist by state.
     unsafe {
         if u_msg == 0x0020 && (l_param as u32 & 0xffff) == 1 {
             let cursor_handle = match CUSTOM_CURSOR.load(Ordering::Relaxed) {
@@ -185,13 +187,14 @@ unsafe extern "system" fn cursor_subclass_proc(
 
 /// # Safety
 ///
-/// `hwnd` 必须是当前进程拥有的有效 Win32 窗口句柄，且每个窗口仅可调用一次；
-/// 内部通过 `SetWindowSubclass` 安装子类过程，调用方需保证窗口消息循环存活期间不重复安装。
+/// `hwnd` must be a valid Win32 window handle owned by the current process, callable once per window;
+/// internally `SetWindowSubclass` installs the subclass proc — the caller must not install twice while
+/// the window's message loop lives.
 ///
-/// 对二进制目标是公开 API（`src/main.rs` 在窗口创建后调用）。
+/// Public API for the binary target (`src/main.rs` calls it after window creation).
 pub unsafe fn init_cursors(hwnd: HWND) {
     debug_log(&format!("init_cursors hwnd={:?}\r\n", hwnd));
-    // 手掌用系统自带的 IDC_HAND：句柄归系统所有、跨进程共享，本进程不创建也不销毁。
+    // The palm uses the system's own IDC_HAND: system-owned, shared across processes; this process neither creates nor destroys it.
     let palm = LoadCursorW(std::ptr::null_mut(), IDC_HAND);
     let fist = create_icon_from_rgba(FIST_RGBA, CURSOR_W, CURSOR_H, CURSOR_HX, CURSOR_HY);
     PALM_HANDLE.store(palm, Ordering::Relaxed);

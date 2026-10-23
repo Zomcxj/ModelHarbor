@@ -1,19 +1,19 @@
 use super::*;
 
-/// 编辑表单（`render_provider_form`）与新增表单（`ui_new_provider_form`）共用的
-/// provider 头部字段：key / 协议下拉 / timeout / compat / DSH 重试 / baseURL / 密钥。
+/// The provider header fields shared by the edit form (`render_provider_form`) and the add form
+/// (`ui_new_provider_form`): key / protocol dropdown / timeout / compat / DSH retry / baseURL / key.
 ///
-/// 两份表单的差异由 [`ProviderHeaderCtx`] 表达：占位提示与 key 重复检查、
-/// npm 空选项的标签、`relaxed` 门控。
+/// The two forms' differences are expressed by [`ProviderHeaderCtx`]: placeholder hints and key-duplicate
+/// checks, the npm empty-option label, and the `relaxed` gate.
 pub(super) struct ProviderHeaderCtx<'a> {
     pub(super) page: ConfigFormat,
     pub(super) npm_salt: String,
     pub(super) api_salt: String,
-    /// 新增表单 = true：字段是给全新 provider 填的，内容型开关放宽为常显。
+    /// Add form = true: the fields fill a brand-new provider, and content toggles relax to always visible.
     pub(super) relaxed: bool,
     pub(super) npm_empty_label: bool,
     pub(super) show_api_keys: bool,
-    /// key 重复检查用的「其他 provider key」集合；None = 不查（新增表单）。
+    /// The set of "other provider keys" for duplicate checks; None = don't check (the add form).
     pub(super) other_keys: Option<&'a HashSet<String>>,
 }
 
@@ -49,7 +49,7 @@ pub(super) fn provider_header_fields(
         if !flags.show_oc {
             provider_api_combo(ui, p, ctx.page, &ctx.api_salt);
         }
-        // timeout / timeoutMs 与 npm/api 同排（第一行）。
+        // timeout / timeoutMs share the first row with npm/api.
         if flags.show_oc && flags.show_provider_timeout {
             field_label(ui, 120.0, flags.timeout_label);
             numeric_text_edit(ui, &mut p.timeout, 70.0, "180000");
@@ -58,12 +58,12 @@ pub(super) fn provider_header_fields(
             field_label(ui, 120.0, "timeoutMs");
             numeric_text_edit(ui, &mut p.dsh_timeout_ms, 70.0, "180000");
         }
-        // QwenCode 的 timeout 落在条目的 generationConfig 里。
+        // QwenCode's timeout lands in the entry's generationConfig.
         if flags.show_qwen {
             field_label(ui, 120.0, "timeout");
             numeric_text_edit(ui, &mut p.timeout, 70.0, "180000");
         }
-        // pi / omp 的 compat 与 api 同排显示（紧跟 api 之后）。
+        // pi / omp's compat displays on the api's row (right after api).
         if !flags.show_oc
             && !flags.show_dsh
             && !flags.show_zcode
@@ -73,7 +73,7 @@ pub(super) fn provider_header_fields(
         {
             field_label(ui, 120.0, "compat");
             ui.checkbox(&mut p.compat, "supportsDeveloperRole");
-            // pi / omp 相互映射字段：加载 opencode/dsh 时缺省不勾选。
+            // pi / omp map to each other: unchecked by default when loading opencode/dsh.
             let requires_label = if flags.show_omp {
                 "requiresReasoningContentForAllAssistantTurns"
             } else {
@@ -99,9 +99,9 @@ pub(super) fn provider_header_fields(
             };
             ui.add(url_edit);
         }
-        // WorkBuddy 的协议由 URL 后缀表达（文件里没有协议字段），不给手动开关：
-        // 上面选的协议决定保存时补什么后缀。
-        // Qwen 的凭据框自己画标签（只剩一个密钥框）。
+        // WorkBuddy's protocol is expressed by the URL suffix (the file has no protocol field), so no manual
+        // toggle: the protocol chosen above decides what suffix gets appended at save.
+        // Qwen's credential box draws its own label (only one key box remains).
         if !flags.show_qwen {
             field_label(ui, 120.0, flags.api_key_label);
         }
@@ -117,20 +117,20 @@ pub(super) fn provider_header_fields(
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
             secret_text_edit(ui, &mut p.api_key_secret, ctx.show_api_keys, 408.0, hint);
         } else if flags.show_qwen {
-            // QwenCode 的密钥存在顶层 `env[<envKey>]` 里：条目上写变量名、`env` 里写值。
-            // 变量名不单独给框，留空就按 provider key 自动推导（见后端 `env_key_name`）。
+            // QwenCode's key lives in the top-level `env[<envKey>]`: the entry carries the variable name, `env` the value.
+            // The variable name gets no box of its own; left empty it derives from the provider key (see the backend's `env_key_name`).
             field_label(ui, 120.0, "API Key");
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
             secret_text_edit(ui, &mut p.api_key, ctx.show_api_keys, 408.0, hint);
         } else if flags.show_kimi {
-            // KimiCode 的 `api_key`（内联密钥）与 `api_key_env`（环境变量名）互斥，
-            // 同时写两个会让 Kimi Code 启动失败。文件里已有的 `api_key_env` 原样沿用
-            // （`api_key` 留空就照写它，见后端 `provider_entry_from_row`），
-            // 填了密钥就写 `api_key` 并清掉变量名。
+            // KimiCode's `api_key` (inline key) and `api_key_env` (environment variable name) are mutually exclusive —
+            // writing both makes Kimi Code fail to start. A pre-existing `api_key_env` in the file is kept as-is
+            // (`api_key` stays empty and writes it — see the backend's `provider_entry_from_row`); filling a key
+            // writes `api_key` and clears the variable name.
             let hint = if ctx.relaxed {
                 "sk-xxx"
             } else if !p.api_key_env.trim().is_empty() {
-                // 密钥在环境变量里：把变量名当占位符写出来。
+                // The key lives in an environment variable: write the variable name as the placeholder.
                 p.api_key_env.trim()
             } else {
                 ""
@@ -143,19 +143,20 @@ pub(super) fn provider_header_fields(
     });
 }
 
-/// 「获取模型」区块（两份表单共用）：按钮行 + 后台探测（连通/鉴权/列表/延迟
-/// 四合一，候选端点 404/405 自动回退）+ 结果勾选面板。
+/// The "discover models" block (shared by both forms): the button row + the background probe
+/// (connectivity / auth / list / latency in one, with 404/405 auto-fallback across candidates) + the result
+/// check panel.
 ///
-/// 拆字段传参而不是拿 `&mut App`：调用方此时还借着 `self.providers[idx]`。
-/// 返回需要写入底部状态栏的消息（缓存命中 / 已添加模型 / 已取消）。
+/// Fields pass individually rather than taking `&mut App`: the caller still holds `self.providers[idx]`.
+/// Returns messages for the bottom status bar (cache hit / models added / cancelled).
 pub(super) struct FetchSectionCtx<'a> {
     pub(super) latency: &'a HashMap<String, LatencyState>,
     pub(super) current_page: ConfigFormat,
     pub(super) fetch_key: &'a str,
-    /// 「探测模型」的状态（key → 状态；存在即结果面板开着）。
-    /// 「探测模型」的状态（key → 状态；存在即结果面板开着）。
+    /// The "discover models" state (key → state; existing = the result panel is open).
+    /// The "discover models" state (key → state; existing = the result panel is open).
     pub(super) discovery: &'a mut HashMap<String, DiscoveryState>,
-    /// 探测结果缓存（24 小时，键为 base_url；不含任何凭据）。
+    /// The discovery-result cache (24 hours, keyed by base_url; holds no credentials).
     pub(super) discovery_cache: &'a mut DiscoveryCache,
 }
 
@@ -171,8 +172,9 @@ pub(super) fn models_fetch_section(
     let mut status: Option<String> = None;
     ui.horizontal(|ui| {
         ui.strong("Models");
-        // 模型探测：后台线程跑 core::discovery 的 probe（候选端点 404/405 自动回退），
-        // 结果在下方面板勾选新增。旧「拉列表」入口已由它取代（超集：连通+鉴权+延迟+只补空）。
+        // Model discovery: a background thread runs core::discovery's probe (404/405 auto-fallback across candidates),
+        // and results are checked into the panel below. The old "fetch list" entry was replaced by it (a superset:
+        // connectivity + auth + latency + fill-only).
         let probing = ctx
             .discovery
             .get(ctx.fetch_key)
@@ -182,7 +184,7 @@ pub(super) fn models_fetch_section(
             if ui.button("取消").clicked() {
                 cancel_probe = true;
             }
-            // 探测结果经通道回传：空闲（无动画控件）时也要有帧去轮询。
+            // Discovery results return over a channel: even the idle state (no animated widgets) needs frames to poll.
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         } else if ui
@@ -192,8 +194,8 @@ pub(super) fn models_fetch_section(
         {
             probe_request = Some((base_url.to_string(), secret.to_string()));
         }
-        // 模型延迟无批量入口：每个模型行右侧各有一个「测试」按钮，一次只测一个
-        // （同模型 60s、同厂商 10s 节流）。
+        // No batch entry for model latency: each model row carries its own "test" button, one at a time
+        // (same model 60s, same vendor 10s throttle).
         if ctx
             .latency
             .get(ctx.fetch_key)
@@ -202,7 +204,7 @@ pub(super) fn models_fetch_section(
             ui.label(egui::RichText::new("延迟测试中…").small());
         }
     });
-    // 发起 / 取消：只填空合并等逻辑见 fetch::discovery。
+    // Start / cancel: fill-only merge and the like live in fetch::discovery.
     let existing_ids: Vec<String> = models.iter().map(|m| m.id.trim().to_string()).collect();
     if let Some((base, secret)) = probe_request {
         if let Some(msg) = start_discovery(
@@ -221,7 +223,7 @@ pub(super) fn models_fetch_section(
             status = Some(msg);
         }
     }
-    // 探测结果面板：状态存在即开着（探测中 / 失败 / 成功列表）。
+    // The discovery result panel: open whenever the state exists (probing / failed / success list).
     if let Some(state) = ctx.discovery.get_mut(ctx.fetch_key) {
         let action = discovery_panel(
             ui,
@@ -241,12 +243,12 @@ pub(super) fn models_fetch_section(
     status
 }
 
-/// 档位（variants）下拉所需的成套参数：字段标签、词表、展开状态与展开键。
+/// The complete parameter set for the tiers (variants) dropdown: field label, vocabulary, expand state, and expand key.
 pub(super) struct VariantsCtx<'a> {
     pub(super) label: &'static str,
     pub(super) names: &'a [&'static str],
     pub(super) open_set: &'a mut HashSet<String>,
     pub(super) open_key: String,
-    /// 编辑表单的模型行会归一已存的档位串；「添加 Model」子表单只收集新输入。
+    /// The edit form's model rows normalize stored tier strings; the "add model" sub-form only collects new input.
     pub(super) normalize: bool,
 }

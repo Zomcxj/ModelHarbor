@@ -3,8 +3,8 @@ use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
-    // 目录名全局唯一：Windows 时钟粒度粗，并行测试仅靠 pid+纳秒会撞 tick
-    // 共用目录互相覆盖。原子计数器消除碰撞。
+    // Directory names globally unique: Windows clock granularity is coarse, and parallel tests relying on pid+nanoseconds
+    // can collide within a tick, sharing a directory and overwriting each other. An atomic counter removes the collisions.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -40,13 +40,13 @@ fn configured_provider(key: &str, model: &str) -> ProviderRow {
     p
 }
 
-/// 端到端：opencode 页的数据写进 kilo 文件，落盘的是 kilo 认的引用。
+/// End to end: the opencode page's data written into a kilo file lands as references kilo accepts.
 #[test]
 fn saving_to_another_page_writes_that_pages_gateway_model() {
     let dir = temp_dir("kilo");
     let kilo_path = dir.join("kilo.json");
     let path = kilo_path.display().to_string();
-    // 来源是 opencode 页，agents 里混着自家网关与自配 provider 两类引用。
+    // The source is the opencode page; agents mix own-gateway and user-configured references.
     let mut app = App {
         agents: vec![
             agent("writing", "sensenova/sensenova-6.8-flash-lite"),
@@ -76,7 +76,7 @@ fn saving_to_another_page_writes_that_pages_gateway_model() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 端到端：从别的页存到 Kimi 文件，`managed:*` 登录态与它名下的官方模型都保留。
+/// End to end: saving from another page into a Kimi file keeps the `managed:*` login state and its official models.
 #[test]
 fn saving_to_the_kimi_page_keeps_the_managed_provider_and_its_models() {
     let dir = temp_dir("kimi_managed");
@@ -141,8 +141,8 @@ fn saving_to_the_kimi_page_keeps_the_managed_provider_and_its_models() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 端到端：opencode 页的 provider（密钥内联）跨格式存到 Qwen 文件，
-/// 落盘的凭据含 `envKey` 与 `env` 两项。
+/// End to end: an opencode-page provider (key inlined) saved cross-format into a Qwen file lands with both
+/// `envKey` and `env`.
 #[test]
 fn cross_format_save_writes_the_credential_for_an_env_less_provider() {
     let dir = temp_dir("qwen_env");
@@ -161,7 +161,7 @@ fn cross_format_save_writes_the_credential_for_an_env_less_provider() {
     p.key = "sensenova".into();
     p.base_url = "https://token.sensenova.cn/v1".into();
     p.pi_api = "openai-completions".into();
-    p.api_key = "sk-sensenova".into(); // opencode 的密钥是内联的
+    p.api_key = "sk-sensenova".into(); // opencode's key is inlined
     let mut m = crate::model::ModelRow::new();
     m.id = "sensenova-6.8-flash-lite".into();
     m.name = "sensenova-6.8-flash-lite".into();
@@ -180,7 +180,7 @@ fn cross_format_save_writes_the_credential_for_an_env_less_provider() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 端到端：从别的页存到 Qwen 文件，硬编码的 `qwen-oauth` 条目保留。
+/// End to end: saving from another page into a Qwen file keeps the hard-coded `qwen-oauth` entry.
 #[test]
 fn saving_to_the_qwen_page_keeps_the_oauth_entries() {
     let dir = temp_dir("qwen_oauth");
@@ -230,7 +230,7 @@ fn saving_to_the_qwen_page_keeps_the_oauth_entries() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 同一份 agents 分别写三页，各自拿到自己网关认的值。
+/// The same agents written to three pages, each receiving its own gateway's accepted value.
 #[test]
 fn each_page_gets_its_own_gateway_reference() {
     let dir = temp_dir("three");
@@ -262,7 +262,7 @@ fn each_page_gets_its_own_gateway_reference() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 保存到别的页不改动界面状态：写出去时归一，`agents` 保持原值。
+/// Saving to another page doesn't alter UI state: normalization happens at write-out; `agents` keeps its original value.
 #[test]
 fn saving_to_another_page_does_not_mutate_the_ui_state() {
     let dir = temp_dir("nomutate");
@@ -282,14 +282,14 @@ fn saving_to_another_page_does_not_mutate_the_ui_state() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 真实配置回归：把用户本机的 opencode.json 分别写向三页，逐条检查落盘的
-/// `model` 前缀是不是目标页认的。非用户机器（CI）跳过。
+/// Real-config regression: the user's local opencode.json written to each of the three pages, checking every
+/// written `model` prefix is one the target page accepts. Skipped on non-user machines (CI).
 #[test]
 fn the_real_opencode_agents_stay_valid_on_every_page() {
     let home = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default());
     let oc = home.join(".config/opencode/opencode.json");
     if !oc.exists() {
-        return; // 非用户机器（CI）跳过
+        return; // Skipped on non-user machines (CI)
     }
     let dir = temp_dir("real");
     let mut app = App {
@@ -333,9 +333,9 @@ fn the_real_opencode_agents_stay_valid_on_every_page() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- 切页往返：用户没改任何东西，配置不被改动 ----
+// ---- Page-switch round trips: the user changed nothing, the config must not change ----
 
-/// 造一个只含 agents 的 App。
+/// Build an App holding only agents.
 fn app_with(agents: Vec<AgentRow>, page: ConfigFormat) -> App {
     App {
         agents,
@@ -345,7 +345,7 @@ fn app_with(agents: Vec<AgentRow>, page: ConfigFormat) -> App {
     }
 }
 
-/// 同文件重载（手动加载 / 预览应用）后，各页的 model 记忆保留。
+/// After a same-file reload (manual load / preview apply), each page's model memory is kept.
 #[test]
 fn reloading_the_same_file_keeps_the_per_page_model_memory() {
     let dir = temp_dir("reload-keeps-memory");
@@ -362,31 +362,31 @@ fn reloading_the_same_file_keeps_the_per_page_model_memory() {
     app.config_path = path.to_string_lossy().into_owned();
     app.loaded_path = app.config_path.clone();
 
-    // 切到 mimocode：指向别家网关的引用被换成本页首选
+    // Switch to mimocode: references pointing at other gateways become this page's preferred model
     app.normalize_agent_models_for_page(ConfigFormat::Mimocode, Some(ConfigFormat::Opencode));
     assert_eq!(app.agents[0].model, "mimo/mimo-auto");
 
-    // 同文件重载
+    // Same-file reload
     app.reload_for_page(ConfigFormat::Opencode, false);
     assert_eq!(app.agents[0].model, "opencode/mimo-v2.6-flash-free");
 
-    // 切回 opencode：记忆仍在，还原用户原值
+    // Back to opencode: the memory persists, restoring the user's original value
     app.normalize_agent_models_for_page(ConfigFormat::Opencode, Some(ConfigFormat::Mimocode));
     assert_eq!(app.agents[0].model, "opencode/mimo-v2.6-flash-free");
 }
 
-/// opencode → kilo → opencode 走一圈，原来配好的 `opencode/…` 仍在。
+/// opencode → kilo → opencode comes full circle with the originally configured `opencode/…` intact.
 #[test]
 fn switching_pages_and_back_restores_the_original_model() {
     let mut app = app_with(
         vec![agent("fallback", "opencode/mimo-v2.6-flash-free")],
         ConfigFormat::Opencode,
     );
-    // 切到 kilo 页：换成 kilo 自家网关模型
+    // Switch to the kilo page: swapped to kilo's own gateway model
     app.normalize_agent_models_for_page(ConfigFormat::Kilocode, Some(ConfigFormat::Opencode));
     app.current_page = ConfigFormat::Kilocode;
     assert_eq!(app.agents[0].model, "kilo/kilo-auto/free");
-    // 切回 opencode 页：还原成用户原来配的那个
+    // Back to the opencode page: restored to the user's original choice
     app.normalize_agent_models_for_page(ConfigFormat::Opencode, Some(ConfigFormat::Kilocode));
     app.current_page = ConfigFormat::Opencode;
     assert_eq!(
@@ -395,47 +395,47 @@ fn switching_pages_and_back_restores_the_original_model() {
     );
 }
 
-/// 三页各配各的，来回切各自保留自己的选择。
+/// Three pages each hold their own; switching back and forth preserves each page's selection.
 #[test]
 fn each_page_remembers_its_own_model_choice() {
     let mut app = app_with(
         vec![agent("a", "opencode/big-pickle")],
         ConfigFormat::Opencode,
     );
-    // opencode → kilo，用户在 kilo 页手动挑了另一个
+    // opencode → kilo, where the user manually picked another on the kilo page
     app.normalize_agent_models_for_page(ConfigFormat::Kilocode, Some(ConfigFormat::Opencode));
     app.current_page = ConfigFormat::Kilocode;
     app.agents[0].model = "kilo/kilo-auto/balanced".into();
-    // kilo → mimo（kilo 的选择被记住），用户在 mimo 页也挑了一个
+    // kilo → mimo (kilo's choice remembered), and the user picks one on the mimo page too
     app.normalize_agent_models_for_page(ConfigFormat::Mimocode, Some(ConfigFormat::Kilocode));
     app.current_page = ConfigFormat::Mimocode;
     assert_eq!(app.agents[0].model, "mimo/mimo-auto");
     app.agents[0].model = "xiaomi/mimo-v2.6-pro".into();
-    // mimo → kilo：回到用户在 kilo 页挑的那个
+    // mimo → kilo: back to the one the user picked on the kilo page
     app.normalize_agent_models_for_page(ConfigFormat::Kilocode, Some(ConfigFormat::Mimocode));
     app.current_page = ConfigFormat::Kilocode;
     assert_eq!(app.agents[0].model, "kilo/kilo-auto/balanced");
-    // kilo → opencode：回到最初的
+    // kilo → opencode: back to the original
     app.normalize_agent_models_for_page(ConfigFormat::Opencode, Some(ConfigFormat::Kilocode));
     app.current_page = ConfigFormat::Opencode;
     assert_eq!(app.agents[0].model, "opencode/big-pickle");
 }
 
-/// 记忆只在切页时建立：第一次进某页没有记忆，按无效引用替换。
+/// Memory forms only on page switches: entering a page for the first time has no memory, so invalid references get replaced.
 #[test]
 fn the_first_visit_to_a_page_has_no_memory_to_restore() {
     let mut app = app_with(
         vec![agent("a", "opencode/big-pickle")],
         ConfigFormat::Opencode,
     );
-    // 直接进 mimo 页
+    // Enter the mimo page directly
     let replaced =
         app.normalize_agent_models_for_page(ConfigFormat::Mimocode, Some(ConfigFormat::Opencode));
     assert_eq!(replaced, 1);
     assert_eq!(app.agents[0].model, "mimo/mimo-auto");
 }
 
-/// 保存到某页时用的是该页记忆里的值，而不是当前页那份。
+/// Saving to a page uses that page's remembered value, not the current page's copy.
 #[test]
 fn saving_to_a_page_uses_that_pages_remembered_choice() {
     let dir = temp_dir("remember");
@@ -443,7 +443,7 @@ fn saving_to_a_page_uses_that_pages_remembered_choice() {
         vec![agent("a", "opencode/big-pickle")],
         ConfigFormat::Opencode,
     );
-    // 去 kilo 页挑一个非默认的模型，再回到 opencode 页
+    // Go to the kilo page and pick a non-default model, then return to the opencode page
     app.normalize_agent_models_for_page(ConfigFormat::Kilocode, Some(ConfigFormat::Opencode));
     app.current_page = ConfigFormat::Kilocode;
     app.agents[0].model = "kilo/kilo-auto/balanced".into();
@@ -462,7 +462,7 @@ fn saving_to_a_page_uses_that_pages_remembered_choice() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 重新加载后：加载页的记忆重置为文件值，其他页的记忆保留。
+/// After a reload: the loading page's memory resets to the file's value; other pages' memories persist.
 #[test]
 fn reloading_reseeds_loaded_page_and_keeps_other_pages_memory() {
     let dir = temp_dir("reload-reseed");
@@ -479,7 +479,7 @@ fn reloading_reseeds_loaded_page_and_keeps_other_pages_memory() {
     app.config_path = path.to_string_lossy().into_owned();
     app.loaded_path = app.config_path.clone();
 
-    // 去 kilo 页再回来，留下两页的记忆
+    // Go to the kilo page and back, leaving memories on both pages
     app.normalize_agent_models_for_page(ConfigFormat::Kilocode, Some(ConfigFormat::Opencode));
     app.current_page = ConfigFormat::Kilocode;
     app.agents[0].model = "kilo/kilo-auto/balanced".into();
@@ -487,7 +487,7 @@ fn reloading_reseeds_loaded_page_and_keeps_other_pages_memory() {
     app.current_page = ConfigFormat::Opencode;
     assert_eq!(app.agents[0].model, "opencode/big-pickle");
 
-    // 用户在 opencode 页改了模型（未保存），然后同文件重载
+    // The user changed the model on the opencode page (unsaved), then reloaded the same file
     app.agents[0].model = "opencode/longcat-2.5-preview-free".into();
     app.normalize_agent_models_for_page(ConfigFormat::Kilocode, Some(ConfigFormat::Opencode));
     app.current_page = ConfigFormat::Kilocode;
@@ -497,19 +497,19 @@ fn reloading_reseeds_loaded_page_and_keeps_other_pages_memory() {
 
     app.reload_for_page(ConfigFormat::Opencode, false);
 
-    // 加载页记忆 = 文件值
+    // The loading page's memory = the file's value
     let op = (app.config_id(), ConfigFormat::Opencode);
     assert_eq!(
         app.agent_models_by_page[&op]["a"], "opencode/big-pickle",
         "重载后加载页的记忆应回到文件值"
     );
-    // 其他页记忆保留
+    // Other pages' memories persist
     let kilo = (app.config_id(), ConfigFormat::Kilocode);
     assert_eq!(
         app.agent_models_by_page[&kilo]["a"], "kilo/kilo-auto/balanced",
         "其他页的记忆不应被重载抹掉"
     );
-    // 当前 agents 也回到文件值
+    // The current agents also return to the file's value
     assert_eq!(app.agents[0].model, "opencode/big-pickle");
     std::fs::remove_dir_all(&dir).ok();
 }

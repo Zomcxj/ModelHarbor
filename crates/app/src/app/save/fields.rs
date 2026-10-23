@@ -3,9 +3,8 @@ use crate::format::ConfigFormat;
 use serde_json::Value;
 
 impl App {
-    /// 当前 agent 文件是否使用某个 provider 级字段。
-    /// 判断范围是整个文件，不是单个 provider；切换到尚未加载的目标页时
-    /// 使用完整 schema。
+    /// Whether the current agent file uses a provider-level field.
+    /// The judgment spans the whole file, not one provider; a target page not yet loaded uses the full schema.
     pub(in crate::app) fn page_has_provider_field(&self, field: &str) -> bool {
         if self.source_format != self.current_page {
             return true;
@@ -13,7 +12,7 @@ impl App {
         self.providers
             .iter()
             .any(|provider| match self.current_page {
-                // opencode 系三者字段口径相同；v1 用 options.*，v2 用 settings.*。
+                // The opencode family's three share field semantics; v1 uses options.*, v2 settings.*.
                 ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
                     let has = |key: &str| {
                         provider
@@ -41,7 +40,7 @@ impl App {
                     "base_url" => provider.raw.get("baseURL").is_some(),
                     _ => false,
                 },
-                // ZCode 的端点/密钥落在 `api.baseUrl` / `access.apiKey`。
+                // ZCode's endpoint/key land in `api.baseUrl` / `access.apiKey`.
                 ConfigFormat::ZCode => match field {
                     "base_url" => provider
                         .raw
@@ -50,12 +49,12 @@ impl App {
                         .is_some(),
                     _ => false,
                 },
-                // WorkBuddy 每条模型自带 url / apiKey。
+                // WorkBuddy carries url / apiKey on every model.
                 ConfigFormat::WorkBuddy => match field {
                     "base_url" => provider.raw.get("url").is_some(),
                     _ => false,
                 },
-                // QwenCode 每条条目自带 baseUrl / envKey；timeout 落在 generationConfig。
+                // QwenCode carries baseUrl / envKey on every entry; the timeout lands in generationConfig.
                 ConfigFormat::QwenCode => match field {
                     "base_url" => provider.raw.get("baseUrl").is_some(),
                     "timeout" => provider
@@ -65,7 +64,7 @@ impl App {
                         .is_some(),
                     _ => false,
                 },
-                // KimiCode 的 provider 表只有 base_url / type / 凭据，没有 provider 级超时。
+                // KimiCode's provider table holds only base_url / type / credentials — no provider-level timeout.
                 ConfigFormat::KimiCode => match field {
                     "base_url" => provider.raw.get("base_url").is_some(),
                     _ => false,
@@ -73,17 +72,15 @@ impl App {
             })
     }
 
-    /// 当前 agent 文件是否使用某个 model 级字段。字段存在性按整个
-    /// agent 文件判断。
+    /// Whether the current agent file uses a model-level field. Existence is judged across the whole agent file.
     pub(in crate::app) fn page_has_model_field(&self, field: &str) -> bool {
         if self.source_format != self.current_page {
             return true;
         }
         self.providers.iter().any(|provider| {
             provider.models.iter().any(|model| match self.current_page {
-                // opencode 系三者模型字段口径相同；v1 用 reasoning / tool_call /
-                // modalities / options.store，v2 用 capabilities.tools /
-                // capabilities.input / body.store（v2 无 reasoning）。
+                // The opencode family's three share model-field semantics; v1 uses reasoning / tool_call /
+                // modalities / options.store, v2 uses capabilities.tools / capabilities.input / body.store (v2 has no reasoning).
                 ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
                     let cap = |key: &str| {
                         model
@@ -128,7 +125,7 @@ impl App {
                 }
                 ConfigFormat::Pi | ConfigFormat::OhMyPi => match field {
                     "name" => model.raw.get("name").is_some(),
-                    // reasoning 也可由 pi/omp 的 thinking 块 / thinkingLevelMap 表达。
+                    // reasoning can also be expressed by pi/omp's thinking block / thinkingLevelMap.
                     "reasoning" => {
                         model.raw.get("reasoning").is_some()
                             || model.raw.get("thinkingLevelMap").is_some()
@@ -152,7 +149,7 @@ impl App {
                     "variants" => model.raw.get("reasoningEfforts").is_some(),
                     _ => false,
                 },
-                // ZCode 的模型属性落在 config.properties / config.optionSpecs。
+                // ZCode's model attributes land in config.properties / config.optionSpecs.
                 ConfigFormat::ZCode => match field {
                     "context" => model
                         .raw
@@ -181,11 +178,11 @@ impl App {
                         .is_some(),
                     _ => false,
                 },
-                // WorkBuddy 每条模型自带全部属性。
+                // WorkBuddy carries every attribute on each model.
                 ConfigFormat::WorkBuddy => match field {
-                    // 模型名已落到模型行的 id 字段（WB 无独立模型 id），name 不单列。
+                    // The model name already lives in the model row's id field (WB has no separate model id); name isn't listed separately.
                     "name" => false,
-                    // 「启用开关」由 `ConfigFormat::has_model_enable()` 判定，见 providers.rs。
+                    // The "enable switch" is decided by `ConfigFormat::has_model_enable()` — see providers.rs.
                     "context" => model.raw.get("maxInputTokens").is_some(),
                     "output" => model.raw.get("maxOutputTokens").is_some(),
                     "input" => model.raw.get("supportsImages").is_some(),
@@ -193,7 +190,7 @@ impl App {
                     "reasoning" => model.raw.get("supportsReasoning").is_some(),
                     _ => false,
                 },
-                // QwenCode 的模型属性落在 generationConfig / capabilities。
+                // QwenCode's model attributes land in generationConfig / capabilities.
                 ConfigFormat::QwenCode => match field {
                     "name" => model.raw.get("name").is_some(),
                     "context" => model
@@ -212,7 +209,7 @@ impl App {
                         .get("capabilities")
                         .and_then(|c| c.get("vision"))
                         .is_some(),
-                    // QwenCode 没有「工具调用」与 `store` 字段。
+                    // QwenCode has no "tool use" or `store` fields.
                     "tool_call" | "store" => false,
                     "reasoning" => model
                         .raw
@@ -227,21 +224,21 @@ impl App {
                         .is_some(),
                     _ => false,
                 },
-                // KimiCode 的模型属性是 `capabilities` 标签集 + 三个数值/字符串键。
+                // KimiCode's model attributes are a `capabilities` label set + three numeric/string keys.
                 ConfigFormat::KimiCode => match field {
                     "name" => model.raw.get("display_name").is_some(),
                     "context" => model.raw.get("max_context_size").is_some(),
                     "output" => model.raw.get("max_output_size").is_some(),
-                    // 「支持思考」对应 thinking / always_thinking 两个标签。
+                    // "Supports reasoning" maps to the thinking / always_thinking labels.
                     "reasoning" => caps_has(model, &["thinking", "always_thinking"]),
-                    // 「工具调用」对应 tool_use 标签。
+                    // "Tool use" maps to the tool_use label.
                     "tool_call" => caps_has(model, &["tool_use"]),
                     "variants" => model.raw.get("support_efforts").is_some(),
-                    // 输入模态不显示：Kimi 用 image_in / video_in / audio_in 三个标签表达，
-                    // 与单个「输入模态」框的映射不可逆。这些标签由 [`merge_capabilities`]
-                    // 原样保留。
+                    // Input modalities don't display: Kimi expresses them via the image_in / video_in / audio_in labels,
+                    // a mapping that doesn't invert into a single "input modality" box. [`merge_capabilities`] preserves
+                    // these labels verbatim.
                     "input" => false,
-                    // Kimi 没有 `store` 字段。
+                    // Kimi has no `store` field.
                     "store" => false,
                     _ => false,
                 },
@@ -250,9 +247,9 @@ impl App {
     }
 }
 
-/// 模型的 `capabilities` 标签集里是否有其中任意一个（KimiCode 用）。
+/// Whether a model's `capabilities` label set contains any of these (KimiCode).
 ///
-/// 不区分大小写。
+/// Case-insensitive.
 fn caps_has(model: &crate::model::ModelRow, names: &[&str]) -> bool {
     model
         .raw

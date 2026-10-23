@@ -1,8 +1,8 @@
-//! opencode v2 页面的字段可见性与标签回归。
+//! The opencode v2 page's field-visibility and label regression.
 //!
-//! v1 与 v2 的键名不同（options↔settings、modalities↔capabilities、
-//! options.store↔body.store），字段可见性判断与标签都必须两版都认，
-//! 否则 v2 页会漏掉 baseURL / 输入模态 / 工具调用 / store 等控件。
+//! v1 and v2 name keys differently (options↔settings, modalities↔capabilities, options.store↔body.store);
+//! visibility judgments and labels must recognize both versions, or the v2 page would lose the baseURL /
+//! input-modality / tool-call / store controls.
 
 use crate::app::providers::ProviderFormFlags;
 use crate::app::App;
@@ -10,7 +10,7 @@ use crate::format::ConfigFormat;
 use crate::model::ProviderRow;
 use serde_json::json;
 
-/// 从 v2 provider JSON 造一个「当前页 = opencode、文件来自 opencode」的 App。
+/// Build an App of "current page = opencode, file from opencode" from a v2 provider JSON.
 fn app_with_v2_provider() -> App {
     let v2 = json!({
         "package": "@opencode/ai/providers/openai-compatible",
@@ -33,7 +33,7 @@ fn app_with_v2_provider() -> App {
     }
 }
 
-/// 从 v1 provider JSON 造同样口径的 App。
+/// Build the same-shaped App from a v1 provider JSON.
 fn app_with_v1_provider() -> App {
     let v1 = json!({
         "npm": "@ai-sdk/openai-compatible",
@@ -74,11 +74,11 @@ fn v2_page_shows_all_mapped_fields_with_v2_labels() {
         "v2 页应显示工具调用（capabilities.tools）"
     );
     assert!(flags.show_model_store, "v2 页应显示 store（body.store）");
-    // v2 无 reasoning 键：推理开关不显示（符合「v2 不写回 reasoning」的决策）。
+    // v2 has no reasoning key: the reasoning switch doesn't display (matching the "v2 never writes reasoning" decision).
     assert!(!flags.show_model_reasoning, "v2 页不该显示推理开关");
-    // v2 门控：新增表单（relaxed）也不得放宽 reasoning。
+    // The v2 gate: the add form (relaxed) must not relax reasoning either.
     assert!(flags.oc_v2, "v2 页应置 oc_v2 门控");
-    // 标签跟随 v2 键名。
+    // Labels follow the v2 key names.
     assert_eq!(flags.base_label, "settings.baseURL");
     assert_eq!(flags.api_key_label, "settings.apiKey");
     assert_eq!(flags.input_label, "capabilities.input");
@@ -107,12 +107,12 @@ fn v1_page_keeps_v1_field_visibility_and_labels() {
     assert_eq!(flags.package_label, "npm");
 }
 
-/// 每个模型预设下拉首项的「同步」：把源模型的 context / output 值刷到本页全部模型。
+/// Each model preset dropdown's first-item "sync": brush the source model's context / output values onto every model on the page.
 #[test]
 fn limit_sync_applies_source_value_to_every_model() {
     use crate::app::providers::SyncField;
     use crate::model::ModelRow;
-    // 两个 provider、共 3 个模型，context/output 初值各异。
+    // Two providers, 3 models total, with differing context/output initials.
     let mk = |id: &str| {
         let mut m = ModelRow::new();
         m.id = id.into();
@@ -131,7 +131,7 @@ fn limit_sync_applies_source_value_to_every_model() {
         ..App::default()
     };
 
-    // 同步 context：output 不动。
+    // Sync context: output untouched.
     app.apply_limit_sync(SyncField::Context, "262000".into());
     for p in &app.providers {
         for m in &p.models {
@@ -140,7 +140,7 @@ fn limit_sync_applies_source_value_to_every_model() {
         }
     }
 
-    // 同步 output：context 保持上一步的值。
+    // Sync output: context keeps the previous step's value.
     app.apply_limit_sync(SyncField::Output, "64000".into());
     let count: usize = app.providers.iter().map(|p| p.models.len()).sum();
     assert_eq!(count, 3);
@@ -151,13 +151,13 @@ fn limit_sync_applies_source_value_to_every_model() {
         }
     }
 
-    // 空值不刷（源模型该字段为空）。
+    // Empty values don't brush (the source model's field is empty).
     app.apply_limit_sync(SyncField::Context, "  ".into());
     assert_eq!(app.providers[0].models[0].context, "262000", "空值不该覆盖");
 }
 
-/// v2 只是 opencode 本家的演进：kilo / mimo 两页即使加载的数据是 v2 形状
-/// （如从 opencode v2 文件加载后切页），标签也永远是 v1 键名。
+/// v2 is opencode's own evolution: on the kilo / mimo pages, even v2-shaped loaded data (say, loaded from
+/// an opencode v2 file then switching pages) always shows v1 key-name labels.
 #[test]
 fn kilocode_and_mimocode_pages_always_show_v1_labels() {
     for page in [ConfigFormat::Kilocode, ConfigFormat::Mimocode] {

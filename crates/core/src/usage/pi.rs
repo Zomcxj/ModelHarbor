@@ -1,35 +1,35 @@
-//! pi 系（pi / oh-my-pi）的会话存储布局 —— 删除与读名字共用的那套路径知识。
+//! The pi family's (pi / oh-my-pi) session storage layout — the path knowledge shared by deletion and title reading.
 //!
-//! ## 两种布局，id 的位置不同
+//! ## Two layouts, the id in different places
 //!
-//! - **顶层会话**：`<会话根>/<编码 cwd>/<时间戳>_<uuid>.jsonl`，
-//!   id 既是文件名最后一段，也写在内容首行；
-//! - **子 agent / worktree 转录**：
-//!   `<会话根>/<编码 cwd>/<父会话>/<uuid>/run-N/session.jsonl`，
-//!   文件名一律是 `session.jsonl`，id **只在内容首行**
-//!   （`{"type":"session","id":"..."}`）。
+//! - **Top-level sessions**: `<session root>/<encoded cwd>/<timestamp>_<uuid>.jsonl`;
+//!   the id is both the file name's last segment and written in the content's first line;
+//! - **Sub-agent / worktree transcripts**:
+//!   `<session root>/<encoded cwd>/<parent session>/<uuid>/run-N/session.jsonl`,
+//!   the file name is always `session.jsonl`, and the id is **only in the content's first line**
+//!   (`{"type":"session","id":"..."}`).
 //!
-//! 只按文件名认 id 会漏掉全部子 agent 会话：它们既取不到名字，也删不掉。
-//! 本机真实数据里 21 个 pi 会话有 16 个是这种，藏在第 4 层目录下。
-//! 因此 [`session_id_of`] 一律以首行为准，文件名只作兜底。
+//! Recognizing ids by file name alone misses every sub-agent session: they'd be neither titled nor
+//! deletable. In this machine's real data, 16 of 21 pi sessions are that kind, hidden four levels deep.
+//! So [`session_id_of`] always trusts the first line, with the file name only as a fallback.
 
 use std::path::{Path, PathBuf};
 
 use crate::format::ConfigFormat;
 use crate::prefs;
 
-/// 递归深度上限（相对会话根）。
+/// Recursion depth cap (relative to the session root).
 ///
-/// 实际布局到第 4 层（`<cwd>/<父会话>/<子 agent>/run-N/session.jsonl`）；
-/// 子 agent 还能再派生子 agent，因此留出余量。设上限是防目录成环或
-/// 异常深时无限递归 —— 早先取 3 层，正好把第 4 层的转录全漏掉。
+/// The real layout reaches level 4 (`<cwd>/<parent session>/<sub-agent>/run-N/session.jsonl`); sub-agents
+/// can spawn further sub-agents, so leave headroom. A cap prevents infinite recursion on directory cycles
+/// or abnormal depth — an earlier cap of 3 missed exactly the level-4 transcripts.
 const MAX_DEPTH: usize = 8;
 
-/// 读会话头（首行）最多读这么多字节：首行是几百字节的 JSON，
-/// 上限只为防住畸形文件里一行超长时把内存吃满。
+/// Max bytes read for a session's head (first line): the first line is a few hundred bytes of JSON;
+/// the cap only guards against one gigantic line in a malformed file exhausting memory.
 const HEADER_BYTES: u64 = 64 * 1024;
 
-/// 会话根：pi 是 `~/.pi/agent/sessions`，oh-my-pi 是 `~/.omp/agent/sessions`。
+/// Session roots: pi is `~/.pi/agent/sessions`, oh-my-pi is `~/.omp/agent/sessions`.
 pub(super) fn sessions_root(client: ConfigFormat) -> Option<PathBuf> {
     match client {
         ConfigFormat::Pi => {
@@ -42,12 +42,12 @@ pub(super) fn sessions_root(client: ConfigFormat) -> Option<PathBuf> {
     }
 }
 
-/// 取一份转录的会话 id：**首行优先**，读不到再退回文件名。
+/// Take a transcript's session id: **first line wins**, falling back to the file name.
 pub(super) fn session_id_of(path: &Path) -> Option<String> {
     header_session_id(path).or_else(|| file_name_session_id(path))
 }
 
-/// 读首行的 `{"type":"session","id":...}`。
+/// Read the first line's `{"type":"session","id":...}`.
 fn header_session_id(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(std::io::Read::take(file, HEADER_BYTES));
@@ -63,24 +63,24 @@ fn header_session_id(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// 从文件名取 id：`<时间戳>_<uuid>.jsonl` 的最后一段。
+/// Take the id from a file name: the last segment of `<timestamp>_<uuid>.jsonl`.
 ///
-/// 子 agent 转录叫 `session.jsonl`，没有 `_`，这里返回 `None`。
+/// Sub-agent transcripts are named `session.jsonl` with no `_`; returns `None` here.
 fn file_name_session_id(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_string_lossy();
     stem.rsplit_once('_').map(|(_, id)| id.to_string())
 }
 
-/// 是不是会话转录文件（`.jsonl`）。
+/// Whether it's a session transcript file (`.jsonl`).
 ///
-/// 同名转录目录（去掉后缀）不是文件，走不到这里；非 `.jsonl` 的兄弟文件
-/// （子 agent 产物）也不算。
+/// The same-named transcript directory (suffix stripped) isn't a file and never reaches here; sibling
+/// non-`.jsonl` files (sub-agent artifacts) don't count either.
 fn is_jsonl(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension == "jsonl")
 }
 
-/// 收集会话根下的全部 `*.jsonl`（递归到 [`MAX_DEPTH`]）。
+/// Collect every `*.jsonl` under the session root (recursing to [`MAX_DEPTH`]).
 pub(super) fn walk_jsonl(root: &Path, out: &mut Vec<PathBuf>) {
     walk(root, 0, out);
 }
@@ -104,10 +104,10 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// 在会话根下找指定会话的转录文件。
+/// Find a given session's transcript under the session root.
 ///
-/// 按 id 比对（见 [`session_id_of`]），因此子 agent 的 `session.jsonl`
-/// 同样找得到。命中即返回，不必走完整棵树。
+/// Comparison goes by id (see [`session_id_of`]), so a sub-agent's `session.jsonl` is found all the same.
+/// Returns on first hit — no need to walk the whole tree.
 pub(super) fn find_session(root: &Path, session_id: &str) -> Option<PathBuf> {
     search(root, session_id, 0)
 }
@@ -118,7 +118,7 @@ fn search(dir: &Path, session_id: &str, depth: usize) -> Option<PathBuf> {
     }
     let entries = std::fs::read_dir(dir).ok()?;
     let mut subdirs: Vec<PathBuf> = Vec::new();
-    // 先扫本层文件：命中就不必下探。
+    // Scan this level's files first: a hit means no descent needed.
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -144,7 +144,7 @@ fn search(dir: &Path, session_id: &str, depth: usize) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// 临时会话根。
+    /// A temporary session root.
     fn temp_root(tag: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -154,9 +154,8 @@ mod tests {
         root
     }
 
-    /// 搭出真实的两层布局：顶层会话 + 藏在第 4 层的子 agent 转录。
-    ///
-    /// 返回（顶层文件, 子 agent 文件）。
+    /// Assemble the real two-level layout: a top-level session + a sub-agent transcript hidden at level 4.
+    /// Returns (top-level file, sub-agent file).
     fn layout(root: &Path) -> (PathBuf, PathBuf) {
         let ws = root.join("--D--VsPro-X--");
         let top = ws.join("2026-01-01T00-00-00-000Z_top-id.jsonl");
@@ -166,7 +165,7 @@ mod tests {
             r#"{"type":"session","version":3,"id":"top-id","cwd":"D:\\X"}"#,
         )
         .expect("写顶层会话");
-        // 子 agent：cwd / 父会话目录 / 子 agent uuid / run-0 / session.jsonl
+        // Sub-agent: cwd / parent session dir / sub-agent uuid / run-0 / session.jsonl
         let run = ws
             .join("2026-01-01T00-00-00-000Z_top-id")
             .join("sub-uuid")
@@ -181,7 +180,7 @@ mod tests {
         (top, sub)
     }
 
-    /// 第 4 层的子 agent 转录也要能找到 —— 深度上限取 3 时这里会失败。
+    /// The level-4 sub-agent transcript must be findable — a depth cap of 3 fails here.
     #[test]
     fn find_session_reaches_nested_subagent_transcripts() {
         let root = temp_root("find");
@@ -200,7 +199,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// `session.jsonl` 的文件名推不出 id，只能读首行。
+    /// `session.jsonl`'s file name yields no id; only the first line can.
     #[test]
     fn session_id_of_prefers_the_header_over_the_file_name() {
         let root = temp_root("id");
@@ -214,7 +213,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 首行不是会话头（或文件空）时退回文件名里的 id。
+    /// When the first line isn't a session header (or the file is empty), fall back to the id in the file name.
     #[test]
     fn session_id_of_falls_back_to_the_file_name() {
         let root = temp_root("fallback");
@@ -234,7 +233,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 只收集 `.jsonl`：同名转录目录与其它后缀都不算。
+    /// Collect `.jsonl` only: same-named transcript directories and other suffixes don't count.
     #[test]
     fn walk_jsonl_collects_only_jsonl_files() {
         let root = temp_root("walk");
@@ -251,7 +250,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 会话根按客户端分：pi 与 oh-my-pi 各在自己的目录下，其余客户端没有。
+    /// Session roots are per client: pi and oh-my-pi each have their own directory; other clients have none.
     #[test]
     fn sessions_root_is_per_client() {
         let pi = sessions_root(ConfigFormat::Pi).expect("pi 应有会话根");

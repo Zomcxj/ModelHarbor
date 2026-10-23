@@ -2,13 +2,13 @@ use crate::app::App;
 use crate::format::ConfigFormat;
 use std::path::PathBuf;
 
-/// 走 App 的真实加载路径（`reload_for_page`）确认 WorkBuddy 的分组结果。
+/// Walk App's real load path (`reload_for_page`) to confirm WorkBuddy's grouping result.
 #[test]
 fn workbuddy_loads_all_models_per_provider() {
     let home = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default());
     let path = home.join(".workbuddy/models.json");
     if !path.exists() {
-        return; // 非用户机器（CI）跳过
+        return; // Skipped on non-user machines (CI)
     }
     let mut app = App {
         config_path: path.display().to_string(),

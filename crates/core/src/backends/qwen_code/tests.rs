@@ -1,6 +1,6 @@
 use super::*;
 
-/// 只读 pid 的条目整块保留，且不进界面。
+/// The read-only pid's entries are preserved whole and stay out of the UI.
 #[test]
 fn readonly_pid_entries_are_preserved_but_not_listed() {
     let root: Value = serde_json::from_str(
@@ -24,7 +24,7 @@ fn readonly_pid_entries_are_preserved_but_not_listed() {
     let _ = placed;
 }
 
-/// 认不出来的条目（没有 id）不被保存动作删掉。
+/// Unrecognized entries (no id) aren't deleted by the save action.
 #[test]
 fn id_less_entries_survive_a_save() {
     let root: Value = serde_json::from_str(
@@ -37,7 +37,7 @@ fn id_less_entries_survive_a_save() {
     assert_eq!(kept[0]["name"], "无 id 的条目");
 }
 
-/// 旧包装形状（值不是数组）整块保留。
+/// The old wrapper shape (values not arrays) is preserved whole.
 #[test]
 fn legacy_wrapped_shape_is_preserved() {
     let root: Value = serde_json::from_str(
@@ -48,7 +48,7 @@ fn legacy_wrapped_shape_is_preserved() {
     assert_eq!(out["modelProviders"]["legacy"]["protocol"], "openai");
 }
 
-/// 全新文件写 `$version: 4`；已有文件不动它。
+/// A brand-new file writes `$version: 4`; existing files never touch it.
 #[test]
 fn version_is_only_stamped_on_a_new_file() {
     let fresh = QwenCodeBackend.serialize_root(&[], &[], &Value::Object(Map::new()), None);
@@ -60,7 +60,7 @@ fn version_is_only_stamped_on_a_new_file() {
     assert!(out.get("general").is_some(), "其余顶层设置保留");
 }
 
-/// `env` 只增改不删：孤儿键与界面清空的键都留着。
+/// `env` only adds and updates, never deletes: orphan keys and UI-cleared keys both stay.
 #[test]
 fn env_is_never_pruned() {
     let base: Value = serde_json::from_str(
@@ -72,7 +72,7 @@ fn env_is_never_pruned() {
     assert_eq!(out["env"]["OLD_KEY"], "sk-old", "无引用的键也不删");
 }
 
-/// 自定义 pid 沿用并刷新映射；卡片删掉后孤儿映射被清理。
+/// A custom pid's mapping is reused and refreshed; deleting its card cleans up the orphan mapping.
 #[test]
 fn custom_pid_mapping_is_refreshed_and_orphans_pruned() {
     let base: Value = serde_json::from_str(
@@ -94,7 +94,7 @@ fn custom_pid_mapping_is_refreshed_and_orphans_pruned() {
     );
 }
 
-/// 内置 pid 不需要映射，切换协议后写进条目的 `wireApi` 跟着变。
+/// Built-in pids need no mapping; after a protocol switch, the entry's written `wireApi` follows.
 #[test]
 fn builtin_pid_needs_no_mapping_and_wire_follows_api() {
     let mut p = ProviderRow::new();
@@ -111,7 +111,7 @@ fn builtin_pid_needs_no_mapping_and_wire_follows_api() {
     assert!(out.get("providerProtocol").is_none(), "内置 pid 不写映射");
 }
 
-/// 非 OpenAI 系协议不得写 `wireApi`（官方明说是配置错误）。
+/// Non-OpenAI-family protocols must not write `wireApi` (officially documented as a config error).
 #[test]
 fn wire_api_is_absent_for_non_openai_protocols() {
     let mut p = ProviderRow::new();
@@ -129,14 +129,14 @@ fn wire_api_is_absent_for_non_openai_protocols() {
         .is_none());
 }
 
-/// 写出的条目不带 `disabled` 键；`ModelRow.disabled` 是界面共享结构上的字段。
+/// Written entries carry no `disabled` key; `ModelRow.disabled` is a field on the UI's shared structure.
 #[test]
 fn written_entries_carry_no_disabled_key() {
     let mut p = ProviderRow::new();
     p.key = "m1".into();
     let mut m = ModelRow::new();
     m.id = "m1".into();
-    m.disabled = true; // 共享结构上的值，保存时视而不见
+    m.disabled = true; // A value on the shared structure — invisible to saving
     p.models.push(m);
     let out = QwenCodeBackend.serialize_root(
         &[],
@@ -149,7 +149,7 @@ fn written_entries_carry_no_disabled_key() {
     assert!(entry.get("disabled").is_none());
 }
 
-/// 条目里界面没接管的键要继承下来。
+/// Keys in an entry the UI doesn't manage must be inherited.
 #[test]
 fn unmanaged_entry_keys_are_inherited() {
     let base: Value = serde_json::from_str(
@@ -174,7 +174,7 @@ fn unmanaged_entry_keys_are_inherited() {
     );
 }
 
-/// 检测：认形状不认键名。
+/// Detection: judges shape, not key names.
 #[test]
 fn detect_requires_the_array_shape() {
     assert!(QwenCodeBackend.detect(
@@ -186,6 +186,6 @@ fn detect_requires_the_array_shape() {
         r#"{ "modelProviders": { "openai": [ { "name": "无 id" } ] } }"#,
         ""
     ));
-    // 路径强命中：目录与文件名对就算，空文件也认。
+    // Strong path hit: directory and file name matching suffices — even an empty file counts.
     assert!(QwenCodeBackend.detect("{}", r"C:\Users\me\.qwen\settings.json"));
 }

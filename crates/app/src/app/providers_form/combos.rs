@@ -1,10 +1,11 @@
 use super::*;
 
-/// 协议包下拉（opencode 专用）；`id_salt` 区分同一页面内的多个表单实例。
+/// The protocol-package dropdown (opencode only); `id_salt` distinguishes a page's multiple form instances.
 ///
-/// 选项统一显示包名**末段**（`openai-compatible` 等）：v1 的 `@ai-sdk/*` 与 v2 的
-/// `@opencode/ai/providers/*` 末段一致，一套词表即可。选中后按 `p.schema`
-/// 拼回当前页版本的全名；落盘时 `to_value_as` 还会再按目标文件版本兜底翻译。
+/// Options uniformly display the package name's **last segment** (`openai-compatible` etc.): v1's
+/// `@ai-sdk/*` and v2's `@opencode/ai/providers/*` agree there, so one vocabulary serves both. On selection,
+/// the full name for the page's version assembles per `p.schema`; at write time `to_value_as` translates
+/// once more per the target file's version as a backstop.
 pub(super) fn provider_npm_combo(
     ui: &mut egui::Ui,
     p: &mut ProviderRow,
@@ -12,13 +13,14 @@ pub(super) fn provider_npm_combo(
     id_salt: &str,
     empty_has_label: bool,
 ) {
-    /// 官方协议包的末段（不含 `@ai-sdk/` / `@opencode/ai/providers/` 前缀）。
-    /// 与 core 的 `PACKAGE_VERSION_PAIRS` 一一对应（mistral 仅出现在译表里，
-    /// 下拉不列，与改动前一致）。
+    /// Official protocol packages' last segments (without the `@ai-sdk/` / `@opencode/ai/providers/` prefixes).
+    /// One-to-one with core's `PACKAGE_VERSION_PAIRS` (mistral appears only in the translation table, not in
+    /// the dropdown, matching the pre-change behavior).
     const PACKAGE_SUFFIXES: [&str; 4] = ["openai", "anthropic", "google", "openai-compatible"];
     field_label(ui, 120.0, flags.package_label);
-    // 当前值按末段比较：v1 / v2 全名不同但末段相同，两版都能选中。
-    // 未收录的自定义包不在词表里，原样显示全名且不预选任何项。
+    // The current value compares by last segment: v1 / v2 full names differ but segments agree, so both
+    // versions can be selected. Uncollected custom packages aren't in the vocabulary — their full names
+    // display as-is, with nothing preselected.
     let known = PACKAGE_SUFFIXES.contains(&crate::model::package_suffix(&p.npm));
     let current = p.npm.clone();
     let current_suffix = crate::model::package_suffix(&current).to_string();
@@ -29,7 +31,7 @@ pub(super) fn provider_npm_combo(
     } else {
         None
     };
-    // `None` = 未选中任何项；`Some(None)` = 选了「(空)」。
+    // `None` = nothing selected; `Some(None)` = "(none)" was picked.
     let mut picked: Option<Option<usize>> = selected.map(Some);
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(if current.is_empty() {
@@ -39,7 +41,7 @@ pub(super) fn provider_npm_combo(
         })
         .width(220.0)
         .show_ui(ui, |ui| {
-            // 首项「(空)」= 不指定包（写盘时走默认兼容层）。
+            // The first item "(none)" = no package specified (the default compatibility layer applies at write).
             if empty_has_label && ui.selectable_label(current.is_empty(), "(空)").clicked() {
                 picked = Some(None);
             }
@@ -49,7 +51,7 @@ pub(super) fn provider_npm_combo(
                 }
             }
         });
-    // 按当前页版本拼回全名；选「(空)」则清空；未动过不写回（保留自定义包名）。
+    // Assemble the full name per the current page's version; "(none)" clears; untouched values don't write back (preserving custom package names).
     if let Some(choice) = picked {
         p.npm = match choice {
             Some(i) => crate::model::package_full_name(PACKAGE_SUFFIXES[i], p.schema),
@@ -58,12 +60,13 @@ pub(super) fn provider_npm_combo(
     }
 }
 
-/// api / npm 下拉里的「(空)」标签：表示未指定协议。
+/// The "(none)" label in the api / npm dropdowns: no protocol specified.
 pub(super) const EMPTY_API_LABEL: &str = "(空)";
 
-/// 官方预设下拉：只填 key / baseUrl / 协议（opencode 页填 npm），不写密钥、不动模型列表。
+/// The official presets dropdown: fills only key / baseUrl / protocol (npm on the opencode page) — never
+/// keys, never the model list.
 ///
-/// 首项「(自定义 / 不套用)」不修改任何字段；套用后所有字段仍可继续手改。
+/// The first item "(custom / don't apply)" changes nothing; after applying, every field stays hand-editable.
 pub(super) fn provider_preset_combo(
     ui: &mut egui::Ui,
     p: &mut ProviderRow,
@@ -93,15 +96,15 @@ pub(super) fn provider_preset_combo(
         });
 }
 
-/// api 下拉：omp 官方 9 值 / pi KnownApi 10 值；首项「(空)」与 opencode 页 npm 的空选项同义。
+/// The api dropdown: omp's official 9 values / pi KnownApi's 10; the first "(none)" matches the opencode page's npm empty option.
 pub(super) fn provider_api_combo(
     ui: &mut egui::Ui,
     p: &mut ProviderRow,
     page: ConfigFormat,
     id_salt: &str,
 ) {
-    // 每个后端自己的协议词表：omp 9 值 / pi 10 值 / ZCode 3 值 / WorkBuddy 3 值 /
-    // QwenCode 3 值 / KimiCode 6 值（逐字就是 `type` 字段）。
+    // Each backend's own protocol vocabulary: omp 9 / pi 10 / ZCode 3 / WorkBuddy 3 /
+    // QwenCode 3 / KimiCode 6 (verbatim, the `type` field's values).
     let options: &[&str] = match page {
         ConfigFormat::OhMyPi => &convert::OMP_APIS,
         ConfigFormat::ZCode => &convert::ZCODE_APIS,
@@ -110,7 +113,7 @@ pub(super) fn provider_api_combo(
         ConfigFormat::KimiCode => &convert::KIMI_APIS,
         _ => &convert::PI_APIS,
     };
-    // ZCode 的 api.type 词表与内部表示差一个 `chat`，显示与写回都要转换。
+    // ZCode's api.type vocabulary differs from the internal representation by one `chat`; both display and write-back convert.
     let zcode = page == ConfigFormat::ZCode;
     let to_display = |api: &str| {
         if zcode {
@@ -119,8 +122,8 @@ pub(super) fn provider_api_combo(
             api.to_string()
         }
     };
-    // 「(空)」= 未指定协议。以 npm / pi_api / raw.api 是否都为空判定，
-    // 显示值统一走 effective_api()，与写盘、延迟测试同口径。
+    // "(none)" = protocol unset. Judged by npm / pi_api / raw.api all being empty; the displayed value goes
+    // through effective_api() uniformly, sharing the disk-write and latency-test accounting.
     let explicit = p.has_explicit_api();
     let current = p.effective_api();
     field_label(ui, 120.0, "api");
@@ -142,14 +145,14 @@ pub(super) fn provider_api_combo(
                 p.clear_api();
             }
             for &api in options {
-                // 选中态按转换后的值比较：ZCode 页存的是 openai-completions，
-                // 而选项文本是 openai-chat-completions。
+                // Selection compares by the converted value: the ZCode page stores openai-completions while the option
+                // text reads openai-chat-completions.
                 let shown = to_display(api);
                 if ui
                     .selectable_label(explicit && to_display(&current) == shown, shown)
                     .clicked()
                 {
-                    // 写回内部表示：ZCode 的 chat 值先映射回 pi 词表。
+                    // Write back to the internal representation: ZCode's chat value maps back to the pi vocabulary first.
                     p.pi_api = if zcode {
                         convert::zcode_api_to_api(api)
                     } else {
@@ -161,8 +164,8 @@ pub(super) fn provider_api_combo(
         });
 }
 
-/// 思考档位多选：按钮展开、勾选写回逗号分隔文本。
-/// `normalize` 为 true 时按规范档位顺序写回。
+/// Reasoning-tier multi-select: buttons expand, checks write back as comma-separated text.
+/// With `normalize` true, write-back follows the canonical tier order.
 pub(super) fn variant_selector(
     ui: &mut egui::Ui,
     variants: &mut String,

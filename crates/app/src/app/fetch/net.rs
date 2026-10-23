@@ -1,8 +1,8 @@
 use super::*;
 
-/// 延迟测试用的 HTTP 客户端（较短超时）。
+/// HTTP client for latency tests (short timeout).
 ///
-/// 不设置 `Proxy`：探测请求始终直连，不走系统代理。
+/// No `Proxy` configured: probe requests always connect directly, never through a system proxy.
 pub(crate) fn latency_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(5))
@@ -12,7 +12,7 @@ pub(crate) fn latency_agent() -> ureq::Agent {
 
 pub(crate) fn http_error(err: ureq::Error, elapsed: u64) -> String {
     match err {
-        // 状态码后面补人话原因与处理建议（悬停提示看全文，卡片上只显示短摘要）。
+        // A human reason and advice follow the status code (hover for the full text; cards show a short summary).
         ureq::Error::Status(code, _) => {
             format!("{}（{} ms）", crate::http_status::detail(code), elapsed)
         }
@@ -22,38 +22,38 @@ pub(crate) fn http_error(err: ureq::Error, elapsed: u64) -> String {
     }
 }
 
-/// 线上协议（api）的调用形状：端点、鉴权与最小请求体各不相同。
-/// 未列出的值按 OpenAI Chat Completions 兼容层处理。
+/// The wire protocol's (api's) call shape: endpoint, auth, and minimal request body all differ.
+/// Unlisted values are treated as the OpenAI Chat Completions compatibility layer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ApiWire {
-    /// `openai-completions` / `mistral-conversations` / 未知值。
+    /// `openai-completions` / `mistral-conversations` / unknown values.
     ChatCompletions,
-    /// `openai-responses` / `openai-codex-responses`。
+    /// `openai-responses` / `openai-codex-responses`.
     Responses,
-    /// `azure-openai-responses`（鉴权头为 `api-key`）。
+    /// `azure-openai-responses` (auth header `api-key`).
     AzureResponses,
-    /// `anthropic-messages`。
+    /// `anthropic-messages`.
     AnthropicMessages,
-    /// `google-generative-ai`（密钥走 `?key=` 查询参数）。
+    /// `google-generative-ai` (the key goes in the `?key=` query parameter).
     GoogleGenerativeAi,
-    /// `google-vertex`（Bearer + `publishers/google` 路径）。
+    /// `google-vertex` (Bearer + the `publishers/google` path).
     GoogleVertex,
-    /// `pi-messages`。
+    /// `pi-messages`.
     PiMessages,
-    /// 需要专有签名或私有网关，无法用最小请求测延迟。
+    /// Needs proprietary signing or a private gateway — latency can't be measured with a minimal request.
     Unsupported,
 }
 
-/// 请求鉴权方式。
+/// Request auth mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum AuthKind {
-    /// `Authorization: Bearer <key>`。
+    /// `Authorization: Bearer <key>`.
     Bearer,
-    /// `x-api-key` + `anthropic-version`。
+    /// `x-api-key` + `anthropic-version`.
     AnthropicKey,
-    /// Azure OpenAI 的 `api-key`。
+    /// Azure OpenAI's `api-key`.
     AzureKey,
-    /// 密钥已放进 URL 查询参数（Google 系），不加鉴权头。
+    /// The key already sits in the URL query (Google family); no auth headers.
     QueryKey,
 }
 
@@ -65,7 +65,7 @@ pub(crate) fn api_wire(api: &str) -> ApiWire {
         "google-generative-ai" => ApiWire::GoogleGenerativeAi,
         "google-vertex" => ApiWire::GoogleVertex,
         "pi-messages" => ApiWire::PiMessages,
-        // 这两个需要专有签名 / 私有网关（SigV4、CloudCode），最小请求测不出真实可用性。
+        // These two need proprietary signing / private gateways (SigV4, CloudCode) — a minimal request can't measure real availability.
         "bedrock-converse-stream" | "google-gemini-cli" => ApiWire::Unsupported,
         _ => ApiWire::ChatCompletions,
     }
@@ -80,7 +80,7 @@ pub(crate) fn auth_kind(wire: ApiWire) -> AuthKind {
     }
 }
 
-/// 该协议是否支持用最小请求测延迟 / 拉模型列表；不支持时给出原因。
+/// Whether this protocol supports latency testing / model listing with a minimal request; gives the reason when not.
 pub(crate) fn unsupported_reason(api: &str) -> Option<String> {
     match api_wire(api) {
         ApiWire::Unsupported => Some(format!(
@@ -91,7 +91,7 @@ pub(crate) fn unsupported_reason(api: &str) -> Option<String> {
     }
 }
 
-/// 按鉴权方式给请求加鉴权头；`QueryKey` 的密钥已在 URL 里。
+/// Add auth headers per the auth mode; `QueryKey`'s key is already in the URL.
 pub(crate) fn apply_auth(request: ureq::Request, auth: AuthKind, secret: &str) -> ureq::Request {
     match auth {
         AuthKind::Bearer => request.set("Authorization", &format!("Bearer {}", secret)),
@@ -103,10 +103,10 @@ pub(crate) fn apply_auth(request: ureq::Request, auth: AuthKind, secret: &str) -
     }
 }
 
-/// Google 系把密钥放查询参数；其余协议原样返回。
+/// Google-family protocols put the key in the query parameter; everything else returns as-is.
 pub(crate) fn with_query_key(url: &str, auth: AuthKind, secret: &str) -> String {
     if auth == AuthKind::QueryKey && !secret.is_empty() {
-        // URL 里可能已经带了查询参数（Google 流式端点的 `?alt=sse`），用 `&` 接着拼
+        // The URL may already carry query parameters (Google's streaming endpoint's `?alt=sse`); join with `&`
         let separator = if url.contains('?') { '&' } else { '?' };
         format!("{}{}key={}", url, separator, secret)
     } else {
@@ -114,12 +114,12 @@ pub(crate) fn with_query_key(url: &str, auth: AuthKind, secret: &str) -> String 
     }
 }
 
-/// 探测请求的 User-Agent：按协议伪装成主流客户端。
+/// Probe requests' User-Agent: masquerade as a mainstream client per protocol.
 ///
-/// 中转站只放行白名单客户端，版本号不被校验；取值跟随当前主流在用的版本
-/// （opencode 取本机实际安装版本）。
+/// Relay stations only admit whitelisted clients and don't validate version numbers; values follow the
+/// versions currently mainstream (opencode uses the actually-installed local version).
 pub(crate) fn probe_user_agent(wire: ApiWire) -> &'static str {
-    // Anthropic 系中转站本来就用 Claude Code 的身份，其余用 opencode 的身份。
+    // Anthropic-family relays already use Claude Code's identity; the rest use opencode's.
     if matches!(wire, ApiWire::AnthropicMessages | ApiWire::PiMessages) {
         "claude-cli/2.0.28 (external, cli)"
     } else {
@@ -127,10 +127,11 @@ pub(crate) fn probe_user_agent(wire: ApiWire) -> &'static str {
     }
 }
 
-/// 给探测请求套上客户端标识头：UA + 附加头。
+/// Dress a probe request in client identity headers: UA + extra headers.
 ///
-/// 真实 Claude Code 的请求总带 `x-app: cli`（纯标识，无行为副作用），带上更像。
-/// `anthropic-beta` 特性串**不仿**：过时 / 不匹配的 beta 声明反而可能改变上游行为。
+/// Real Claude Code requests always carry `x-app: cli` (pure identification, no behavioral side effects),
+/// so sending it looks more authentic. The `anthropic-beta` feature string is **not** imitated: stale /
+/// mismatched beta declarations could actually change upstream behavior.
 pub(crate) fn apply_client_headers(request: ureq::Request, wire: ApiWire) -> ureq::Request {
     let request = request.set("User-Agent", probe_user_agent(wire));
     if matches!(wire, ApiWire::AnthropicMessages | ApiWire::PiMessages) {
@@ -140,9 +141,10 @@ pub(crate) fn apply_client_headers(request: ureq::Request, wire: ApiWire) -> ure
     }
 }
 
-/// 三个远程测量入口共用的前置：协议支持性、URL 与密钥判空，然后解析 wire / auth。
+/// Shared preamble of the three remote measurement entry points: protocol support, URL and key emptiness,
+/// then wire / auth resolution.
 ///
-/// `why` 拼在「缺少 baseURL / API Key」后面区分入口。
+/// `why` is appended after "missing baseURL / API Key" to distinguish entry points.
 pub(crate) fn request_prelude(
     api: &str,
     url_empty: bool,
@@ -162,7 +164,7 @@ pub(crate) fn request_prelude(
     Ok((wire, auth_kind(wire)))
 }
 
-/// 测量入口共用的「已鉴权 GET」构造：UA 伪装成白名单客户端 + Accept: json。
+/// The measurement entry points' shared "authenticated GET" builder: UA masquerading as a whitelisted client + Accept: json.
 pub(crate) fn authed_get(
     agent: &ureq::Agent,
     target: &str,
@@ -177,7 +179,7 @@ pub(crate) fn authed_get(
     )
 }
 
-/// 测量 provider 模型列表接口的往返延迟（毫秒）。
+/// Measure the round-trip latency of a provider's model-list endpoint (milliseconds).
 pub(crate) fn measure_provider_latency(url: &str, secret: &str, api: &str) -> Result<u64, String> {
     let (wire, auth) = request_prelude(api, url.is_empty(), secret.is_empty(), "")?;
     let target = with_query_key(url, auth, secret);
@@ -194,10 +196,10 @@ pub(crate) fn measure_provider_latency(url: &str, secret: &str, api: &str) -> Re
     }
 }
 
-/// 最小对话请求的地址：按协议决定路径（Google 系需要模型名参与路径）。
-/// Google 系的推理动作：非流式 `:generateContent`，流式 `:streamGenerateContent?alt=sse`。
+/// The minimal chat request's address: the path depends on the protocol (Google needs the model name in the path).
+/// Google's reasoning actions: non-streaming `:generateContent`, streaming `:streamGenerateContent?alt=sse`.
 ///
-/// Google 的流式靠换端点区分，而非请求体里的 `stream` 字段。
+/// Google distinguishes streaming by the endpoint, not a `stream` field in the body.
 pub(crate) fn google_action(stream: bool) -> &'static str {
     if stream {
         ":streamGenerateContent?alt=sse"
@@ -232,11 +234,11 @@ pub(crate) fn chat_url(base_url: &str, api: &str, model: &str, stream: bool) -> 
     }
 }
 
-/// 单次探测的请求体：内容是题库里的中性短问句。
+/// One probe's request body: a neutral short question from the question bank.
 ///
-/// - 不校验答案，判定只看 HTTP 是否成功与往返耗时。
-/// - token 上限 16，过小会让推理模型返回空内容或报错。
-/// - 不设 `temperature`，部分推理模型只接受默认值。
+/// - Answers are never validated; the verdict only looks at HTTP success and round-trip time.
+/// - Token cap 16: too small makes reasoning models return empty content or error.
+/// - No `temperature`: some reasoning models only accept the default.
 pub(crate) fn minimal_body(wire: ApiWire, model: &str, question: &str) -> Value {
     match wire {
         ApiWire::Responses | ApiWire::AzureResponses => serde_json::json!({
@@ -264,25 +266,25 @@ pub(crate) fn minimal_body(wire: ApiWire, model: &str, question: &str) -> Value 
     }
 }
 
-/// 判断一个 SSE 载荷是不是「第一个字」（即真的开始出内容了）。
+/// Whether an SSE payload is "the first byte" (content has genuinely started arriving).
 ///
-/// 只看内容类字段，不看 role / usage / 各种元事件。
+/// Only content-bearing fields count; role / usage / assorted meta events don't.
 pub(crate) fn chunk_has_content(wire: ApiWire, chunk: &Value) -> bool {
     match wire {
         ApiWire::ChatCompletions | ApiWire::Unsupported => {
             let delta = &chunk["choices"][0]["delta"];
-            // 推理模型先出 reasoning_content（思维链）也算已经出字
+            // Reasoning models emitting reasoning_content (the chain of thought) first also count as output starting
             non_empty_text(&delta["content"]) || non_empty_text(&delta["reasoning_content"])
         }
         ApiWire::Responses | ApiWire::AzureResponses => {
-            // 形如 {"type":"response.output_text.delta","delta":"你"}
+            // Shaped like {"type":"response.output_text.delta","delta":"Hi"}
             chunk["type"]
                 .as_str()
                 .is_some_and(|kind| kind.ends_with(".delta"))
                 && non_empty_text(&chunk["delta"])
         }
         ApiWire::AnthropicMessages | ApiWire::PiMessages => {
-            // 形如 {"type":"content_block_delta","delta":{"text":"你"}}
+            // Shaped like {"type":"content_block_delta","delta":{"text":"Hi"}}
             let delta = &chunk["delta"];
             non_empty_text(&delta["text"]) || non_empty_text(&delta["thinking"])
         }
@@ -293,7 +295,7 @@ pub(crate) fn chunk_has_content(wire: ApiWire, chunk: &Value) -> bool {
     }
 }
 
-/// 字段是否含有非空文本（兼容「字符串 / 内容块数组 / 嵌套对象」三种形态）。
+/// Whether a field holds non-empty text (accepting the string / content-block array / nested object shapes).
 pub(crate) fn non_empty_text(value: &Value) -> bool {
     match value {
         Value::String(text) => !text.trim().is_empty(),
@@ -303,10 +305,11 @@ pub(crate) fn non_empty_text(value: &Value) -> bool {
     }
 }
 
-/// 流结束标记：OpenAI 兼容的 `[DONE]`、Anthropic 的 `message_stop`、Responses 的 `response.completed`。
+/// Stream-end markers: OpenAI-compatible `[DONE]`, Anthropic's `message_stop`, Responses' `response.completed`.
 ///
-/// Anthropic 会先发一行 `event: message_stop` 再发 `data: {"type":"message_stop"}`，两种形态都认
-/// （裸标记行没有引号，所以按子串匹配）。靠它提前收尾，不必读到读超时。
+/// Anthropic sends an `event: message_stop` line before `data: {"type":"message_stop"}`; both shapes are
+/// recognized (the bare marker line has no quotes, hence substring matching). It allows finishing early
+/// instead of reading until the read timeout.
 pub(crate) fn is_stream_end(line: &str) -> bool {
     line.contains("[DONE]")
         || line.contains("message_stop")
@@ -315,19 +318,19 @@ pub(crate) fn is_stream_end(line: &str) -> bool {
         || line.contains("response.failed")
 }
 
-/// 读完流式响应，返回首字延迟（毫秒，从请求发出算起）。
+/// Read a streaming response to the end, returning first-byte latency (ms, from request issue).
 ///
-/// - 边读边解析 SSE 的 `data:` 载荷，碰到第一个带内容的块记下耗时；
-/// - 记下后继续把流读完（`[DONE]` / `message_stop` / EOF / 64 KB 上限）再关闭连接；
-/// - 全程没有数据时返回 `None`；
-/// - 有数据但认不出内容块时退回「第一个 `data:` 包到达的时刻」。
+/// - Parses SSE `data:` payloads while reading, noting the elapsed time at the first content-bearing block;
+/// - after noting it, keeps reading the stream to the end (`[DONE]` / `message_stop` / EOF / 64 KB cap) before closing;
+/// - returns `None` when no data arrived at all;
+/// - with data but no recognizable content block, falls back to "the moment the first `data:` packet arrived".
 pub(crate) fn read_stream_ttft(
     reader: impl std::io::Read,
     wire: ApiWire,
     started: std::time::Instant,
 ) -> Option<u64> {
     use std::io::BufRead;
-    /// 读取上限：足够装下 16 token 的流式响应，又能顶住发完不关连接的站点。
+    /// The read cap: enough for a 16-token streaming response, while withstanding stations that never close the connection.
     pub(crate) const MAX_STREAM_BYTES: usize = 64 * 1024;
     let mut buffer = std::io::BufReader::new(reader);
     let mut line = String::new();
@@ -339,7 +342,7 @@ pub(crate) fn read_stream_ttft(
         match buffer.read_line(&mut line) {
             Ok(0) => break,
             Ok(read) => read_bytes += read,
-            // 读超时 / 连接中断：保留已经测到的首字
+            // Read timeout / connection drop: keep the first byte already measured
             Err(_) => break,
         }
         let trimmed = line.trim_end_matches(['\r', '\n']);
@@ -363,10 +366,10 @@ pub(crate) fn read_stream_ttft(
     ttft.or(first_data)
 }
 
-/// 对单个模型发一个流式探测请求，测量首字延迟（毫秒）。
+/// Send one streaming probe request to a single model, measuring first-byte latency (ms).
 ///
-/// 解响应体只为找第一个内容块（测首字），不校验答案。端点、鉴权与请求体按所选协议构造；
-/// 失败仍会报出耗时。
+/// The response body is parsed only to find the first content block (measuring first byte), answers never
+/// validated. Endpoint, auth, and body follow the chosen protocol; failures still report elapsed time.
 pub(crate) fn measure_model_latency(
     base_url: &str,
     secret: &str,
@@ -377,10 +380,10 @@ pub(crate) fn measure_model_latency(
     let (wire, auth) = request_prelude(api, base_url.trim().is_empty(), secret.is_empty(), "")?;
     let url = with_query_key(&chat_url(base_url, api, model, true), auth, secret);
     let body = minimal_body(wire, model, question).to_string();
-    // 与列表测延迟同一个 agent：连接 5s / 读 10s（见 `latency_agent`）。
+    // The same agent as the list-latency test: connect 5s / read 10s (see `latency_agent`).
     let agent = latency_agent();
     let started = std::time::Instant::now();
-    // Accept 与主流 SDK 的流式口径一致；UA 伪装成白名单客户端（见 `probe_user_agent`）。
+    // Accept matches mainstream SDKs' streaming accounting; the UA masquerades as a whitelisted client (see `probe_user_agent`).
     let result = apply_auth(
         apply_client_headers(
             agent

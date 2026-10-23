@@ -1,9 +1,10 @@
 use super::*;
 
-/// 一张卡片该落到哪个 pid、要不要写 `providerProtocol`、条目要写什么 `wireApi`。
+/// Which pid a card lands in, whether to write `providerProtocol`, and the entry's `wireApi`.
 ///
-/// 优先沿用卡片上原有的**自定义** pid（且该 pid 已在映射表里），只把映射刷新成当前协议；
-/// 新建卡片（或从别的后端转来）没有 pid，就回落到内置 pid。
+/// A card's pre-existing **custom** pid is kept first (when that pid is already in the mapping table),
+/// with only the mapping refreshed to the current protocol; new cards (or converts from other backends)
+/// have no pid and fall back to the built-in one.
 pub(crate) fn route(
     p: &ProviderRow,
     api: &str,
@@ -23,15 +24,15 @@ pub(crate) fn route(
     (builtin_pid.to_string(), None, wire)
 }
 
-/// 一条待写入的条目：落在哪个 pid、该 pid 需要的映射、条目内容。
+/// One entry to write: its pid, that pid's needed mapping, and the entry content.
 pub(crate) struct Placed {
     pid: String,
-    /// `Some(协议桶名)` = 这个 pid 是自定义的，要在 `providerProtocol` 里声明。
+    /// `Some(protocol bucket name)` = this pid is custom and must be declared in `providerProtocol`.
     mapping: Option<String>,
     entry: Value,
 }
 
-/// 界面状态 → 全部条目（`serialize_root` 唯一的条目来源）。
+/// UI state → every entry (`serialize_root`'s sole entry source).
 pub(crate) fn place(providers: &[ProviderRow], base: &Value) -> Vec<Placed> {
     let protocols = provider_protocols(base);
     let mut out: Vec<Placed> = Vec::new();
@@ -39,16 +40,16 @@ pub(crate) fn place(providers: &[ProviderRow], base: &Value) -> Vec<Placed> {
         let api = p.effective_api();
         let (pid, mapping, wire) = route(p, &api, protocols);
         if is_readonly_provider(&pid) {
-            // `route` 不会产出只读 pid，这里再挡一道。
+            // `route` never produces read-only pids; this is a second guard.
             continue;
         }
-        // 旧条目按 id 建索引，未接管的键（`capabilities.agent`、
-        // `generationConfig.maxRetries` 等）从这里继承。
+        // Old entries index by id; unmanaged keys (`capabilities.agent`,
+        // `generationConfig.maxRetries` etc.) inherit from here.
         let index: HashMap<&str, &Value> = entries_of_pid(base, &pid)
             .iter()
             .filter_map(|e| entry_id(e).map(|id| (id, e)))
             .collect();
-        // 没有模型的卡片也要留一条（id 回落到 key）。
+        // A card with no models still keeps an entry (id falls back to the key).
         let models: Vec<Option<&ModelRow>> = if p.models.is_empty() {
             vec![None]
         } else {
@@ -72,7 +73,7 @@ pub(crate) fn place(providers: &[ProviderRow], base: &Value) -> Vec<Placed> {
     out
 }
 
-/// 按 pid 分组（没有停用概念，全部条目都进主配置）。
+/// Group by pid (no disable concept — every entry enters the main config).
 pub(crate) fn group_by_pid(placed: &[Placed]) -> Map<String, Value> {
     let mut out: Map<String, Value> = Map::new();
     for item in placed {
@@ -81,9 +82,9 @@ pub(crate) fn group_by_pid(placed: &[Placed]) -> Map<String, Value> {
     out
 }
 
-/// `providerProtocol` 的内容：由界面条目推导，并保留「认不出来的 pid」原有的映射。
+/// `providerProtocol`'s content: derived from UI entries, preserving unrecognized pids' existing mappings.
 ///
-/// 界面不再需要的自定义 pid 其映射会被清掉；「有自定义 pid 条目 ⇒ 有映射」。
+/// Custom pids the UI no longer needs get their mappings cleared; "a custom-pid entry exists ⇒ a mapping exists".
 pub(crate) fn protocols_for(placed: &[Placed], base: &Value) -> Map<String, Value> {
     let mut out: Map<String, Value> = Map::new();
     for item in placed {
@@ -93,8 +94,8 @@ pub(crate) fn protocols_for(placed: &[Placed], base: &Value) -> Map<String, Valu
     }
     if let (Some(old), Some(map)) = (provider_protocols(base), providers_map(base)) {
         for (pid, value) in old {
-            // 值不是数组的 pid 是旧包装形状，整块由 `unmanaged_of` 原样带过去，
-            // 它的映射也留着。
+            // Pids whose values aren't arrays are the old wrapper shape, carried over whole by `unmanaged_of`,
+            // their mappings kept too.
             let unmanaged = map.get(pid).is_some_and(|v| !v.is_array());
             if unmanaged && !out.contains_key(pid) {
                 out.insert(pid.clone(), value.clone());
@@ -104,10 +105,10 @@ pub(crate) fn protocols_for(placed: &[Placed], base: &Value) -> Map<String, Valu
     out
 }
 
-/// 基座里**认不出来**的条目，原样带过去。
+/// The base's **unrecognized** entries, carried over verbatim.
 ///
-/// 返回 `pid → 该 pid 要补写的内容`：数组表示「补进这个 pid 的数组里」，其它值表示
-/// 「整块替换这个 pid」，后者只在该 pid 本次没有界面条目时才产出。
+/// Returns `pid → what to write for this pid`: an array means "append into this pid's array"; any other
+/// value means "replace this pid whole", produced only when the UI has no entries for that pid this time.
 pub(crate) fn unmanaged_of(base: &Value, placed: &[Placed]) -> Vec<(String, Value)> {
     let managed: HashSet<&str> = placed.iter().map(|p| p.pid.as_str()).collect();
     let mut out: Vec<(String, Value)> = Vec::new();
@@ -115,7 +116,7 @@ pub(crate) fn unmanaged_of(base: &Value, placed: &[Placed]) -> Vec<(String, Valu
         return out;
     };
     for (pid, value) in m {
-        // `qwen-oauth` 整块原样保留：官方硬编码、不可覆盖，界面也不显示它。
+        // `qwen-oauth` is preserved whole: officially hard-coded, non-overridable, and invisible to the UI.
         if is_readonly_provider(pid) {
             out.push((pid.clone(), value.clone()));
             continue;
@@ -131,8 +132,8 @@ pub(crate) fn unmanaged_of(base: &Value, placed: &[Placed]) -> Vec<(String, Valu
                     out.push((pid.clone(), Value::Array(extra)));
                 }
             }
-            // 值不是数组（旧包装形状 `{protocol, models}`）：整块保留，仅当本次没有
-            // 界面条目落到这个 pid 时。
+            // A non-array value (the old wrapper shape `{protocol, models}`): preserved whole, only when no UI
+            // entry lands on this pid this time.
             None => {
                 if !managed.contains(pid.as_str()) {
                     out.push((pid.clone(), value.clone()));
@@ -143,10 +144,10 @@ pub(crate) fn unmanaged_of(base: &Value, placed: &[Placed]) -> Vec<(String, Valu
     out
 }
 
-/// 把界面上的密钥写回顶层 `env`。
+/// Write the UI's keys back into the top-level `env`.
 ///
-/// **只增改，绝不删。** `env` 是跨 provider 共享的扁平命名空间，Qwen Code 自己的
-/// `/auth` 也往里写。界面清空密钥时也不动 `env`。
+/// **Only adds and updates, never deletes.** `env` is a flat namespace shared across providers, and Qwen
+/// Code's own `/auth` writes into it too. Clearing a key in the UI never touches `env`.
 pub(crate) fn sync_env(root: &mut Map<String, Value>, providers: &[ProviderRow]) {
     let mut env = root
         .get("env")
@@ -165,7 +166,7 @@ pub(crate) fn sync_env(root: &mut Map<String, Value>, providers: &[ProviderRow])
     }
 }
 
-/// 条目列表 → [`BackendLoad`]。
+/// Entry list → [`BackendLoad`].
 pub(crate) fn build_load(
     entries: Vec<(String, Value)>,
     env: Option<&Map<String, Value>>,

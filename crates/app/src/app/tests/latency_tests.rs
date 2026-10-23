@@ -18,9 +18,9 @@ fn matrix_glyphs_shape_and_variation() {
     let frame = matrix_glyphs(7, "provider/model", MATRIX_LEN);
     assert_eq!(frame.chars().count(), MATRIX_LEN);
     assert!(frame.chars().all(|c| MATRIX_CHARS.contains(c)));
-    // 同一帧 + 同一 salt 稳定
+    // The same frame + salt is stable
     assert_eq!(frame, matrix_glyphs(7, "provider/model", MATRIX_LEN));
-    // 换行（salt 不同）或换帧都刷新字符
+    // A new line (different salt) or a new frame refreshes the characters
     assert_ne!(frame, matrix_glyphs(7, "provider/other", MATRIX_LEN));
     assert!((8..16).any(|f| frame != matrix_glyphs(f, "provider/model", MATRIX_LEN)));
 }

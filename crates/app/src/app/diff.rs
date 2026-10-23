@@ -1,21 +1,21 @@
-//! 行级差异：把「磁盘上的原文件」与「待保存文档」对齐，供预览面板的对比视图使用。
+//! Line-level diff: aligns "the original file on disk" with "the pending document" for the preview panel's diff view.
 //!
-//! 用 **Hirschberg** 分治求最长公共子序列（LCS）对齐，时间 O(n·m)、空间 O(min(n,m))。
-//! 结果按 **hunk** 输出（改动块 + 前后各 [`CONTEXT_LINES`] 行上下文）。
+//! Uses **Hirschberg's** divide-and-conquer LCS alignment: O(n·m) time, O(min(n,m)) space. Results emit as
+//! **hunks** (changed blocks + [`CONTEXT_LINES`] context lines on each side).
 
-/// 对比视图里改动块上下各保留的上下文行数。
+/// Context lines kept above and below each hunk in the diff view.
 pub(super) const CONTEXT_LINES: usize = 3;
 
-/// 差异行的种类，决定显示颜色与行首标记。
+/// A diff line's kind; decides display color and the line's leading marker.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum LineKind {
-    /// 两侧都有，未改动（仅作上下文）。
+    /// Present on both sides, unchanged (context only).
     Context,
-    /// 只在新内容里：本次保存会新增。
+    /// Only in the new content: this save adds it.
     Added,
-    /// 只在旧内容里：本次保存会删除。
+    /// Only in the old content: this save removes it.
     Removed,
-    /// `@@ -a,b +c,d @@` 改动块头。
+    /// The `@@ -a,b +c,d @@` hunk header.
     Hunk,
 }
 
@@ -25,7 +25,7 @@ pub(super) struct DiffLine {
     pub text: String,
 }
 
-/// 改动统计：新增 / 删除的行数（不含上下文与块头）。
+/// Change stats: lines added / removed (context and headers excluded).
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(super) struct DiffSummary {
     pub added: usize,
@@ -38,17 +38,17 @@ impl DiffSummary {
     }
 }
 
-/// 对齐的一步：`Keep` 是两侧同序的同一行，`Del` / `Ins` 是单侧独有的行。
+/// One alignment step: `Keep` is the same line in both; `Del` / `Ins` are one-sided lines.
 enum Op {
     Keep(usize, usize),
     Del(usize),
     Ins(usize),
 }
 
-/// 按行切分，忽略行尾的 `\r`。
+/// Split by lines, ignoring trailing `\r`.
 ///
-/// 行数按 `diff` 的口径：空文件是 0 行，以 `\n` 结尾的文件不把结尾那个空串算成一行
-/// （`"a\n"` 是 1 行而不是 2 行）。
+/// Line counts follow `diff`'s accounting: an empty file is 0 lines, and a file ending in `\n` doesn't
+/// count the trailing empty string as a line (`"a\n"` is 1 line, not 2).
 fn split_lines(text: &str) -> Vec<&str> {
     if text.is_empty() {
         return Vec::new();
@@ -63,7 +63,7 @@ fn split_lines(text: &str) -> Vec<&str> {
     lines
 }
 
-/// 正向 LCS 长度表的最后一行：`res[j] = LCS(a, b[..j])`。
+/// The forward LCS length table's last row: `res[j] = LCS(a, b[..j])`.
 fn lcs_prefix_row(a: &[&str], b: &[&str]) -> Vec<usize> {
     let mut prev = vec![0usize; b.len() + 1];
     let mut cur = vec![0usize; b.len() + 1];
@@ -80,7 +80,7 @@ fn lcs_prefix_row(a: &[&str], b: &[&str]) -> Vec<usize> {
     prev
 }
 
-/// 反向 LCS 长度表的首行：`res[j] = LCS(a, b[j..])`。
+/// The reverse LCS length table's first row: `res[j] = LCS(a, b[j..])`.
 fn lcs_suffix_row(a: &[&str], b: &[&str]) -> Vec<usize> {
     let mut prev = vec![0usize; b.len() + 1];
     let mut cur = vec![0usize; b.len() + 1];
@@ -97,16 +97,16 @@ fn lcs_suffix_row(a: &[&str], b: &[&str]) -> Vec<usize> {
     prev
 }
 
-/// Hirschberg 分治求 LCS 匹配对，结果按 `(旧下标, 新下标)` 升序追加到 `out`。
+/// Hirschberg's divide-and-conquer LCS match pairs, appended to `out` in ascending `(old index, new index)` order.
 ///
-/// `a_off` / `b_off` 是当前子问题在各自全文里的起始下标，用于把递归结果还原成
-/// 全文坐标。
+/// `a_off` / `b_off` are the current subproblem's offsets within each full text, used to map recursion
+/// results back to whole-text coordinates.
 fn lcs_pairs(a: &[&str], b: &[&str], a_off: usize, b_off: usize, out: &mut Vec<(usize, usize)>) {
     if a.is_empty() || b.is_empty() {
         return;
     }
     if a.len() == 1 {
-        // 单行：取 b 里第一处相同行。
+        // Single line: take b's first matching line.
         if let Some(j) = b.iter().position(|line| *line == a[0]) {
             out.push((a_off, b_off + j));
         }
@@ -129,7 +129,7 @@ fn lcs_pairs(a: &[&str], b: &[&str], a_off: usize, b_off: usize, out: &mut Vec<(
     lcs_pairs(&a[mid..], &b[best_k..], a_off + mid, b_off + best_k, out);
 }
 
-/// 把两侧文本对齐成 `Keep` / `Del` / `Ins` 序列。
+/// Align both sides' texts into a `Keep` / `Del` / `Ins` sequence.
 fn align(old: &[&str], new: &[&str]) -> Vec<Op> {
     let mut matches = Vec::new();
     lcs_pairs(old, new, 0, 0, &mut matches);
@@ -159,7 +159,7 @@ fn align(old: &[&str], new: &[&str]) -> Vec<Op> {
     ops
 }
 
-/// 生成对比视图的显示行（改动块 + 上下文 + `@@` 块头）与改动统计。
+/// Produce the diff view's display lines (hunks + context + `@@` headers) and change stats.
 pub(super) fn diff_hunks(old: &str, new: &str, context: usize) -> (Vec<DiffLine>, DiffSummary) {
     let old_lines = split_lines(old);
     let new_lines = split_lines(new);
@@ -177,7 +177,7 @@ pub(super) fn diff_hunks(old: &str, new: &str, context: usize) -> (Vec<DiffLine>
         return (Vec::new(), summary);
     }
 
-    // 标记每个 op 是否需要显示：改动本身，以及距改动不超过 context 行的相邻行。
+    // Mark which ops need display: the changes themselves, plus neighbors within `context` lines of a change.
     let changed: Vec<bool> = ops.iter().map(|op| !matches!(op, Op::Keep(..))).collect();
     let mut show = vec![false; ops.len()];
     for (i, is_changed) in changed.iter().enumerate() {
@@ -202,7 +202,7 @@ pub(super) fn diff_hunks(old: &str, new: &str, context: usize) -> (Vec<DiffLine>
         while i < ops.len() && show[i] {
             i += 1;
         }
-        // 块头：旧侧起止行 / 新侧起止行（1 基，与 `diff -u` 同形）。
+        // Hunk header: old-side start/end / new-side start/end (1-based, shaped like `diff -u`).
         let (mut old_start, mut new_start) = (usize::MAX, usize::MAX);
         let (mut old_count, mut new_count) = (0usize, 0usize);
         for op in &ops[start..i] {
@@ -254,7 +254,7 @@ pub(super) fn diff_hunks(old: &str, new: &str, context: usize) -> (Vec<DiffLine>
 mod tests {
     use super::{diff_hunks, split_lines, DiffSummary, LineKind};
 
-    /// 取出非块头的显示行，便于断言。
+    /// Take the display lines excluding hunk headers, for assertions.
     fn body(old: &str, new: &str) -> Vec<(LineKind, String)> {
         diff_hunks(old, new, 3)
             .0
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn hunk_header_carries_one_based_line_numbers() {
-        // 第 2 行改动：旧侧从第 1 行起 3 行、新侧同样。
+        // Line 2 changed: old side starts at line 1 for 3 lines, new side the same.
         let (lines, _) = diff_hunks("a\nb\nc\nd\ne", "a\nB\nc\nd\ne", 1);
         let header = lines
             .iter()
@@ -374,13 +374,13 @@ mod tests {
             .iter()
             .find(|line| line.kind == LineKind::Hunk)
             .expect("应有块头");
-        // 旧侧这一块没有内容行 → 按 unified diff 惯例写作 0,0。
+        // The old side's block has no content lines → written 0,0 per unified-diff convention.
         assert_eq!(header.text, "@@ -0,0 +1,1 @@");
     }
 
     #[test]
     fn reordering_a_block_keeps_the_diff_small() {
-        // 交换两行：LCS 只保留一条，另一条算「删+增」。
+        // Swap two lines: the LCS keeps one; the other counts as "delete + insert".
         let (_, summary) = diff_hunks("a\nb\nc", "b\na\nc", 3);
         assert_eq!(
             summary,
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn deep_recursion_still_finds_a_minimal_diff() {
-        // 足够长、改动在尾部，走多轮 Hirschberg 递归。
+        // Long enough with the change at the tail, exercising multiple Hirschberg recursion rounds.
         let old = (0..400)
             .map(|i| format!("line-{i}"))
             .collect::<Vec<_>>()
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn a_single_line_file_compares_against_empty() {
-        // 新建文件（磁盘侧为空）时全部算新增。
+        // A new file (empty disk side) counts everything as inserted.
         let (_, summary) = diff_hunks("", "a\nb", 3);
         assert_eq!(
             summary,
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn split_lines_strips_only_the_trailing_carriage_return() {
         assert_eq!(split_lines("a\r\nb"), vec!["a", "b"]);
-        // 行内的 \r 是内容的一部分，不能动。
+        // A line's internal \r is content — never touched.
         assert_eq!(split_lines("a\rb"), vec!["a\rb"]);
     }
 

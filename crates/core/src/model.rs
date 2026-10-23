@@ -5,12 +5,12 @@ use crate::util::{
 };
 use serde_json::{Map, Value};
 
-/// 推理档位的规范顺序（各方言并集）：写入时按此排序。
+/// Canonical order of reasoning tiers (union across dialects): writes sort by this.
 const VARIANT_ORDER: &[&str] = &[
     "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
 
-/// 将档位名按规范顺序排列（未收录的自定义档位保持相对顺序，排在最后）。
+/// Order tier names by canonical order (uncollected custom tiers keep relative order, sorted last).
 pub fn ordered_variants<'a, I>(names: I) -> Vec<String>
 where
     I: IntoIterator<Item = &'a str>,
@@ -30,12 +30,12 @@ where
     list
 }
 
-/// 解析逗号分隔的档位文本并按规范顺序返回。
+/// Parse comma-separated tier text and return it in canonical order.
 pub fn ordered_variants_text(text: &str) -> Vec<String> {
     ordered_variants(text.split(','))
 }
 
-/// 按规范档位顺序重建映射（键为档位名，值为该档位的映射细节）。
+/// Rebuild a mapping in canonical tier order (keys are tier names, values that tier's mapping details).
 pub fn order_variant_map(map: &Map<String, Value>) -> Map<String, Value> {
     ordered_variants(map.keys().map(String::as_str))
         .into_iter()
@@ -43,14 +43,14 @@ pub fn order_variant_map(map: &Map<String, Value>) -> Map<String, Value> {
         .collect()
 }
 
-/// opencode 系配置的 schema 版本。
+/// Schema version of opencode-family configs.
 ///
-/// v1（旧版）与 v2（新版）同概念不同键名：provider 用 `npm`/`options` 对
-/// `package`/`settings`，agent 的档位从独立 `variant` 键并入 `model#variant`，
-/// 温度从顶层挪到 `request.body`，模型的 `reasoning`/`tool_call`/`modalities`
-/// 合并为 `capabilities`，`variants` 从对象变数组。`$schema` 两版相同，只能
-/// 靠这些结构特征区分。写回时**跟随目标文件**的版本：给 v1 更新 v1，
-/// 给 v2 更新 v2。
+/// v1 (old) and v2 (new) share concepts under different key names: provider uses `npm`/`options` vs
+/// `package`/`settings`; an agent's tiers move from a standalone `variant` key into `model#variant`;
+/// temperature moves from the top level into `request.body`; a model's `reasoning`/`tool_call`/
+/// `modalities` merge into `capabilities`; `variants` turns from an object into an array. `$schema`
+/// is identical in both versions, so only these structural features tell them apart. Writes
+/// **follow the target file's** version: given v1, update v1; given v2, update v2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum OpencodeSchemaVersion {
     #[default]
@@ -59,7 +59,7 @@ pub enum OpencodeSchemaVersion {
 }
 
 impl OpencodeSchemaVersion {
-    /// agent 条目自探测：v2 的 `model` 携带 `#variant`，温度在 `request.body`。
+    /// Per-entry sniffing for agents: v2's `model` carries `#variant`, temperature lives in `request.body`.
     pub fn of_agent(v: &Value) -> Self {
         if v.get("request").is_some() || str_at(v, "model").contains('#') {
             Self::V2
@@ -68,7 +68,7 @@ impl OpencodeSchemaVersion {
         }
     }
 
-    /// provider 条目自探测：v2 用 `package` / `settings`。
+    /// Per-entry sniffing for providers: v2 uses `package` / `settings`.
     pub fn of_provider(v: &Value) -> Self {
         if v.get("package").is_some() || v.get("settings").is_some() {
             Self::V2
@@ -77,7 +77,7 @@ impl OpencodeSchemaVersion {
         }
     }
 
-    /// model 条目自探测：v2 用 `capabilities`。
+    /// Per-entry sniffing for models: v2 uses `capabilities`.
     pub fn of_model(v: &Value) -> Self {
         if v.get("capabilities").is_some() {
             Self::V2
@@ -87,7 +87,7 @@ impl OpencodeSchemaVersion {
     }
 }
 
-/// v1 / v2 包名互译表：同一协议在两版里名字不同。
+/// v1 / v2 package-name translation table: the same protocol has different names per version.
 const PACKAGE_VERSION_PAIRS: &[(&str, &str)] = &[
     (
         "@ai-sdk/openai-compatible",
@@ -99,9 +99,9 @@ const PACKAGE_VERSION_PAIRS: &[(&str, &str)] = &[
     ("@ai-sdk/mistral", "@opencode/ai/providers/mistral"),
 ];
 
-/// 按目标 schema 版本翻译包名（v1 `@ai-sdk/*` ↔ v2 `@opencode/ai/providers/*`）。
-/// 未收录的包名原样返回（自定义包不受版本影响）。UI 下拉写的是 v1 包名，
-/// 落盘前统一按目标版本翻译。
+/// Translate package names by target schema version (v1 `@ai-sdk/*` ↔ v2 `@opencode/ai/providers/*`).
+/// Unrecognized names pass through (custom packages are version-independent). The UI dropdown writes
+/// v1 package names; they are uniformly translated per the target version before hitting disk.
 fn translate_package(pkg: &str, schema: OpencodeSchemaVersion) -> String {
     for (v1, v2) in PACKAGE_VERSION_PAIRS {
         match schema {
@@ -113,19 +113,20 @@ fn translate_package(pkg: &str, schema: OpencodeSchemaVersion) -> String {
     pkg.to_string()
 }
 
-/// 包名末段：最后一个 `/` 之后的部分（无 `/` 时原样返回）。
+/// Package name's last segment: everything after the final `/` (returned as-is when there is none).
 ///
-/// v1（`@ai-sdk/*`）与 v2（`@opencode/ai/providers/*`）同一协议的末段一致
-/// （见 [`PACKAGE_VERSION_PAIRS`]），UI 下拉用末段统一表示两个版本。
+/// v1 (`@ai-sdk/*`) and v2 (`@opencode/ai/providers/*`) agree on the last segment per protocol (see
+/// [`PACKAGE_VERSION_PAIRS`]); the UI dropdown represents both versions with the segment alone.
 pub fn package_suffix(pkg: &str) -> &str {
     pkg.rsplit('/').next().unwrap_or(pkg)
 }
 
-/// 末段 + 目标版本 → 完整包名。空末段返回空串。
+/// Last segment + target version → full package name. Empty segment returns an empty string.
 ///
-/// 前缀与 [`PACKAGE_VERSION_PAIRS`] 一致：v1 用 `@ai-sdk/`，v2 用
-/// `@opencode/ai/providers/`。UI 下拉选中末段后据此拼回当前页版本的全名；
-/// 落盘时 [`translate_package`] 还会再按目标文件版本兜底翻译。
+/// Prefixes match [`PACKAGE_VERSION_PAIRS`]: v1 uses `@ai-sdk/`, v2 uses `@opencode/ai/providers/`.
+/// After the UI dropdown selects a segment, the full name for the current page's version is assembled
+/// here; [`translate_package`] translates once more by the target file's version as a backstop at
+/// write time.
 pub fn package_full_name(suffix: &str, schema: OpencodeSchemaVersion) -> String {
     if suffix.is_empty() {
         return String::new();
@@ -136,8 +137,8 @@ pub fn package_full_name(suffix: &str, schema: OpencodeSchemaVersion) -> String 
     }
 }
 
-/// 包名是否等价 opencode 的 openai 缺省兼容层（未显式声明 developer role 时不勾选）。
-/// 同时覆盖 v1（@ai-sdk/*）与 v2（@opencode/ai/providers/*）两种写法。
+/// Whether a package name is opencode's default openai compatibility layer (unchecked when the developer role isn't explicitly declared).
+/// Covers both spellings: v1 (`@ai-sdk/*`) and v2 (`@opencode/ai/providers/*`).
 fn is_default_openai_package(pkg: &str) -> bool {
     matches!(
         pkg,
@@ -148,7 +149,7 @@ fn is_default_openai_package(pkg: &str) -> bool {
     )
 }
 
-/// 把值写入嵌套路径（逐层建对象；不存在则创建）。
+/// Write a value at a nested path (creating objects layer by layer when absent).
 fn set_nested_value(target: &mut Map<String, Value>, path: &[&str], value: Value) {
     let Some((&last, rest)) = path.split_last() else {
         return;
@@ -166,12 +167,12 @@ fn set_nested_value(target: &mut Map<String, Value>, path: &[&str], value: Value
     cursor.insert(last.to_string(), value);
 }
 
-/// 删除嵌套路径末级键。父级对象即使变空也保留（无害，避免重下钻逻辑）。
+/// Delete a nested path's final key. An emptied parent object is kept (harmless; avoids re-descent logic).
 fn remove_nested_key(target: &mut Map<String, Value>, path: &[&str]) {
     let Some((&last, rest)) = path.split_last() else {
         return;
     };
-    // 逐层下钻；任一层不是对象就无事可做。
+    // Descend layer by layer; any non-object layer means nothing to do.
     let mut cursor = target;
     for key in rest {
         let Some(next) = cursor.get_mut(*key).and_then(Value::as_object_mut) else {
@@ -219,7 +220,7 @@ fn changed_bool(raw: &Value, key: &str, current: bool) -> bool {
     raw.get(key).is_some() && current != bool_at(raw, key) || raw.get(key).is_none() && current
 }
 
-/// 嵌套路径版的 [`changed_bool`]：路径断裂或值非布尔时按 false 处理。
+/// Nested-path variant of [`changed_bool`]: broken paths or non-bool values count as false.
 fn changed_nested_bool(raw: &Value, path: &[&str], current: bool) -> bool {
     let mut value = raw;
     for key in path {
@@ -247,7 +248,7 @@ pub struct AgentRow {
     pub temperature: String,
     pub color: String,
     pub system: String,
-    /// 来源文件的 opencode schema 版本：决定 to_value 的写回形状。
+    /// The source file's opencode schema version: decides to_value's write-back shape.
     pub schema: OpencodeSchemaVersion,
     pub raw: Value,
 }
@@ -263,11 +264,11 @@ impl AgentRow {
         Self::from_with_schema(key, v, OpencodeSchemaVersion::of_agent(v))
     }
 
-    /// 指定条目 schema 版本构造（加载路径用：版本跟**文件**走）。
+    /// Construct with an entry's schema version specified (the load path: the version follows the **file**).
     ///
-    /// 逐条嗅探（[`Self::from`]）会把 v2 文件里的极简 agent（无 `request`、
-    /// model 不带 `#`）误判成 v1：温度从顶层死键读（v2 运行时不看），保存时
-    /// 走「v1→v2 转换」把已有的 `request.body.temperature` 静默删掉。
+    /// Per-entry sniffing ([`Self::from`]) misjudges a v2 file's minimal agent (no `request`, model without
+    /// `#`) as v1: temperature reads from the top-level dead key (which the v2 runtime ignores), and saving
+    /// would run the "v1→v2 conversion" that silently deletes the existing `request.body.temperature`.
     pub fn from_with_schema(key: &str, v: &Value, schema: OpencodeSchemaVersion) -> Self {
         let (model, variant, temperature) = match schema {
             OpencodeSchemaVersion::V1 => (
@@ -275,8 +276,7 @@ impl AgentRow {
                 str_at(v, "variant").to_string(),
                 num_at(v, "temperature"),
             ),
-            // v2 把档位并进 model（`base#variant`，按最后一个 # 拆），
-            // 温度挪到 request.body。
+            // v2 folds tiers into the model (`base#variant`, split at the last #) and moves temperature into request.body.
             OpencodeSchemaVersion::V2 => {
                 let raw_model = str_at(v, "model");
                 let (model, variant) = match raw_model.rsplit_once('#') {
@@ -323,12 +323,13 @@ impl AgentRow {
         self.to_value_as(self.schema)
     }
 
-    /// 按目标 schema 版本写出。同版本增量写（只写改动字段，保留 raw 键序与
-    /// 未动内容）；跨版本视为转换：删源版特有键、按目标形状全量写。
+    /// Write out per the target schema version. Same version = incremental write (only changed fields; raw
+    /// key order and untouched content preserved); cross-version = conversion: drop source-specific keys and
+    /// write fully in the target shape.
     pub fn to_value_as(&self, schema: OpencodeSchemaVersion) -> Value {
         let cross = self.schema != schema;
         let mut m = self.raw.as_object().cloned().unwrap_or_default();
-        // 仅在 UI 值相对原始值发生变化时写入；未修改字段保留原始键、类型和内容。
+        // Write only when the UI value differs from the original; unmodified fields keep their original key, type, and content.
         if cross {
             set_str(&mut m, "mode", &self.mode);
             set_str(&mut m, "description", &self.description);
@@ -343,7 +344,7 @@ impl AgentRow {
         match schema {
             OpencodeSchemaVersion::V1 => {
                 if cross {
-                    // v2 → v1：拆掉 request.body，平铺 variant / temperature。
+                    // v2 → v1: tear down request.body, flatten variant / temperature.
                     m.remove("request");
                     set_str(&mut m, "model", &self.model);
                     set_str(&mut m, "variant", &self.variant);
@@ -363,8 +364,8 @@ impl AgentRow {
                 }
             }
             OpencodeSchemaVersion::V2 => {
-                // v2：档位并入 model（`base#variant`），无独立 variant 键；
-                // 温度在 request.body.temperature。
+                // v2: tiers fold into the model (`base#variant`), no standalone variant key;
+                // temperature lives in request.body.temperature.
                 let merged = if self.variant.is_empty() {
                     self.model.clone()
                 } else {
@@ -406,28 +407,28 @@ pub struct ModelRow {
     pub reasoning: bool,
     pub tool_call: bool,
     pub store: bool,
-    /// WorkBuddy 专属：关闭的模型不写入配置文件（保存时整条跳过）。
+    /// WorkBuddy-specific: disabled models are not written to the config (skipped whole at save time).
     ///
-    /// 同一 id 全局去重，UI 上只允许开一个（开关互斥）；`id` 是发给上游的
-    /// 模型名，不改名去重。
+    /// Same id dedupes globally; the UI allows only one enabled (toggles are mutually exclusive); `id` is the
+    /// model name sent upstream — no renaming for dedup.
     pub disabled: bool,
     pub context: String,
     pub output: String,
     pub modalities_input: String,
     pub modalities_output: String,
     pub variants: String,
-    /// 加载时的思考档位投影。
+    /// The reasoning tiers as loaded.
     pub original_variants: String,
-    /// raw 所属格式；None 表示在当前页面中新建的条目。
+    /// The format raw belongs to; None = an entry created fresh in the current page.
     pub source_format: Option<ConfigFormat>,
-    /// 来源文件的 opencode schema 版本：决定写回形状。
+    /// The source file's opencode schema version: decides the write-back shape.
     pub schema: OpencodeSchemaVersion,
     pub raw: Value,
-    /// KimiCode 专属：模型在顶层 `[models."<alias>"]` 表里的表键。
+    /// KimiCode-specific: the model's table key inside the top-level `[models."<alias>"]` table.
     ///
-    /// Kimi 把模型放在全局表里，键是 alias，表内的 `model` 才是发给上游的 wire id，
-    /// 两者可以不同。`id` 只装 wire id（界面显示它），alias 单独存这里，
-    /// 写回时用它作表键。新建模型时 alias 缺省 = `id`。
+    /// Kimi keeps models in a global table keyed by alias, while the `model` field inside is the wire id sent
+    /// upstream — the two may differ. `id` holds only the wire id (what the UI displays and sends); the alias
+    /// is stored separately here and used as the table key at write-back. New models default alias = `id`.
     pub kimi_alias: String,
 }
 
@@ -467,8 +468,8 @@ impl ModelRow {
                         nested_list_str(v, &["modalities", "output"]),
                     )
                 }
-                // v2：tool_call / 模态并入 capabilities、variants 变数组、
-                // store 挪到 body；无 reasoning 键。
+                // v2: tool_call / modalities fold into capabilities, variants becomes an array,
+                // store moves to body; there is no reasoning key.
                 OpencodeSchemaVersion::V2 => {
                     let variants = v
                         .get("variants")
@@ -493,9 +494,8 @@ impl ModelRow {
                     (
                         variants,
                         store,
-                        // v2 无 reasoning 键：默认按勾选处理（用户拍板）。
-                        // 写回 v2 时不落盘（见 apply_identity 的 V2 分支），
-                        // 跨到 v1 目标时落成 reasoning: true。
+                        // v2 has no reasoning key: treated as checked by default (user decision).
+                        // Not written back to v2 (see apply_identity's V2 branch); crossing to a v1 target writes reasoning: true.
                         true,
                         tool_call,
                         nested_list_str(v, &["capabilities", "input"]),
@@ -527,12 +527,12 @@ impl ModelRow {
         Self {
             id: String::new(),
             name: String::new(),
-            // 新增模型的缺省值：默认支持思考与工具调用，预填常用上下文/输出上限、
-            // 输入输出模态与思考档位。
+            // Defaults for a new model: reasoning and tool calls on, common context/output caps, input/output
+            // modalities, and reasoning tiers prefilled.
             reasoning: true,
             tool_call: true,
             store: false,
-            // 新建模型默认启用，`disabled` 只由 WorkBuddy 页的开关显式设置。
+            // New models are enabled by default; `disabled` is set explicitly only by the WorkBuddy page's toggle.
             disabled: false,
             context: "262000".into(),
             output: "131000".into(),
@@ -551,11 +551,12 @@ impl ModelRow {
         self.to_value_as(self.schema)
     }
 
-    /// 按目标 schema 版本写出。同版本增量写（只更新改动字段，保留 raw 键序与
-    /// 未动内容）；跨版本 / 跨格式视为转换：按目标形状全量重写。
+    /// Write out per the target schema version. Same version = incremental write (only changed fields; raw
+    /// key order and untouched content preserved); cross-version / cross-format = conversion: rewrite fully
+    /// in the target shape.
     pub fn to_value_as(&self, schema: OpencodeSchemaVersion) -> Value {
-        // pi/omp/DSH 来源从干净对象构造；opencode 系来源以 raw 为基底，
-        // 并只更新 UI 实际改动过的字段。
+        // pi/omp/DSH sources build from a clean object; opencode-family sources use raw as the base and
+        // update only the fields the UI actually changed.
         let convert_dialect = self
             .source_format
             .is_some_and(|format| !format.is_opencode_family());
@@ -566,7 +567,7 @@ impl ModelRow {
         } else {
             self.raw.as_object().cloned().unwrap_or_default()
         };
-        // 跨版本：清掉源版特有键，按目标形状重写。
+        // Cross-version: clear source-version keys, rewrite in the target shape.
         if cross {
             match schema {
                 OpencodeSchemaVersion::V1 => {
@@ -588,15 +589,15 @@ impl ModelRow {
         self.apply_modalities(&mut m, cross, schema);
         self.apply_variants(&mut m, cross, schema);
 
-        // 新建模型 / 转换写入时按 opencode 惯例键顺序输出；
-        // 同版本已有 raw 的模型保留原有键顺序。
+        // New models / conversion writes emit opencode's conventional key order;
+        // models with existing raw in the same version keep their original key order.
         if cross || raw_empty {
             m = canonical_model_order(m, schema);
         }
         Value::Object(m)
     }
 
-    /// 名称与身份开关（v1：reasoning / tool_call；v2：capabilities.tools）。
+    /// Name and identity switches (v1: reasoning / tool_call; v2: capabilities.tools).
     fn apply_identity(
         &self,
         m: &mut Map<String, Value>,
@@ -611,8 +612,8 @@ impl ModelRow {
         match schema {
             OpencodeSchemaVersion::V1 => {
                 if cross {
-                    // reasoning/tool_call 是 opencode 专属控件：跨格式来源不继承默认值，
-                    // 但用户在 opencode 页明确勾选后仍可写入。
+                    // reasoning/tool_call are opencode-only controls: cross-format sources don't inherit defaults,
+                    // but an explicit check on the opencode page still writes them.
                     if self.reasoning {
                         m.insert("reasoning".into(), true.into());
                     }
@@ -629,11 +630,11 @@ impl ModelRow {
                 }
             }
             OpencodeSchemaVersion::V2 => {
-                // v2 无 reasoning；tool_call 位于 capabilities.tools。
+                // v2 has no reasoning; tool_call sits at capabilities.tools.
                 let tools_changed =
                     changed_nested_bool(&self.raw, &["capabilities", "tools"], self.tool_call);
                 if cross {
-                    // 与 v1 转换分支同策略：仅在明确勾选时创建。
+                    // Same policy as the v1 conversion branch: created only when explicitly checked.
                     if self.tool_call {
                         set_capability(m, "tools", self.tool_call.into());
                     }
@@ -644,8 +645,8 @@ impl ModelRow {
         }
     }
 
-    /// 存储开关（v1：options.store；v2：body.store）。
-    /// 新建模型（raw 为空）与既有配置一致写出 false，已有模型只在改动时写入。
+    /// Storage switch (v1: options.store; v2: body.store).
+    /// New models (empty raw) write false like existing configs; existing models write only on change.
     fn apply_store(
         &self,
         m: &mut Map<String, Value>,
@@ -653,7 +654,7 @@ impl ModelRow {
         raw_empty: bool,
         schema: OpencodeSchemaVersion,
     ) {
-        // raw 里的 store 位置跟随来源版本；写出位置跟随目标版本。
+        // store's location in raw follows the source version; the write-out location follows the target version.
         let raw_store = match self.schema {
             OpencodeSchemaVersion::V1 => self.raw.get("options"),
             OpencodeSchemaVersion::V2 => self.raw.get("body"),
@@ -687,7 +688,7 @@ impl ModelRow {
         }
     }
 
-    /// `limit.context` / `limit.output`。
+    /// `limit.context` / `limit.output`.
     fn apply_limits(&self, m: &mut Map<String, Value>, cross: bool) {
         let context_changed =
             cross || changed_nested_num(&self.raw, &["limit", "context"], &self.context);
@@ -714,7 +715,7 @@ impl ModelRow {
         }
     }
 
-    /// 模态列表（v1：modalities.input/output；v2：capabilities.input/output）。
+    /// Modality lists (v1: modalities.input/output; v2: capabilities.input/output).
     fn apply_modalities(
         &self,
         m: &mut Map<String, Value>,
@@ -751,8 +752,8 @@ impl ModelRow {
         }
     }
 
-    /// `variants`：按规范顺序写出，并保留 raw 中各档位的原有内容
-    /// （v1 对象键集合 ↔ v2 数组 `id` 集合）。
+    /// `variants`: written in canonical order, preserving each tier's original content from raw
+    /// (v1's object keys ↔ v2's array `id`s).
     fn apply_variants(
         &self,
         m: &mut Map<String, Value>,
@@ -792,7 +793,7 @@ impl ModelRow {
                 m.insert("variants".into(), Value::Object(variants_map));
             }
             OpencodeSchemaVersion::V2 => {
-                // v2：variants 是 `[{id}]` 数组，保留 raw 中同名条目的原有内容。
+                // v2: variants is a `[{id}]` array; same-named entries' original content in raw is preserved.
                 let raw_names = self
                     .raw
                     .get("variants")
@@ -838,7 +839,7 @@ impl ModelRow {
     }
 }
 
-/// 写入 capabilities.<key>（保留 capabilities 里已有的其他键）。
+/// Write capabilities.<key> (keeping other existing keys inside capabilities).
 fn set_capability(m: &mut Map<String, Value>, key: &str, value: Value) {
     let mut cap = m
         .get("capabilities")
@@ -848,7 +849,7 @@ fn set_capability(m: &mut Map<String, Value>, key: &str, value: Value) {
     cap.insert(key.into(), value);
     m.insert("capabilities".into(), Value::Object(cap));
 }
-/// 逗号分隔的模态列表写入：改动过才写，空串删除该键。
+/// Comma-separated modality list write: written only when changed; an empty string removes the key.
 fn set_list(target: &mut Map<String, Value>, key: &str, changed: bool, text: &str) {
     if !changed {
         return;
@@ -866,7 +867,7 @@ fn set_list(target: &mut Map<String, Value>, key: &str, changed: bool, text: &st
     }
 }
 
-/// raw 是否为空对象（视为新建条目）。
+/// Whether raw is an empty object (treated as a new entry).
 fn raw_object_is_empty(raw: &Value) -> bool {
     match raw.as_object() {
         Some(obj) => obj.is_empty(),
@@ -874,7 +875,7 @@ fn raw_object_is_empty(raw: &Value) -> bool {
     }
 }
 
-/// opencode 模型的惯例键顺序（未列举的键按原顺序追加在后）。
+/// opencode models' conventional key order (unlisted keys are appended in original order).
 const MODEL_KEY_ORDER: &[&str] = &[
     "name",
     "modalities",
@@ -885,7 +886,7 @@ const MODEL_KEY_ORDER: &[&str] = &[
     "variants",
 ];
 
-/// v2 形状的惯例键顺序。
+/// Conventional key order for the v2 shape.
 const MODEL_KEY_ORDER_V2: &[&str] = &["name", "capabilities", "limit", "body", "variants"];
 
 fn canonical_model_order(
@@ -917,47 +918,47 @@ pub struct ProviderRow {
     pub npm: String,
     pub base_url: String,
     pub api_key: String,
-    /// DSH 中保存于主配置的凭据引用名（apiKeyEnv）。
+    /// DSH: the credential reference name stored in the main config (apiKeyEnv).
     pub api_key_env: String,
-    /// 加载时的 apiKeyEnv。
+    /// The apiKeyEnv as loaded.
     pub original_api_key_env: String,
-    /// DSH 同级 `.credentials.yaml` 中 refs 下的实际密钥。
+    /// The actual key under refs in DSH's sibling `.credentials.yaml`.
     pub api_key_secret: String,
-    /// 加载时的密钥。
+    /// The key as loaded.
     pub original_api_key_secret: String,
-    /// DSH provider 的 timeoutMs。
+    /// The DSH provider's timeoutMs.
     pub dsh_timeout_ms: String,
-    /// DSH provider 的 retryPolicy.mode。
+    /// The DSH provider's retryPolicy.mode.
     pub dsh_retry_mode: String,
-    /// DSH provider 的 retryPolicy.maxRetries。
+    /// The DSH provider's retryPolicy.maxRetries.
     pub dsh_max_retries: String,
-    /// 加载时的 DSH provider 参数。
+    /// The DSH provider parameters as loaded.
     pub original_dsh_timeout_ms: String,
     pub original_dsh_retry_mode: String,
     pub original_dsh_max_retries: String,
     pub timeout: String,
-    /// 加载时的 timeout（含缺省默认化）。
+    /// The timeout as loaded (defaults applied).
     pub original_timeout: String,
     pub compat: bool,
-    /// pi: compat.requiresReasoningContentOnAssistantMessages；
-    /// omp: compat.requiresReasoningContentForAllAssistantTurns（相互映射）。
-    /// 加载 opencode/dsh 或新建时缺省为 false（不勾选）。
+    /// pi: compat.requiresReasoningContentOnAssistantMessages;
+    /// omp: compat.requiresReasoningContentForAllAssistantTurns (mapped to each other).
+    /// Defaults to unchecked when loading opencode/dsh or creating new.
     pub requires_reasoning_content: bool,
-    /// 加载时的值，用于同格式未修改时不改写 raw。
+    /// The value as loaded, so unmodified same-format entries don't rewrite raw.
     pub original_requires_reasoning_content: bool,
     pub models: Vec<ModelRow>,
     pub new_model: ModelRow,
-    /// raw 所属格式；None 表示在当前页面中新建的条目。
+    /// The format raw belongs to; None = an entry created fresh in the current page.
     pub source_format: Option<ConfigFormat>,
-    /// 来源文件的 opencode schema 版本：决定写回形状。
+    /// The source file's opencode schema version: decides the write-back shape.
     pub schema: OpencodeSchemaVersion,
     pub raw: Value,
     pub pi_api: String,
-    /// QwenCode 专属：该条目在 `modelProviders` 里的 provider id（map 键）。
+    /// QwenCode-specific: the entry's provider id inside `modelProviders` (the map key).
     ///
-    /// QwenCode 的结构是 `modelProviders[<pid>] = [<模型条目>, ...]`，一个 pid 下
-    /// 可以挂多条条目，且每条条目自带 `baseUrl` / `envKey`。界面按「一条 = 一张卡片」
-    /// 建模，`key` 只存条目自己的 `id`，本字段记录它属于哪个 pid。
+    /// QwenCode's structure is `modelProviders[<pid>] = [<model entries>, ...]`; one pid may carry several
+    /// entries, each carrying its own `baseUrl` / `envKey`. The UI models "one entry = one card"; `key`
+    /// stores only the entry's own `id`, and this field records which pid it belongs to.
     pub qwen_pid: String,
 }
 
@@ -970,8 +971,8 @@ impl Default for ProviderRow {
 impl ProviderRow {
     pub fn from(key: &str, v: &Value) -> Self {
         let schema = OpencodeSchemaVersion::of_provider(v);
-        // v1：npm / options；v2：package / settings。键名不同、语义一致，
-        // 统一读进内部字段。
+        // v1: npm / options; v2: package / settings. Different key names, same semantics —
+        // read uniformly into internal fields.
         let (pkg_key, opt_key) = match schema {
             OpencodeSchemaVersion::V1 => ("npm", "options"),
             OpencodeSchemaVersion::V2 => ("package", "settings"),
@@ -987,8 +988,8 @@ impl ProviderRow {
             .and_then(|c| c.get("supportsDeveloperRole"))
             .and_then(|v| v.as_bool())
             .unwrap_or_else(|| {
-                // opencode 缺省包等价 @ai-sdk/openai（chat/completions），
-                // 未显式声明 developer role 时不勾选。
+                // opencode's default package equals @ai-sdk/openai (chat/completions);
+                // unchecked when the developer role isn't explicitly declared.
                 !is_default_openai_package(&npm)
             });
         let row = Self {
@@ -1001,7 +1002,7 @@ impl ProviderRow {
             original_api_key_env: String::new(),
             api_key_secret: String::new(),
             original_api_key_secret: String::new(),
-            // 跨格式保存到 DSH 时写出默认 timeoutMs；同格式未修改不写。
+            // Saving cross-format to DSH writes the default timeoutMs; unmodified same-format saves don't.
             dsh_timeout_ms: "180000".into(),
             dsh_retry_mode: "normal".into(),
             dsh_max_retries: String::new(),
@@ -1025,7 +1026,7 @@ impl ProviderRow {
                 }
             },
             compat,
-            // opencode 无该字段：默认不勾选。
+            // opencode has no such field: unchecked by default.
             requires_reasoning_content: false,
             original_requires_reasoning_content: false,
             models,
@@ -1036,20 +1037,20 @@ impl ProviderRow {
             pi_api: String::new(),
             qwen_pid: String::new(),
         };
-        // opencode 的 anthropic-messages 必须带 /v1：读入即补齐，界面显示与落盘一致。
+        // opencode's anthropic-messages requires /v1: completed at load so display and disk agree.
         let api = row.effective_api();
         let base_url = crate::convert::with_v1_for_messages(&api, &row.base_url);
         Self { base_url, ..row }
     }
 
-    /// 生效的 api（线上协议）。UI 显示、写盘、延迟测试共用同一套优先级：
-    /// 1. npm 非空 → 按 npm 包推导；
-    /// 2. pi_api 非空 → 直接用（若被误写成 `@ai-sdk/...` 包名，按 npm 解释并自愈）；
-    /// 3. 原文件（raw）里的 api → 保留；
-    /// 4. 都没有 → 默认兼容层 openai-completions。
+    /// The effective api (wire protocol). UI display, disk writes, and latency tests share one priority:
+    /// 1. npm non-empty → derive from the npm package;
+    /// 2. pi_api non-empty → use directly (if written as an `@ai-sdk/...` package name by mistake, interpret as npm and self-heal);
+    /// 3. the api in the original file (raw) → keep;
+    /// 4. none → the default compatibility layer openai-completions.
     pub fn effective_api(&self) -> String {
         if !self.npm.is_empty() {
-            // npm 字段可能装 v1 包名或 v2 package 名，统一映射。
+            // The npm field may hold a v1 package name or a v2 package name; map uniformly.
             return crate::convert::package_or_npm_to_api(&self.npm);
         }
         let api = self.pi_api.trim();
@@ -1067,12 +1068,12 @@ impl ProviderRow {
         "openai-completions".to_string()
     }
 
-    /// 是否显式指定了协议（npm 或 api 任一侧有值），供下拉决定显示「(空)」还是协议名。
+    /// Whether a protocol was explicitly set (npm or api has a value); decides whether the dropdown shows "(none)" or a protocol name.
     pub fn has_explicit_api(&self) -> bool {
         !self.npm.is_empty() || !self.pi_api.is_empty() || !str_at(&self.raw, "api").is_empty()
     }
 
-    /// 选择「(空)」（不指定协议）：清掉 npm / pi_api，并抹掉 raw 里的 api。
+    /// Selecting "(none)" (protocol unset): clears npm / pi_api and erases the api in raw.
     pub fn clear_api(&mut self) {
         self.npm.clear();
         self.pi_api.clear();
@@ -1092,7 +1093,7 @@ impl ProviderRow {
             original_api_key_env: String::new(),
             api_key_secret: String::new(),
             original_api_key_secret: String::new(),
-            // 新建 provider 的默认值：跨格式保存时也写入目标文件的默认字段。
+            // Defaults for a new provider: written into the target file on cross-format saves too.
             dsh_timeout_ms: "180000".into(),
             dsh_retry_mode: "normal".into(),
             dsh_max_retries: String::new(),
@@ -1118,12 +1119,12 @@ impl ProviderRow {
         self.to_value_as(self.schema)
     }
 
-    /// 按目标 schema 版本写出：v1 用 npm / options，v2 用 package / settings。
-    /// 包名按目标版本互译（UI 下拉写的是 v1 包名）；同版本增量写，
-    /// 跨版本 / 跨格式视为转换。
+    /// Write out per the target schema version: v1 uses npm / options, v2 uses package / settings.
+    /// Package names translate per the target version (the UI dropdown writes v1 names); same-version writes
+    /// are incremental; cross-version / cross-format counts as conversion.
     pub fn to_value_as(&self, schema: OpencodeSchemaVersion) -> Value {
-        // pi/omp/DSH 来源全新构造；opencode 系来源以 raw 为基底，
-        // 只更新发生变化的 provider 字段。
+        // pi/omp/DSH sources are built fresh; opencode-family sources use raw as the base and
+        // update only provider fields that changed.
         let convert_dialect = self
             .source_format
             .is_some_and(|format| !format.is_opencode_family());
@@ -1137,7 +1138,7 @@ impl ProviderRow {
             OpencodeSchemaVersion::V1 => ("npm", "options"),
             OpencodeSchemaVersion::V2 => ("package", "settings"),
         };
-        // 跨版本：清掉源版键，按目标形状重写。
+        // Cross-version: clear source-version keys, rewrite in the target shape.
         if cross {
             match schema {
                 OpencodeSchemaVersion::V1 => {
@@ -1171,7 +1172,7 @@ impl ProviderRow {
                 .cloned()
                 .unwrap_or_default();
             if base_changed {
-                // opencode 的 anthropic-messages 必须带 /v1。
+                // opencode's anthropic-messages requires /v1.
                 let api = self.effective_api();
                 let base_url = crate::convert::with_v1_for_messages(&api, &self.base_url);
                 set_str(&mut options, "baseURL", &base_url);

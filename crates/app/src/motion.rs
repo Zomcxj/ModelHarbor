@@ -1,26 +1,26 @@
-//! 界面动效：卡片描边悬停过渡、卡片体折叠 / 展开的高度动画与滑动开关补间。
+//! UI motion: card border hover transitions, card-body collapse / expand height animation, and toggle knob tweening.
 //!
-//! 各时长都在 0.1~0.2 秒。
+//! All durations are 0.1–0.2 seconds.
 
 use eframe::egui::{self, Color32};
 
-/// 悬停描边过渡时长（秒）。
+/// Hover border transition duration (seconds).
 pub const HOVER_TIME: f32 = 0.12;
 
-/// 折叠 / 展开时长（秒）。
+/// Collapse / expand duration (seconds).
 pub const COLLAPSE_TIME: f32 = 0.18;
 
-/// 滑动开关的滑块行程时长（秒）。
+/// Toggle knob travel duration (seconds).
 pub const TOGGLE_TIME: f32 = 0.14;
 
-/// 数字逐位滚动时长（秒）。
+/// Per-digit number roll duration (seconds).
 ///
-/// 比悬停 / 折叠长一档：滚动要让人看清「旧值滚走、新值滚入」，
-/// 太快就成了闪一下。参考实现（token-monitor v0.70.0 的 digit roll）
-/// 也在半秒量级。
+/// One step longer than hover / collapse: the roll must let people see "the old digits roll out, the new
+/// roll in" — too fast reads as a flicker. The reference implementation (token-monitor v0.70.0's digit
+/// roll) is also in the half-second range.
 pub const DIGIT_ROLL_TIME: f32 = 0.45;
 
-/// 动画时长的编译期上界检查。
+/// Compile-time upper-bound check on animation durations.
 const _: () = {
     assert!(HOVER_TIME <= 0.2, "悬停过渡时长超过 0.2s，界面会显得拖沓");
     assert!(
@@ -39,9 +39,9 @@ const _: () = {
     );
 };
 
-/// gamma 空间的逐通道插值（预乘 alpha 原样插）。
+/// Per-channel interpolation in gamma space (premultiplied alpha interpolated as-is).
 ///
-/// `t` 会被夹到 `[0, 1]`。
+/// `t` is clamped to `[0, 1]`.
 pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
@@ -53,9 +53,9 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
-/// 悬停插值系数（0 = 未悬停，1 = 悬停）。
+/// Hover interpolation factor (0 = not hovered, 1 = hovered).
 ///
-/// `everything_is_visible`（调试模式）下直接返回终值。
+/// Under `everything_is_visible` (debug mode) the final value returns directly.
 pub fn hover_t(ctx: &egui::Context, id: egui::Id, hovered: bool) -> f32 {
     if ctx.memory(|mem| mem.everything_is_visible()) {
         return hovered as u8 as f32;
@@ -63,7 +63,7 @@ pub fn hover_t(ctx: &egui::Context, id: egui::Id, hovered: bool) -> f32 {
     ctx.animate_bool_with_time(id, hovered, HOVER_TIME)
 }
 
-/// 折叠展开的开放度（0 = 全收，1 = 全开）。
+/// Collapse/expand openness (0 = fully closed, 1 = fully open).
 pub fn collapse_openness(ctx: &egui::Context, id: egui::Id, open: bool) -> f32 {
     if ctx.memory(|mem| mem.everything_is_visible()) {
         return open as u8 as f32;
@@ -71,12 +71,12 @@ pub fn collapse_openness(ctx: &egui::Context, id: egui::Id, open: bool) -> f32 {
     ctx.animate_bool_with_time(id.with("collapse"), open, COLLAPSE_TIME)
 }
 
-/// 滑动开关的滑块进度（0 = 贴左的关态，1 = 贴右的开态）。
+/// Toggle knob progress (0 = left / off, 1 = right / on).
 ///
-/// 未登记过的 id 首帧直接返回终值，因此页面刚打开时开关不从左侧滑入，
-/// 只有点击造成的状态变化才走动画。
+/// Unregistered ids return the final value on the first frame, so switches don't slide in from the left
+/// when a page opens — only state changes caused by clicks animate.
 ///
-/// `everything_is_visible`（调试模式）下直接返回终值。
+/// Under `everything_is_visible` (debug mode) the final value returns directly.
 pub fn toggle_progress(ctx: &egui::Context, id: egui::Id, on: bool) -> f32 {
     if ctx.memory(|mem| mem.everything_is_visible()) {
         return on as u8 as f32;
@@ -84,30 +84,30 @@ pub fn toggle_progress(ctx: &egui::Context, id: egui::Id, on: bool) -> f32 {
     ctx.animate_bool_with_time(id.with("toggle"), on, TOGGLE_TIME)
 }
 
-/// 把折叠动画立刻钉到终值（时长 0）。用于批量展开 / 收起。
+/// Pin the collapse animation to its final value immediately (zero duration). Used for bulk expand / collapse.
 pub fn snap_collapse(ctx: &egui::Context, id: egui::Id, open: bool) {
     ctx.animate_bool_with_time(id.with("collapse"), open, 0.0);
 }
 
-/// 数字逐位滚动：每位数字在自己的槽里垂直滚动，非数字字符（逗号、点、单位）原地不动。
+/// Per-digit number roll: each digit rolls vertically inside its slot; non-digits (commas, dots, units) stay put.
 ///
-/// 参考 token-monitor v0.70.0 的默认动画（digit roll，#1014）：总量与分解
-/// 读数切换时逐位滚动，而不是整串闪换。
+/// Mirrors token-monitor v0.70.0's default animation (digit roll, #1014): totals and breakdowns roll
+/// digit-by-digit when switching, instead of the whole string flashing.
 ///
-/// 槽：宽度取**终值**该位的字符宽（滚动期间布局不跳），高度一行。
-/// 补间 0 = 只见旧位，1 = 只见新位：旧位随补间上移出槽，新位自槽下滚入，
-/// 超出槽的部分裁掉。位数变多时新增高位同样自下方滚入。
+/// Slots: width from the **final value's** digit width (layout doesn't jump mid-roll), height one line.
+/// Tween 0 = only the old digit, 1 = only the new: the old digit slides up out of the slot while the new
+/// rolls in from below; overflow is clipped. Added high digits roll in from below too.
 ///
-/// 状态存三个临时键：`id` = 本轮滚动起点值，`id/target` = 终点值，
-/// `id/roll_start` = 起点时刻。滚动途中值又变：上一轮直接钉到它的终点、
-/// 新一轮从那里起滚（不倒跳，对齐参考实现 #1025 对滚动层数的收口）。
+/// State lives in three temp keys: `id` = this roll's start value, `id/target` = target value,
+/// `id/roll_start` = start moment. If the value changes mid-roll: the previous roll pins to its target
+/// and the new roll starts from there (no backward jumps, matching the reference's #1025 cap on roll depth).
 ///
-/// 整串矩形经 [`egui::Ui::allocate_exact_size`] 分配并返回：与 `Label`
-/// 同一套布局行为，在行内垂直居中——与同行的色块、标签共用行中心，
-/// 不会像贴行顶直画那样错开半个行高。
+/// The whole string's rect is allocated and returned via [`egui::Ui::allocate_exact_size`]: the same
+/// layout behavior as `Label`, vertically centered in the line — sharing the line center with adjacent
+/// swatches and labels, never offset half a line height like top-painted text.
 ///
-/// `everything_is_visible`（调试模式）与首帧都不滚动、直接画终值，
-/// 布局测试因此能拿到稳定文本。
+/// Under `everything_is_visible` (debug mode) and on the first frame, the final value paints directly
+/// with no roll, so layout tests get stable text.
 pub fn rolling_number(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -127,7 +127,7 @@ pub fn rolling_number(
         .unwrap_or_else(|| from.clone());
 
     if ctx.memory(|mem| mem.everything_is_visible()) {
-        // 调试模式：钉终值、清状态。
+        // Debug mode: pin the final value, clear state.
         from = text.to_string();
         target = from.clone();
         ctx.data_mut(|data| {
@@ -136,7 +136,7 @@ pub fn rolling_number(
             data.remove_temp::<f64>(start_id);
         });
     } else if text != target {
-        // 值变了：上一轮（若有）钉到它的终点，新一轮从那里起滚。
+        // The value changed: the previous round (if any) pins to its target, and the new roll starts from there.
         from = target;
         target = text.to_string();
         ctx.data_mut(|data| {
@@ -145,7 +145,7 @@ pub fn rolling_number(
             data.insert_temp(start_id, now);
         });
     } else {
-        // 值未变：记下当前显示值，供下次变化作为滚动起点。
+        // Value unchanged: note the currently displayed value as the next change's roll start.
         ctx.data_mut(|data| data.insert_temp(id, text.to_string()));
     }
 
@@ -162,22 +162,22 @@ pub fn rolling_number(
         ctx.request_repaint();
     }
     if rolling && t >= 1.0 {
-        // 滚完：起点值升为终点值，清计时。
+        // Roll finished: the start value becomes the target; clear timing.
         ctx.data_mut(|data| {
             data.insert_temp(id, target.clone());
             data.remove_temp::<f64>(start_id);
         });
     }
-    // 缓动：先快后慢，收尾不突兀。
+    // Easing: fast then slow, so the finish doesn't jar.
     let eased = 1.0 - (1.0 - t).powi(2);
 
     let chars: Vec<char> = target.chars().collect();
     let from_chars: Vec<char> = from.chars().collect();
-    // 从右往左对齐数位：末位对末位。
+    // Align digits right-to-left: last digit to last digit.
     let offset = chars.len().saturating_sub(from_chars.len());
     let fallback = ui.visuals().text_color();
 
-    // 先整体量排：每位一个 galley，总宽与行高定了才能向布局要矩形。
+    // Measure the whole string first: one galley per digit; only with total width and line height can rects be requested from layout.
     let galleys: Vec<_> = chars
         .iter()
         .map(|ch| {
@@ -191,7 +191,7 @@ pub fn rolling_number(
         .collect();
     let width = galleys.iter().map(|g| g.size().x).sum::<f32>();
     let height = galleys.iter().map(|g| g.size().y).fold(0.0f32, f32::max);
-    // 经布局分配（而非贴游标直画）：行内垂直居中与 Label / 色块一致。
+    // Through layout allocation (not painted flush at the cursor): vertical centering matches Label / swatches.
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
 
     let mut x = rect.min.x;
@@ -212,7 +212,7 @@ pub fn rolling_number(
             let clip = painter.clip_rect();
             painter.set_clip_rect(slot);
             if let Some(old_ch) = old_ch {
-                // 旧位：随补间上移出槽。
+                // The old digit: slides up out of the slot with the tween.
                 let old_galley = egui::WidgetText::from(rich(&old_ch.to_string())).into_galley(
                     ui,
                     Some(egui::TextWrapMode::Extend),
@@ -225,7 +225,7 @@ pub fn rolling_number(
                     fallback,
                 );
             }
-            // 新位：自槽下滚入。
+            // The new digit: rolls in from below the slot.
             painter.galley(
                 slot.min + egui::vec2(0.0, size.y * (1.0 - eased)),
                 galley,
@@ -238,13 +238,13 @@ pub fn rolling_number(
     rect
 }
 
-/// 带高度动画的折叠体：收起且动画结束后返回 `None`（本帧不渲染）。
+/// Collapsible body with height animation: returns `None` while collapsed and the animation has finished (not rendered this frame).
 ///
-/// 动画中先给父布局预留补间高度，再把 body 画进同一位置的独立子树、用裁剪收住
-/// 超出部分。
+/// Mid-animation, the parent layout first reserves the tweened height, then the body paints into an
+/// independent subtree at the same position, clipped to the excess.
 ///
-/// body 全开与动画中都用同一个全局 `id`；满高逐帧测量后存进临时存储，
-/// 未知时先按 10px 位移量起算。
+/// Fully open and mid-animation share one global `id`; full height is measured per frame into temp
+/// storage, starting from a 10px offset while unknown.
 pub fn animated_collapse<R>(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -269,7 +269,7 @@ pub fn animated_collapse<R>(
     let band = known * openness;
     let (band_rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), band), egui::Sense::hover());
-    // 子树给满高（未知时给一页占位）。
+    // The subtree gets full height (a page-sized placeholder while unknown).
     let child_max = egui::Rect::from_min_size(
         band_rect.min,
         egui::vec2(band_rect.width(), stored.unwrap_or(4096.0).max(known)),
@@ -289,7 +289,7 @@ mod tests {
     use super::{animated_collapse, lerp_color, rolling_number};
     use eframe::egui;
 
-    /// 收集全部文本形状的位置（含嵌套）。
+    /// Collect all text shapes' positions (including nested).
     fn texts_at(out: &egui::FullOutput) -> Vec<(String, f32, f32)> {
         let mut hits = Vec::new();
         fn collect(shape: &egui::Shape, hits: &mut Vec<(String, f32, f32)>) {
@@ -307,7 +307,7 @@ mod tests {
         hits
     }
 
-    /// 跑一帧并返回输出与读数矩形。
+    /// Run one frame; returns the output and the readout rect.
     fn run_frame(ctx: &egui::Context, time: f64, text: &str) -> (egui::FullOutput, egui::Rect) {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
         let mut rect = egui::Rect::NOTHING;
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(lerp_color(a, b, 1.0), b);
         let mid = lerp_color(a, b, 0.5);
         assert_eq!(mid, egui::Color32::from_rgb(100, 50, 25));
-        // 超范围的 `t` 被夹住。
+        // Out-of-range `t` is clamped.
         assert_eq!(lerp_color(a, b, -1.0), a);
         assert_eq!(lerp_color(a, b, 2.0), b);
     }
@@ -369,9 +369,9 @@ mod tests {
         assert_eq!(super::hover_t(&ctx, id, true), 1.0);
     }
 
-    /// 展开时渲染并量出满高；收起后返回 `None`、不占用布局空间。
+    /// While expanded: renders and measures the full height; once collapsed returns `None`, taking no layout space.
     ///
-    /// body 用固定尺寸占位，不用文本。
+    /// body reserves with a fixed-size widget, not text.
     #[test]
     fn collapse_renders_when_open_and_nothing_when_closed() {
         let ctx = egui::Context::default();
@@ -421,8 +421,8 @@ mod tests {
         });
     }
 
-    /// 动画中的帧：先预留补间高度，body 画进独立子树；总高度不超过已记录的
-    /// 满高 × 开放度。
+    /// Mid-animation frames: reserve the tweened height first, painting body into an independent subtree; total
+    /// height never exceeds the recorded full height × openness.
     #[test]
     fn animating_frames_reserve_a_clamped_band() {
         let ctx = egui::Context::default();
@@ -435,7 +435,7 @@ mod tests {
             )),
             ..Default::default()
         };
-        // 先展开一帧，量出满高。
+        // Expand one frame first, measuring the full height.
         let _ = ctx.run(input.clone(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let _ = animated_collapse(ui, id, true, |ui| ui.label("body"));
@@ -443,7 +443,7 @@ mod tests {
         });
         let full = ctx.data(|data| data.get_temp::<f32>(id.with("open_height")));
         assert!(full.is_some_and(|h| h > 0.0), "展开一帧后必须量到满高");
-        // 这里锁的是：满高记录在收起后依然保留。
+        // What's locked here: the full-height record survives collapsing.
         assert_eq!(
             ctx.data(|data| data.get_temp::<f32>(id.with("open_height"))),
             full,
@@ -451,8 +451,8 @@ mod tests {
         );
     }
 
-    /// 首帧静态；值变化帧旧值在位、新值在槽下待入；滚完后只剩新值，
-    /// 且滚动期间预留宽度与终值一致（布局不跳）。
+    /// The first frame is static; on a value-change frame the old value holds its slot while the new waits below;
+    /// after the roll only the new remains, and the reserved width during the roll matches the final value (layout doesn't jump).
     #[test]
     fn rolling_number_rolls_old_out_and_new_in_then_settles() {
         let ctx = egui::Context::default();
@@ -469,7 +469,7 @@ mod tests {
             "首帧应只画一层，实际：{texts:?}"
         );
 
-        // 值变化帧：补间 0，旧值在位、新值在槽下（裁剪外但形状在）。
+        // Value-change frame: tween 0 — the old value in place, the new below the slot (clipped out but shaped).
         let (out, mid_rect) = run_frame(&ctx, 1.0, "34");
         let texts = texts_at(&out);
         let old_y = texts
@@ -486,7 +486,7 @@ mod tests {
         assert!(new_y > top + 1.0, "新值应在槽下待入，实际 {new_y} vs {top}");
         let row_h = new_y - top;
 
-        // 半程：旧值上移出槽、新值自下滚入。
+        // Halfway: the old slides up out of the slot, the new rolls in from below.
         let (out, _) = run_frame(&ctx, 1.0 + f64::from(super::DIGIT_ROLL_TIME) * 0.5, "34");
         let texts = texts_at(&out);
         let old_y = texts.iter().find(|(t, _, _)| t == "1").unwrap().2;
@@ -497,7 +497,7 @@ mod tests {
             "半程时新值应在槽内，实际 {new_y}"
         );
 
-        // 滚完：只剩新值、回到原位。
+        // Roll finished: only the new value remains, back in place.
         let (out, end_rect) = run_frame(&ctx, 1.0 + f64::from(super::DIGIT_ROLL_TIME) + 0.1, "34");
         let texts = texts_at(&out);
         assert!(
@@ -516,7 +516,7 @@ mod tests {
         );
     }
 
-    /// 调试模式下值变化不滚动，直接画终值。
+    /// In debug mode, value changes don't roll — the final value paints directly.
     #[test]
     fn rolling_number_snaps_under_everything_is_visible() {
         let ctx = egui::Context::default();

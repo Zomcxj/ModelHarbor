@@ -1,28 +1,28 @@
-//! 「本机用量」的状态机：后台扫描 + 3 秒增量检测 + debounce。
+//! The "Local Usage" state machine: background scan + 3s change detection + debounce.
 //!
-//! 照 [`crate::app::balance`] 的模式：后台线程 + `mpsc::Receiver`，UI 线程每帧
-//! `try_recv` 收结果，**绝不在 UI 线程调 `usage::scan()`**。
+//! Follows the [`crate::app::balance`] pattern: a background thread plus an `mpsc::Receiver`; the UI
+//! thread calls `try_recv` each frame to pick up results — **never call `usage::scan()` on the UI thread**.
 //!
-//! 重扫的触发条件是**源文件指纹变了**，不是「过了 3 秒」：
+//! A rescan is triggered when the **source-file fingerprints change**, not when "3 seconds passed":
 //!
 //! ```text
-//! 每 3 秒比对一次指纹
-//!   ├─ 没变化 ──────────────► 什么都不做（空闲时 CPU ≈ 0）
-//!   └─ 有变化 ──► 记下首次变化时刻，等 1.5 秒（合并连续写入）
-//!                  ├─ 1.5 秒内没再变 ──► 重扫
-//!                  └─ 一直在变（agent 流式写文件）──► 最多等 5 秒就重扫
+//! Every 3 seconds, compare fingerprints
+//!   ├─ unchanged ────────────► do nothing (idle CPU ≈ 0)
+//!   └─ changed ──► note first-change time, wait 1.5s (coalesce consecutive writes)
+//!                  ├─ quiet for 1.5s ──► rescan
+//!                  └─ still changing (agent streaming writes) ──► rescan after at most 5s
 //! ```
 //!
-//! debounce 参数对齐 token-monitor（`DEBOUNCE_SECS` / `MAX_WAIT_SECS` /
-//! `POLL_INTERVAL_SECS`），**没有额外的冷却** —— token-monitor 在源码里明确写了
-//! 「There is deliberately no cooldown on top of the debounce」：debounce 已经
-//! 把连续写入合并掉了，再加冷却只会让用户觉得数字不跟手。
+//! Debounce parameters mirror token-monitor (`DEBOUNCE_SECS` / `MAX_WAIT_SECS` /
+//! `POLL_INTERVAL_SECS`), **with no extra cooldown** — token-monitor states in its source:
+//! "There is deliberately no cooldown on top of the debounce". The debounce already coalesces
+//! consecutive writes; adding a cooldown would only make the numbers feel laggy.
 
 pub(in crate::app) mod aggregate;
 mod chart;
 pub(in crate::app) use chart::ChartKind;
 mod component;
-// 布局测试拿行距预算做断言（会话表体是普通表的三倍）。
+// Layout tests assert on the line-spacing budget (the session table is 3x an ordinary table).
 #[cfg(test)]
 pub(in crate::app) use component::ROW_PITCH;
 mod overview;
@@ -37,31 +37,31 @@ use eframe::egui;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-/// 连续变化合并窗口：首次发现变化后等这么久，期间没再变才重扫。
+/// Coalescing window for consecutive changes: after the first change is seen, wait this long and only rescan if nothing else changed.
 pub(in crate::app) const DEBOUNCE_SECS: f64 = 1.5;
 
-/// 持续写入时的强制触发上限：agent 流式写会话文件时，指纹每轮检测都在变，
-/// 光靠「静止 1.5 秒」可能永远等不到，所以最多等这么久就重扫一次。
+/// Hard trigger cap while writes keep coming: when an agent streams a session file, the fingerprint changes on every poll,
+/// and "quiet for 1.5s" may never arrive — so force a rescan after at most this long.
 pub(in crate::app) const MAX_WAIT_SECS: f64 = 5.0;
 
-/// 指纹检测间隔：每 3 秒才 stat 一遍源文件（空闲时这是唯一的开销）。
+/// Fingerprint poll interval: source files are only stat-ed every 3s (the sole idle-time cost).
 pub(in crate::app) const POLL_INTERVAL_SECS: f64 = 3.0;
 
-/// 账本落盘的最小间隔：扫描最密也就检测间隔一次，没必要每次都写盘。
+/// Minimum interval between ledger flushes: at most one flush per detection cycle, so no need to write on every scan.
 pub(in crate::app) const SAVE_INTERVAL_SECS: f64 = 30.0;
 
-/// 扫描在途时的轮询间隔：扫描耗时远超过一帧，界面空闲时不会自己重绘，
-/// 所以要主动要帧才能及时收结果。
+/// Poll interval while a scan is in flight: a scan takes far longer than a frame, and the UI won't repaint on its own
+/// while idle, so we must explicitly request frames to collect results promptly.
 const SCAN_POLL_REPAINT_SECS: f64 = 0.25;
 
-/// 重绘请求的最小间隔：两个期限都已经过去时退化成这个节拍，
-/// 避免 0 秒（每帧重绘）把界面拖成空转。
+/// Minimum interval between repaint requests: when both deadlines have passed, fall back to this beat
+/// so a 0s interval (repaint every frame) can't spin the UI idle.
 pub(in crate::app) const MIN_REPAINT_SECS: f64 = 0.01;
 
-/// 段控按钮：选中态 = 悬浮色底 + 2px 描边，与顶栏页签同一套样式。
+/// Segmented button: selected state = hover-tinted fill + 2px border, same style as the top-bar page tabs.
 ///
-/// 宽度固定（不随标签长短跳动），返回是否被点击。用量视图里的区间 / 维度 /
-/// 图表开关三组按钮都用它，免得到处重写一遍选中态。
+/// Fixed width (doesn't jump with label length); returns whether it was clicked. The usage view's
+/// range / dimension / chart-toggle groups all reuse it instead of restating the selected style.
 pub(in crate::app) fn chip(ui: &mut egui::Ui, selected: bool, label: &str, width: f32) -> bool {
     let visuals = ui.visuals();
     let (fill, stroke) = if selected {
@@ -83,23 +83,24 @@ pub(in crate::app) fn chip(ui: &mut egui::Ui, selected: bool, label: &str, width
     .clicked()
 }
 
-/// 系列颜色：强调色按黄金角转一圈，第 0 个系列就是强调色本身。
+/// Series colors: the accent hue rotates by the golden angle; series 0 is the accent itself.
 ///
-/// 用黄金角（137.508°）而不是均分：均分时系列一多，相邻两色就贴在一起；
-/// 黄金角让任意前缀的几个系列都散得开。
+/// Golden angle (137.508°) instead of even spacing: with many series, evenly spaced hues collide;
+/// the golden angle keeps any prefix of series well separated.
 ///
-/// 饱和度与明度按明暗主题分开夹：亮色主题下高饱和色在浅底上会「发飘」，
-/// 深色主题下低明度色在深底上又糊成一片。
+/// Saturation and lightness are clamped per theme: on light themes highly saturated colors float off
+/// pale backgrounds; on dark themes low-lightness colors blur into deep backgrounds.
 ///
-/// 趋势图的堆叠系列与总览卡的构成条共用它，两处的颜色才对得上。
+/// Shared by the trend chart's stacked series and the overview cards' composition bars so both match.
 pub(in crate::app) fn series_color(
     index: usize,
     accent: egui::Color32,
     dark: bool,
 ) -> egui::Color32 {
-    // 第 0 个系列原样用强调色：下面那套 s/v 夹取是为了保证「转出来」的颜色
-    // 在深浅底上都看得清，但强调色本身是主题作者调过的，不该被动。
-    // （`Hsva` 在线性空间算，往返一趟会把强调色推偏几个色阶。）
+    // Series 0 uses the accent color as-is: the s/v clamping below exists to keep "generated" colors
+    // readable on both light and dark fills, but the accent itself was tuned by the theme author and
+    // must not be touched. (`Hsva` computes in linear space; a round trip would shift the accent
+    // several steps off.)
     if index == 0 {
         return accent;
     }
@@ -115,54 +116,54 @@ pub(in crate::app) fn series_color(
     egui::Color32::from(hsva)
 }
 
-/// 后台线程交回来的原始扫描结果：会话表、按天分桶、消息数、内核自报耗时。
+/// Raw scan result delivered from the background thread: session table, daily buckets, message counts, engine-reported duration.
 type ScanPayload = (HashMap<String, SessionSnapshot>, DailyMap, usize, u32);
 
-/// 一次扫描的成品（已并入账本）。
+/// A finished scan (already merged into the ledger).
 pub(in crate::app) struct UsageReport {
-    /// 展示视图：实时扫描结果 ∪ 账本里已消失的会话，按最近活动倒序。
+    /// Display view: live scan results ∪ sessions gone from the sources but kept in the ledger, most recent activity first.
     pub sessions: Vec<SessionSnapshot>,
-    /// 按本地日历日分桶（聚合与各分解保留已删会话的用量，明细不含它）。
+    /// Buckets per local calendar day (aggregates and breakdowns keep deleted sessions' usage; details don't).
     ///
-    /// 热力图与「今日 / 本周 / 本月 / 总计」都读这里：会话级汇总做不到这件事，
-    /// 一个会话可以横跨几十天。
+    /// The heatmap and "today / week / month / total" all read from here: session-level sums can't do this —
+    /// one session may span dozens of days.
     pub daily: DailyMap,
-    /// 本次扫描完成时刻（egui 时间轴秒），用于显示「更新于 N 秒前」。
+    /// When this scan finished (egui timeline seconds), for the "updated N seconds ago" display.
     pub scanned_at: f64,
-    /// 内核读到的消息条数。
+    /// Message count reported by the engine.
     pub message_count: usize,
-    /// 内核自报的扫描耗时（毫秒）。
+    /// Scan duration self-reported by the engine (milliseconds).
     pub scan_ms: u32,
 }
 
 impl UsageReport {
-    /// 合计 token。
+    /// Total tokens.
     ///
-    /// 只用于测试：生产路径的合计走按天分桶（`range::range_stats`），
-    /// 那里能按区间筛选，而会话级汇总做不到。
+    /// Test-only: the production total goes through the daily buckets (`range::range_stats`), which can
+    /// filter by range — session-level sums can't.
     #[cfg(test)]
     pub(in crate::app) fn total(&self) -> i64 {
         self.sessions.iter().map(SessionSnapshot::total).sum()
     }
 }
 
-/// 「本机用量」的扫描状态。
+/// Scan state for the "Local Usage" page.
 pub(in crate::app) struct UsageState {
-    /// 最近一次成功扫描的结果（已并入账本）。
+    /// The last successful scan's result (already merged into the ledger).
     pub result: Option<Result<UsageReport, String>>,
-    /// `result` 当前是账本顶上的缓存数据（打开秒显）：后台扫完即替换。
+    /// `result` currently holds the ledger-topped cached data (instant display on open): replaced once the background scan finishes.
     cached: bool,
-    /// 扫描在途时的接收端。
+    /// Receiver while a scan is in flight.
     rx: Option<Receiver<Result<ScanPayload, String>>>,
-    /// 账本（跨扫描保留已删会话）。
+    /// The ledger (keeps deleted sessions across scans).
     ledger: Ledger,
-    /// 上次指纹检测时刻（egui 秒）。
+    /// Time of the last fingerprint check (egui seconds).
     last_poll_at: Option<f64>,
-    /// 上次落盘时刻（egui 秒）。
+    /// Time of the last ledger flush (egui seconds).
     last_save_at: Option<f64>,
-    /// 源文件指纹：path → (mtime_secs, size)。
+    /// Source-file fingerprints: path → (mtime_secs, size).
     fingerprints: scan_sources::Fingerprints,
-    /// debounce：首次检测到变化的时刻。
+    /// Debounce: the moment the first change was detected.
     dirty_since: Option<f64>,
 }
 
@@ -172,34 +173,34 @@ impl Default for UsageState {
             result: None,
             cached: false,
             rx: None,
-            // 账本按项目既有约定放在配置目录（`Prefs::config_dir()`，
-            // 与 settings.json / tokens.json 同目录），不自己拼路径。
+            // The ledger sits in the config dir per the project's existing convention (`Prefs::config_dir()`,
+            // same directory as settings.json / tokens.json); no hand-rolled paths.
             ledger: Ledger::open_default(),
             last_poll_at: None,
             last_save_at: None,
             fingerprints: scan_sources::Fingerprints::new(),
             dirty_since: None,
         };
-        // 打开秒显：账本里有上次的数据就直接顶上，后台扫完再替换
-        //（对齐 token-monitor：缓存保持可见，后台刷新期间不清屏）。
+        // Instant display: with data in the ledger, surface it immediately and replace after the background
+        // scan (aligned with token-monitor: the cache stays visible, the screen isn't cleared mid-refresh).
         state.fill_from_ledger();
         state
     }
 }
 
 impl UsageState {
-    /// 是否有扫描在途（首次打开还没有结果时，界面据此显示「扫描中」）。
+    /// Whether a scan is in flight (the UI shows "scanning" on first open when there's no result yet).
     pub(in crate::app) fn scanning(&self) -> bool {
         self.rx.is_some()
     }
 
-    /// 源里已消失、只存在于账本里的会话条数。
+    /// Count of sessions gone from the sources, existing only in the ledger.
     pub(in crate::app) fn ledger_archived_len(&self) -> usize {
         self.ledger.archived_len()
     }
 
-    /// 打开秒显：账本里有数据就把上次的结果直接填进展示（后台扫完替换）。
-    /// 返回是否填上了；账本为空时清掉旧展示与缓存标记（保持状态一致）。
+    /// Instant display: with ledger data, fill the last result straight into the display (replaced after the background scan).
+    /// Returns whether anything was filled; an empty ledger clears the old display and cache flag (state stays consistent).
     pub(in crate::app) fn fill_from_ledger(&mut self) -> bool {
         self.cached = false;
         if self.ledger.is_empty() {
@@ -210,7 +211,7 @@ impl UsageState {
         self.result = Some(Ok(UsageReport {
             sessions: self.ledger.view(),
             daily: self.ledger.daily().clone(),
-            // 缓存态不读 egui 时间轴的 scanned_at：时刻在 `cached_saved_at`。
+            // In cached mode, don't read the egui timeline's scanned_at: the moment lives in `cached_saved_at`.
             scanned_at: 0.0,
             message_count: 0,
             scan_ms: 0,
@@ -218,8 +219,8 @@ impl UsageState {
         true
     }
 
-    /// 缓存展示中的数据时刻（账本落盘时刻，unix 毫秒）；
-    /// `None` = 实时数据或还没有数据。
+    /// Data timestamp while showing the cache (the ledger's flush time, unix millis);
+    /// `None` = live data or no data yet.
     pub(in crate::app) fn cached_saved_at(&self) -> Option<i64> {
         if self.cached {
             self.ledger.saved_at()
@@ -228,7 +229,7 @@ impl UsageState {
         }
     }
 
-    /// 收下后台扫描结果：并入账本、替换展示视图、清掉缓存标记。
+    /// Accept a background scan result: merge into the ledger, replace the display view, clear the cache flag.
     fn adopt_scan(&mut self, payload: ScanPayload, now: f64) {
         let (sessions, daily, message_count, scan_ms) = payload;
         self.result = Some(Ok(merge_into_ledger(
@@ -243,36 +244,37 @@ impl UsageState {
     }
 }
 
-/// 指纹比对的结果：这次该不该发起重扫。
+/// Fingerprint comparison verdict: whether to kick off a rescan this time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum PollOutcome {
-    /// 指纹没变：不重扫，并清掉 debounce 状态。
+    /// Fingerprints unchanged: no rescan, and the debounce state is cleared.
     Idle,
-    /// 刚发现变化：记下时刻，还在合并窗口内。
+    /// Change just noticed: record the moment; still inside the coalescing window.
     Debouncing,
-    /// 该重扫了。
+    /// Time to rescan.
     Scan,
 }
 
-/// 纯逻辑的 debounce 判定（可单测）。
+/// Pure debounce logic (unit-testable).
 ///
-/// `changed` 是本次指纹比对发现的变化文件数；`dirty_since` 是上一次「首次发现
-/// 变化」的时刻（`None` = 之前是干净的）。
+/// `changed` is the number of changed files found by this fingerprint comparison; `dirty_since` is the
+/// moment the change was first noticed (`None` = it was clean before).
 ///
-/// 语义（带最大等待的尾沿防抖）：
-/// - `changed > 0` 只负责**置脏**，不负责触发 —— 源里确实写了新数据，
-///   就应该在窗口结束后扫一次，哪怕这期间它又安静下来了（否则「改了、
-///   但下一次指纹检测时已经稳定」的那次改动会被永远跳过）；
-/// - 已置脏时不再看 `changed`：等到距首次发现变化满 [`DEBOUNCE_SECS`] 就扫；
-/// - [`MAX_WAIT_SECS`] 是安全网：只有把检测间隔调到小于防抖窗口时才用得上，
-///   保留它是为了在调参时不会出现「流式写入永远等不到」的坑。
+/// Semantics (trailing-edge debounce with a max wait):
+/// - `changed > 0` only **marks dirty**, it does not trigger — new data did land in the sources, so a
+///   scan should happen once the window closes, even if the source went quiet again in the meantime
+///   (otherwise a change that "was made but had already settled by the next fingerprint check" would
+///   be skipped forever);
+/// - once dirty, `changed` is ignored: when [`DEBOUNCE_SECS`] has passed since the first sighting, scan;
+/// - [`MAX_WAIT_SECS`] is a safety net: only needed if the poll interval is tuned below the debounce
+///   window, kept so parameter tweaking can't hit the "streaming writes never settle" trap.
 pub(in crate::app) fn poll_outcome(
     changed: usize,
     dirty_since: Option<f64>,
     now: f64,
 ) -> (PollOutcome, Option<f64>) {
-    // 只在「干净 → 脏」的那一次记时刻；已置脏就保留最初的时刻，
-    // 不让持续写入把窗口起点往后推。
+    // Record the moment only on the "clean → dirty" transition; once dirty, the original moment is kept —
+    // continuous writes must not push the window's origin later.
     let since = match (changed > 0, dirty_since) {
         (_, Some(since)) => Some(since),
         (true, None) => Some(now),
@@ -282,13 +284,13 @@ pub(in crate::app) fn poll_outcome(
         return (PollOutcome::Idle, None);
     };
     if now - since >= DEBOUNCE_SECS || now - since >= MAX_WAIT_SECS {
-        // 扫完就清脏；扫描期间新增的改动会在下一轮检测里重新置脏。
+        // Clear dirty after the scan; changes arriving mid-scan re-dirty on the next check round.
         return (PollOutcome::Scan, None);
     }
     (PollOutcome::Debouncing, Some(since))
 }
 
-/// 是否到了该做指纹检测的时刻（3 秒节流）。
+/// Whether it's time for a fingerprint check (3s throttle).
 pub(in crate::app) fn poll_due(last_poll_at: Option<f64>, now: f64) -> bool {
     match last_poll_at {
         None => true,
@@ -296,17 +298,18 @@ pub(in crate::app) fn poll_due(last_poll_at: Option<f64>, now: f64) -> bool {
     }
 }
 
-/// debounce 期间该请求多久之后重绘。
+/// How soon the debounce phase should request a repaint.
 ///
-/// 界面空闲时 egui 不重绘，不主动要帧就等不到「合并窗口到期该扫了」的那一刻。
-/// 返回 `None` = 不需要额外请求（没在 debounce）。
+/// egui doesn't repaint while idle; without requesting frames we'd never reach "coalescing window
+/// expired, time to scan". Returns `None` = no extra request needed (not debouncing).
 ///
-/// 只认**还没到**的期限：把已过去的期限夹到 0 再取最小，会退化成 0.01 秒的
-/// 空转重绘。检测间隔（3 秒）比合并窗口（1.5 秒）长，所以「刚过合并窗口、
-/// 还没到下一个检测点」这个状态每轮都会出现，夹 0 会让界面连续空绘上百帧。
+/// Only **not-yet-due** deadlines count: clamping an overdue deadline to 0 and taking the min would
+/// degenerate into 0.01s busy repaints. The poll interval (3s) is longer than the coalescing window
+/// (1.5s), so the state "window expired, next poll not yet due" occurs every cycle — clamping to 0
+/// would spin hundreds of wasted repaint frames.
 pub(in crate::app) fn repaint_delay(dirty_since: Option<f64>, now: f64) -> Option<f64> {
     let since = dirty_since?;
-    // 取两个期限里更近的**未来**时刻；都过了才退化成最小节拍。
+    // Take the nearer **future** of the two deadlines; only when both have passed fall back to the minimum beat.
     let nearest = [since + DEBOUNCE_SECS - now, since + MAX_WAIT_SECS - now]
         .into_iter()
         .filter(|remaining| *remaining > 0.0)
@@ -319,14 +322,14 @@ pub(in crate::app) fn repaint_delay(dirty_since: Option<f64>, now: f64) -> Optio
 }
 
 impl App {
-    /// 每帧调用：收扫描结果 + 按指纹变化决定是否重扫。
+    /// Called every frame: collect scan results + decide on a rescan from fingerprint changes.
     ///
-    /// 与 `poll_balance()` 并列放在 `App::update()` 里。扫描全程在后台线程，
-    /// 这里只做「收结果 + stat 指纹 + spawn」。
+    /// Sits beside `poll_balance()` in `App::update()`. The scan runs entirely on a background thread;
+    /// this only does "collect results + stat fingerprints + spawn".
     pub(super) fn poll_usage(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|input| input.time);
 
-        // 1. 先收结果。`try_recv` 不阻塞：没有结果就立刻返回。
+        // 1. Collect results first. `try_recv` doesn't block: returns immediately with no result.
         let received = self
             .usage
             .rx
@@ -334,58 +337,59 @@ impl App {
             .map(std::sync::mpsc::Receiver::try_recv);
         match received {
             Some(Ok(Ok(payload))) => {
-                // 并入账本 + 产出展示视图。merge_scan 是 O(会话数)，几十条，UI 线程够用。
+                // Merge into the ledger + produce the display view. merge_scan is O(sessions) — dozens — fine on the UI thread.
                 self.usage.adopt_scan(payload, now);
                 self.save_usage_ledger(now);
             }
             Some(Ok(Err(err))) => {
-                // 扫描失败：换上错误页（与无缓存时的行为一致）。缓存标记一并清掉，
-                // 否则「有缓存 → 自动重扫」会在持续失败时每帧打转。
+                // Scan failed: swap in the error page (same behavior as having no cache). Clear the cache flag too,
+                // otherwise "has cache → auto rescan" would spin every frame on persistent failure.
                 self.usage.result = Some(Err(err));
                 self.usage.cached = false;
             }
             Some(Err(TryRecvError::Empty)) => {}
             Some(Err(TryRecvError::Disconnected)) => {
-                // 线程异常退出：结束等待，下一轮检测再决定要不要重扫。
+                // Thread died abnormally: end the wait; the next check round decides whether to rescan.
                 self.usage.rx = None;
             }
             None => {}
         }
 
-        // 2. 首帧（或上次扫描失败后重开）自动扫一次：满足「每次打开软件自动更新」。
-        //    缓存秒显也一样：账本只保证「有得看」，扫完才保证「是新的」。
-        //    不等 3 秒，否则打开用量视图会先看到一段过期数字。
+        // 2. First frame (or reopening after a failed scan) scans once automatically: fulfilling "auto-refresh on every open".
+        //    Instant cache display is the same: the ledger only guarantees "something to look at"; the scan is what
+        //    guarantees "it's fresh". Waiting 3 seconds would show stale numbers first when opening the view.
         if self.usage.rx.is_none() && (self.usage.result.is_none() || self.usage.cached) {
             self.start_usage_scan(now, ctx);
             return;
         }
 
-        // 3. 扫描在途：不叠加扫描，但要按扫描轮询间隔要帧才能收到结果。
+        // 3. Scan in flight: don't stack scans, but request frames at the polling interval to receive results.
         if self.usage.rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(SCAN_POLL_REPAINT_SECS));
             return;
         }
 
-        // 4. 3 秒节流：空闲时唯一的开销就是这一步。
+        // 4. 3-second throttle: this step is the only idle-time cost.
         if !poll_due(self.usage.last_poll_at, now) {
-            // 还在 debounce 里就按剩余时间要一帧，否则界面空闲时不会重绘。
+            // While debouncing, request a frame for the remaining time; otherwise the idle UI never repaints.
             self.request_usage_repaint(ctx, now);
             return;
         }
         self.usage.last_poll_at = Some(now);
 
-        // 5. 指纹比对：只有源真的变了才可能重扫。
+        // 5. Fingerprint comparison: only real source changes can lead to a rescan.
         let current = scan_sources::fingerprint();
         let changed = scan_sources::changed_files(&self.usage.fingerprints, &current);
-        // 指纹立刻记下最新的：变化持续时每轮都要刷新，否则下一轮拿「首次变化前」
-        // 的快照去比会一直认为有变化（结果一样，但账目更清楚）。
+        // Record the newest fingerprint immediately: while changes keep coming, every round must refresh, or the
+        // next round would compare against a pre-first-change snapshot and always see a difference (same outcome,
+        // but the bookkeeping is cleaner).
         self.usage.fingerprints = current;
         let (outcome, dirty_since) = poll_outcome(changed, self.usage.dirty_since, now);
         self.usage.dirty_since = dirty_since;
         match outcome {
-            // 空闲也要按「下一个检测点」要帧：egui 空闲时不主动重绘，
-            // 不要帧则周期检测饿死，源文件此后再有变化也永远发现不了
-            // （只能靠鼠标移动复活）。「半分钟不刷新」的缺陷就是这么来的。
+            // Even when idle, request a frame for "the next check point": egui doesn't repaint on its own while idle,
+            // and without frame requests the periodic check starves — later source changes would never be noticed
+            // (only mouse movement would revive it). That's exactly how the "half a minute without refresh" defect arose.
             PollOutcome::Idle => {
                 let delay = match self.usage.last_poll_at {
                     Some(last) => (last + POLL_INTERVAL_SECS - now).max(MIN_REPAINT_SECS),
@@ -398,13 +402,14 @@ impl App {
         }
     }
 
-    /// debounce 期间按剩余时间请求重绘。
+    /// Request repaints during the debounce phase, by remaining time.
     ///
-    /// 取「到 debounce 期限」与「到下一个检测点」里更近的那个：扫描只能在检测点
-    /// 发起，所以只等期限会白绘一帧再重排，而只等检测点又会让 [`MAX_WAIT_SECS`]
-    /// 在把检测间隔调小时失去作用。两个期限都已过期时，唯一有意义的帧就是
-    /// 检测点本身：此时若仍取最小值，会退化成 [`MIN_REPAINT_SECS`] 节拍的
-    /// 空转重绘（检测间隔远大于合并窗口时尤其明显）。
+    /// Takes the nearer of "the debounce deadline" and "the next check point": scans can only start at a
+    /// check point, so waiting only for the deadline wastes one frame before reordering, while waiting only
+    /// for the check point renders [`MAX_WAIT_SECS`] useless when the poll interval is tuned down. When both
+    /// deadlines have passed, the only meaningful frame is the check point itself: taking the min anyway
+    /// would degenerate into [`MIN_REPAINT_SECS`]-beat busy repaints (most visible when the poll interval
+    /// far exceeds the coalescing window).
     fn request_usage_repaint(&self, ctx: &egui::Context, now: f64) {
         let Some(deadline) = repaint_delay(self.usage.dirty_since, now) else {
             return;
@@ -423,15 +428,15 @@ impl App {
         ));
     }
 
-    /// 发起一次后台扫描。UI 线程只负责 spawn 与收结果。
+    /// Start one background scan. The UI thread only spawns and collects.
     fn start_usage_scan(&mut self, now: f64, ctx: &egui::Context) {
         let (tx, rx) = std::sync::mpsc::channel::<Result<ScanPayload, String>>();
-        // 已删除并永久忽略的会话：名单拷给后台线程，扫描时直接跳过，
-        // 否则删掉的会话会在下一轮扫描里复活（它们已并入按天分桶的贡献
-        // 会照常合并保留，见 [`Ledger::ignore_session`]）。
+        // Deleted and permanently ignored sessions: the list is copied to the background thread and skipped
+        // during the scan, otherwise deleted sessions would revive on the next scan (their contributions already
+        // merged into the daily buckets are kept as usual — see [`Ledger::ignore_session`]).
         let ignored = self.usage.ledger.ignored().clone();
         std::thread::spawn(move || {
-            // 全量扫描耗时远超一帧：只能在后台线程跑。
+            // A full scan takes far longer than a frame: it can only run on a background thread.
             let payload = crate::usage::scan(&ignored).map(|scanned| {
                 (
                     scanned.sessions,
@@ -445,24 +450,24 @@ impl App {
         self.usage.rx = Some(rx);
         self.usage.dirty_since = None;
         self.usage.last_poll_at = Some(now);
-        // 扫描在途：按轮询间隔继续要帧，结果回来后界面自动换上新数据
-        //（指示器已删，用户反馈）。
+        // Scan in flight: keep requesting frames at the polling interval; the UI swaps in new data when results arrive
+        // (the spinner was removed per user feedback).
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(SCAN_POLL_REPAINT_SECS));
     }
 
-    /// 注入一次「扫描完成」的结果（仅测试用）。
+    /// Inject a "scan finished" result (tests only).
     ///
-    /// 排版测试只关心表格怎么画，不去真扫盘（也不依赖本机数据）。
-    /// 走 `merge_into_ledger` 而不是直接塞 `result`：与生产路径同构，
-    /// 这样测试里的 `daily` 与 `sessions` 会经过同一套账本合并逻辑。
+    /// Layout tests care about how tables draw, not real disk scans (and must not depend on local data).
+    /// Goes through `merge_into_ledger` instead of stuffing `result` directly: isomorphic to the production
+    /// path, so the tests' `daily` and `sessions` pass through the same ledger merge logic.
     #[cfg(test)]
     pub(in crate::app) fn set_usage_result_for_test(
         &mut self,
         sessions: Vec<SessionSnapshot>,
         daily: DailyMap,
     ) {
-        // 用内存账本：否则会读用户真实账本，行数不定、断言不稳。
-        // 更换账本后，构造期填充的缓存数据一并失效。
+        // Use an in-memory ledger: otherwise the user's real ledger loads, with unpredictable rows and flaky assertions.
+        // Swapping the ledger also invalidates any cache data filled during construction.
         self.usage.ledger = Ledger::in_memory();
         self.usage.cached = false;
         let scanned: HashMap<String, SessionSnapshot> = sessions
@@ -481,8 +486,8 @@ impl App {
         self.usage.result = Some(Ok(report));
     }
 
-    /// 测试钩子：预置源指纹与干净状态，让下一次 [`Self::poll_usage`]
-    /// 直接落在空闲分支（不必真等源文件变化，也不触发后台扫描）。
+    /// Test hook: pre-seed source fingerprints and the clean state so the next [`Self::poll_usage`]
+    /// lands directly in the idle branch (no waiting for real file changes, no background scan triggered).
     #[cfg(test)]
     pub(in crate::app) fn seed_usage_idle_for_test(&mut self) {
         self.usage.fingerprints = scan_sources::fingerprint();
@@ -491,9 +496,9 @@ impl App {
         self.usage.rx = None;
     }
 
-    /// 账本落盘（按 [`SAVE_INTERVAL_SECS`] 节流）。
+    /// Flush the ledger (throttled by [`SAVE_INTERVAL_SECS`]).
     ///
-    /// 落盘失败不影响功能：账本留在内存里，本次会话的数字照样正确。
+    /// Flush failure doesn't affect the feature: the ledger stays in memory and this session's numbers stay correct.
     fn save_usage_ledger(&mut self, now: f64) {
         if !self.usage.ledger.is_dirty() {
             return;
@@ -508,7 +513,7 @@ impl App {
         self.save_usage_ledger_unthrottled(now);
     }
 
-    /// 立即落盘（不节流）：删除会话是显式动作，不该等攒批间隔。
+    /// Flush immediately (no throttle): deleting a session is an explicit action and shouldn't wait for the batching interval.
     fn save_usage_ledger_unthrottled(&mut self, now: f64) {
         if !self.usage.ledger.is_dirty() {
             return;
@@ -517,24 +522,25 @@ impl App {
         self.usage.last_save_at = Some(now);
     }
 
-    /// 删除一个会话：先把它从**源**里删掉，再从统计里收走明细。
+    /// Delete a session: first remove it **from the source**, then withdraw its details from the statistics.
     ///
-    /// 两半是同一次动作：
-    /// - **源**（agent 自己的库 / 会话文件）：真删，见 [`crate::usage::delete_session`]。
-    ///   失败时按 [`DeleteError::blocks_ledger`] 决定统计那半做不做：
-    ///   可修的失败（agent 在跑、写库出错）**两半都不做** —— 行从列表里
-    ///   消失后用户再也点不到它，源里的会话就水远删不掉了；不可修的失败
-    ///   （后端不支持删源）没有重试可言，照旧收走统计。
-    /// - **账本**：会话快照与逐日 `by_session` 明细真删；各维度的合计与分解
-    ///   原样保留，所以总量、热力图与时间表不因删除缩水。同时把键记进忽略
-    ///   名单，挡住「删前已起飞的扫描」把它并回来。
+    /// The two halves are one action:
+    /// - **Source** (the agent's own database / session files): really deleted — see [`crate::usage::delete_session`].
+    ///   On failure, [`DeleteError::blocks_ledger`] decides whether the statistics half proceeds:
+    ///   recoverable failures (agent running, database write error) do **neither half** — once the row
+    ///   disappears from the list the user can never click it again, and the source session would be
+    ///   stuck undeletable; unrecoverable failures (backend can't delete sources) have no retry to speak
+    ///   of, so statistics proceed as usual.
+    /// - **Ledger**: the session snapshot and per-day `by_session` details are really deleted; per-dimension
+    ///   totals and breakdowns stay untouched, so totals, the heatmap, and the time table don't shrink from
+    ///   deletion. The key also enters the ignore list, blocking "scans already in flight" from merging it back.
     pub(in crate::app) fn forget_usage_session(&mut self, key: &str, now: f64) {
         let source = crate::usage::delete_session(key);
         self.apply_session_removal(key, source, now);
     }
 
-    /// 删除的后半段（与源删除分开：测试要拿「源删成了 / 拦下了」两种输入
-    /// 跑同一段逻辑，不依赖本机真的装没装那些 agent）。
+    /// The deletion's second half (split from source deletion: tests run the same logic with both "source deleted" and
+    /// "source blocked" inputs, without depending on which agents this machine really has installed).
     pub(in crate::app) fn apply_session_removal(
         &mut self,
         key: &str,
@@ -554,8 +560,8 @@ impl App {
             report
                 .sessions
                 .retain(|session| SessionSnapshot::key(session.client, &session.session_id) != key);
-            // 内存里的展示数据同步收掉明细：不等下一轮扫描，
-            // 否则账本已摘、报表还揣着，两者不一致。
+            // The in-memory display data withdraws its details in sync: don't wait for the next scan,
+            // otherwise the ledger has dropped them while the reports still carry them — inconsistent.
             for bucket in report.daily.values_mut() {
                 bucket.remove_session_detail(key);
             }
@@ -564,9 +570,10 @@ impl App {
         self.save_usage_ledger_unthrottled(now);
     }
 
-    /// 当前展示视图（各维度聚合的输入）。
+    /// The current display view (input to every dimension's aggregation).
     ///
-    /// 扫描失败 / 还没扫完时返回空切片：界面会画「没有数据」而不是上一轮的旧数字。
+    /// Returns an empty slice on scan failure / before the first scan finishes: the UI paints "no data"
+    /// instead of last round's stale numbers.
     pub(in crate::app) fn usage_sessions(&self) -> &[SessionSnapshot] {
         match self
             .usage
@@ -579,10 +586,10 @@ impl App {
         }
     }
 
-    /// 按天分桶（热力图与区间统计的输入）。
+    /// The daily buckets (input to the heatmap and range stats).
     ///
-    /// 与 [`Self::usage_sessions`] 并列：两者服务于不同视图，都取自同一次扫描结果。
-    /// 扫描失败 / 还没扫完时返回 `None`，界面据此画「没有数据」。
+    /// Parallel to [`Self::usage_sessions`]: the two serve different views, both taken from the same scan
+    /// result. Returns `None` on scan failure / before completion, and the UI paints "no data" accordingly.
     pub(in crate::app) fn usage_daily(&self) -> Option<&DailyMap> {
         self.usage
             .result
@@ -591,15 +598,15 @@ impl App {
             .map(|report| &report.daily)
     }
 
-    /// 按当前 agent 筛选过滤后的按天分桶。
+    /// Daily buckets filtered by the current agent selection.
     ///
-    /// 筛选方式是**只保留该 agent 的分解，并把合计换成它**：桶里的
-    /// `by_client` 是现成的（按 label 分），拿它替掉 `totals` 即可，
-    /// 不用重新扫一遍。热力图、区间统计、四个维度全都读这个结果，
-    /// 所以「看单个 agent」和「看全部」走的是同一条代码路径。
+    /// The filter **keeps only that agent's breakdown and swaps it in as the total**: the bucket's
+    /// `by_client` is ready-made (keyed by label), so it simply replaces `totals` — no rescan needed.
+    /// The heatmap, range stats, and all four dimensions read this one result, so "view one agent" and
+    /// "view all" share a single code path.
     ///
-    /// 模型与来源 agent 也跟着收窄：只看 pi 时，模型表里不该出现
-    /// 只有 opencode 用过的模型。
+    /// Models and source agents narrow too: when only pi is selected, the model table must not list models
+    /// only opencode ever used.
     pub(in crate::app) fn usage_daily_filtered(&self) -> DailyMap {
         let Some(daily) = self.usage_daily() else {
             return DailyMap::new();
@@ -607,7 +614,7 @@ impl App {
         filter_daily_by_client(daily, self.usage_filter)
     }
 
-    /// 当前筛选的 agent 名；未筛选时给「全部 agent」。
+    /// The currently filtered agent name; "all agents" when unfiltered.
     pub(in crate::app) fn usage_filter_label(&self) -> String {
         match self.usage_filter {
             Some(client) => client.label().to_string(),
@@ -615,20 +622,20 @@ impl App {
         }
     }
 
-    /// 今天（本地日索引）。
+    /// Today (local day index).
     ///
-    /// 区间边界都相对它算，所以集中在这里读一次系统时间，而不是每个函数各读一次
-    /// （跨零点时同一帧内读到不同值会画出不一致的界面）。
+    /// All range bounds are computed relative to it, so the system clock is read once here instead of once
+    /// per function (a frame straddling midnight reading different values would paint an inconsistent UI).
     pub(in crate::app) fn usage_today(&self) -> i64 {
         let offset = crate::app::balance::local_utc_offset_secs();
         aggregate::local_day_index(unix_now_secs(), offset)
     }
 }
 
-/// 当前时间（Unix 秒）。
+/// Current time (Unix seconds).
 ///
-/// 放在 `mod.rs` 而不是各子模块里各写一份：`view` 与 `overview` 都要用，
-/// 同一帧内两处读系统时间会跨零点不一致。
+/// Lives in `mod.rs` rather than duplicated per submodule: both `view` and `overview` need it, and
+/// two reads of the system clock within one frame could straddle midnight and disagree.
 pub(in crate::app) fn unix_now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -636,15 +643,15 @@ pub(in crate::app) fn unix_now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// 按 agent 筛选按天分桶：只保留该 agent 的用量，并把它当成这一天的新合计。
+/// Filter daily buckets by agent: keep only that agent's usage and treat it as the day's new total.
 ///
-/// 筛选方式是**用现成的分解换掉合计**，不重新扫一遍：`by_client` 本来就是按
-/// agent 分好的，拿它替掉 `totals` 即可。于是热力图、区间统计、四个维度表
-/// 全都读同一份结果，「看单个 agent」与「看全部」走完全相同的代码路径。
+/// The filter **swaps the ready-made breakdown in for the total** instead of rescanning: `by_client` is
+/// already grouped per agent, so it replaces `totals` directly. The heatmap, range stats, and all four
+/// dimension tables then read the same result — "view one agent" and "view all" share one code path.
 ///
-/// 模型与会话也跟着收窄：只看 pi 时，模型表里不该出现只有 opencode 用过的模型。
-/// 某天该 agent 没有用量就不生成空桶 —— 热力图靠「桶存不存在」区分
-/// 「那天没用过」与「那天用了但为 0」。
+/// Models and sessions narrow too: when only pi is selected, the model table must not list models
+/// only opencode ever used. A day with no usage for the agent gets no bucket at all — the heatmap
+/// distinguishes "didn't use that day" from "used but zero" by a bucket's mere existence.
 fn filter_daily_by_client(daily: &DailyMap, filter: Option<ConfigFormat>) -> DailyMap {
     let Some(filter) = filter else {
         return daily.clone();
@@ -658,8 +665,8 @@ fn filter_daily_by_client(daily: &DailyMap, filter: Option<ConfigFormat>) -> Dai
         let mut narrowed = DailyBucket::new(date);
         narrowed.totals = *totals;
         narrowed.by_client.insert(label.to_string(), *totals);
-        // 交叉分解的键就是 agent label：拿它同时填 `by_model`，
-        // 这样模型表天然只含该 agent 用过的模型。
+        // The cross-breakdown key is the agent label: use it to fill `by_model` too, so the model table naturally
+        // holds only models that agent used.
         if let Some(models) = bucket.by_client_model.get(label) {
             narrowed
                 .by_client_model
@@ -668,7 +675,7 @@ fn filter_daily_by_client(daily: &DailyMap, filter: Option<ConfigFormat>) -> Dai
                 narrowed.by_model.insert(model.clone(), *model_totals);
             }
         }
-        // 会话键是 `"{client}:{session_id}"`（见 `SessionSnapshot::key`）。
+        // The session key is `"{client}:{session_id}"` (see `SessionSnapshot::key`).
         let prefix = format!("{label}:");
         for (session, session_totals) in &bucket.by_session {
             if session.starts_with(&prefix) {
@@ -680,10 +687,10 @@ fn filter_daily_by_client(daily: &DailyMap, filter: Option<ConfigFormat>) -> Dai
     out
 }
 
-/// 把扫描结果并进账本并产出展示视图。
+/// Merge a scan result into the ledger and produce the display view.
 ///
-/// 拆成自由函数是为了让「并入 → 视图」这段纯逻辑可以被单测直接调用
-/// （不依赖 `App` 与 egui）。
+/// Split into free functions so the "merge → view" logic can be unit-tested directly
+/// (without `App` or egui).
 pub(in crate::app) fn merge_into_ledger(
     ledger: &mut Ledger,
     scanned: HashMap<String, SessionSnapshot>,
@@ -710,25 +717,26 @@ mod tests {
     use crate::usage::DayTotals;
     use std::collections::BTreeMap;
 
-    /// 空闲分支必须按「下一个检测点」要帧：egui 空闲时不自行重绘，
-    /// 不要帧则周期检测饿死——源文件此后的变化永远发现不了（「半分钟
-    /// 不刷新」的历史缺陷），滚动条淡入这类逐帧动画也会停在透明档。
+    /// The idle branch must request a frame for "the next check point": egui doesn't repaint on its own while
+    /// idle, and without frame requests the periodic check starves — later source changes would never be
+    /// noticed (the historical "half a minute without refresh" defect), and per-frame animations like the
+    /// scrollbar fade would stay stuck at transparent.
     #[test]
     fn idle_poll_requests_a_repaint_for_the_next_check() {
         let mut app = crate::app::App::default();
         app.set_usage_result_for_test(Vec::new(), DailyMap::new());
         app.seed_usage_idle_for_test();
         let ctx = egui::Context::default();
-        // egui 0.33 的重绘请求走回调（`repaint_delay` 字段已移除）。
-        // 首帧 egui 内部会发一次 delay=0 的补遍请求，那只够续一帧；
-        // 空闲轮询必须自己按「下一个检测点」要帧，否则照样饿死。
+        // egui 0.33 routes repaint requests through callbacks (the `repaint_delay` field is gone).
+        // The first frame egui itself sends one delay=0 follow-up request, which only sustains one more frame;
+        // the idle polling must request frames for "the next check point" itself, or it starves all the same.
         let requested = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = std::sync::Arc::clone(&requested);
         ctx.set_request_repaint_callback(move |info| {
             sink.lock().unwrap().push(info.delay);
         });
-        // 第一遍：初始化视口 / 字体等内部机制会发一次 delay=0 的补遍请求，
-        // 且合并逻辑只让更小的 delay 触发回调——先把它消耗掉。
+        // First pass: viewport / font initialization etc. triggers one delay=0 follow-up request, and the merge
+        // logic only fires the callback for smaller delays — consume that one first.
         let _ = ctx.run(
             egui::RawInput {
                 time: Some(100.0),
@@ -737,7 +745,7 @@ mod tests {
             |ctx| app.poll_usage(ctx),
         );
         requested.lock().unwrap().clear();
-        // 第二遍（一个检测间隔后）：又到了检测点，源没变 → 空闲分支。
+        // Second pass (one poll interval later): a check point arrives again, sources unchanged → idle branch.
         let _ = ctx.run(
             egui::RawInput {
                 time: Some(100.0 + POLL_INTERVAL_SECS + 0.5),
@@ -762,7 +770,7 @@ mod tests {
         );
     }
 
-    /// 无筛选：原样返回（不做无谓的深拷贝）。
+    /// Unfiltered: returned as-is (no pointless deep copy).
     #[test]
     fn filter_without_client_keeps_everything() {
         let mut daily = DailyMap::new();
@@ -772,70 +780,70 @@ mod tests {
         assert_eq!(filtered["2026-01-01"].totals.total(), 300);
     }
 
-    /// 筛到单个 agent 时：合计换成该 agent 的，分解也跟着收窄。
+    /// Filtered to one agent: the total becomes that agent's, and breakdowns narrow with it.
     #[test]
     fn filter_narrows_totals_models_and_sessions() {
         let mut daily = DailyMap::new();
         daily.insert("2026-01-01".into(), bucket_with_two_clients());
         let filtered = filter_daily_by_client(&daily, Some(ConfigFormat::Pi));
         let bucket = &filtered["2026-01-01"];
-        // 合计 = pi 自己的 200，不是全部的 300。
+        // The total = pi's own 200, not the grand 300.
         assert_eq!(bucket.totals.total(), 200);
         assert_eq!(bucket.by_client.len(), 1, "只剩 pi 一项");
         assert!(bucket.by_client.contains_key(&pi_label()));
-        // 模型表不能出现只有 opencode 用过的模型。
+        // The model table must not list models only opencode used.
         assert!(bucket.by_model.contains_key("claude-opus-5"));
         assert!(
             !bucket.by_model.contains_key("gpt-5"),
             "别的 agent 的模型不该混进来"
         );
-        // 会话按 `"{label}:"` 前缀收窄。
+        // Sessions narrow by the `"{label}:"` prefix.
         assert_eq!(bucket.by_session.len(), 1);
         assert!(bucket.by_session.contains_key(&pi_session("session-a")));
     }
 
-    /// 某天该 agent 没有用量：整桶不生成（热力图靠它区分「没用过」与「用了 0」）。
+    /// A day with no usage for the agent: no bucket at all (the heatmap distinguishes "never used" from "used zero" by this).
     #[test]
     fn filter_drops_days_without_that_client() {
         let mut daily = DailyMap::new();
         daily.insert("2026-01-01".into(), bucket_with_two_clients());
         daily.insert("2026-01-02".into(), bucket_with_one_client());
-        // 两天都碰过 opencode → 两天都留下，但合计各自只剩 opencode 那份。
+        // Both days touched opencode → both days remain, but each total keeps only opencode's share.
         let filtered = filter_daily_by_client(&daily, Some(ConfigFormat::Opencode));
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered["2026-01-01"].totals.total(), 100, "不含 pi 的 200");
         assert_eq!(filtered["2026-01-02"].totals.total(), 100);
 
-        // 完全没用过的 agent：一天都不留。
+        // An agent never used: not a single day remains.
         let none = filter_daily_by_client(&daily, Some(ConfigFormat::KimiCode));
         assert!(none.is_empty(), "没用过的 agent 不该生成空桶");
     }
 
-    /// 筛选后逐日合计 == 筛选后区间合计（不丢不重）。
+    /// After filtering, per-day totals == the filtered range total (nothing lost, nothing doubled).
     #[test]
     fn filter_keeps_per_day_sum_consistent() {
         let mut daily = DailyMap::new();
         daily.insert("2026-01-01".into(), bucket_with_two_clients());
         daily.insert("2026-01-02".into(), bucket_with_one_client());
         let filtered = filter_daily_by_client(&daily, Some(ConfigFormat::Opencode));
-        // `today` 要晚于桶里的日期：`Range::All` 会排除未来日期（防脏账本）。
+        // `today` must be later than the buckets' dates: `Range::All` excludes future dates (guards against dirty ledgers).
         let today = aggregate::days_from_civil(2026, 1, 3);
         let summed: i64 = filtered.values().map(|bucket| bucket.totals.total()).sum();
         let from_range =
             crate::app::usage::range::totals_in_range(&filtered, Range::All, today).total();
         assert_eq!(summed, from_range);
         assert_eq!(summed, 200, "两天各 100 的 opencode 用量");
-        // 逐日合计 == 各天 by_client 之和（分解与合计口径一致）。
+        // Per-day totals == the sum of each day's by_client (breakdown and total share one accounting basis).
         for bucket in filtered.values() {
             let per_client: i64 = bucket.by_client.values().map(|t| t.total()).sum();
             assert_eq!(bucket.totals.total(), per_client, "{}", bucket.date);
         }
     }
 
-    /// 造一个含两个 agent 的桶：pi 200 + opencode 100，各自有模型与会话。
+    /// Build a bucket with two agents: pi 200 + opencode 100, each with models and sessions.
     ///
-    /// 键一律走 [`ConfigFormat::label`]，不硬编码字符串：分解表的键就是
-    /// label（见 `DailyBucket::add_message`），写错大小写会让筛选静默落空。
+    /// Keys always go through [`ConfigFormat::label`], never hard-coded strings: the breakdown table's keys
+    /// ARE labels (see `DailyBucket::add_message`), and a wrong case would make filtering silently no-op.
     fn bucket_with_two_clients() -> DailyBucket {
         let mut bucket = DailyBucket::new("2026-01-01");
         let pi = day_totals(200, 1);
@@ -860,7 +868,7 @@ mod tests {
         bucket
     }
 
-    /// 造一个只有 opencode 的桶。
+    /// Build an opencode-only bucket.
     fn bucket_with_one_client() -> DailyBucket {
         let mut bucket = DailyBucket::new("2026-01-02");
         let opencode = day_totals(100, 1);
@@ -885,7 +893,7 @@ mod tests {
         ConfigFormat::Opencode.label().to_string()
     }
 
-    /// 会话键与 [`SessionSnapshot::key`] 同构：`client:session_id`。
+    /// Session keys are isomorphic to [`SessionSnapshot::key`]: `client:session_id`.
     fn pi_session(id: &str) -> String {
         SessionSnapshot::key(ConfigFormat::Pi, id)
     }
@@ -894,7 +902,7 @@ mod tests {
         SessionSnapshot::key(ConfigFormat::Opencode, id)
     }
 
-    /// 输入 `input`，消息 `messages` 条，其余为 0。
+    /// Input `input`, `messages` messages, everything else 0.
     fn day_totals(input: i64, messages: i64) -> DayTotals {
         DayTotals {
             input,
@@ -926,14 +934,14 @@ mod tests {
         assert_eq!(since, Some(100.0), "记下首次变化时刻");
     }
 
-    /// 关键回归：置脏之后即使源又安静下来（下一轮 `changed == 0`），
-    /// 也必须把那次改动扫出来，不能直接回到 Idle。
+    /// Key regression: once dirty, even if the source goes quiet again (next round `changed == 0`),
+    /// that change must still be scanned out — no direct return to Idle.
     #[test]
     fn a_settled_change_is_still_scanned() {
-        // 100 秒发现变化（还没到窗口）
+        // Change found at 100s (window not yet due)
         let (outcome, since) = poll_outcome(4, None, 100.0);
         assert_eq!(outcome, PollOutcome::Debouncing);
-        // 合并窗口到期时源已经安静（changed == 0），但改动仍待处理 → 该扫了。
+        // At window expiry the source is already quiet (changed == 0), but the change is still pending → time to scan.
         let (outcome, since) = poll_outcome(0, since, 100.0 + DEBOUNCE_SECS);
         assert_eq!(outcome, PollOutcome::Scan, "已置脏的改动不能被丢掉");
         assert_eq!(since, None, "扫完清脏");
@@ -941,19 +949,19 @@ mod tests {
 
     #[test]
     fn change_settling_for_the_debounce_window_triggers_a_scan() {
-        // 100 秒首次发现变化 → 窗口到期前 0.1 秒还没到窗口
+        // First change at 100s → 0.1s before the window expires, not yet due
         let (outcome, since) = poll_outcome(1, Some(100.0), 100.0 + DEBOUNCE_SECS - 0.1);
         assert_eq!(outcome, PollOutcome::Debouncing);
         assert_eq!(since, Some(100.0));
-        // 正好 DEBOUNCE_SECS 触发
+        // Triggers exactly at DEBOUNCE_SECS
         let (outcome, _) = poll_outcome(1, Some(100.0), 100.0 + DEBOUNCE_SECS);
         assert_eq!(outcome, PollOutcome::Scan);
     }
 
     #[test]
     fn continuous_writes_are_capped_by_the_max_wait() {
-        // 检测间隔缩到小于防抖窗口时，MAX_WAIT_SECS 是唯一能救场的兜底：
-        // 每轮都还有新变化（changed > 0），窗口起点不被推后。
+        // When the poll interval shrinks below the debounce window, MAX_WAIT_SECS is the only rescue:
+        // every round still has new changes (changed > 0), so the window origin never gets pushed back.
         let mut since = None;
         let mut scanned_at = None;
         for tick in 0..40 {
@@ -978,8 +986,8 @@ mod tests {
 
     #[test]
     fn debounce_window_start_is_not_pushed_back_by_later_changes() {
-        // 这是「永远等不到」的经典 bug：如果每轮都刷新 dirty_since，
-        // 流式写入会让 waited 永远是 0。
+        // This is the classic "never arrives" bug: if dirty_since refreshed every round,
+        // streaming writes would keep waited at 0 forever.
         let (_, since) = poll_outcome(1, None, 100.0);
         assert_eq!(since, Some(100.0));
         let (outcome, since) = poll_outcome(1, since, 101.0);
@@ -989,14 +997,14 @@ mod tests {
         assert_eq!(outcome, PollOutcome::Scan);
     }
 
-    /// 每 3 秒检测一次时的真实节奏：改动在下一次检测就该被扫出来。
+    /// The real rhythm at a 3-second poll: the change must be scanned out at the very next check.
     #[test]
     fn realistic_poll_cadence_triggers_on_the_next_check() {
         let mut since = None;
         let mut scanned_at = None;
         for tick in 0..10 {
             let now = 100.0 + tick as f64 * POLL_INTERVAL_SECS;
-            // 第一轮检测到变化，之后源安静（changed == 0）。
+            // First round detects the change; the source then goes quiet (changed == 0).
             let changed = usize::from(tick == 0);
             let (outcome, next) = poll_outcome(changed, since, now);
             since = next;
@@ -1014,18 +1022,18 @@ mod tests {
 
     #[test]
     fn repaint_delay_asks_for_the_nearest_deadline() {
-        // 刚发现变化：等合并窗口（比上限近）。
+        // Change just noticed: wait the coalescing window (nearer than the cap).
         assert_eq!(repaint_delay(Some(100.0), 100.0), Some(DEBOUNCE_SECS));
-        // 已等了 4.6 秒：离上限只剩 0.4 秒。
+        // 4.6 seconds already waited: only 0.4s left to the cap.
         let delay = repaint_delay(Some(100.0), 104.6).expect("应要一帧");
         assert!((delay - 0.4).abs() < 1e-9, "实际 {delay}");
-        // 已经过了两个期限：给一个正的最小值，不能是 0 / 负数。
+        // Both deadlines passed: give a positive minimum, never 0 / negative.
         assert_eq!(repaint_delay(Some(100.0), 200.0), Some(0.01));
-        // 没在 debounce：不要帧。
+        // Not debouncing: no frame request.
         assert_eq!(repaint_delay(None, 100.0), None);
     }
 
-    /// 端到端：并入账本 → 视图；源里消失的会话保留在展示里（归档）。
+    /// End to end: merge into the ledger → view; sessions gone from the sources stay in the display (archived).
     #[test]
     fn merge_into_ledger_keeps_deleted_sessions_in_the_view() {
         use crate::format::ConfigFormat;
@@ -1069,14 +1077,14 @@ mod tests {
         assert_eq!(first.scanned_at, 1.0);
         assert_eq!(first.total(), 100);
 
-        // 下一轮 a 消失了 → 不进视图，但账本里还留着（合计不缩水）。
+        // Next round a disappeared → not in the view, but still in the ledger (totals don't shrink).
         let second = merge_into_ledger(&mut ledger, scan_of(vec![]), DailyMap::new(), 2.0, 0, 10);
         assert!(second.sessions.is_empty(), "源里已消失的不进列表");
         assert_eq!(ledger.len(), 1, "用量在账本里留着");
         assert_eq!(ledger.archived_len(), 1);
     }
 
-    /// 按天分桶也要穿过 `merge_into_ledger` 进到报告里（热力图靠它）。
+    /// Daily buckets must also pass through `merge_into_ledger` into the report (the heatmap depends on them).
     #[test]
     fn merge_into_ledger_carries_daily_buckets() {
         let mut bucket = crate::usage::DailyBucket::new("2026-03-15");
@@ -1089,13 +1097,13 @@ mod tests {
         assert_eq!(report.daily.len(), 1, "按天分桶要出现在报告里");
         assert_eq!(report.daily["2026-03-15"].totals.input, 500);
 
-        // 下一轮扫描没有新数据：账本里的按天记录要留着（已删会话的用量靠它）。
+        // The next scan has no new data: the ledger's daily records must stay (deleted sessions' usage lives there).
         let second = merge_into_ledger(&mut ledger, HashMap::new(), DailyMap::new(), 2.0, 0, 10);
         assert_eq!(second.daily.len(), 1, "历史按天记录不因本轮没扫到而消失");
         assert_eq!(second.daily["2026-03-15"].totals.input, 500);
     }
 
-    /// 打开秒显：账本非空 → 直接可展示（不用等扫描），后台扫完回到实时态。
+    /// Instant display: non-empty ledger → immediately presentable (no waiting for a scan); the background scan then returns to live mode.
     #[test]
     fn fill_from_ledger_shows_cached_data_until_scan_lands() {
         use crate::format::ConfigFormat;
@@ -1143,7 +1151,7 @@ mod tests {
         assert_eq!(report.sessions.len(), 1);
         assert!(state.cached, "展示的是账本顶上的缓存");
 
-        // 后台扫描收尾：替换展示并清掉缓存标记。
+        // Background scan wrap-up: replace the display and clear the cache flag.
         state.adopt_scan(
             (scan_of(vec![snapshot("a", 150)]), DailyMap::new(), 1, 5),
             3.0,
@@ -1154,10 +1162,10 @@ mod tests {
         assert_eq!(report.sessions[0].input, 150, "展示要换成最新扫描");
     }
 
-    /// 账本为空 → 不填充：界面维持「还没有扫描结果 · 扫描中」。
+    /// Empty ledger → no fill: the UI keeps "no scan results yet · scanning".
     #[test]
     fn fill_from_ledger_skips_empty_ledger() {
-        // 显式构造，不碰用户真实账本（default() 会读它并秒显）。
+        // Explicit construction; never touches the user's real ledger (default() would read and surface it).
         let mut state = UsageState {
             result: None,
             cached: false,

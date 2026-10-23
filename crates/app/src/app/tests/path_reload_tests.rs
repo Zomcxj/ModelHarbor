@@ -16,7 +16,7 @@ fn missing_json_on_pi_page_does_not_overwrite_opencode_path() {
     let opencode_path = r"D:\existing-opencode\opencode.json";
     app.config_paths
         .set_local_path(ConfigFormat::Opencode, opencode_path);
-    // 先清掉本机可能给 pi 页留的覆盖路径，使断言独立成立。
+    // First clear any override this machine may have left on the pi page, so assertions stand independently.
     app.config_paths.set_local_path(
         ConfigFormat::Pi,
         &ConfigPaths::default_local_path(ConfigFormat::Pi),
@@ -40,7 +40,7 @@ fn missing_json_on_pi_page_does_not_overwrite_opencode_path() {
     );
 }
 
-/// 路径记到用户操作的当前页（owner），不跟文件内容走；内容检测只决定解析格式。
+/// The path registers under the page the user operated (the owner), never following file content; content detection only decides the parse format.
 #[test]
 fn path_is_remembered_by_owner_page_not_by_detected_content() {
     let path =
@@ -51,14 +51,14 @@ fn path_is_remembered_by_owner_page_not_by_detected_content() {
     let opencode_path = r"D:\existing-opencode\opencode.json";
     app.config_paths
         .set_local_path(ConfigFormat::Opencode, opencode_path);
-    // 在 opencode 页打开一个 pi 内容的文件。
+    // Open a pi-content file from the opencode page.
     app.current_page = ConfigFormat::Opencode;
     app.config_path = path.clone();
     app.loaded_path.clear();
 
     app.reload();
 
-    // 解析格式跟随内容（pi）；但页面留在 opencode、路径记到 opencode 页。
+    // The parse format follows content (pi); but the page stays on opencode and the path registers under the opencode page.
     assert_eq!(app.source_format, ConfigFormat::Pi, "解析格式跟随文件内容");
     assert_eq!(
         app.current_page,
@@ -78,12 +78,12 @@ fn path_is_remembered_by_owner_page_not_by_detected_content() {
     let _ = std::fs::remove_file(app.config_path);
 }
 
-/// 启动页 = 顶栏第一个已安装后端 + 它自己的解析路径，不按文件内容切页。
+/// The startup page = the top bar's first installed backend + its own parse path, never switching pages by content.
 #[test]
 fn startup_page_is_first_installed_tab_regardless_of_content() {
     use crate::app::startup_page_with;
-    // pi 页指向一个 opencode 内容的文件（误配）：启动仍应停在 pi 页、
-    // 加载 pi 自己的解析路径，不再因内容是 opencode 而切到 opencode 页。
+    // The pi page points at an opencode-content file (a misconfiguration): startup should still stay on the pi
+    // page and load pi's own parse path, no longer switching to the opencode page because of the content.
     let oc_content = std::env::temp_dir().join(format!(
         "model-harbor-startup-first-{}.json",
         std::process::id()

@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
-/// 构造 wsl 命令：Windows 下带 CREATE_NO_WINDOW。
+/// Build a wsl command: with CREATE_NO_WINDOW on Windows.
 pub(crate) fn wsl_command() -> Command {
     let mut cmd = Command::new("wsl");
     #[cfg(target_os = "windows")]
@@ -17,9 +17,9 @@ pub(crate) fn wsl_command() -> Command {
     cmd
 }
 
-/// WSL 是否真的可用：`wsl -e true` 退出码 0 才算。结果进程内缓存。
-/// 主要服务于测试守卫（无 WSL 时跳过 WSL 同步测试），也供保存流程查询。
-/// 普通（非 test）编译同样需要：app crate 的测试构建依赖它。
+/// Whether WSL genuinely works: only `wsl -e true` exiting 0 counts. Cached per process.
+/// Serves test guards chiefly (skip WSL sync tests without WSL), plus save-flow queries.
+/// Needed in normal (non-test) builds too: the app crate's test builds depend on it.
 pub fn wsl_usable() -> bool {
     static USABLE: OnceLock<bool> = OnceLock::new();
     *USABLE.get_or_init(|| {
@@ -43,7 +43,7 @@ pub fn num_at(v: &Value, k: &str) -> String {
     v.get(k).map(number_text).unwrap_or_default()
 }
 
-/// JSON 数字 → 文本：优先 i64/u64 精确表示。
+/// JSON number → text: prefers exact i64/u64 representation.
 fn number_text(v: &Value) -> String {
     match v.as_number() {
         Some(n) => {
@@ -113,9 +113,10 @@ pub fn set_str(m: &mut Map<String, Value>, k: &str, v: &str) {
     }
 }
 
-/// 逗号串 → 列表（去空白、去空项）。
+/// Comma string → list (whitespace trimmed, empty items dropped).
 ///
-/// 界面上的多值字段（档位、输入模态等）都是逗号串，各后端按它拆成数组写盘。
+/// Multi-value fields in the UI (tiers, input modalities, etc.) are comma strings; each backend
+/// splits them into arrays for the config file.
 pub fn split_csv(text: &str) -> Vec<String> {
     text.split(',')
         .map(|s| s.trim())
@@ -137,7 +138,7 @@ pub fn set_num_opt(m: &mut Map<String, Value>, k: &str, v: &str) {
         }
     }
     if let Ok(f) = t.parse::<f64>() {
-        // 非有限数（inf / nan）按「无效数字」处理，不写。
+        // Non-finite numbers (inf / nan) count as invalid — never written.
         if f.is_finite() {
             m.insert(k.into(), f.into());
             return;
@@ -157,8 +158,7 @@ pub fn parse_number_text(v: &str) -> Option<Value> {
         }
     }
     if let Ok(f) = t.parse::<f64>() {
-        // `inf` / `nan` / `1e400` 按「无效数字」处理（不计入有效值，
-        // 保存状态栏会提示已忽略）。
+        // `inf` / `nan` / `1e400` count as invalid (not counted as valid values; the save status bar notes the ignores).
         if f.is_finite() {
             return Some(f.into());
         }
@@ -166,10 +166,11 @@ pub fn parse_number_text(v: &str) -> Option<Value> {
     None
 }
 
-/// 原子写入文本文件：先写同目录临时文件并 `sync_all`，再替换正式文件。
+/// Atomic text-file write: write a temp file in the same directory with `sync_all`, then replace the real file.
 ///
-/// Windows 的 rename 不覆盖已存在的文件：已存在时先把旧文件移到备份名，替换成功
-/// 后删备份，失败则把旧文件移回。错误文本只含路径，不含正文。
+/// Windows rename doesn't overwrite existing files: when the target exists, the old file first moves
+/// to a backup name; after a successful replace the backup is deleted, on failure it moves back. Error
+/// text carries paths only, never content.
 pub fn atomic_write_text(path: &Path, content: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
@@ -198,7 +199,7 @@ pub fn atomic_write_text(path: &Path, content: &str) -> Result<(), String> {
     result
 }
 
-/// 用同目录临时文件替换目标。已存在时先移到备份名，失败则回滚。
+/// Replace the target using a same-directory temp file. Existing targets move to a backup name first; failures roll back.
 fn replace_file(temp_path: &Path, path: &Path, file_name: &str) -> std::io::Result<()> {
     if !path.exists() {
         return fs::rename(temp_path, path);
@@ -224,23 +225,23 @@ pub fn is_wsl_path(path: &str) -> bool {
     path.starts_with('/') && !path.contains(':')
 }
 
-/// WSL 总闸：默认关闭。未放行时所有探测 / 读写直接短路，不拉起 WSL 虚拟机。
-/// 单点拦截：调用方各自判断会漏。
+/// The WSL master switch: off by default. While closed, all probing / IO short-circuits and no WSL
+/// VM is ever started. Single-point interception: per-caller checks would leak.
 static WSL_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// 放行 / 禁止 WSL 子进程调用（勾选状态变化时由 App 同步调用）。
+/// Allow / forbid WSL subprocess calls (App syncs this when the checkbox changes).
 pub fn wsl_set_enabled(on: bool) {
     WSL_ENABLED.store(on, Ordering::Relaxed);
 }
 
-/// 当前是否放行 WSL 调用。
+/// Whether WSL calls are currently allowed.
 pub fn wsl_enabled() -> bool {
     WSL_ENABLED.load(Ordering::Relaxed)
 }
 
-/// WSL 默认发行版的 $HOME（进程级缓存）。
+/// The default WSL distro's $HOME (cached per process).
 pub fn wsl_home() -> Option<String> {
-    // 总闸关闭时直接短路，且不碰缓存：否则探测到的 None 会被 OnceLock 永久缓存。
+    // With the master switch off, short-circuit without touching the cache: otherwise a probed None would cache in the OnceLock forever.
     if !wsl_enabled() {
         return None;
     }
@@ -271,22 +272,22 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\\\''"))
 }
 
-/// WSL 批量探测的单项结果。
+/// One item's result from a WSL batch probe.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct WslPathProbe {
-    /// `test -f`：路径是常规文件。
+    /// `test -f`: the path is a regular file.
     pub file_exists: bool,
-    /// `test -e`：路径存在（任意类型，含文件）。
+    /// `test -e`: the path exists (any type, files included).
     pub path_exists: bool,
-    /// 父目录存在（"已安装" 判定的宽松条件）。
+    /// The parent directory exists (the "installed" verdict's loose condition).
     pub parent_dir_exists: bool,
 }
 
-/// 单次 `wsl` 调用批量探测多个路径的存在状态。
-/// 每项依次输出 `F`（文件）/ `E`（存在非文件）/ `P`（父目录存在）/ `N`（均不存在）。
+/// Probe several paths' existence in a single `wsl` call.
+/// Each item prints in order: `F` (regular file) / `E` (exists, not a file) / `P` (parent exists) / `N` (neither).
 pub fn wsl_batch_probe(paths: &[String]) -> Vec<WslPathProbe> {
     let fallback = || vec![WslPathProbe::default(); paths.len()];
-    // 总闸关闭：不拉起 wsl 进程，直接按「全部不存在」处理。
+    // Master switch off: no wsl process spawns — everything reads as "absent".
     if !wsl_enabled() {
         return fallback();
     }
@@ -362,7 +363,7 @@ pub fn read_wsl_file(path: &str) -> Result<String, String> {
     String::from_utf8(out.stdout).map_err(|e| format!("读取失败: {}", e))
 }
 
-/// WSL 侧路径是否为常规文件（单次探测）。
+/// Whether a WSL-side path is a regular file (single probe).
 pub fn wsl_file_exists(path: &str) -> bool {
     let out = wsl_command()
         .args([
@@ -396,7 +397,7 @@ pub fn write_wsl_file(path: &str, content: &str) -> Result<(), String> {
     if !wsl_enabled() {
         return Err("WSL 同步未开启".to_string());
     }
-    // 临时文件用带纳秒时间的随机名。
+    // Temp files get random names with nanosecond timestamps.
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -421,16 +422,17 @@ pub fn write_wsl_file(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 文件对话框支持的扩展名。
+/// File extensions supported by the file dialog.
 ///
-/// **首个滤镜就是 Windows 对话框的默认选中项**，对话框按选中滤镜过滤列表：
-/// 需覆盖 json / jsonc / yml / yaml / toml。单测 `dialog_extensions_cover_backend_defaults`
-/// 会用各后端的默认路径反向守住这份清单。对话框本体（依赖 rfd）在 app crate。
+/// **The first filter is the Windows dialog's default selection**, and the dialog filters the list by
+/// the selected filter: it must cover json / jsonc / yml / yaml / toml. The unit test
+/// `dialog_extensions_cover_backend_defaults` guards this list against every backend's default path.
+/// The dialog itself (rfd-dependent) lives in the app crate.
 pub const CONFIG_FILE_EXTENSIONS: &[&str] = &["json", "jsonc", "yml", "yaml", "toml"];
 
-/// 网络错误文本脱敏：剥离 URL 的 query/fragment 后返回。
+/// Sanitize network error text: strip the URL's query/fragment and return.
 ///
-/// ureq 的 Transport Display 会带上目标 URL。core 与 app 共用。
+/// ureq's Transport Display includes the target URL. Shared by core and app.
 pub fn sanitize_network_error(text: &str) -> String {
     const MARK: &str = "for URL \"";
     if let Some(idx) = text.find(MARK) {
@@ -444,8 +446,8 @@ pub fn sanitize_network_error(text: &str) -> String {
     }
 }
 
-/// 剥离 JSONC 的行注释、块注释与尾逗号，产出可被 serde_json 解析的 JSON。
-/// 字符串字面量内的注释符与逗号不受影响；注释中的换行保留以维持行号。
+/// Strip JSONC line comments, block comments, and trailing commas into JSON serde_json can parse.
+/// Comment markers and commas inside string literals are unaffected; newlines in comments are kept to preserve line numbers.
 pub fn strip_jsonc_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -498,7 +500,7 @@ pub fn strip_jsonc_comments(input: &str) -> String {
     remove_trailing_commas(&out)
 }
 
-/// 移除 `}` / `]` 前的尾逗号。
+/// Remove trailing commas before `}` / `]`.
 fn remove_trailing_commas(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len());
@@ -521,7 +523,7 @@ fn remove_trailing_commas(input: &str) -> String {
     out
 }
 
-/// 读取配置文件内容（支持本地与 WSL 路径）；不存在返回空串。
+/// Read a config file's content (local and WSL paths supported); missing files return an empty string.
 pub fn config_exists(path: &str) -> bool {
     if is_wsl_path(path) {
         wsl_file_exists(path)
@@ -530,16 +532,16 @@ pub fn config_exists(path: &str) -> bool {
     }
 }
 
-/// Windows 风格主目录字符串（`USERPROFILE` 优先，取不到为空串）。
+/// Windows-style home directory string (`USERPROFILE` preferred; empty string when unavailable).
 ///
-/// 各后端拼默认配置路径都用它；路径分隔符保持反斜杠字面量。
+/// Every backend assembles its default config path from this; path separators stay as literal backslashes.
 pub fn home_dir_string() -> String {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default()
 }
 
-/// 配置文件同目录下的伴生文件路径（分隔符按主配置路径形态选：WSL 路径用 `/`）。
+/// Path of a companion file next to the config file (separator follows the main config path's shape: WSL paths use `/`).
 pub fn sibling_path(config_path: &str, file_name: &str) -> String {
     let separator = if is_wsl_path(config_path) || config_path.contains('/') {
         '/'
@@ -554,7 +556,7 @@ pub fn sibling_path(config_path: &str, file_name: &str) -> String {
     }
 }
 
-/// 读取配置文件内容（支持本地与 WSL 路径）；不存在返回空串。
+/// Read a config file's content (local and WSL paths supported); missing files return an empty string.
 pub fn read_config_content(path: &str) -> Result<String, String> {
     if path.is_empty() {
         return Ok(String::new());
@@ -571,7 +573,7 @@ pub fn read_config_content(path: &str) -> Result<String, String> {
     }
 }
 
-/// 解析配置内容（支持 JSONC 注释与尾逗号）；空内容视为空对象。
+/// Parse config content (JSONC comments and trailing commas supported); empty content parses as an empty object.
 pub fn parse_config_content(content: &str) -> Result<serde_json::Value, String> {
     if content.trim().is_empty() {
         return Ok(serde_json::Value::Object(serde_json::Map::new()));
@@ -580,7 +582,7 @@ pub fn parse_config_content(content: &str) -> Result<serde_json::Value, String> 
     serde_json::from_str(&stripped).map_err(|e| format!("解析失败: {}", e))
 }
 
-/// 解析 YAML 配置内容；空内容视为空对象。
+/// Parse YAML config content; empty content parses as an empty object.
 pub fn parse_yaml_content(content: &str) -> Result<serde_json::Value, String> {
     if content.trim().is_empty() {
         return Ok(serde_json::Value::Object(serde_json::Map::new()));
@@ -588,21 +590,21 @@ pub fn parse_yaml_content(content: &str) -> Result<serde_json::Value, String> {
     serde_yaml_ng::from_str(content).map_err(|e| format!("解析失败: {}", e))
 }
 
-/// 将 Value 序列化为块风格 YAML 文本。
+/// Serialize a Value into block-style YAML text.
 pub fn to_yaml_string(value: &serde_json::Value) -> Result<String, String> {
     serde_yaml_ng::to_string(value).map_err(|e| format!("序列化失败: {}", e))
 }
 
-/// baseUrl 体检：返回可疑点标签（**仅供界面提示，绝不自动改写配置**）。
+/// baseUrl health check: returns suspicious-point labels (**UI hints only; configs are never auto-rewritten**).
 ///
-/// 覆盖重复斜杠（`https://host//v1`）、末尾多余斜杠、缺少协议头与夹带空白字符。
+/// Covers doubled slashes (`https://host//v1`), stray trailing slashes, missing scheme, and embedded whitespace.
 pub fn url_suspicions(url: &str) -> Vec<&'static str> {
     let trimmed = url.trim();
     let mut out = Vec::new();
     if trimmed.is_empty() {
         return out;
     }
-    // 空白检查基于原值：首尾空格会被 trim 抹掉。
+    // The whitespace check reads the original value: edge spaces would be trimmed away.
     if url.chars().any(char::is_whitespace) {
         out.push("含空白字符");
     }
@@ -610,7 +612,7 @@ pub fn url_suspicions(url: &str) -> Vec<&'static str> {
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
         out.push("缺少 http(s):// 协议头");
     }
-    // 只检查协议之后的路径部分。
+    // Only the path after the scheme is checked.
     let after_scheme = trimmed
         .split_once("://")
         .map(|(_, rest)| rest)
@@ -633,7 +635,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    /// 非有限浮点（inf / nan）必须按「无效数字」处理。
+    /// Non-finite floats (inf / nan) must count as invalid numbers.
     #[test]
     fn parse_number_text_rejects_non_finite_floats() {
         for bad in ["inf", "-inf", "infinity", "NaN", "nan", "1e400", "-1e400"] {
@@ -658,9 +660,9 @@ mod tests {
         assert!(m.get("context").is_none(), "无效数字按既有口径删除该键");
     }
 
-    /// 反向守住对话框滤镜：每个后端的默认配置扩展名都必须在列表里。
+    /// Guard the dialog filter in reverse: every backend's default config extension must be in the list.
     ///
-    /// Windows 对话框按首项滤镜过滤列表：首项必须覆盖 json / jsonc / yml / yaml。
+    /// The Windows dialog filters by the first filter: it must cover json / jsonc / yml / yaml.
     #[test]
     fn dialog_extensions_cover_backend_defaults() {
         for backend in crate::backends::BACKENDS {
@@ -682,7 +684,7 @@ mod tests {
                 backend.id()
             );
         }
-        // JSON 与 YAML 两侧都不能漏。
+        // Neither the JSON nor the YAML side may be missed.
         for ext in ["json", "jsonc", "yml", "yaml"] {
             assert!(
                 CONFIG_FILE_EXTENSIONS.contains(&ext),
@@ -717,7 +719,7 @@ mod tests {
 
     #[test]
     fn url_suspicions_flags_whitespace() {
-        // 中间夹带空白（粘贴带空格）与首尾空格都要提示。
+        // Embedded whitespace (pasted with spaces) and edge spaces both get flagged.
         assert_eq!(
             url_suspicions("https://api.example.com /v1"),
             vec!["含空白字符"]
@@ -789,7 +791,7 @@ mod tests {
 
     #[test]
     fn atomic_write_failure_keeps_previous_content() {
-        // 用目录占住临时文件路径，让原子写无法创建临时文件。
+        // Hold the temp-file path with a directory so the atomic write can't create its temp file.
         let dir = scratch_dir("atomic-fail");
         fs::create_dir_all(&dir).expect("建目录");
         let path = dir.join("tokens.json");

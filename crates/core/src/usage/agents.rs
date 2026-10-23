@@ -1,25 +1,26 @@
-//! [`ConfigFormat`] ↔ tokscale client id 的映射。
+//! The [`ConfigFormat`] ↔ tokscale client id mapping.
 //!
-//! **两边命名有 6/10 不一致**，必须显式映射，不能靠字符串拼接推断：
+//! **The two sides' naming disagrees on 6 of 10** — explicit mapping is mandatory; string-assembly inference
+//! would guarantee mistakes:
 //!
-//! | ModelHarbor | tokscale | 差异 |
+//! | ModelHarbor | tokscale | Difference |
 //! |---|---|---|
-//! | `Kilocode` | `kilo` | tokscale 另有一个 `kilocode`（VS Code 扩展），
-//! |            |         | ModelHarbor 管的是 Kilo **CLI** |
-//! | `Mimocode` | `micode` | 拼写不同 |
-//! | `OhMyPi` | `omp` | 缩写 |
-//! | `DeepSeekHarness` | `dsh` | 缩写 |
-//! | `QwenCode` | `qwen` | 去掉 `-code` |
-//! | `KimiCode` | `kimi` | 去掉 `-code` |
+//! | `Kilocode` | `kilo` | tokscale also has a `kilocode` (the VS Code extension);
+//! |            |         | ModelHarbor manages the Kilo **CLI** |
+//! | `Mimocode` | `micode` | Different spelling |
+//! | `OhMyPi` | `omp` | Abbreviation |
+//! | `DeepSeekHarness` | `dsh` | Abbreviation |
+//! | `QwenCode` | `qwen` | `-code` dropped |
+//! | `KimiCode` | `kimi` | `-code` dropped |
 
 use crate::format::ConfigFormat;
 
-/// ModelHarbor 的配置格式 → tokscale 的 client id。
+/// ModelHarbor's config format → tokscale's client id.
 pub fn tokscale_client_for(format: ConfigFormat) -> Option<&'static str> {
     Some(match format {
         ConfigFormat::Opencode => "opencode",
-        // ⚠️ 不是 `kilocode`：那是 VS Code 扩展（`ui_messages.json`），
-        // ModelHarbor 的 kilocode 后端管的是 Kilo CLI 的 `kilo.json`。
+        // ⚠️ Not `kilocode`: that's the VS Code extension (`ui_messages.json`);
+        // ModelHarbor's kilocode backend manages the Kilo CLI's `kilo.json`.
         ConfigFormat::Kilocode => "kilo",
         ConfigFormat::Mimocode => "micode",
         ConfigFormat::Pi => "pi",
@@ -32,10 +33,10 @@ pub fn tokscale_client_for(format: ConfigFormat) -> Option<&'static str> {
     })
 }
 
-/// tokscale 的 client id → ModelHarbor 的配置格式。
+/// tokscale's client id → ModelHarbor's config format.
 ///
-/// 返回 `None` 表示该 client 不在 ModelHarbor 的 10 个 agent 里 —— tokscale
-/// 支持 56 个，扫描结果里可能出现 claude / codex / cursor 等，调用方应丢弃。
+/// `None` means the client isn't among ModelHarbor's 10 agents — tokscale supports 56, and scans may
+/// surface claude / codex / cursor etc.; callers should drop them.
 pub fn config_format_for_client(client: &str) -> Option<ConfigFormat> {
     Some(match client {
         "opencode" => ConfigFormat::Opencode,
@@ -56,7 +57,7 @@ pub fn config_format_for_client(client: &str) -> Option<ConfigFormat> {
 mod tests {
     use super::*;
 
-    /// 每个后端都能映射到 tokscale id，且不重复。
+    /// Every backend maps to a tokscale id, without repeats.
     #[test]
     fn every_backend_maps_to_a_distinct_client() {
         let mut seen = Vec::new();
@@ -73,7 +74,7 @@ mod tests {
         assert_eq!(seen.len(), crate::backends::BACKENDS.len());
     }
 
-    /// 往返一致：format → client → format 回到原值。
+    /// Round-trip consistency: format → client → format returns the original.
     #[test]
     fn round_trip_is_stable() {
         for backend in crate::backends::BACKENDS {
@@ -88,7 +89,7 @@ mod tests {
         }
     }
 
-    /// 易错项逐个钉住：这 6 个不能靠字符串推断。
+    /// The error-prone ones pinned one by one: these 6 can't be inferred from strings.
     #[test]
     fn pinned_spellings_match_tokscale() {
         assert_eq!(tokscale_client_for(ConfigFormat::Kilocode), Some("kilo"));
@@ -102,7 +103,7 @@ mod tests {
         assert_eq!(tokscale_client_for(ConfigFormat::KimiCode), Some("kimi"));
     }
 
-    /// `kilocode` 是另一个 client（VS Code 扩展），不能映射到 ModelHarbor 的 kilocode。
+    /// `kilocode` is a different client (the VS Code extension) — never maps to ModelHarbor's kilocode.
     #[test]
     fn vs_code_kilocode_extension_is_not_model_harbors_kilocode() {
         assert_eq!(
@@ -117,7 +118,7 @@ mod tests {
         );
     }
 
-    /// 不在 10 个之内的 client 返回 None（tokscale 有 56 个）。
+    /// Clients outside the 10 return None (tokscale has 56).
     #[test]
     fn unknown_clients_are_rejected() {
         for client in [
@@ -131,7 +132,7 @@ mod tests {
         }
     }
 
-    /// 扫描入参正好是 10 个 client。
+    /// The scan's input is exactly 10 clients.
     #[test]
     fn scan_clients_cover_every_backend_once() {
         let clients = super::super::tokscale_clients();

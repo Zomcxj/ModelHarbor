@@ -4,15 +4,15 @@ use crate::model::ProviderRow;
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
 
-/// Agents 的 `model` 下拉候选，按「自家网关 → 自配 provider → 当前值」排序。
+/// The Agents `model` dropdown's candidates, ordered "own gateway → user-configured providers → current value".
 ///
-/// 分三段按顺序拼接：
+/// Three segments concatenated in order:
 ///
-/// 1. `gateway`：本页网关的模型（首选在最前，见 [`crate::opencode_models::gateway_models`]）；
-/// 2. 自配 provider 的模型（按 provider 配置顺序、模型配置顺序）；
-/// 3. 当前值（若前两段都没有它）。
+/// 1. `gateway`: this page gateway's models (preferred first — see [`crate::opencode_models::gateway_models`]);
+/// 2. user-configured providers' models (provider order, then model order);
+/// 3. the current value (when neither segment above holds it).
 ///
-/// 当前值一定保留，排在最后。
+/// The current value is always kept, sorted last.
 pub(super) fn model_options(
     providers: &[ProviderRow],
     gateway: &[String],
@@ -29,19 +29,19 @@ pub(super) fn model_options(
     if !current.is_empty() && !options.iter().any(|option| option == current) {
         options.push(current.to_string());
     }
-    // 只去重，保持原有顺序。
+    // Dedup only, preserving original order.
     let mut seen = HashSet::new();
     options.retain(|option| seen.insert(option.clone()));
     options
 }
 
-/// Agents 标题行里（「展开全部卡片」右侧）的免费模型状态提示与「刷新」按钮。
+/// The free-model status note and "refresh" button in the Agents title row (right of "expand all cards").
 ///
-/// 刷新的是本页后端的内置免费模型清单，整页只有这一份。
+/// Refreshes this page backend's built-in free-model list — the page has exactly one.
 ///
-/// 返回 `true` 表示用户点了刷新；调用方随即发起后台拉取。
+/// Returns `true` when the user clicked refresh; the caller then starts the background fetch.
 ///
-/// 拉取中 / 失败 / 空列表三种状态各有文案，就地可见。
+/// Fetching / failed / empty-list each carry their own wording, visible in place.
 pub(super) fn model_options_hint(
     ui: &mut egui::Ui,
     backend: &str,
@@ -86,12 +86,12 @@ pub(super) fn model_options_hint(
     clicked
 }
 
-/// 当前页面后端的免费模型 `(引用前缀, 裸 id 列表)`；没有免费层时前缀为 `None`。
+/// The current page backend's free models `(reference prefix, bare id list)`; the prefix is `None` without a free tier.
 ///
-/// 前缀来自 [`crate::opencode_models::source_for`]，与拉取时用的 provider id 同源。
+/// The prefix comes from [`crate::opencode_models::source_for`], the same source as the fetch's provider id.
 ///
-/// 只用于免费层的提示与刷新按钮（mimocode 没有免费层，不显示这些）。
-/// 下拉候选请用 [`current_gateway_options`]。
+/// Used only by the free-tier note and refresh button (mimocode has no free tier and shows neither).
+/// For dropdown candidates use [`current_gateway_options`].
 pub(super) fn current_free_models(
     page: ConfigFormat,
     free_models: &HashMap<ConfigFormat, FreeModelsState>,
@@ -106,10 +106,10 @@ pub(super) fn current_free_models(
     (Some(source.provider_id), models)
 }
 
-/// 当前页面自家网关的模型候选（已带前缀，首选在最前）。
+/// The current page's own-gateway model candidates (prefixed, preferred first).
 ///
-/// 覆盖所有 opencode 系页面，包括没有免费层的 mimocode
-/// （兜底清单见 [`crate::opencode_models::gateway_models`]）。
+/// Covers every opencode-family page, including tier-less mimocode
+/// (the fallback list is [`crate::opencode_models::gateway_models`]).
 pub(super) fn current_gateway_options(
     page: ConfigFormat,
     free_models: &HashMap<ConfigFormat, FreeModelsState>,
@@ -121,7 +121,7 @@ pub(super) fn current_gateway_options(
     crate::opencode_models::gateway_models(page, free)
 }
 
-/// 当前页面后端的免费模型拉取状态：`(是否在飞, 失败原因)`。
+/// The current page backend's free-model fetch state: `(in flight, failure reason)`.
 pub(super) fn current_free_status(
     page: ConfigFormat,
     free_models: &HashMap<ConfigFormat, FreeModelsState>,
@@ -132,9 +132,9 @@ pub(super) fn current_free_status(
     }
 }
 
-/// agent 下拉所需的只读来源。
+/// The read-only sources the agent dropdown needs.
 ///
-/// `model` 下拉要同时用到页面、provider 列表与免费模型状态。
+/// The `model` dropdown needs the page, the provider list, and the free-model state together.
 pub(super) struct AgentComboCtx<'a> {
     pub(super) page: ConfigFormat,
     pub(super) providers: &'a [ProviderRow],
@@ -142,9 +142,9 @@ pub(super) struct AgentComboCtx<'a> {
 }
 
 impl AgentComboCtx<'_> {
-    /// `model` 下拉：自家网关模型排最前，免费模型一并入选。
+    /// The `model` dropdown: own-gateway models first, free models included.
     ///
-    /// 免费模型的状态提示与「刷新」按钮在 Agents 标题行，见 `ui_agents_section`。
+    /// The free-model status note and "refresh" button live in the Agents title row — see `ui_agents_section`.
     pub(super) fn model_combo(&self, ui: &mut egui::Ui, salt: String, current: &str) -> String {
         let gateway = current_gateway_options(self.page, self.free_models);
         let options = model_options(self.providers, &gateway, current);
@@ -172,9 +172,9 @@ impl AgentComboCtx<'_> {
     }
 }
 
-/// `variant` 下拉。空值在菜单里显示为「(空)」。
+/// The `variant` dropdown. An empty value displays as "(none)" in the menu.
 ///
-/// 两个表单共用一套渲染，只差 id salt。
+/// Both forms share one rendering; only the id salt differs.
 pub(super) fn agent_variant_combo(ui: &mut egui::Ui, salt: String, current: &str) -> String {
     let options = ["", "low", "medium", "high", "xhigh", "max", "ultra"];
     let mut selected = options.iter().position(|v| *v == current);

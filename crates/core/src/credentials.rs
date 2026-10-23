@@ -1,21 +1,22 @@
-//! DeepSeek Harness（DSH）凭据 sidecar 支持。
+//! DeepSeek Harness (DSH) credential sidecar support.
 //!
-//! DSH 将 provider 配置放在 `settings.yaml`，实际密钥放在同目录的
-//! `.credentials.yaml`：`refs.{apiKeyEnv}`。本模块只更新指定 ref，保留其余
-//! 版本、记录和未知字段。
+//! DSH keeps provider config in `settings.yaml` with actual keys in the same directory's `.credentials.yaml`
+//! under `refs.{apiKeyEnv}`. This module updates only the given ref, preserving other versions, records,
+//! and unknown fields.
 
 use crate::model::ProviderRow;
 use crate::util::{parse_yaml_content, read_config_content, to_yaml_string};
 use serde_json::{Map, Value};
 
-/// 根据模型配置路径得到同级凭据路径。
+/// Derive the sibling credentials path from a model config's path.
 pub fn sidecar_path(config_path: &str) -> String {
     crate::util::sibling_path(config_path, ".credentials.yaml")
 }
 
-/// 读取凭据文件的完整 root。
+/// Read the credentials file's complete root.
 ///
-/// 文件不存在（新建场景）返回骨架；文件存在但读不出 / 解析不了 / 根不是对象返回 `Err`。
+/// A missing file (creation scenario) returns the skeleton; an existing but unreadable / unparseable file,
+/// or a non-object root, returns `Err`.
 pub fn load_root(config_path: &str) -> Result<Value, String> {
     let path = sidecar_path(config_path);
     let content = read_config_content(&path).map_err(|e| format!("读取失败（{path}）: {e}"))?;
@@ -30,7 +31,7 @@ pub fn load_root(config_path: &str) -> Result<Value, String> {
     Ok(root)
 }
 
-/// 全新凭据文件的骨架。
+/// The skeleton of a brand-new credentials file.
 fn skeleton_root() -> Value {
     let mut root = Map::new();
     root.insert("version".into(), Value::Number(1.into()));
@@ -39,7 +40,7 @@ fn skeleton_root() -> Value {
     Value::Object(root)
 }
 
-/// 从凭据 root 解析 refs 中的字符串密钥。
+/// Parse the string keys under refs from a credentials root.
 pub fn secret_for(root: &Value, env_name: &str) -> String {
     root.get("refs")
         .and_then(Value::as_object)
@@ -49,8 +50,8 @@ pub fn secret_for(root: &Value, env_name: &str) -> String {
         .to_string()
 }
 
-/// 将 provider 的实际密钥更新到同级凭据文件。
-/// 空密钥删除对应 ref；其余 refs / records / 未知字段保留。
+/// Update the provider's actual key into the sibling credentials file.
+/// An empty key deletes the ref; other refs / records / unknown fields are kept.
 pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> {
     if !providers.iter().any(|provider| {
         !effective_env_name(provider).is_empty() || !provider.original_api_key_env.trim().is_empty()
@@ -77,7 +78,7 @@ pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> 
     for provider in providers {
         let env_name = effective_env_name(provider);
         let old_name = provider.original_api_key_env.trim();
-        // 重命名/清空引用时，只清理本次加载且已不再使用的旧 ref。
+        // On rename/clear, only clean the old ref loaded this round and no longer in use.
         if !old_name.is_empty() && old_name != env_name && !current_names.contains(old_name) {
             refs.remove(old_name);
         }
@@ -96,8 +97,8 @@ pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> 
     crate::backends::write_config(&path, &content)
 }
 
-/// 根据 provider key 生成 DSH 默认凭据引用名。
-/// 非 ASCII 字母数字统一转为下划线。
+/// Generate DSH's default credential reference name from the provider key.
+/// Non-alphanumeric-ASCII characters uniformly become underscores.
 pub fn default_env_name(provider_key: &str) -> String {
     let stem: String = provider_key
         .trim()
@@ -118,8 +119,8 @@ pub fn default_env_name(provider_key: &str) -> String {
     }
 }
 
-/// DSH 需要写入 `settings.yaml` 的引用名。
-/// `apiKeyEnv` 为空时按 provider key 生成默认值。
+/// The reference name DSH needs written into `settings.yaml`.
+/// An empty `apiKeyEnv` generates the default from the provider key.
 pub fn effective_env_name(provider: &ProviderRow) -> String {
     let explicit = provider.api_key_env.trim();
     if explicit.is_empty() {
@@ -129,7 +130,7 @@ pub fn effective_env_name(provider: &ProviderRow) -> String {
     }
 }
 
-/// DSH sidecar 中的实际密钥：优先 DSH 编辑框，其次来源 provider 的 `apiKey`。
+/// The actual key in DSH's sidecar: the DSH edit box first, then the source provider's `apiKey`.
 pub fn effective_secret(provider: &ProviderRow) -> String {
     if !provider.api_key_secret.is_empty() {
         provider.api_key_secret.clone()

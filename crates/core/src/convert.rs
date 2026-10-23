@@ -3,7 +3,7 @@ use crate::util::{bool_at, nested_list_str, num_at, str_at};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 
-/// 判断 raw 是否为 opencode 方言（含 opencode 特征键）。
+/// Whether raw is the opencode dialect (carries opencode fingerprint keys).
 pub(crate) fn is_opencode_shaped_model(raw: &Value) -> bool {
     ["limit", "modalities", "options", "variants"]
         .iter()
@@ -14,7 +14,7 @@ pub(crate) fn is_opencode_shaped_provider(raw: &Value) -> bool {
     raw.get("options").is_some() || raw.get("models").map(|m| m.is_object()).unwrap_or(false)
 }
 
-/// 判断 raw 是否为 pi / omp 方言（含 pi 特征键）。
+/// Whether raw is the pi / omp dialect (carries pi fingerprint keys).
 pub(crate) fn is_dsh_shaped_model(raw: &Value) -> bool {
     raw.get("reasoningEfforts").is_some()
 }
@@ -23,14 +23,14 @@ pub(crate) fn is_dsh_shaped_provider(raw: &Value) -> bool {
     raw.get("apiKeyEnv").is_some() || raw.get("baseURL").is_some()
 }
 
-/// 判断 raw 是否为 WorkBuddy 方言（扁平条目，含 `useCustomProtocol` 或 `url`）。
+/// Whether raw is the WorkBuddy dialect (flat entries with `useCustomProtocol` or `url`).
 pub(crate) fn is_workbuddy_shaped(raw: &Value) -> bool {
     raw.get("useCustomProtocol").is_some() || raw.get("url").is_some()
 }
 
-/// `anthropic-messages` 协议的 base URL 归一化：保证末尾带 `/v1`（opencode 侧读入与写出共用）。
+/// Normalize an `anthropic-messages` protocol base URL: ensure a trailing `/v1` (shared by opencode read and write).
 ///
-/// 非 `anthropic-messages` 或空串原样返回。
+/// Non-`anthropic-messages` or empty strings pass through.
 pub fn with_v1_for_messages(api: &str, url: &str) -> String {
     if api != "anthropic-messages" || url.trim().is_empty() {
         return url.to_string();
@@ -43,9 +43,9 @@ pub fn with_v1_for_messages(api: &str, url: &str) -> String {
     }
 }
 
-/// `anthropic-messages` 协议的 base URL 归一化：去掉末尾 `/v1`（读入与写出共用）。
+/// Normalize an `anthropic-messages` protocol base URL: strip the trailing `/v1` (shared by read and write).
 ///
-/// 非 `anthropic-messages`、或末尾不带 `/v1` 时原样返回。
+/// Non-`anthropic-messages`, or URLs without a trailing `/v1`, pass through.
 pub fn without_v1_for_messages(api: &str, url: &str) -> String {
     if api != "anthropic-messages" {
         return url.to_string();
@@ -57,16 +57,16 @@ pub fn without_v1_for_messages(api: &str, url: &str) -> String {
     }
 }
 
-/// ZCode 端的 `baseUrl` 归一化：剥掉 ZCode 自己会补的端点路径后缀（读入与写出共用）。
+/// Normalize ZCode's `baseUrl`: strip the endpoint path suffixes ZCode itself would append (shared by read and write).
 ///
-/// 后缀表按 api 取值：`anthropic-messages` 剥 `/v1/messages`、`/messages`、`/v1`；
-/// `openai-responses` 剥 `/responses`；其余剥 `/chat/completions`。循环剥到不再匹配为止。
+/// The suffix table keys on api: `anthropic-messages` strips `/v1/messages`, `/messages`, `/v1`;
+/// `openai-responses` strips `/responses`; the rest strip `/chat/completions`. Strips in a loop until no match.
 pub fn zcode_normalize_base_url(api: &str, url: &str) -> String {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return String::new();
     }
-    // 按 api 选择要剥的后缀，先长后短。
+    // Pick the suffixes to strip by api, longest first.
     let suffixes: &[&str] = match api {
         "anthropic-messages" => &["/v1/messages", "/messages", "/v1"],
         "openai-responses" => &["/responses"],
@@ -89,9 +89,9 @@ pub fn zcode_normalize_base_url(api: &str, url: &str) -> String {
     base.to_string()
 }
 
-/// ZCode 的 `api.type` → 内部统一的 api（pi / omp / DSH 词表）。
+/// ZCode's `api.type` → the internally unified api (pi / omp / DSH vocabulary).
 ///
-/// `openai-chat-completions` 映射为 `openai-completions`，其余原样返回。
+/// `openai-chat-completions` maps to `openai-completions`; everything else passes through.
 pub fn zcode_api_to_api(zcode_api: &str) -> String {
     match zcode_api.trim() {
         "openai-chat-completions" => "openai-completions".to_string(),
@@ -99,9 +99,9 @@ pub fn zcode_api_to_api(zcode_api: &str) -> String {
     }
 }
 
-/// 内部统一的 api（pi / omp / DSH 词表）→ ZCode 的 `api.type`。
+/// The internally unified api (pi / omp / DSH vocabulary) → ZCode's `api.type`.
 ///
-/// 只认三值；未知值与 `openai-completions` 都映射为 `openai-chat-completions`。
+/// Only the three values are recognized; unknown values and `openai-completions` both map to `openai-chat-completions`.
 pub fn api_to_zcode_api(api: &str) -> String {
     match api.trim() {
         "openai-completions" | "openai-chat-completions" => "openai-chat-completions".to_string(),
@@ -111,9 +111,9 @@ pub fn api_to_zcode_api(api: &str) -> String {
     }
 }
 
-/// 输入模态列表（`text, image` 形式）→ 一组能力布尔。
+/// Input modality list (`text, image` form) → a set of capability booleans.
 ///
-/// 返回固定顺序的 5 项：`text` / `image` / `video` / `pdf` / `audio`，匹配时大小写不敏感。
+/// Returns 5 items in fixed order: `text` / `image` / `video` / `pdf` / `audio`; matching is case-insensitive.
 pub fn modalities_to_supports(list: &str) -> Vec<(&'static str, bool)> {
     let items: HashSet<String> = list
         .split(',')
@@ -129,7 +129,7 @@ pub fn modalities_to_supports(list: &str) -> Vec<(&'static str, bool)> {
     ]
 }
 
-/// 一组能力布尔 → 输入模态列表（`text, image` 形式，按固定顺序）。
+/// A set of capability booleans → input modality list (`text, image` form, fixed order).
 pub fn supports_to_modalities<'a>(pairs: impl IntoIterator<Item = (&'a str, bool)>) -> String {
     const ORDER: [&str; 5] = ["text", "image", "video", "pdf", "audio"];
     let on: HashSet<String> = pairs
@@ -145,10 +145,10 @@ pub fn supports_to_modalities<'a>(pairs: impl IntoIterator<Item = (&'a str, bool
         .join(", ")
 }
 
-/// ZCode 的模型 raw → 输入模态列表。
+/// ZCode's model raw → input modality list.
 ///
-/// 模态布尔取自 `properties.inputFormat.supportsText/Image/Video/Pdf/Audio`；
-/// 一个 `supports*` 键都没写时返回空串。
+/// Modality booleans come from `properties.inputFormat.supportsText/Image/Video/Pdf/Audio`; when none of
+/// the `supports*` keys are written, an empty string returns.
 pub fn zcode_modalities_from_raw(raw: &Value) -> String {
     let props = raw.get("properties").and_then(|p| p.get("inputFormat"));
     let flag = |key: &str| {
@@ -157,7 +157,7 @@ pub fn zcode_modalities_from_raw(raw: &Value) -> String {
             .and_then(Value::as_bool)
             .unwrap_or(false)
     };
-    // 未写任何 supports* 键时返回空串。
+    // No supports* keys written at all returns an empty string.
     let any = [
         "supportsText",
         "supportsImage",
@@ -179,20 +179,20 @@ pub fn zcode_modalities_from_raw(raw: &Value) -> String {
     ])
 }
 
-/// WorkBuddy 的模型 raw → 输入模态列表（由 `supportsImages` 推导）。
+/// WorkBuddy's model raw → input modality list (derived from `supportsImages`).
 ///
-/// 没写 `supportsImages` 时返回空串（未声明）；写了则返回 `text` 加可选的 `image`。
+/// No `supportsImages` returns an empty string (undeclared); written, it returns `text` plus an optional `image`.
 pub fn workbuddy_modalities_from_raw(raw: &Value) -> String {
     match raw.get("supportsImages").and_then(Value::as_bool) {
-        // 声明了 supportsImages：文本恒为 true。
+        // supportsImages declared: text is always true.
         Some(images) => supports_to_modalities([("text", true), ("image", images)]),
         None => String::new(),
     }
 }
 
-/// ZCode 的模型 raw → 思考档位文本（逗号分隔）。
+/// ZCode's model raw → reasoning tier text (comma-separated).
 ///
-/// 档位存在 `optionSpecs.reasoningLevel.values`；未写该键时留空。
+/// Tiers live in `optionSpecs.reasoningLevel.values`; left empty when the key is absent.
 pub fn zcode_variants_from_raw(raw: &Value) -> String {
     raw.get("optionSpecs")
         .and_then(|s| s.get("reasoningLevel"))
@@ -208,11 +208,11 @@ pub fn zcode_variants_from_raw(raw: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// opencode 的 npm 包 → pi / omp 的 api（线上协议）。
+/// opencode's npm package → pi / omp api (the wire protocol).
 ///
-/// `@ai-sdk/anthropic` → `anthropic-messages`、`@ai-sdk/google` → `google-generative-ai`、
-/// `@ai-sdk/mistral` → `mistral-conversations`、`@ai-sdk/openai` → `openai-responses`；
-/// 其余（含空值）→ `openai-completions`。
+/// `@ai-sdk/anthropic` → `anthropic-messages`, `@ai-sdk/google` → `google-generative-ai`,
+/// `@ai-sdk/mistral` → `mistral-conversations`, `@ai-sdk/openai` → `openai-responses`;
+/// the rest (including empty) → `openai-completions`.
 pub fn npm_to_api(npm: &str) -> String {
     match npm {
         "@ai-sdk/anthropic" => "anthropic-messages".to_string(),
@@ -223,12 +223,12 @@ pub fn npm_to_api(npm: &str) -> String {
     }
 }
 
-/// v2 的 `@opencode/ai/providers/<后缀>` 包 → api（线上协议）。
+/// v2's `@opencode/ai/providers/<suffix>` package → api (the wire protocol).
 ///
-/// 后缀映射：anthropic → anthropic-messages、google → google-generative-ai、
-/// openai → openai-responses、mistral → mistral-conversations；
-/// openai-compatible 与未知后缀 → openai-completions。
-/// 非 v2 前缀的包名走 [`npm_to_api`]。
+/// Suffix mapping: anthropic → anthropic-messages, google → google-generative-ai,
+/// openai → openai-responses, mistral → mistral-conversations;
+/// openai-compatible and unknown suffixes → openai-completions.
+/// Package names without the v2 prefix go through [`npm_to_api`].
 pub fn package_or_npm_to_api(pkg: &str) -> String {
     if let Some(suffix) = pkg.strip_prefix("@opencode/ai/providers/") {
         let last = suffix.rsplit('/').next().unwrap_or(suffix);
@@ -243,7 +243,7 @@ pub fn package_or_npm_to_api(pkg: &str) -> String {
     npm_to_api(pkg)
 }
 
-/// omp 官方 9 值（`google-gemini-cli` 为 omp 专属）。
+/// omp's official 9 values (`google-gemini-cli` is omp-only).
 pub const OMP_APIS: [&str; 9] = [
     "openai-completions",
     "openai-responses",
@@ -256,7 +256,7 @@ pub const OMP_APIS: [&str; 9] = [
     "google-vertex",
 ];
 
-/// pi KnownApi 10 值（`mistral-conversations` / `pi-messages` 为 pi 专属）。
+/// pi KnownApi's 10 values (`mistral-conversations` / `pi-messages` are pi-only).
 pub const PI_APIS: [&str; 10] = [
     "openai-completions",
     "mistral-conversations",
@@ -270,30 +270,30 @@ pub const PI_APIS: [&str; 10] = [
     "pi-messages",
 ];
 
-/// ZCode 官方 3 值（`api.type`；Chat Completions 多一个 `chat`）。
+/// ZCode's official 3 values (`api.type`; Chat Completions also accepts `chat`).
 pub const ZCODE_APIS: [&str; 3] = [
     "openai-chat-completions",
     "anthropic-messages",
     "openai-responses",
 ];
 
-/// WorkBuddy 页面可选协议：用于界面选择，保存时落到 URL 后缀。
+/// WorkBuddy page's selectable protocols: chosen in the UI, persisted as the URL suffix at save.
 pub const WORKBUDDY_APIS: [&str; 3] = [
     "openai-completions",
     "anthropic-messages",
     "openai-responses",
 ];
 
-/// QwenCode 页面可选协议：保存时落到 pid + `wireApi`。
+/// QwenCode page's selectable protocols: saved as pid + `wireApi`.
 pub const QWEN_APIS: [&str; 3] = [
     "openai-completions",
     "anthropic-messages",
     "openai-responses",
 ];
 
-/// KimiCode 页面可选协议：`[providers.<name>].type` 的 6 个合法值。
+/// KimiCode page's selectable protocols: the 6 legal values of `[providers.<name>].type`.
 ///
-/// 逐字存进 `ProviderRow::pi_api`，不做映射翻译。
+/// Stored verbatim into `ProviderRow::pi_api` — no mapping translation.
 pub const KIMI_APIS: [&str; 6] = [
     "openai",
     "kimi",
@@ -303,12 +303,12 @@ pub const KIMI_APIS: [&str; 6] = [
     "vertexai",
 ];
 
-/// pi / omp 的 api → opencode 的 npm 包。
+/// pi / omp api → opencode's npm package.
 ///
-/// `anthropic-messages` → `@ai-sdk/anthropic`、`google-generative-ai` → `@ai-sdk/google`、
-/// `mistral-conversations` → `@ai-sdk/mistral`、
-/// `openai-completions` → `@ai-sdk/openai-compatible`、`openai-responses` → `@ai-sdk/openai`；
-/// 其余 api 返回空串。
+/// `anthropic-messages` → `@ai-sdk/anthropic`, `google-generative-ai` → `@ai-sdk/google`,
+/// `mistral-conversations` → `@ai-sdk/mistral`,
+/// `openai-completions` → `@ai-sdk/openai-compatible`, `openai-responses` → `@ai-sdk/openai`;
+/// other apis return an empty string.
 pub fn api_to_npm(api: &str) -> String {
     match api {
         "anthropic-messages" => "@ai-sdk/anthropic".to_string(),
@@ -320,9 +320,9 @@ pub fn api_to_npm(api: &str) -> String {
     }
 }
 
-/// 提取思考档位的“发送值”集合（逗号分隔）：
-/// - omp 方言：thinking.effortMap 的值（无 effortMap 时用 efforts）
-/// - pi 方言：thinkingLevelMap 的值
+/// Extract a reasoning tier's set of "sent values" (comma-separated):
+/// - omp dialect: the values of thinking.effortMap (efforts when there is no effortMap)
+/// - pi dialect: the values of thinkingLevelMap
 fn thinking_values(v: &Value) -> String {
     if let Some(t) = v.get("thinking") {
         if let Some(em) = t.get("effortMap").and_then(|m| m.as_object()) {
@@ -339,7 +339,7 @@ fn thinking_values(v: &Value) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
         }
-        // thinking 块无 efforts/effortMap 时回落到 thinkingLevelMap。
+        // A thinking block without efforts/effortMap falls back to thinkingLevelMap.
     }
     v.get("thinkingLevelMap")
         .and_then(|m| m.as_object())
@@ -355,7 +355,7 @@ fn thinking_values(v: &Value) -> String {
 pub fn model_from_pi(v: &Value) -> ModelRow {
     let id = str_at(v, "id").to_string();
     let modalities_input = nested_list_str(v, &["input"]);
-    // 除 `reasoning` 外，`thinking` / `thinkingLevelMap` / `reasoningEfforts` 也算支持思考。
+    // Besides `reasoning`, `thinking` / `thinkingLevelMap` / `reasoningEfforts` also express reasoning support.
     let reasoning = bool_at(v, "reasoning")
         || v.get("thinkingLevelMap").is_some()
         || v.get("thinking").is_some()
@@ -366,7 +366,7 @@ pub fn model_from_pi(v: &Value) -> ModelRow {
         reasoning,
         tool_call: true,
         store: false,
-        // `disabled` 是 WorkBuddy 专属字段，其他方言的模型恒为启用。
+        // `disabled` is WorkBuddy-exclusive; other dialects' models are always enabled.
         disabled: false,
         context: num_at(v, "contextWindow"),
         output: num_at(v, "maxTokens"),
@@ -386,14 +386,14 @@ pub fn model_from_pi(v: &Value) -> ModelRow {
 }
 
 pub fn model_to_pi(m: &ModelRow) -> Value {
-    // opencode / DSH 来源全新构造，其余以 raw 为基底保留扩展字段。
+    // opencode / DSH sources build fresh; the rest keep extension fields over raw as the base.
     let mut obj: Map<String, Value> =
         if is_opencode_shaped_model(&m.raw) || is_dsh_shaped_model(&m.raw) {
             Map::new()
         } else {
             m.raw.as_object().cloned().unwrap_or_default()
         };
-    // thinking 块由 thinkingLevelMap 表达，写出前移除。
+    // The thinking block is expressed by thinkingLevelMap — removed before writing out.
     obj.remove("thinking");
     obj.insert("id".into(), Value::String(m.id.clone()));
     if !m.name.trim().is_empty() {
@@ -431,7 +431,7 @@ pub fn model_to_pi(m: &ModelRow) -> Value {
     let names: Vec<String> = crate::model::ordered_variants_text(&m.variants);
     let cur: HashSet<String> = names.iter().cloned().collect();
     let thinking_map: Map<String, Value> =
-        // 1) raw.thinkingLevelMap 的值集合与当前档位一致时原样保留（含非对称映射）。
+        // 1) When raw.thinkingLevelMap's value set matches the current tiers, keep verbatim (asymmetric mappings included).
         if let Some(rm) = m.raw.get("thinkingLevelMap").and_then(|v| v.as_object()) {
             let rm_vals: HashSet<String> = rm
                 .values()
@@ -444,7 +444,7 @@ pub fn model_to_pi(m: &ModelRow) -> Value {
                 Map::new()
             }
         }
-        // 2) raw.thinking.effortMap 的值集合一致时作为 thinkingLevelMap。
+        // 2) When raw.thinking.effortMap's value set matches, serve as thinkingLevelMap.
         else if let Some(em) = m
             .raw
             .get("thinking")
@@ -464,7 +464,7 @@ pub fn model_to_pi(m: &ModelRow) -> Value {
         } else {
             Map::new()
         };
-    // 都不匹配 → 对称映射 {档位: 档位}
+    // No match → the symmetric mapping {tier: tier}
     let thinking_map = if thinking_map.is_empty() {
         names
             .iter()
@@ -482,7 +482,7 @@ pub fn model_to_pi(m: &ModelRow) -> Value {
 pub fn provider_from_pi(key: &str, v: &Value) -> ProviderRow {
     let api = str_at(v, "api");
     let npm = api_to_npm(api);
-    // 读入时归一化：`anthropic-messages` 的 baseUrl 去掉末尾 `/v1`。
+    // Normalized at load: `anthropic-messages`' baseUrl loses its trailing /v1.
     let base_url = without_v1_for_messages(api, str_at(v, "baseUrl"));
     let models = v
         .get("models")
@@ -493,9 +493,9 @@ pub fn provider_from_pi(key: &str, v: &Value) -> ProviderRow {
         .get("compat")
         .and_then(|c| c.get("supportsDeveloperRole"))
         .and_then(|v| v.as_bool())
-        // `compat` 缺省：`api` 非空且不是 `openai-completions`。
+        // `compat` defaults: `api` non-empty and not `openai-completions`.
         .unwrap_or_else(|| !api.is_empty() && api != "openai-completions");
-    // 两个键任一为 true 即为 true，缺省 false。
+    // Either key true means true; default false.
     let requires_reasoning_content = v
         .get("compat")
         .and_then(Value::as_object)
@@ -515,7 +515,7 @@ pub fn provider_from_pi(key: &str, v: &Value) -> ProviderRow {
         original_api_key_env: String::new(),
         api_key_secret: String::new(),
         original_api_key_secret: String::new(),
-        // DSH 侧默认值。
+        // DSH-side defaults.
         dsh_timeout_ms: "180000".into(),
         dsh_retry_mode: "normal".into(),
         dsh_max_retries: String::new(),
@@ -538,7 +538,7 @@ pub fn provider_from_pi(key: &str, v: &Value) -> ProviderRow {
     r
 }
 
-/// 把指定键按给定顺序排到对象最前，其余键保持原有相对顺序。
+/// Move the given keys to the front of an object in the given order; remaining keys keep their relative order.
 pub fn order_fields(object: Map<String, Value>, keys: &[&str]) -> Map<String, Value> {
     let mut ordered = Map::new();
     for key in keys {
@@ -554,18 +554,18 @@ pub fn order_fields(object: Map<String, Value>, keys: &[&str]) -> Map<String, Va
     ordered
 }
 
-/// pi / omp provider 的字段顺序：baseUrl → apiKey → api → compat → models，其余保留。
+/// pi / omp provider field order: baseUrl → apiKey → api → compat → models, the rest preserved.
 const PROVIDER_FIELD_ORDER: &[&str] = &["baseUrl", "apiKey", "api", "compat", "models"];
 
 pub fn provider_to_pi(p: &ProviderRow) -> Value {
-    // opencode / DSH 来源全新构造，其余以 raw 为基底保留扩展字段。
+    // opencode / DSH sources build fresh; the rest keep extension fields over raw as the base.
     let mut obj: Map<String, Value> =
         if is_opencode_shaped_provider(&p.raw) || is_dsh_shaped_provider(&p.raw) {
             Map::new()
         } else {
             p.raw.as_object().cloned().unwrap_or_default()
         };
-    // compat 只增删 supportsDeveloperRole，其余键保留。
+    // compat only adds/removes supportsDeveloperRole; other keys are kept.
     if !p.compat {
         let mut c = obj
             .get("compat")
@@ -580,7 +580,7 @@ pub fn provider_to_pi(p: &ProviderRow) -> Value {
             obj.remove("compat");
         }
     }
-    // 同格式且未改动时不写该键；否则写出当前值。
+    // Same format and unmodified → the key isn't written; otherwise the current value writes.
     let native_pi = matches!(
         p.source_format,
         Some(crate::format::ConfigFormat::Pi) | Some(crate::format::ConfigFormat::OhMyPi)
@@ -637,7 +637,7 @@ pub fn load_pi_extras(root: &Value) -> Value {
 
 pub fn to_pi_root(providers: &[ProviderRow], extras: &Value) -> Value {
     let mut root = extras.as_object().cloned().unwrap_or_default();
-    // 与目标现有 providers 合并：同名覆盖，目标独有项保留。
+    // Merge with the target's existing providers: same names overwrite, target-only entries stay.
     let existing = root
         .get("providers")
         .and_then(Value::as_object)
@@ -656,8 +656,8 @@ pub fn to_pi_root(providers: &[ProviderRow], extras: &Value) -> Value {
     Value::Object(root)
 }
 
-/// 保守合并：以 `target` 为基底，`source` 中存在的键覆盖对应值，`target` 独有的键保留。
-/// 对象递归合并；数组与标量以 `source` 为准。
+/// Conservative merge: `target` is the base; keys present in `source` overwrite, target-only keys are kept.
+/// Objects merge recursively; arrays and scalars take `source`'s side.
 pub fn merge_conservative(target: &Value, source: &Value) -> Value {
     match (target, source) {
         (Value::Object(target_obj), Value::Object(source_obj)) => {

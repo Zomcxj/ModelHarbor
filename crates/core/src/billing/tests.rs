@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// 真实响应：哈基米API站（额度是占位值 1e8，已用 $216.00）。
+/// Real response: a Hajimi-style API station (quota is a placeholder 1e8, $216.00 used).
 const HAJIMI_SUB: &str = r#"{"object":"billing_subscription","has_payment_method":true,
         "soft_limit_usd":100000000,"hard_limit_usd":100000000,"system_hard_limit_usd":100000000,
         "access_until":0}"#;
@@ -10,7 +10,7 @@ const HAJIMI_USAGE: &str = r#"{"object":"list","total_usage":21600}"#;
 const HAJIMI_STATUS: &str =
     r#"{"success":true,"data":{"system_name":"哈基米API站","version":"v1.0.0-rc.19.3518"}}"#;
 
-/// 真实响应：另一种形状 credit_summary（单位未标注）。
+/// Real response: another shape, credit_summary (unit unlabeled).
 const CREDIT_SUMMARY: &str = r#"{"object":"credit_summary","total_granted":-1300000,
         "total_used":0,"total_available":-1300000,"expires_at":0}"#;
 
@@ -30,7 +30,7 @@ fn panel_name_combines_system_and_version() {
 
 #[test]
 fn placeholder_limit_shows_used_only() {
-    // 占位额度 1e8：不显示也不保留。
+    // Placeholder quota 1e8: neither displayed nor kept.
     let billing = parse(HAJIMI_SUB, Some(HAJIMI_USAGE), Some(HAJIMI_STATUS));
     assert_eq!(billing.shape, Shape::Subscription);
     assert_eq!(billing.used_usd, Some(216.0));
@@ -46,7 +46,7 @@ fn placeholder_limit_shows_used_only() {
     );
     assert_eq!(billing.inline_full(), "已用 $216.00");
     let detail = billing.detail();
-    // 占位额度只显示已用。
+    // Placeholder quotas show usage only.
     assert!(!detail.contains("占位值"), "不再解释占位：{detail}");
     assert!(!detail.contains("额度"), "占位额度下不该有额度行：{detail}");
     assert!(!detail.contains("余额"), "占位额度下不该给余额行：{detail}");
@@ -81,7 +81,7 @@ fn credit_summary_is_shown_raw() {
 
 #[test]
 fn zero_hard_limit_is_treated_as_no_limit() {
-    // 部分站用 hard_limit_usd: 0 表示无硬上限。
+    // Some stations use hard_limit_usd: 0 to mean no hard cap.
     let sub = r#"{"object":"billing_subscription","hard_limit_usd":0,"soft_limit_usd":0}"#;
     let usage = r#"{"object":"list","total_usage":500}"#;
     let billing = parse(sub, Some(usage), None);
@@ -93,7 +93,7 @@ fn zero_hard_limit_is_treated_as_no_limit() {
 
 #[test]
 fn balance_never_shows_negative() {
-    // 额度比已用小（数据不一致 / 已超支）：只说已用。
+    // Quota smaller than usage (inconsistent data / overspent): usage only.
     let sub = r#"{"object":"billing_subscription","hard_limit_usd":10.0}"#;
     let usage = r#"{"object":"list","total_usage":1500}"#;
     let billing = parse(sub, Some(usage), None);
@@ -102,15 +102,15 @@ fn balance_never_shows_negative() {
     assert!(!billing.detail().contains("-$"), "不要出现负金额");
 }
 
-/// 真实际形状：`/api/status`（换算字段 + 面板名）。
+/// Real observed shape: `/api/status` (conversion fields + panel name).
 const STATUS_UNITS: &str = r#"{"success":true,"data":{"system_name":"哈基米API站",
         "version":"v1.0.0-rc.19.3518","quota_per_unit":500000,"quota_display_type":"CNY",
         "display_in_currency":true,"usd_exchange_rate":7.3}}"#;
-/// 真实际形状：`/api/usage/token/`（不限额度）。
+/// Real observed shape: `/api/usage/token/` (unlimited quota).
 const USAGE_TOKEN_UNLIMITED: &str = r#"{"code":true,"message":"","data":{"name":"demo",
         "unlimited_quota":true,"total_granted":0,"total_used":137000000,
         "total_available":-137000000,"expires_at":0}}"#;
-/// 真实际形状：`/api/log/token`（字段取自实测）。
+/// Real observed shape: `/api/log/token` (fields taken from live probing).
 const TOKEN_LOGS: &str = r#"{"success":true,"message":"","data":[
         {"created_at":1789436810,"type":2,"model_name":"deepseek-v4-flash","quota":1000000},
         {"created_at":1789436900,"type":2,"model_name":"grok-4.6","quota":500000},
@@ -147,7 +147,7 @@ fn token_logs_summarize_by_window_and_model() {
     let logs = parse_token_logs(TOKEN_LOGS);
     assert_eq!(logs.len(), 3);
 
-    // 今日：前两条（第三条在昨天的窗口里）
+    // Today: the first two (the third falls in yesterday's window)
     let today = summarize_logs(&logs, Some(1_789_430_000));
     assert_eq!(today.count, 2);
     assert_eq!(today.quota, 1_500_000.0);
@@ -162,7 +162,7 @@ fn token_logs_summarize_by_window_and_model() {
     assert_eq!(all.quota, 3_500_000.0);
     assert_eq!(all.models[0].1, 3_000_000.0, "同模型要合并");
 
-    // 空日志 / 坏日志都不 panic
+    // Empty logs / corrupt logs never panic
     assert_eq!(parse_token_logs("not json").len(), 0);
     assert_eq!(parse_token_logs(r#"{"success":false}"#).len(), 0);
     assert_eq!(summarize_logs(&[], Some(1)).count, 0);
@@ -206,7 +206,7 @@ fn token_billing_shows_balance_when_quota_is_finite() {
                 "total_used":2500000,"total_available":7500000}}"#,
     )
     .expect("应能解析");
-    // 站点没给换算比 → 按默认并标记假设
+    // The station gave no conversion ratio → assume the default and flag the assumption
     let units = parse_units(None);
     let info = parse_token_billing(TokenInputs {
         usage: Some(&usage),
@@ -230,7 +230,7 @@ fn token_billing_shows_balance_when_quota_is_finite() {
 
 #[test]
 fn detail_keeps_numbers_and_drops_the_endpoint_footnotes() {
-    // 悬停小窗只放数字与影响读数的口径（换算比、跳日）。
+    // The hover's small window holds only numbers and the accounting that affects them (ratio, day rollover).
     let items: Vec<String> = (0..LOG_PAGE_LIMIT)
         .map(|i| {
             format!(
@@ -265,7 +265,7 @@ fn detail_keeps_numbers_and_drops_the_endpoint_footnotes() {
 
 #[test]
 fn a_degraded_result_shows_no_note_line() {
-    // 降级原因（调用日志不可用、面板令牌失效）留在结果里，小窗只显示数字。
+    // Degradation reasons (call logs unavailable, panel token invalid) stay in the result; the small window shows numbers only.
     let units = parse_units(Some(STATUS_UNITS));
     let usage = parse_token_usage(USAGE_TOKEN_UNLIMITED).expect("应能解析");
     let info = parse_token_billing(TokenInputs {
@@ -285,7 +285,7 @@ fn a_degraded_result_shows_no_note_line() {
 
 #[test]
 fn unsupported_site_is_unknown() {
-    // 站点不支持：拿到的可能是 404 页面或空对象
+    // Not supported: what arrives may be a 404 page or an empty object
     for payload in ["", "{}", "<html>404</html>", r#"{"success":false}"#] {
         let billing = parse(payload, None, None);
         assert_eq!(billing.shape, Shape::Unknown, "{payload}");
@@ -357,7 +357,7 @@ fn endpoints_derive_origin_and_base() {
         "https://gemai.huchan.cn/v1/dashboard/billing/usage"
     );
 
-    // anthropic 系 baseUrl 没有 /v1，末尾斜杠要去掉
+    // anthropic-family baseUrls lack /v1; the trailing slash must go
     let ep = endpoints("https://kktoken.cc/");
     assert_eq!(ep.status, "https://kktoken.cc/api/status");
     assert_eq!(
@@ -365,14 +365,14 @@ fn endpoints_derive_origin_and_base() {
         "https://kktoken.cc/dashboard/billing/subscription"
     );
 
-    // 无协议头：整体当 origin。
+    // No scheme: the whole thing counts as the origin.
     let ep = endpoints("api.example.com/v1");
     assert_eq!(ep.status, "api.example.com/v1/api/status");
 }
 
 #[test]
 fn endpoints_v1_only_touches_origin_only_bases() {
-    // pi 页里 anthropic 系的 baseUrl 只有 origin → 备选端点补上 /v1
+    // In the pi page, anthropic-family baseUrls carry only the origin → the alternate endpoint appends /v1
     let ep = endpoints_v1("https://ps.air-outer.com");
     assert_eq!(
         ep.subscription,
@@ -387,24 +387,24 @@ fn endpoints_v1_only_touches_origin_only_bases() {
         "https://kktoken.cc/v1/dashboard/billing/subscription"
     );
 
-    // 已带 /v1：原样返回，不拼出 /v1/v1/...
+    // /v1 already present: returned as-is, never /v1/v1/...
     let same = endpoints("https://gemai.huchan.cn/v1");
     let alt = endpoints_v1("https://gemai.huchan.cn/v1");
     assert_eq!(alt.subscription, same.subscription);
 
-    // 带了其他路径：原样返回
+    // Another path present: returned as-is
     let same = endpoints("https://host/api");
     let alt = endpoints_v1("https://host/api");
     assert_eq!(alt.subscription, same.subscription);
 }
 
-/// 真实响应形状：`/api/user/self`（需要面板 PAT）。
-/// 字段名取自 new-api `buildSelfUserData`（controller/user.go）。
+/// Real response shape: `/api/user/self` (requires a panel PAT).
+/// Field names from new-api's `buildSelfUserData` (controller/user.go).
 const ACCOUNT_SELF: &str = r#"{"success":true,"message":"","data":{
         "id":1,"username":"tester","display_name":"Tester","role":1,"status":1,
         "group":"default","quota":6150000,"used_quota":10250000,"request_count":321}}"#;
 
-/// 只有账号数据、没有令牌数据时的展示。
+/// Display when there is account data but no token data.
 fn account_only_billing() -> Billing {
     let units = parse_units(Some(STATUS_UNITS));
     Billing {
@@ -432,13 +432,13 @@ fn account_self_rejects_failures_and_useless_payloads() {
         "not json",
         "{}",
         "[]",
-        // PAT 无效 / 未提供：new-api 把错误放在 200 响应的 success:false 里
+        // Invalid / missing PAT: new-api puts the error in a 200 response's success:false
         r#"{"success":false,"message":"Unauthorized, invalid access token"}"#,
-        // 一个可用字段都没有
+        // Not a single usable field
         r#"{"success":true,"data":{}}"#,
-        // 只有分组，没有任何数字
+        // Only the group, no numbers at all
         r#"{"success":true,"data":{"group":"default"}}"#,
-        // 类型不符
+        // Type mismatch
         r#"{"success":true,"data":{"quota":"nope"}}"#,
     ] {
         assert!(parse_account_self(payload, &units).is_none(), "{payload}");
@@ -447,7 +447,7 @@ fn account_self_rejects_failures_and_useless_payloads() {
 
 #[test]
 fn account_zero_quota_is_a_real_zero_balance() {
-    // 额度真为 0（用完了）显示 $0.00，不当成没数据。
+    // A genuine zero quota (used up) displays $0.00 — not treated as no data.
     let units = parse_units(None);
     let account = parse_account_self(
         r#"{"success":true,"data":{"quota":0,"used_quota":500000,"request_count":3}}"#,
@@ -462,8 +462,8 @@ fn account_zero_quota_is_a_real_zero_balance() {
 
 #[test]
 fn account_only_result_still_shows_how_much_was_used() {
-    // 实测站点（ps.air-outer.com）：令牌侧整条都是空的，只有 `/api/user/self`
-    // 可用，它的 `used_quota` 是这一站唯一的用量数字。
+    // A probed station (ps.air-outer.com): the token side is entirely empty and only `/api/user/self` works;
+    // its `used_quota` is that station's only usage number.
     let info = account_only_billing();
     let line = info.inline();
     assert!(line.contains("账号余额 $12.30"), "{line}");
@@ -473,7 +473,7 @@ fn account_only_result_still_shows_how_much_was_used() {
     );
 }
 
-/// 账号数据 + 签到状态同一条结果。
+/// Account data and check-in status in one result.
 fn account_with_checkin_billing() -> Billing {
     let units = parse_units(Some(STATUS_UNITS));
     Billing {
@@ -505,7 +505,7 @@ fn checkin_state_gets_its_own_detail_line() {
 
 #[test]
 fn checkin_alone_counts_as_displayable_data() {
-    // 账号接口挂了、只有签到读得到时也要能显示。
+    // Even when the account endpoint is down and only check-in reads, something must display.
     let units = parse_units(Some(STATUS_UNITS));
     let info = Billing {
         source: Source::Token,
@@ -519,7 +519,7 @@ fn checkin_alone_counts_as_displayable_data() {
         !line.contains("未返回额度信息"),
         "有签到就不该说没数据：{line}"
     );
-    // 签到是账号级信息，不进「本令牌」分节。
+    // Check-in is account-level info; it stays out of the "this token" section.
     let text = info.detail();
     assert!(text.contains("签到：今日已签"), "{text}");
     assert!(!text.contains("本令牌"), "{text}");
@@ -527,7 +527,7 @@ fn checkin_alone_counts_as_displayable_data() {
 
 #[test]
 fn no_checkin_data_means_no_checkin_word() {
-    // 站点没开签到、或用户没填面板令牌：卡片上不出现「签到」这两个字。
+    // The station has no check-in, or the user set no panel token: the words "check-in" never appear on the card.
     let info = account_only_billing();
     assert!(!info.inline().contains("签到"), "{}", info.inline());
     assert!(!info.detail().contains("签到"), "{}", info.detail());
@@ -562,7 +562,7 @@ fn account_balance_leads_the_summary_line() {
     );
 
     let detail = info.detail();
-    // 悬停小窗求紧凑：数字合并成行，但「同站点共用」这层含义留一个短标记。
+    // The hover's small window prizes compactness: numbers merge into lines, but the "shared per station" nuance keeps a short marker.
     assert!(
         detail.contains("账号级额度（面板访问令牌，同站点共用）"),
         "{detail}"
@@ -589,11 +589,11 @@ fn account_only_result_is_still_displayable() {
 
 #[test]
 fn the_card_has_one_headline_number_and_a_quieter_rest() {
-    // 主行只留一个「第一眼看到」的数：余额优先；其余数字降一档。
+    // The main line keeps one "first-glance" number: balance wins; the rest demote a tier.
     let info = account_only_billing();
     assert_eq!(info.headline().as_deref(), Some("账号余额 $12.30"));
     assert_eq!(info.inline_rest(), "已用 $20.50");
-    // 两段拼起来等于完整摘要。
+    // The two parts concatenated equal the full summary.
     assert_eq!(
         format!("{} · {}", info.headline().unwrap(), info.inline_rest()),
         info.inline_full()
@@ -602,7 +602,7 @@ fn the_card_has_one_headline_number_and_a_quieter_rest() {
 
 #[test]
 fn headline_falls_back_to_used_when_there_is_no_balance() {
-    // 不限额度站 / 拿不到余额时，已用就是那个主数字。
+    // On unlimited stations / when no balance is available, usage IS the headline number.
     let billing = Billing {
         source: Source::Token,
         used_usd: Some(3.0),
@@ -615,7 +615,7 @@ fn headline_falls_back_to_used_when_there_is_no_balance() {
 
 #[test]
 fn headline_is_none_when_there_is_nothing_to_show() {
-    // 查不到就什么都不突出。
+    // When nothing can be queried, nothing is highlighted.
     let empty = Billing::default();
     assert_eq!(empty.headline(), None);
     assert_eq!(empty.inline_rest(), "");
@@ -623,7 +623,7 @@ fn headline_is_none_when_there_is_nothing_to_show() {
 
 #[test]
 fn account_detail_is_disclosed_as_account_level() {
-    // 小窗不写接口路径，但「账号级」与「面板访问令牌」两项口径披露必须留住。
+    // The small window omits endpoint paths, but the two disclosures — "account-level" and "panel access token" — must stay.
     let info = account_only_billing();
     let detail = info.detail();
     assert!(
@@ -635,7 +635,7 @@ fn account_detail_is_disclosed_as_account_level() {
 
 #[test]
 fn logs_only_result_still_reports_today_and_week() {
-    // 部分站点没有 /api/usage/token/ 这个面板路由，但 /api/log/token 仍可用。
+    // Some stations lack the /api/usage/token/ panel route, yet /api/log/token still works.
     let units = parse_units(Some(STATUS_UNITS));
     let logs = parse_token_logs(TOKEN_LOGS);
     let info = parse_token_billing(TokenInputs {
@@ -663,7 +663,7 @@ fn logs_only_result_still_reports_today_and_week() {
 
     let detail = info.detail();
     assert!(detail.contains("今日已用：$3.00（2 次请求）"), "{detail}");
-    // 额度缺失时不留额度行。
+    // With quota missing, no quota line is left behind.
     assert!(!detail.contains("额度"), "没有额度就不该有额度行：{detail}");
     assert!(!detail.contains("接口"), "{detail}");
     assert!(!detail.contains("/api/"), "{detail}");
@@ -671,7 +671,7 @@ fn logs_only_result_still_reports_today_and_week() {
 
 #[test]
 fn logs_only_result_without_logs_is_not_displayable() {
-    // 两边都没拿到：保持“无数据”。
+    // Neither side yielded anything: stay at "no data".
     let units = parse_units(None);
     let info = parse_token_billing(TokenInputs {
         usage: None,
@@ -686,7 +686,7 @@ fn logs_only_result_without_logs_is_not_displayable() {
     assert!(!info.is_displayable(), "没有任何数据就不该显示");
 }
 
-/// 真实际形状：`GET /api/user/checkin`（字段取自实测）。
+/// Real observed shape: `GET /api/user/checkin` (fields taken from live probing).
 const CHECKIN_STATUS: &str = r#"{"success":true,"data":{"enabled":true,
         "max_quota":250000,"min_quota":50000,"stats":{"checked_in_today":true,
         "checkin_count":14,"total_checkins":45,"total_quota":6500000,
@@ -707,12 +707,12 @@ fn checkin_status_reads_the_real_payload() {
 
 #[test]
 fn checkin_status_keeps_the_site_own_refusal_message() {
-    // 站点没开签到：new-api 用 200 + success:false + 这句中文报错。
+    // The station has no check-in: new-api answers 200 + success:false + this Chinese message.
     let units = parse_units(Some(STATUS_UNITS));
     let err = parse_checkin_status(r#"{"message":"签到功能未启用","success":false}"#, &units)
         .expect_err("未启用应报错");
     assert!(err.contains("签到功能未启用"), "{err}");
-    // 不是 JSON 也不能当成「已签到」。
+    // Non-JSON must never count as "already checked in".
     assert!(parse_checkin_status("not json", &units).is_err());
 }
 
@@ -736,12 +736,12 @@ fn checkin_parsers_survive_missing_fields() {
 fn checkin_short_and_long_describe_the_same_state() {
     let units = parse_units(Some(STATUS_UNITS));
     let status = parse_checkin_status(CHECKIN_STATUS, &units).expect("应能解析");
-    // 短描述给卡片那一行：只说状态与今日金额。
+    // The short description serves the card's line: status and today's amount only.
     let short = checkin_short(&status);
     assert!(short.contains("今日已签"), "{short}");
     assert!(short.contains("$0.30"), "今日金额要带上：{short}");
     assert!(!short.contains("累计"), "短描述不放累计：{short}");
-    // 长描述给悬停说明：短描述的内容 + 本月 / 累计。
+    // The long description serves the hover: the short one's content + this month / lifetime.
     let long = checkin_long(&status);
     assert!(long.contains("今日已签"), "{long}");
     assert!(long.contains("本月 14 次"), "{long}");
@@ -758,7 +758,7 @@ fn checkin_descriptions_omit_numbers_the_site_did_not_give() {
     let text = checkin_long(&bare);
     assert_eq!(text, "未签", "没给本月 / 累计就不提：{text}");
 
-    // 今天签了但站点没给金额：不编 $0.00。
+    // Checked in today but the station gave no amount: never fabricate $0.00.
     let no_amount = CheckinStatus {
         enabled: true,
         today: true,
@@ -767,7 +767,7 @@ fn checkin_descriptions_omit_numbers_the_site_did_not_give() {
     assert_eq!(checkin_short(&no_amount), "今日已签");
     assert!(!checkin_long(&no_amount).contains('$'), "没给就不编金额");
 
-    // 站点没开签到：明确说未启用。
+    // The station has no check-in: say plainly it's not enabled.
     let disabled = CheckinStatus::default();
     assert_eq!(checkin_short(&disabled), "未启用");
     assert_eq!(checkin_long(&disabled), "该站点未启用签到");
@@ -777,7 +777,7 @@ fn checkin_descriptions_omit_numbers_the_site_did_not_give() {
 fn checkin_status_reports_todays_amount_from_the_records() {
     let units = parse_units(Some(STATUS_UNITS));
     let status = parse_checkin_status(CHECKIN_STATUS, &units).expect("应能解析");
-    // fixture 的最新一条是 2026-09-17 / 150000 → $0.30。
+    // The fixture's latest record is 2026-09-17 / 150000 → $0.30.
     assert_eq!(status.today_usd, Some(0.3), "今日签到的金额");
     let text = checkin_short(&status);
     assert!(text.contains("$0.30"), "要能说清今天签了多少：{text}");
@@ -786,7 +786,7 @@ fn checkin_status_reports_todays_amount_from_the_records() {
 #[test]
 fn checkin_status_has_no_today_amount_when_not_signed_today() {
     let units = parse_units(Some(STATUS_UNITS));
-    // 今天没签：即使有历史记录，也不把昨天/上一条的金额当成今天。
+    // Not checked in today: even with history, yesterday's / the previous record's amount is never today's.
     let not_today = parse_checkin_status(
             r#"{"success":true,"data":{"enabled":true,"stats":{"checked_in_today":false,
                 "checkin_count":3,"records":[{"checkin_date":"2026-09-16","quota_awarded":150000}]}}}"#,
@@ -798,7 +798,7 @@ fn checkin_status_has_no_today_amount_when_not_signed_today() {
     assert_eq!(text, "未签", "今天没签就直说未签");
     assert!(!text.contains('$'), "没签就不该提金额：{text}");
 
-    // 今天签了但记录为空（站点只给标记不给明细）：同样不编金额。
+    // Checked in today but the record is empty (the station gives a flag without details): likewise no fabricated amount.
     let no_records = parse_checkin_status(
             r#"{"success":true,"data":{"enabled":true,"stats":{"checked_in_today":true,"checkin_count":1}}}"#,
             &units,
@@ -807,7 +807,7 @@ fn checkin_status_has_no_today_amount_when_not_signed_today() {
     assert_eq!(no_records.today_usd, None);
     assert_eq!(checkin_short(&no_records), "今日已签", "只有标记、没金额");
 
-    // 记录顺序被打乱时按最大日期取。
+    // Shuffled record order takes the greatest date.
     let shuffled = parse_checkin_status(
         r#"{"success":true,"data":{"enabled":true,"stats":{"checked_in_today":true,
                 "checkin_count":2,"records":[{"checkin_date":"2026-09-10","quota_awarded":50000},
@@ -820,22 +820,22 @@ fn checkin_status_has_no_today_amount_when_not_signed_today() {
 
 #[test]
 fn sub2api_usage_url_normalizes_base() {
-    // 常规：根路径直接补 v1/usage。
+    // Normal: the root path directly completes to v1/usage.
     assert_eq!(
         crate::billing::sub2api_usage_url("https://sub.example.com"),
         "https://sub.example.com/v1/usage"
     );
-    // 已带 /v1：只补 usage。
+    // /v1 already present: only append usage.
     assert_eq!(
         crate::billing::sub2api_usage_url("https://sub.example.com/v1"),
         "https://sub.example.com/v1/usage"
     );
-    // 整条路径：不再重复追加。
+    // A full path: no repeated appending.
     assert_eq!(
         crate::billing::sub2api_usage_url("https://sub.example.com/v1/usage"),
         "https://sub.example.com/v1/usage"
     );
-    // 末尾斜杠与首尾空白先归一。
+    // Trailing slashes and edge whitespace normalize first.
     assert_eq!(
         crate::billing::sub2api_usage_url("  https://sub.example.com/v1/  "),
         "https://sub.example.com/v1/usage"
@@ -844,7 +844,7 @@ fn sub2api_usage_url_normalizes_base() {
 
 #[test]
 fn sub2api_usage_parses_quota_remaining_and_unit_variants() {
-    // 完整读数：quota.limit/used + remaining + unit。
+    // Complete readings: quota.limit/used + remaining + unit.
     let full = crate::billing::parse_sub2api_usage(
         r#"{"quota":{"limit":100.0,"used":37.5},"remaining":62.5,"unit":"USD"}"#,
     )
@@ -854,19 +854,19 @@ fn sub2api_usage_parses_quota_remaining_and_unit_variants() {
     assert_eq!(full.remaining, Some(62.5));
     assert_eq!(full.unit, "USD");
 
-    // 只有 balance：剩余直接取它，单位缺省 USD。
+    // balance only: remaining taken from it directly; the unit defaults to USD.
     let only_balance = crate::billing::parse_sub2api_usage(r#"{"balance": 12.0}"#).unwrap();
     assert_eq!(only_balance.remaining, Some(12.0));
     assert_eq!(only_balance.total, None);
     assert_eq!(only_balance.unit, "USD");
 
-    // 只有 quota：剩余按 total - used 兜底。
+    // quota only: remaining falls back to total - used.
     let only_quota =
         crate::billing::parse_sub2api_usage(r#"{"quota":{"limit":50,"used":8}}"#).unwrap();
     assert_eq!(only_quota.remaining, Some(42.0));
     assert_eq!(only_quota.total, Some(50.0));
 
-    // 空读数 / 非法 JSON / 别的结构：None。
+    // Empty readings / invalid JSON / other structures: None.
     for junk in [
         "{}",
         r#"{"unit":"USD"}"#,
@@ -900,7 +900,7 @@ fn parse_data_self_aggregates_days_and_models() {
     assert_eq!(late.top_model, "gpt-5", "取消耗最大的模型");
     assert!((days[0].usd - 100_000.0 / units.quota_per_unit).abs() < 1e-9);
 
-    // 空数组 / success:false / 非法 JSON / 缺 data：None。
+    // Empty array / success:false / invalid JSON / missing data: None.
     for junk in [
         r#"{"success":true,"data":[]}"#,
         r#"{"success":false,"data":[]}"#,
@@ -941,7 +941,7 @@ fn token_usage_expiry_flows_into_billing() {
         today_from: 1_789_430_000,
         note: None,
     });
-    // 应用层未填标签前：只有 ts，悬停里不展示到期行。
+    // Before the app layer fills labels: only ts exists, so the hover omits the expiry line.
     {
         let expiry = info.expires.as_ref().expect("到期要透传");
         assert_eq!(expiry.ts, 1_789_546_200);

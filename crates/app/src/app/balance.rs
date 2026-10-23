@@ -1,11 +1,12 @@
-//! 中转站「已用 / 余额 / 今日用量」查询：后台线程 + mpsc 通道。
+//! Relay-station "used / balance / today's usage" queries: background thread + mpsc channel.
 //!
-//! 两条路径（按优先级）：
-//! - **令牌额度**（只需 `sk-` key）：`/api/usage/token/` + `/api/log/token`；
-//! - **兼容账单**（`sk-` key）：`/dashboard/billing/subscription` + `/usage`。
+//! Two paths (by priority):
+//! - **Token quota** (only needs the `sk-` key): `/api/usage/token/` + `/api/log/token`;
+//! - **Compatible billing** (the `sk-` key): `/dashboard/billing/subscription` + `/usage`.
 //!
-//! 约束：直连（每次查询新建 Agent）；全部为只读管理接口；同一 provider 两次查询
-//! 间隔至少 [`BALANCE_COOLDOWN_MS`]；凭证只放在请求头里，不进日志与状态栏文本。
+//! Constraints: direct connections (a fresh Agent per query); all endpoints are read-only management
+//! APIs; two queries to the same provider are spaced at least [`BALANCE_COOLDOWN_MS`] apart;
+//! credentials live only in request headers — never in logs or status-bar text.
 
 use super::fetch::{apply_auth, latency_agent, AuthKind};
 use super::App;
@@ -13,40 +14,40 @@ use crate::billing;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-/// 同一 provider 两次查询的最小间隔（毫秒）。
+/// Minimum interval between two queries to the same provider (milliseconds).
 pub(super) const BALANCE_COOLDOWN_MS: f64 = 5_000.0;
 
-/// 一次查询的输入（拥有所有权，可 move 进后台线程）。
+/// Input for one query (owned, so it can be moved into the background thread).
 #[derive(Clone, Default)]
 pub(super) struct Query {
     pub(super) key: String,
     pub(super) base_url: String,
-    /// `sk-` 形式的 API key（兼容账单接口用）。
+    /// The `sk-`-style API key (used by the compatible billing endpoint).
     pub(super) secret: String,
-    /// 面板访问令牌（PAT，可选）：填了才能查账号级额度（`/api/user/self`）。
+    /// The panel access token (PAT, optional): required for account-level quota (`/api/user/self`).
     pub(super) pat: String,
-    /// 旧版 new-api 要求的用户 ID（`New-Api-User` 头）；空串 = 不发送该头。
+    /// The user ID required by older new-api (the `New-Api-User` header); empty = the header isn't sent.
     pub(super) user_id: String,
-    /// 站点标记为 sub2api：直接用 `sk-` key 查 `{base}/v1/usage`，
-    /// 跳过 NewAPI 面板体系（令牌额度 / 兼容账单 / 面板账户）。
+    /// The station marked sub2api: query `{base}/v1/usage` directly with the `sk-` key,
+    /// skipping the NewAPI panel system (token quota / compatible billing / panel account).
     pub(super) sub2api: bool,
 }
 
-/// 单个 provider 的用户数据查询状态。
+/// Per-provider user-data query state.
 #[derive(Default)]
 pub(super) struct BalanceState {
     pub(super) result: Option<Result<billing::Billing, String>>,
     pub(super) rx: Option<Receiver<Result<billing::Billing, String>>>,
-    /// 上次发起查询的时间（egui 时间轴，秒）。
+    /// When the last query was issued (egui timeline, seconds).
     pub(super) last_at: Option<f64>,
-    /// 本次成功结果的本地午夜标识；跨到下一天后隐藏 `today_*`。
+    /// This successful result's local-midnight marker; crossing to the next day hides `today_*`.
     pub(super) snapshot_midnight: Option<i64>,
 }
 
 impl App {
-    /// 发起一次用户数据查询。
+    /// Issue one user-data query.
     ///
-    /// 返回 `Some(提示文本)` 表示没有发起请求（正在查询中，或还在冷却期）。
+    /// Returns `Some(note)` when no request was issued (already querying, or still cooling down).
     pub(super) fn start_balance_query(
         balance: &mut HashMap<String, BalanceState>,
         query: Query,
@@ -74,7 +75,7 @@ impl App {
         None
     }
 
-    /// 收割用户数据查询结果（在 `update` 里每帧调用）。
+    /// Harvest user-data query results (called every frame in `update`).
     pub(super) fn poll_balance(&mut self) {
         let mut finished = 0usize;
         for state in self.balance.values_mut() {
@@ -94,7 +95,7 @@ impl App {
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
-                    // 线程异常退出：结束等待。
+                    // The thread died abnormally: end the wait.
                     state.rx = None;
                 }
             }
@@ -102,7 +103,7 @@ impl App {
         if finished == 0 || !self.balance_batch {
             return;
         }
-        // 一键查询：全部跑完后给一条汇总。
+        // Query all: one summary lands after everything finishes.
         if self.balance.values().any(|state| state.rx.is_some()) {
             return;
         }
@@ -113,13 +114,13 @@ impl App {
             .filter(|state| matches!(state.result, Some(Ok(_))))
             .count();
         self.balance_batch = false;
-        // 只报数，不报原因。
+        // Report counts only, never reasons.
         self.status = format!("用户数据查询完成：{} 个查到，{} 个没查到", ok, total - ok);
     }
 }
 
 impl BalanceState {
-    /// 按当前本地日期返回展示副本；跨日只失效「今日」，累计/余额/近 7 天保留。
+    /// Return a display copy per the current local date; crossing midnight only invalidates "today", keeping lifetime / balance / last-7-days.
     pub(super) fn display_result(
         &self,
         current_midnight: Option<i64>,
@@ -138,23 +139,23 @@ impl BalanceState {
     }
 }
 
-/// 查询一个站点的用量：令牌额度接口优先，失败再退兼容账单；
-/// 填了面板令牌则再补一份账号级额度。
-/// 站点标记为 sub2api 时只查 `{base}/v1/usage`（无需面板令牌）。
+/// Query a station's usage: token-quota endpoints first, falling back to compatible billing on failure;
+/// with a panel token filled in, account-level quota is fetched on top.
+/// When the station is marked sub2api, only `{base}/v1/usage` is queried (no panel token needed).
 fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
-    // sub2api 站点没有 NewAPI 面板体系，直接走自己的用量接口。
+    // sub2api stations have no NewAPI panel system; their own usage endpoint is used directly.
     if query.sub2api {
         return fetch_sub2api(&query.base_url, &query.secret);
     }
     let endpoints = billing::endpoints(&query.base_url);
-    // 站点信息（面板名）与换算比，失败可容忍。
+    // Station info (panel name) and the conversion ratio; failure is tolerated.
     let status = http_get(&endpoints.status, None).ok();
     let units = billing::parse_units(status.as_deref());
     let mut result = match fetch_token(&endpoints, &units, &query.secret, status.as_deref()) {
         Some(info) => Ok(info),
         None => fetch_compat(&query.base_url, &query.secret, status.as_deref()),
     };
-    // 面板令牌为可选增强：失败只往详情里补一行说明。
+    // The panel token is an optional enhancement: failure only appends one explanatory line to the details.
     let pat = query.pat.trim();
     if !pat.is_empty() {
         let account = fetch_account(&endpoints, &units, pat, &query.user_id);
@@ -165,14 +166,15 @@ fn fetch_billing(query: &Query) -> Result<billing::Billing, String> {
         merge_checkin(&mut result, checkin, panel);
         merge_panel_days(&mut result, panel_days);
     }
-    // 到期标签与紧迫度：令牌路径与兼容账单路径都补。
+    // Expiry labels and urgency: both the token path and the compatible-billing path attach them.
     fill_expiry_labels(&mut result);
     result
 }
 
-/// Sub2API 站点用量：`GET {base}/v1/usage`（只需 `sk-` key，Bearer 鉴权）。
+/// Sub2API station usage: `GET {base}/v1/usage` (only the `sk-` key, Bearer auth).
 ///
-/// 返回站点级剩余 / 已用 / 总额；没有面板账户 / 签到概念，也不查 `/api/status`。
+/// Returns station-level remaining / used / total; there is no panel-account or check-in concept, and
+/// `/api/status` is not queried.
 fn fetch_sub2api(base_url: &str, secret: &str) -> Result<billing::Billing, String> {
     let secret = secret.trim();
     if secret.is_empty() {
@@ -192,16 +194,17 @@ fn fetch_sub2api(base_url: &str, secret: &str) -> Result<billing::Billing, Strin
     })
 }
 
-/// 站点要求 `New-Api-User`（用户 ID）头时的提示。
+/// Hint shown when a station requires the `New-Api-User` (user ID) header.
 pub(super) const ACCOUNT_NEEDS_USER_ID: &str =
     "该站点要求 New-Api-User（用户 ID）头：请在「令牌」面板为它补填用户 ID（可在站点面板 F12 看 /api/user/self 请求的 New-Api-User 值）";
 
-/// 账号查询因缺 `New-Api-User` 头失败时，错误文本里包含的标记。
+/// Marker included in the error text when an account query fails for lacking the `New-Api-User` header.
 pub(super) const NEEDS_USER_ID_MARK: &str = "New-Api-User";
 
-/// 面板账号额度：`GET {origin}/api/user/self`（需面板访问令牌 PAT）。
+/// Panel account quota: `GET {origin}/api/user/self` (requires the panel access token PAT).
 ///
-/// 鉴权只用 `Authorization: Bearer <pat>`；`New-Api-User` 头仅在用户填了用户 ID 时发送。
+/// Auth is `Authorization: Bearer <pat>` only; the `New-Api-User` header is sent only when the user
+/// has filled in a user ID.
 fn fetch_account(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
@@ -214,9 +217,10 @@ fn fetch_account(
         .ok_or_else(|| "返回内容不是可识别的账号额度".to_string())
 }
 
-/// 签到状态：`GET /api/user/checkin`（只读，需面板访问令牌）。
+/// Check-in status: `GET /api/user/checkin` (read-only, requires the panel access token).
 ///
-/// 不代签；站点没开签到、没填令牌或接口读不到时返回 `None`。
+/// Never performs the check-in; returns `None` when the station has none, no token is set, or the
+/// endpoint can't be read.
 fn fetch_checkin(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
@@ -227,9 +231,10 @@ fn fetch_checkin(
     billing::parse_checkin_status(&body, units).ok()
 }
 
-/// 把签到状态并进结果。
+/// Merge check-in status into the result.
 ///
-/// 读不到就不写；结果为 `Err` 时用签到数据拼一份可展示结果。
+/// Unreadable status is not written; when the result is `Err`, a presentable result is assembled from
+/// the check-in data alone.
 fn merge_checkin(
     result: &mut Result<billing::Billing, String>,
     checkin: Option<billing::CheckinStatus>,
@@ -251,10 +256,11 @@ fn merge_checkin(
     }
 }
 
-/// 面板按天用量：`GET {origin}/api/data/self`（近 7 天；需面板访问令牌）。
+/// Panel per-day usage: `GET {origin}/api/data/self` (last 7 days; requires the panel access token).
 ///
-/// 面板聚合覆盖全部来源的用量（含非本机、已被清理的会话），与本地扫描
-/// 互补；只进卡片悬停，不并入账本（避免与本地扫描双重计数）。
+/// Panel aggregates cover usage from all sources (non-local machines, cleaned-up sessions included),
+/// complementing the local scan; shown only in the card hover, never merged into the ledger (to avoid
+/// double counting with the local scan).
 fn fetch_panel_days(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
@@ -267,7 +273,7 @@ fn fetch_panel_days(
     billing::parse_data_self(&body, units)
 }
 
-/// 把面板按天用量并进结果：近期在前，日期标签本地化；读不到不写。
+/// Merge panel per-day usage into the result: recent days first, date labels localized; unreadable data is not written.
 fn merge_panel_days(
     result: &mut Result<billing::Billing, String>,
     days: Option<Vec<billing::PanelDay>>,
@@ -289,7 +295,7 @@ fn merge_panel_days(
     }
 }
 
-/// 天数差（相对今天：0 = 今天，负 = 过去）→ 标签：今天 / 昨天 / N 天前 / MM-DD。
+/// Day offset (relative to today: 0 = today, negative = past) → label: today / yesterday / N days ago / MM-DD.
 fn panel_day_label(day_delta: i64, now_idx: i64) -> String {
     match day_delta {
         0 => return "今天".to_string(),
@@ -301,7 +307,7 @@ fn panel_day_label(day_delta: i64, now_idx: i64) -> String {
     format!("{m:02}-{d:02}")
 }
 
-/// 给到期信息补本地标签与紧迫度（`ts` 由 core 解析，标签应用层填）。
+/// Attach localized labels and urgency to expiry info (`ts` is parsed by core; labels are filled by the app layer).
 fn fill_expiry_labels(result: &mut Result<billing::Billing, String>) {
     let Ok(info) = result.as_mut() else {
         return;
@@ -317,23 +323,24 @@ fn fill_expiry_labels(result: &mut Result<billing::Billing, String>) {
     expiry.days_left = Some(exp_idx - now_idx);
 }
 
-/// `New-Api-User` 头的取值：空串（没填）表示不发这个头。
+/// Value of the `New-Api-User` header: an empty string (unset) means the header is not sent.
 pub(super) fn user_id_header(user_id: &str) -> Option<&str> {
     let id = user_id.trim();
     (!id.is_empty()).then_some(id)
 }
 
-/// 账号接口专用请求：与 [`http_get`] 的区别是保留错误响应正文用于分类。
+/// Account-endpoint-specific request: differs from [`http_get`] in that the error response body is
+/// kept for classification.
 ///
-/// 正文只在本地用于判断，不进入错误文本。
+/// The body is used locally for classification only and never enters error text.
 fn account_get(url: &str, pat: &str, user_id: &str) -> Result<String, String> {
     let request = latency_agent()
         .get(url)
         .set("Accept", "application/json")
-        // 与 http_get 一致：带浏览器 UA。
+        // Same as http_get: carries a browser UA.
         .set("User-Agent", "Mozilla/5.0");
     let mut request = apply_auth(request, AuthKind::Bearer, pat);
-    // 用户填了用户 ID 时才发送该头。
+    // The header is sent only when the user filled a user ID.
     if let Some(id) = user_id_header(user_id) {
         request = request.set("New-Api-User", id);
     }
@@ -342,7 +349,7 @@ fn account_get(url: &str, pat: &str, user_id: &str) -> Result<String, String> {
             .into_string()
             .map_err(|err| format!("读取响应失败：{}", err)),
         Err(ureq::Error::Status(code, response)) => {
-            // 正文读失败时按状态码报。
+            // Body-read failures report by status code.
             let body = response.into_string().unwrap_or_default();
             if body_requests_user_id(&body) {
                 return Err(ACCOUNT_NEEDS_USER_ID.to_string());
@@ -356,14 +363,15 @@ fn account_get(url: &str, pat: &str, user_id: &str) -> Result<String, String> {
     }
 }
 
-/// 站点是否在错误正文里要求 `New-Api-User`（头名匹配，大小写不敏感）。
+/// Whether the station demanded `New-Api-User` in an error body (header-name match, case-insensitive).
 pub(super) fn body_requests_user_id(body: &str) -> bool {
     body.to_lowercase().contains("new-api-user")
 }
 
-/// 把账号查询结果并入已有结果：
-/// - 成功：写入 `account`；结果为 `Err` 时用账号数据拼一份可展示结果；
-/// - 失败：保留已有结果不动，只在 `note` 里追加一行原因。
+/// Merge an account-query result into an existing result:
+/// - success: writes `account`; when the result was `Err`, a presentable result is assembled from the
+///   account data;
+/// - failure: the existing result is kept as-is, with only one reason line appended to `note`.
 fn merge_account(
     result: &mut Result<billing::Billing, String>,
     account: Result<billing::AccountInfo, String>,
@@ -393,7 +401,7 @@ fn merge_account(
     }
 }
 
-/// 账号接口错误文本：401/403 转为「面板令牌无效或已撤销」，其余原样返回。
+/// Account-endpoint error text: 401/403 become "panel token invalid or revoked"; everything else passes through.
 fn account_error_message(err: &str) -> String {
     match crate::app::bars::http_status_code(err) {
         Some(401) | Some(403) => "面板令牌无效或已撤销".to_string(),
@@ -401,9 +409,9 @@ fn account_error_message(err: &str) -> String {
     }
 }
 
-/// 令牌额度：`/api/usage/token/`（额度）+ `/api/log/token`（今日 / 近 7 天用量）。
+/// Token quota: `/api/usage/token/` (quota) + `/api/log/token` (today / last-7-days usage).
 ///
-/// 两边都没拿到时返回 `None`（交给调用方继续降级）。
+/// Returns `None` when neither side yields data (caller continues degrading).
 fn fetch_token(
     endpoints: &billing::Endpoints,
     units: &billing::Units,
@@ -416,7 +424,7 @@ fn fetch_token(
     let mut note = (today_from == fallback_from)
         .then(|| "非 Windows 或读不到本地时间：今日按近 24 小时统计".to_string());
 
-    // 两个接口互相独立，各自解析。
+    // The two endpoints are independent; each parses on its own.
     let (usage, usage_error) = match http_get(&endpoints.token_usage(), Some(secret)) {
         Ok(text) => (billing::parse_token_usage(&text), None),
         Err(err) => (None, Some(err)),
@@ -424,13 +432,13 @@ fn fetch_token(
     let logs = match http_get(&endpoints.token_logs(), Some(secret)) {
         Ok(text) => billing::parse_token_logs(&text),
         Err(err) => {
-            // 额度读到了但日志不可用：保留额度。
+            // Quota arrived but logs unavailable: keep the quota.
             note = Some(format!("调用日志不可用（{err}），今日用量取不到"));
             Vec::new()
         }
     };
 
-    // 两边都没拿到时返回 `None`，由调用方降级到兼容账单。
+    // With neither side yielding, return `None` and let the caller degrade to compatible billing.
     if usage.is_none() && logs.is_empty() {
         return None;
     }
@@ -454,7 +462,7 @@ fn fetch_token(
     }))
 }
 
-/// 兼容账单：额度接口必须成功，用量接口失败可容忍。
+/// Compatible billing: the quota endpoint must succeed; usage-endpoint failure is tolerated.
 fn fetch_compat(
     base_url: &str,
     secret: &str,
@@ -462,7 +470,7 @@ fn fetch_compat(
 ) -> Result<billing::Billing, String> {
     let mut endpoints = billing::endpoints(base_url);
     let mut subscription = http_get(&endpoints.subscription, Some(secret));
-    // 仅 404 时换到 `/v1` 路径重试一次，其他错误直接返回。
+    // Only 404 retries once on the `/v1` path; every other error returns immediately.
     if matches!(&subscription, Err(err) if crate::app::bars::http_status_code(err) == Some(404)) {
         let fallback = billing::endpoints_v1(base_url);
         if fallback.subscription != endpoints.subscription {
@@ -477,12 +485,12 @@ fn fetch_compat(
     Ok(billing::parse(&subscription, usage.as_deref(), status_json))
 }
 
-/// 只读 GET：返回正文，失败给出人话原因（复用 HTTP 状态码解释）。
+/// Read-only GET: returns the body, with a human-readable reason on failure (reusing HTTP status explanations).
 fn http_get(url: &str, secret: Option<&str>) -> Result<String, String> {
     let mut request = latency_agent()
         .get(url)
         .set("Accept", "application/json")
-        // 管理接口带浏览器 UA。
+        // Management endpoints carry a browser UA.
         .set("User-Agent", "Mozilla/5.0");
     if let Some(secret) = secret {
         request = apply_auth(request, AuthKind::Bearer, secret);
@@ -499,7 +507,7 @@ fn http_get(url: &str, secret: Option<&str>) -> Result<String, String> {
     }
 }
 
-/// 当前时间（秒级 Unix 时间戳）。
+/// Current time (second-resolution Unix timestamp).
 pub(super) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -507,20 +515,20 @@ pub(super) fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// 本地时区相对 UTC 的偏移（秒，东八区 = 28800）。
+/// Local timezone offset from UTC (seconds; UTC+8 = 28800).
 ///
-/// 取本地墙上时间与 UTC 之差。`usage` 的「时间」维度要用它把时间戳落到本地日历日
-/// （见 `crate::app::usage::aggregate::local_day_index`）。
+/// Computed as the difference between local wall time and UTC. The `usage` "time" dimension needs it
+/// to floor timestamps onto local calendar days (see `crate::app::usage::aggregate::local_day_index`).
 ///
-/// 局限：读的是**此刻**的偏移，所以跨夏令时的历史时间戳会差一小时。
-/// 与 [`local_midnight_unix`] 同一个取舍 —— 不值得为此引入时区数据库。
+/// Limitation: the **current** offset is read, so historical timestamps crossing a DST boundary are off
+/// by an hour. Same trade as [`local_midnight_unix`] — not worth pulling in a timezone database.
 #[cfg(windows)]
 pub(super) fn local_utc_offset_secs() -> i64 {
     use windows_sys::Win32::Foundation::SYSTEMTIME;
     use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 
     let mut local = SYSTEMTIME::default();
-    // SAFETY: `GetLocalTime` 只写这一个结构体。
+    // SAFETY: `GetLocalTime` writes only this one struct.
     unsafe { GetLocalTime(&mut local) };
     let wall_now = wall_clock_unix(
         i64::from(local.wYear),
@@ -533,22 +541,22 @@ pub(super) fn local_utc_offset_secs() -> i64 {
     wall_now - unix_now()
 }
 
-/// 非 Windows：拿不到本地时区，按 UTC 处理。
+/// Non-Windows: no local timezone available; treated as UTC.
 #[cfg(not(windows))]
 pub(super) fn local_utc_offset_secs() -> i64 {
     0
 }
 
-/// 本地时区「今天 0 点」的秒级 Unix 时间戳。
+/// Unix timestamp (seconds) of local timezone "today 00:00".
 ///
-/// 取本地墙上时间，减去它与 UTC 的时区偏移。
+/// Takes local wall time and subtracts its offset from UTC.
 #[cfg(windows)]
 pub(super) fn local_midnight_unix() -> Option<i64> {
     use windows_sys::Win32::Foundation::SYSTEMTIME;
     use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 
     let mut local = SYSTEMTIME::default();
-    // SAFETY: `GetLocalTime` 只写这一个结构体。
+    // SAFETY: `GetLocalTime` writes only this one struct.
     unsafe { GetLocalTime(&mut local) };
     let (year, month, day) = (
         i64::from(local.wYear),
@@ -570,15 +578,15 @@ pub(super) fn local_midnight_unix() -> Option<i64> {
     Some(wall_clock_unix(year, month, day, 0, 0, 0) - offset)
 }
 
-/// 非 Windows：拿不到本地时区，返回 `None`。
+/// Non-Windows: no local timezone available; returns `None`.
 #[cfg(not(windows))]
 pub(super) fn local_midnight_unix() -> Option<i64> {
     None
 }
 
-/// 把年月日时分秒（按 UTC 理解）换算成秒级 Unix 时间戳。
+/// Convert Y/M/D h:m:s (interpreted as UTC) into a second-resolution Unix timestamp.
 ///
-/// 用 Howard Hinnant 的 `days_from_civil` 算法。
+/// Uses Howard Hinnant's `days_from_civil` algorithm.
 pub(super) fn wall_clock_unix(
     year: i64,
     month: i64,
@@ -644,9 +652,9 @@ mod tests {
         assert_eq!(wall_clock_unix(1970, 1, 2, 0, 0, 0), 86_400);
         // 2024-03-01 00:00:00 UTC
         assert_eq!(wall_clock_unix(2024, 3, 1, 0, 0, 0), 1_709_251_200);
-        // 2024-02-29（闰日）
+        // 2024-02-29 (leap day)
         assert_eq!(wall_clock_unix(2024, 2, 29, 0, 0, 0), 1_709_164_800);
-        // 2000-03-01（百年闰规则）
+        // 2000-03-01 (century leap rule)
         assert_eq!(wall_clock_unix(2000, 3, 1, 0, 0, 0), 951_868_800);
         assert_eq!(wall_clock_unix(1999, 12, 31, 23, 59, 59), 946_684_799);
         assert_eq!(
@@ -664,7 +672,7 @@ mod tests {
         assert!(now - midnight < 86_400 + 3_600, "0 点应落在过去 25 小时内");
     }
 
-    /// 一份可展示的令牌侧结果。
+    /// A presentable token-side result.
     fn token_side_result() -> billing::Billing {
         billing::Billing {
             source: billing::Source::Token,
@@ -700,12 +708,12 @@ mod tests {
 
     #[test]
     fn user_id_requirement_is_not_reported_as_a_bad_token() {
-        // 两家的文案都要识别出来。
+        // Both vendors' wordings must be recognized.
         for body in [
             r#"{"message":"Unauthorized, New-Api-User header not provided","success":false}"#,
             r#"{"message":"无权进行此操作，未提供 New-Api-User","success":false}"#,
             r#"{"message":"Unauthorized, New-Api-User does not match logged in user"}"#,
-            // 大小写不敏感。
+            // Case-insensitive.
             r#"{"message":"new-api-user missing"}"#,
         ] {
             assert!(body_requests_user_id(body), "应识别：{body}");
@@ -735,7 +743,7 @@ mod tests {
 
     #[test]
     fn user_id_header_is_sent_only_when_filled_in() {
-        // 空串与纯空白 = 不发这个头。
+        // Empty and whitespace-only strings = don't send the header.
         assert_eq!(user_id_header(""), None);
         assert_eq!(user_id_header("   "), None);
         assert_eq!(user_id_header(" 777 "), Some("777"));

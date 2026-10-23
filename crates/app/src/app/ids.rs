@@ -1,5 +1,5 @@
 impl super::App {
-    /// 当前配置文件身份。各页面共享同一份加载数据，故只按路径分区，不按页面分区。
+    /// The current config file's identity. All pages share one loaded dataset, so partitioning goes by path, never by page.
     pub(in crate::app) fn config_id(&self) -> String {
         let path = if self.loaded_path.trim().is_empty() {
             &self.config_path
@@ -9,26 +9,26 @@ impl super::App {
         crate::prefs::config_identity(path)
     }
 
-    /// 卡片折叠状态的持久化键（按配置与类别区分）。
+    /// The persistence key for card collapse state (per config and category).
     pub(in crate::app) fn card_id(&self, kind: &str, key: &str) -> String {
         crate::prefs::collapsed_id(&self.config_id(), kind, key)
     }
 
-    /// 某 baseUrl 所属站点的面板令牌（没设置则空串）。
+    /// A baseUrl's station's panel token (empty string when unset).
     ///
-    /// 键是规范化 origin：同一站点的多个 provider 共用一份令牌。
+    /// Keys are normalized origins: several providers on one station share one token.
     pub(in crate::app) fn station_pat(&self, base_url: &str) -> String {
         let key = crate::tokens::station_key(base_url);
         self.tokens.get(&key).to_string()
     }
 
-    /// 某 baseUrl 所属站点的用户 ID（没设置则空串；空串 = 不发 `New-Api-User`）。
+    /// A baseUrl's station's user ID (empty string when unset; empty = don't send `New-Api-User`).
     pub(in crate::app) fn station_user_id(&self, base_url: &str) -> String {
         let key = crate::tokens::station_key(base_url);
         self.tokens.user_id(&key).to_string()
     }
 
-    /// 某 baseUrl 所属站点是否标记为 sub2api（余额直连 `/v1/usage`，无需面板令牌）。
+    /// Whether a baseUrl's station is marked sub2api (balances query `/v1/usage` directly, no panel token needed).
     pub(in crate::app) fn station_is_sub2api(&self, base_url: &str) -> bool {
         self.tokens
             .is_sub2api(&crate::tokens::station_key(base_url))

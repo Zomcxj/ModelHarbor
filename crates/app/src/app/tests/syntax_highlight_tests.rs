@@ -4,7 +4,7 @@ use crate::app::syntax::{
 };
 use eframe::egui;
 
-/// 既有断言都按深色配色写，这里固定住。
+/// Existing assertions assume the dark palette — pinned here.
 fn json_tokens(text: &str) -> Vec<(usize, usize, egui::Color32)> {
     json_tokens_with(text, SYN_DARK)
 }
@@ -17,7 +17,7 @@ fn syntax_tokens(text: &str, syntax: PreviewSyntax) -> Vec<(usize, usize, egui::
     syntax_tokens_with(text, syntax, SYN_DARK)
 }
 
-/// 段落必须落在字符边界上。
+/// Segments must land on character boundaries.
 fn assert_boundaries(text: &str, tokens: &[(usize, usize, egui::Color32)]) {
     for &(s, e, _) in tokens {
         assert!(
@@ -93,8 +93,8 @@ fn syntax_dispatch_matches_page_kind() {
     assert!(syntax_tokens("a: 1\n", PreviewSyntax::Yaml).len() >= 3);
 }
 
-/// 两套配色都要在自己那类底色上读得清：语法色按正文下限 4.5:1 卡，
-/// 注释按提示下限 3.0:1 卡。
+/// Both palettes must read on their own fill class: syntax colors are held to the body-text floor of 4.5:1,
+/// comments to the hint floor of 3.0:1.
 #[test]
 fn every_syntax_palette_reads_on_its_background() {
     use crate::theme::{contrast_for_tests, CONTRAST_HINT_MIN, CONTRAST_TEXT_MIN};
@@ -124,7 +124,7 @@ fn every_syntax_palette_reads_on_its_background() {
     }
 }
 
-/// 明暗两套配色必须不同。
+/// The light and dark palettes must differ.
 #[test]
 fn light_and_dark_palettes_differ() {
     assert_ne!(SYN_DARK.key, SYN_LIGHT.key);
@@ -133,14 +133,14 @@ fn light_and_dark_palettes_differ() {
     assert_ne!(SYN_DARK.error, SYN_LIGHT.error);
 }
 
-/// 查找命中的底色与语法色都要够看：命中区换成配好的文字色，
-/// 底色与文字色、底色与面板都达到下限。
+/// Find hits' backgrounds and syntax colors must both be visible: the hit region switches to the palette's
+/// text color, with background-vs-text and background-vs-panel both meeting their floors.
 #[test]
 fn find_highlight_is_readable_on_both_palettes() {
     use crate::app::syntax::apply_find_background;
     use crate::theme::{contrast_for_tests, distance_for_tests, CONTRAST_TEXT_MIN};
-    // 底色与面板的可见度用 RGB 距离判：琥珀黄和浅灰面板的亮度接近，
-    // 对比度只有 1.5:1，用对比度卡会误报。
+    // Background-vs-panel visibility judges by RGB distance: amber yellow and a pale gray panel are close in
+    // lightness — contrast is only 1.5:1, and a contrast check would false-fail.
     let min_distance = 100.0;
     let cases = [
         (SYN_DARK, "深色", egui::Color32::from_rgb(0x1E, 0x1E, 0x1E)),
@@ -164,7 +164,7 @@ fn find_highlight_is_readable_on_both_palettes() {
             );
         }
     }
-    // 命中区的前景色被换成 `find_current_fg`。
+    // The hit region's foreground is swapped to `find_current_fg`.
     let mut job = egui::text::LayoutJob::default();
     job.append(
         "hello",

@@ -1,32 +1,32 @@
-//! 时间区间筛选：今日 / 本周 / 本月 / 全部。
+//! Time-range filter: today / this week / this month / all.
 //!
-//! 数据源是 [`DailyMap`]（按本地日历日分桶），不是会话级汇总 —— 一个会话可以
-//! 横跨几十天，拿它的总量当「本月用量」会虚高。
+//! Data source is [`DailyMap`] (buckets per local calendar day), not session-level sums — one session
+//! can span dozens of days, so using its lifetime total as "this month's usage" would overstate.
 //!
-//! 区间边界用**日索引**（1970-01-01 为 0）表达，与 [`aggregate::local_day_index`]
-//! 同一坐标系；`DailyMap` 的键是 `YYYY-MM-DD`，两者用
-//! [`aggregate::days_from_civil`] 换算。
+//! Range bounds are expressed as **day indexes** (1970-01-01 = 0), the same coordinate system as
+//! [`aggregate::local_day_index`]; `DailyMap` keys are `YYYY-MM-DD`, and the two are converted via
+//! [`aggregate::days_from_civil`].
 
 use super::aggregate;
 use crate::usage::{DailyBucket, DailyMap, DayTotals};
 use std::collections::BTreeMap;
 
-/// 时间区间。
+/// A time range.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(in crate::app) enum Range {
-    /// 今天。
+    /// Today.
     Today,
-    /// 本周（周一为一周之始）。
+    /// This week (Monday starts the week).
     Week,
-    /// 本月。
+    /// This month.
     #[default]
     Month,
-    /// 全部历史。
+    /// All history.
     All,
 }
 
 impl Range {
-    /// 全部区间，按界面上的展示顺序。
+    /// All ranges, in the UI's display order.
     pub(in crate::app) const ALL: [Range; 4] =
         [Range::Today, Range::Week, Range::Month, Range::All];
 
@@ -39,7 +39,7 @@ impl Range {
         }
     }
 
-    /// 持久化用的稳定键（写进 settings.json；与 label 解耦，改文案不影响存档）。
+    /// Stable key for persistence (written into settings.json; decoupled from label so wording changes don't touch archives).
     pub(in crate::app) fn key(self) -> &'static str {
         match self {
             Self::Today => "today",
@@ -49,7 +49,7 @@ impl Range {
         }
     }
 
-    /// 从持久化键还原；空串或未知键回退默认档（本月）。
+    /// Restore from a persistence key; an empty or unknown key falls back to the default tier (this month).
     pub(in crate::app) fn from_key(key: &str) -> Range {
         match key {
             "today" => Range::Today,
@@ -60,14 +60,14 @@ impl Range {
         }
     }
 
-    /// 区间包含的日索引范围（闭区间）；`All` 返回 `None`（不设下界）。
+    /// Day-index range the range covers (inclusive); `All` returns `None` (no lower bound).
     ///
-    /// 上界固定为 `today`：账本里可能有未来日期的记录（系统时钟被改过、
-    /// agent 写了错误的日期），它们不该混进「今日」。
+    /// The upper bound is fixed at `today`: the ledger may hold future-dated records (a fiddled system clock,
+    /// an agent writing wrong dates) and they must not leak into "today".
     pub(in crate::app) fn day_bounds(self, today: i64) -> Option<(i64, i64)> {
         match self {
             Self::Today => Some((today, today)),
-            // 周一为一周之始：`weekday_mon0` 给出 0=周一…6=周日。
+            // Monday starts the week: `weekday_mon0` gives 0=Monday…6=Sunday.
             Self::Week => Some((today - i64::from(aggregate::weekday_mon0(today)), today)),
             Self::Month => {
                 let (year, month, _) = aggregate::civil_from_days(today);
@@ -77,10 +77,11 @@ impl Range {
         }
     }
 
-    /// 区间内是否包含某一天。
+    /// Whether the range includes a given day.
     ///
-    /// 生产路径用 [`Range::day_bounds`] 直接枚举区间内的日子（连续区间比逐天
-    /// 判断更快也更直白）；这个留给测试当断言工具，以及未来需要「判断单天」的场景。
+    /// The production path enumerates in-range days via [`Range::day_bounds`] (a contiguous range beats
+    /// per-day checks in both speed and clarity); this one stays for tests as an assertion helper, and for
+    /// any future "judge a single day" need.
     #[cfg(test)]
     pub(in crate::app) fn contains(self, day: i64, today: i64) -> bool {
         match self.day_bounds(today) {
@@ -90,7 +91,7 @@ impl Range {
     }
 }
 
-/// 区间名 + 「用量」，用在总览卡的标题上（如「本月用量」）。
+/// Range name + "usage", used for overview card titles (e.g. "this month's usage").
 pub(in crate::app) fn totals_label(range: Range) -> &'static str {
     match range {
         Range::Today => "今日用量",
@@ -100,27 +101,27 @@ pub(in crate::app) fn totals_label(range: Range) -> &'static str {
     }
 }
 
-/// 趋势图自己的时间区间（与全局 [`Range`] 分开）。
+/// The trend chart's own time range (separate from the global [`Range`]).
 ///
-/// 趋势图回答「最近走势如何」，固定窗口（最近 N 天）比今日 / 本周 / 本月
-/// 这种自然区间更合适；五个档位照 token-monitor 的趋势页。
+/// The chart answers "how has the recent trend been", so a fixed window (last N days) fits better
+/// than natural ranges like today / week / month; the five tiers mirror token-monitor's trend page.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(in crate::app) enum ChartRange {
-    /// 最近 7 天。
+    /// Last 7 days.
     D7,
-    /// 最近 30 天。
+    /// Last 30 days.
     #[default]
     D30,
-    /// 最近 90 天。
+    /// Last 90 days.
     D90,
-    /// 最近一年。
+    /// Last year.
     Y1,
-    /// 全部历史。
+    /// All history.
     All,
 }
 
 impl ChartRange {
-    /// 全部档位，按界面上的展示顺序。
+    /// All tiers, in the UI's display order.
     pub(in crate::app) const ALL: [ChartRange; 5] = [
         ChartRange::D7,
         ChartRange::D30,
@@ -139,7 +140,7 @@ impl ChartRange {
         }
     }
 
-    /// 区间覆盖的天数；`All` 返回 `None`。
+    /// Days the range covers; `All` returns `None`.
     pub(in crate::app) fn days(self) -> Option<i64> {
         match self {
             Self::D7 => Some(7),
@@ -150,28 +151,28 @@ impl ChartRange {
         }
     }
 
-    /// 区间包含的日索引范围（闭区间）；`All` 返回 `None`（不设下界）。
+    /// Day-index range the range covers (inclusive); `All` returns `None` (no lower bound).
     ///
-    /// 上界固定为 `today`，与 [`Range::day_bounds`] 同一口径：账本里可能有
-    /// 未来日期的记录，不该混进「最近 7 天」。
+    /// Upper bound fixed at `today`, same accounting as [`Range::day_bounds`]: future-dated records in the
+    /// ledger must not leak into "last 7 days".
     pub(in crate::app) fn day_bounds(self, today: i64) -> Option<(i64, i64)> {
         self.days().map(|days| (today - days + 1, today))
     }
 }
 
-/// 某一天在 `DailyMap` 里的桶。
+/// A day's bucket in `DailyMap`.
 ///
-/// `DailyMap` 用 `YYYY-MM-DD` 字符串做键（tokscale 给的就是这个格式），
-/// 而区间判断用日索引；这里按需换算，避免把 42 个键全转一遍。
+/// `DailyMap` keys are `YYYY-MM-DD` strings (that's the format tokscale emits) while range checks use
+/// day indexes; conversion happens on demand instead of translating all 42 keys upfront.
 fn bucket_for(daily: &DailyMap, day: i64) -> Option<&DailyBucket> {
     let (year, month, day_of_month) = aggregate::civil_from_days(day);
     let key = format!("{year:04}-{month:02}-{day_of_month:02}");
     daily.get(&key)
 }
 
-/// 把 `DailyMap` 按区间过滤成「日索引 → 桶」。
+/// Filter `DailyMap` by range into "day index → bucket".
 ///
-/// 返回 `BTreeMap` 是为了让调用方能按时间序遍历（热力图、日维度表格）。
+/// Returns a `BTreeMap` so callers can iterate in time order (heatmap, day-dimension table).
 pub(in crate::app) fn buckets_in_range(
     daily: &DailyMap,
     range: Range,
@@ -180,7 +181,7 @@ pub(in crate::app) fn buckets_in_range(
     buckets_in_bounds(daily, range.day_bounds(today), today)
 }
 
-/// 趋势图区间内的桶：与 [`buckets_in_range`] 同一套逻辑，区间来自 [`ChartRange`]。
+/// Buckets within a chart range: same logic as [`buckets_in_range`], bounds from [`ChartRange`].
 pub(in crate::app) fn buckets_in_chart_range(
     daily: &DailyMap,
     chart_range: ChartRange,
@@ -189,7 +190,7 @@ pub(in crate::app) fn buckets_in_chart_range(
     buckets_in_bounds(daily, chart_range.day_bounds(today), today)
 }
 
-/// 按日索引边界（闭区间；`None` = 全部历史）取桶。
+/// Take buckets by day-index bounds (inclusive; `None` = all history).
 fn buckets_in_bounds(
     daily: &DailyMap,
     bounds: Option<(i64, i64)>,
@@ -198,7 +199,7 @@ fn buckets_in_bounds(
     let mut out = BTreeMap::new();
     match bounds {
         Some((start, end)) => {
-            // 区间是连续的日子，逐天取桶（区间最多一个月，开销可忽略）。
+            // A range is contiguous days; take buckets day by day (ranges span at most a month — negligible cost).
             for day in start..=end {
                 if let Some(bucket) = bucket_for(daily, day) {
                     out.insert(day, bucket);
@@ -206,7 +207,7 @@ fn buckets_in_bounds(
             }
         }
         None => {
-            // 全部：直接遍历账本里有的日子，不按区间枚举。
+            // All: iterate the days the ledger actually has instead of enumerating a range.
             for (key, bucket) in daily {
                 if let Some(day) = parse_day_key(key) {
                     if day <= today {
@@ -219,7 +220,7 @@ fn buckets_in_bounds(
     out
 }
 
-/// `YYYY-MM-DD` → 日索引；格式不对返回 `None`。
+/// `YYYY-MM-DD` → day index; returns `None` on malformed input.
 pub(in crate::app) fn parse_day_key(key: &str) -> Option<i64> {
     let bytes = key.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
@@ -234,7 +235,7 @@ pub(in crate::app) fn parse_day_key(key: &str) -> Option<i64> {
     Some(aggregate::days_from_civil(year, month, day))
 }
 
-/// 区间内的合计（跨所有 agent）。
+/// Totals within the range (across all agents).
 pub(in crate::app) fn totals_in_range(daily: &DailyMap, range: Range, today: i64) -> DayTotals {
     let mut out = DayTotals::default();
     for bucket in buckets_in_range(daily, range, today).values() {
@@ -243,26 +244,25 @@ pub(in crate::app) fn totals_in_range(daily: &DailyMap, range: Range, today: i64
     out
 }
 
-/// 区间内的汇总事实（总览卡用）。
+/// Aggregate facts within the range (for the overview card).
 ///
-/// 跟参考实现（tokscale 的 Token Usage 面板）一样把「总量」与「日均 / 活跃天数 /
-/// 最高一天」分开：单看总量看不出频率 —— 一天猛跑 10 亿和一个月每天跑一点，
-/// 总量可能一样，但使用习惯完全不同。
+/// Like the reference (tokscale's Token Usage panel), "total" is kept apart from "per-day average /
+/// active days / peak day": totals alone say nothing about frequency — burning 1B in one day and
+/// trickling the same total across a month are very different habits.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(in crate::app) struct RangeStats {
-    /// 区间内合计。
+    /// Totals within the range.
     pub totals: DayTotals,
-    /// 有量的天数（0 用量的日子不算）。
+    /// Days with usage (zero-usage days don't count).
     pub active_days: usize,
-    /// 最高的一天：`(日索引, 当天合计)`。区间内没有量时为 `None`。
+    /// The peak day: `(day index, that day's total)`. `None` when the range has no usage.
     pub best_day: Option<(i64, i64)>,
 }
 
 impl RangeStats {
-    /// 日均（按活跃天数算，不是按自然天数）。
+    /// Per-day average (by active days, not calendar days).
     ///
-    /// 用活跃天数而不是区间长度：后者会把没用的日子也算进去，
-    /// 得到一个偏小、没有意义的平均数。
+    /// Active days instead of range length: the latter counts unused days, yielding a smaller, meaningless average.
     pub(in crate::app) fn average_per_active_day(&self) -> i64 {
         if self.active_days == 0 {
             return 0;
@@ -271,7 +271,7 @@ impl RangeStats {
     }
 }
 
-/// 区间内的汇总事实。
+/// Aggregate facts within the range.
 pub(in crate::app) fn range_stats(daily: &DailyMap, range: Range, today: i64) -> RangeStats {
     let mut stats = RangeStats::default();
     for (day, bucket) in buckets_in_range(daily, range, today) {
@@ -287,9 +287,9 @@ pub(in crate::app) fn range_stats(daily: &DailyMap, range: Range, today: i64) ->
     stats
 }
 
-/// 区间内用量第一的模型。
+/// The top-usage model within the range.
 ///
-/// 区间内没有任何模型记录时返回 `None`（不编造「未知模型」）。
+/// Returns `None` when no model was recorded in the range (never fabricates an "unknown model").
 pub(in crate::app) fn top_model_in_range(
     daily: &DailyMap,
     range: Range,
@@ -308,15 +308,15 @@ pub(in crate::app) fn top_model_in_range(
     best
 }
 
-/// 连续活跃天数（截至今天往前数，断一天就停）。
+/// Consecutive active days (counting back from today; stops at the first gap).
 ///
-/// 照 GitHub / tokscale 的口径：只有「今天或昨天有量」才算连续 —— 否则用户
-/// 断了一周还会看到「连续 1 天」，那是上一条记录的残留，不是当前连续。
-/// 今天还没用不算断（一天还没过完）。
+/// Follows the GitHub / tokscale convention: the streak only counts if "today or yesterday had
+/// usage" — otherwise a week-long break would still show "1-day streak", a leftover of the previous
+/// record rather than a current streak. Today having no usage yet doesn't break it (the day isn't over).
 pub(in crate::app) fn current_streak(daily: &DailyMap, today: i64) -> usize {
     let has_usage =
         |day: i64| bucket_for(daily, day).is_some_and(|bucket| bucket.totals.total() > 0);
-    // 今天没量就从昨天起数（今天可能还没开始用）。
+    // No usage today → count from yesterday (today may not have started yet).
     let mut cursor = if has_usage(today) {
         today
     } else if has_usage(today - 1) {
@@ -332,10 +332,10 @@ pub(in crate::app) fn current_streak(daily: &DailyMap, today: i64) -> usize {
     streak
 }
 
-/// 区间内按某个分解维度汇总（agent / 模型 / 会话）。
+/// Aggregate the range by one breakdown dimension (agent / model / session).
 ///
-/// 分解表在 [`DailyBucket`] 里，键的含义由 `pick` 决定；跨天求和即可得到
-/// 该区间内的正确用量 —— 这正是不能用会话总量代替的地方。
+/// Breakdowns live in [`DailyBucket`]; `pick` decides what the keys mean. Summing across days yields
+/// correct in-range usage — exactly where session lifetime totals would be wrong.
 pub(in crate::app) fn breakdown_in_range<'a>(
     daily: &'a DailyMap,
     range: Range,
@@ -351,23 +351,24 @@ pub(in crate::app) fn breakdown_in_range<'a>(
     out
 }
 
-/// 热力图的一个格子。
+/// One heatmap cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) struct HeatCell {
-    /// 日索引。
+    /// Day index.
     pub day: i64,
-    /// 当天合计 token。
+    /// That day's total tokens.
     pub total: i64,
-    /// 账本里有没有这一天的记录（没有 = 空格子，不是 0 用量）。
+    /// Whether the ledger has a record for this day (absent = empty cell, not zero usage).
     pub has_data: bool,
 }
 
-/// 热力图网格：`weeks` 列 × 7 行，最后一列是本周。
+/// Heatmap grid: `weeks` columns × 7 rows, last column is the current week.
 ///
-/// 每列是一周（周一到周日），行是星期几 —— GitHub 贡献图的排法。
-/// 返回的格子按列优先顺序（先第一周的 7 天，再第二周…），方便直接按行列画。
+/// Each column is a week (Monday..Sunday), rows are weekdays — the GitHub contribution-graph layout.
+/// Cells are returned column-major (first week's 7 days, then next week...) for straightforward
+/// row-and-column painting.
 pub(in crate::app) fn heatmap_grid(daily: &DailyMap, today: i64, weeks: usize) -> Vec<HeatCell> {
-    // 最后一列所在的周一；往回推 `weeks - 1` 周就是第一列的周一。
+    // The Monday of the last column; stepping back `weeks - 1` weeks gives the first column's Monday.
     let last_monday = today - i64::from(aggregate::weekday_mon0(today));
     let first_monday = last_monday - (weeks as i64 - 1) * 7;
 
@@ -390,20 +391,22 @@ pub(in crate::app) fn heatmap_grid(daily: &DailyMap, today: i64, weeks: usize) -
     out
 }
 
-/// 热力图的强度分级（0-4），照 GitHub 的做法按分位数定阈。
+/// Heatmap intensity levels (0-4), thresholds set by quantiles like GitHub.
 ///
-/// 返回 **3 个分界值** `[t0, t1, t2]`：比 0 个阈值大是 1 级，比 1 个大是 2 级，
-/// 比 2 个大是 3 级，比 3 个都大是 4 级（见 [`heat_level`]）。
+/// Returns **3 boundary values** `[t0, t1, t2]`: greater than 0 boundaries → level 1, greater than
+/// 1 → level 2, greater than 2 → level 3, greater than all 3 → level 4 (see [`heat_level`]).
 ///
-/// 为什么不是 4 个阈值：4 级需要 3 个分界，第 4 个阈值只能是最大值本身，
-/// 而「比最大值还大」永远为假 —— 最忙的那天就永远拿不到最深的一档。
+/// Why not 4 thresholds: level 4 needs 3 boundaries; a 4th threshold could only be the maximum
+/// itself, and "greater than the maximum" is never true — the busiest day would never reach the
+/// deepest tier.
 ///
-/// 用分位数而不是固定阈值：不同 agent 的量级差几个数量级（本机 dsh 是几万、
-/// opencode 是十几亿），固定阈值会让一边全白、一边全绿。
+/// Quantiles instead of fixed thresholds: agent magnitudes differ by orders of magnitude (dsh runs
+/// tens of thousands here, opencode over a billion); fixed thresholds would leave one side all white
+/// and the other all green.
 ///
-/// 取**最近秩**（`ceil(q * n) - 1`）而不是 `round((n - 1) * q)`：后者在样本少时
-/// 会产生重复阈值（n = 4 时 q = 0.75 与 q = 0.5 都落在下标 2），而重复的阈值
-/// 会让中间某一级永远取不到。
+/// Uses the **nearest-rank** method (`ceil(q * n) - 1`) rather than `round((n - 1) * q)`: the latter
+/// produces duplicate thresholds on small samples (with n = 4, q = 0.75 and q = 0.5 both land on
+/// index 2), and duplicate thresholds make some middle level unreachable.
 pub(in crate::app) fn heat_thresholds(values: &[i64]) -> [i64; 3] {
     let mut nonzero: Vec<i64> = values.iter().copied().filter(|v| *v > 0).collect();
     if nonzero.is_empty() {
@@ -412,13 +415,13 @@ pub(in crate::app) fn heat_thresholds(values: &[i64]) -> [i64; 3] {
     nonzero.sort_unstable();
     let n = nonzero.len();
     let quantile = |q: f64| -> i64 {
-        // 最近秩：至少取第 1 个，至多取最后一个。
+        // Nearest rank: at least the first, at most the last.
         let rank = (q * n as f64).ceil().max(1.0) as usize;
         nonzero[rank.min(n) - 1]
     };
     let mut out = [quantile(0.25), quantile(0.50), quantile(0.75)];
-    // 样本很少时几个分位数会撞在一起，把重复的往后推，保证严格递增
-    // （否则某一级永远是空的）。
+    // With few samples several quantiles collide; push duplicates back to keep strictly increasing
+    // (otherwise some level stays empty forever).
     for index in 1..out.len() {
         if out[index] <= out[index - 1] {
             out[index] = out[index - 1].saturating_add(1);
@@ -427,10 +430,11 @@ pub(in crate::app) fn heat_thresholds(values: &[i64]) -> [i64; 3] {
     out
 }
 
-/// 某天的用量落在哪一级（0 = 无数据，1-4 逐级加深）。
+/// Which level a day's usage falls into (0 = no data, 1-4 progressively deeper).
 ///
-/// 分级规则是「严格比多少个分界值大」：最大值必然比 3 个都大（阈值来自样本
-/// 自身，不会超过最大值），所以最忙的那天一定是最深的一档。
+/// Rule: "strictly greater than how many boundaries". The maximum is necessarily greater than all 3
+/// (thresholds come from the sample and never exceed the max), so the busiest day always reaches the
+/// deepest tier.
 pub(in crate::app) fn heat_level(total: i64, thresholds: &[i64; 3]) -> u8 {
     if total <= 0 {
         return 0;
@@ -444,7 +448,7 @@ mod tests {
     use super::*;
     use crate::usage::DailyBucket;
 
-    /// 造一个只有合计的桶。
+    /// Build a bucket with totals only.
     fn day(input: i64) -> DailyBucket {
         let mut bucket = DailyBucket::new("x");
         bucket.totals.input = input;
@@ -452,7 +456,7 @@ mod tests {
         bucket
     }
 
-    /// 2026-03-15 是周日；用固定日期避免测试依赖「今天」。
+    /// 2026-03-15 is a Sunday; fixed dates keep tests independent of "today".
     fn today() -> i64 {
         aggregate::days_from_civil(2026, 3, 15)
     }
@@ -463,7 +467,7 @@ mod tests {
             .collect()
     }
 
-    /// 今日只含今天。
+    /// Today contains only today.
     #[test]
     fn today_range_covers_only_today() {
         let today = today();
@@ -472,20 +476,20 @@ mod tests {
         assert!(!Range::Today.contains(today - 1, today));
     }
 
-    /// 本周从周一起算：2026-03-15 是周日，所以本周一是 03-09。
+    /// The week starts Monday: 2026-03-15 is a Sunday, so this week's Monday is 03-09.
     #[test]
     fn week_starts_on_monday() {
         let today = today();
         let (start, end) = Range::Week.day_bounds(today).unwrap();
         assert_eq!(end, today);
         assert_eq!(aggregate::civil_from_days(start), (2026, 3, 9));
-        // 周日在周内（不是下一周的开始）。
+        // Sunday is inside the week (not the start of the next one).
         assert!(Range::Week.contains(today, today));
-        // 上周日不在。
+        // Last Sunday is not.
         assert!(!Range::Week.contains(today - 7, today));
     }
 
-    /// 本月从 1 号起算。
+    /// The month starts on the 1st.
     #[test]
     fn month_starts_on_the_first() {
         let today = today();
@@ -496,7 +500,7 @@ mod tests {
         assert!(!Range::Month.contains(start - 1, today));
     }
 
-    /// 全部不设下界，但未来日期仍被排除。
+    /// All sets no lower bound, but future dates are still excluded.
     #[test]
     fn all_has_no_lower_bound_but_excludes_future() {
         let today = today();
@@ -505,7 +509,7 @@ mod tests {
         assert!(!Range::All.contains(today + 1, today), "未来日期不算");
     }
 
-    /// 区间过滤按日索引取桶。
+    /// Range filtering takes buckets by day index.
     #[test]
     fn buckets_in_range_filters_by_day() {
         let today = today();
@@ -520,7 +524,7 @@ mod tests {
         assert_eq!(buckets_in_range(&daily, Range::All, today).len(), 4);
     }
 
-    /// 区间合计只算区间内的天数。
+    /// Range totals count only days inside the range.
     #[test]
     fn totals_in_range_sums_only_that_range() {
         let today = today();
@@ -530,7 +534,7 @@ mod tests {
         assert_eq!(totals_in_range(&daily, Range::All, today).input, 170);
     }
 
-    /// 分解跨天求和：这是「本月 × pi」能算对的原因。
+    /// Breakdowns sum across days: this is why "this month × pi" computes correctly.
     #[test]
     fn breakdown_sums_across_days() {
         let today = today();
@@ -553,7 +557,7 @@ mod tests {
         assert_eq!(rows["opencode"].input, 7);
     }
 
-    /// 未来日期的记录不混进今日（系统时钟被改过时会出现）。
+    /// Future-dated records don't leak into today (appears when the system clock was fiddled with).
     #[test]
     fn future_dated_records_are_ignored() {
         let today = today();
@@ -562,7 +566,7 @@ mod tests {
         assert_eq!(totals_in_range(&daily, Range::Today, today).input, 0);
     }
 
-    /// 日期键解析：正常、补零、非法格式。
+    /// Date-key parsing: normal, unpadded, malformed.
     #[test]
     fn parse_day_key_handles_edges() {
         assert_eq!(parse_day_key("1970-01-01"), Some(0));
@@ -578,22 +582,23 @@ mod tests {
         assert_eq!(parse_day_key("2026-01-32"), None);
     }
 
-    /// 网格是 7 的整数倍，且最后一格是今天所在周的周日。
+    /// The grid is a multiple of 7, and the last cell is the Sunday of today's week.
     #[test]
     fn heatmap_grid_shape_and_alignment() {
         let today = today();
         let grid = heatmap_grid(&DailyMap::new(), today, 53);
         assert_eq!(grid.len(), 53 * 7);
-        // 第一格是周一（53 周前的那个周一）。
+        // The first cell is a Monday (53 weeks back).
         assert_eq!(aggregate::weekday_mon0(grid[0].day), 0);
-        // 最后一列的周一到周日：今天是周日，所以最后一格就是今天。
+        // The last column's Monday..Sunday: today is Sunday, so the last cell is today.
         assert_eq!(grid[grid.len() - 1].day, today);
     }
 
-    /// 未来的格子标记为无数据，不显示成 0 用量。
+    /// Future cells are marked no-data, not shown as zero usage.
     ///
-    /// 用一个周三做「今天」（2026-03-11）：这样本周里今天之后还有周四到周日
-    /// 四格。若拿周日当今天，本周最后一格就是今天，测不到「未来格子」。
+    /// Uses a Wednesday as "today" (2026-03-11): this leaves Thursday..Sunday — four cells — after today in
+    /// the current week. Taking a Sunday as today would make the week's last cell today, untestable for
+    /// "future cells".
     #[test]
     fn heatmap_future_cells_have_no_data() {
         let wednesday = aggregate::days_from_civil(2026, 3, 11);
@@ -606,7 +611,7 @@ mod tests {
         }
     }
 
-    /// 有数据的天数被标出来。
+    /// Days with data get flagged.
     #[test]
     fn heatmap_marks_days_with_data() {
         let today = today();
@@ -617,7 +622,7 @@ mod tests {
         assert_eq!(cell.total, 100);
     }
 
-    /// 分位数阈值：0 值不参与，避免「一个高用量日」把阈值拉飞。
+    /// Quantile thresholds: zeros are excluded, so one heavy day can't yank the thresholds skyward.
     #[test]
     fn thresholds_ignore_zero_days() {
         let values = [0, 0, 0, 10, 20, 30, 40];
@@ -625,28 +630,28 @@ mod tests {
         assert_eq!(t[0], 10, "最小值作第 1 个分界");
         assert_eq!(t[2], 30, "上四分位作第 3 个分界");
         assert!(t[0] < t[1] && t[1] < t[2], "分界值严格递增：{t:?}");
-        // 最大值一定比 3 个分界都大（分界来自样本自身）。
+        // The maximum is necessarily greater than all 3 boundaries (boundaries come from the sample itself).
         let max = *values.iter().max().unwrap();
         assert_eq!(heat_level(max, &t), 4, "最忙的一天要拿到最深的一档");
     }
 
-    /// 样本很少时阈值也不能重复：重复会让中间某一级永远取不到。
+    /// Even with few samples, thresholds must not repeat: duplicates leave some middle level unreachable.
     ///
-    /// 这是实际踩到的坑：`round((n-1)*q)` 在 n = 4 时给出 [20,30,30,40]，
-    /// 于是「3 级」要求 `> 30 && <= 30`，无解。
+    /// A pit actually hit: `round((n-1)*q)` with n = 4 yields [20,30,30,40], making level 3 require
+    /// `> 30 && <= 30` — unsolvable.
     #[test]
     fn thresholds_are_strictly_increasing_even_for_tiny_samples() {
         for values in [vec![5], vec![5, 9], vec![10, 20, 30, 40], vec![1, 1, 1]] {
             let t = heat_thresholds(&values);
             assert!(t[0] < t[1], "{values:?} → {t:?}");
             assert!(t[1] < t[2], "{values:?} → {t:?}");
-            // 最低一级永远有样本（任何非 0 值都比 0 个分界大）。
+            // The lowest level always has samples (any non-zero value exceeds 0 boundaries).
             assert!(
                 values.iter().any(|v| heat_level(*v, &t) == 1),
                 "{values:?} → {t:?} 里没有 1 级的样本"
             );
-            // 能填满的档数取决于取值范围：只有 1 个不同取值时只能分出 1 档，
-            // 有多个取值时至少能分出 2 档。上界永远是 4。
+            // How many tiers fill depends on the value range: one distinct value yields 1 tier; several yield at least 2.
+            // The cap is always 4.
             let distinct = values
                 .iter()
                 .filter(|v| **v > 0)
@@ -662,14 +667,14 @@ mod tests {
         }
     }
 
-    /// 全 0 时阈值全 0，不会除零。
+    /// All-zero data yields all-zero thresholds — no division by zero.
     #[test]
     fn thresholds_of_all_zero_are_zero() {
         assert_eq!(heat_thresholds(&[0, 0, 0]), [0; 3]);
         assert_eq!(heat_thresholds(&[]), [0; 3]);
     }
 
-    /// 分级：0 是无数据，1-4 逐级；规则是「比多少个阈值大」。
+    /// Levels: 0 is no data, 1-4 progressive; the rule is "greater than how many thresholds".
     #[test]
     fn heat_level_maps_to_four_steps() {
         let t = [10, 20, 30];
@@ -682,10 +687,10 @@ mod tests {
         assert_eq!(heat_level(1000, &t), 4);
     }
 
-    /// 最忙的那天必须能拿到 4 级。
+    /// The busiest day must be able to reach level 4.
     ///
-    /// 这是实际踩到的坑：早先按「逐个 `<=` 比较」分级，而 `t3` 恰好是最大值，
-    /// `max > max` 永远为假，最深的一档永远空着。
+    /// A pit actually hit: levels were once assigned by chained `<=` comparisons, and `t3` happened to equal
+    /// the maximum — `max > max` is never true, so the deepest tier stayed empty forever.
     #[test]
     fn the_largest_value_reaches_level_four() {
         let values = [1, 2, 3, 4, 5, 100];
@@ -694,7 +699,7 @@ mod tests {
         assert_eq!(heat_level(max, &t), 4, "阈值 {t:?}");
     }
 
-    /// 区间标题文案。
+    /// The range's title text.
     #[test]
     fn totals_label_names_every_range() {
         assert_eq!(totals_label(Range::Today), "今日用量");
@@ -703,7 +708,7 @@ mod tests {
         assert_eq!(totals_label(Range::All), "总计用量");
     }
 
-    /// 持久化键往返：每个区间都能从键还原，未知 / 空键回退默认档（本月）。
+    /// Persistence-key round trip: every range restores from its key; unknown / empty keys fall back to the default (this month).
     #[test]
     fn range_key_round_trips() {
         for range in Range::ALL {
@@ -714,9 +719,9 @@ mod tests {
         assert_eq!(Range::default(), Range::Month, "默认档是本月");
     }
 
-    // ---- 趋势图自己的区间 ----
+    // ---- The trend chart's own range ----
 
-    /// 固定窗口含今天在内共 N 天；全部不设下界但排除未来。
+    /// A fixed window includes today, N days in all; All sets no lower bound but excludes the future.
     #[test]
     fn chart_range_bounds_cover_n_days_ending_today() {
         let today = today();
@@ -727,7 +732,7 @@ mod tests {
         assert_eq!(ChartRange::All.day_bounds(today), None);
     }
 
-    /// 趋势图按自己的区间取桶：7 天档不带上月的数据。
+    /// The chart takes buckets by its own range: the 7-day tier carries no last-month data.
     #[test]
     fn chart_buckets_respect_the_chart_range() {
         let today = today();
@@ -738,9 +743,9 @@ mod tests {
         assert_eq!(all.len(), 3);
     }
 
-    // ---- 汇总事实 ----
+    // ---- Aggregate facts ----
 
-    /// 活跃天数只数有量的天，最高一天取最大。
+    /// Active days count only days with usage; the peak day takes the maximum.
     #[test]
     fn range_stats_counts_only_active_days() {
         let today = today();
@@ -760,7 +765,7 @@ mod tests {
         );
     }
 
-    /// 日均按活跃天数算，不是按区间长度。
+    /// The daily average counts active days, not range length.
     #[test]
     fn average_divides_by_active_days() {
         let today = today();
@@ -769,7 +774,7 @@ mod tests {
         assert_eq!(stats.average_per_active_day(), 200, "400 / 2 天");
     }
 
-    /// 区间内没有任何量时：活跃 0 天、没有最高一天、日均 0（不除零）。
+    /// With no usage in the range: 0 active days, no peak day, 0 average (no division by zero).
     #[test]
     fn empty_range_stats_are_zero() {
         let stats = range_stats(&DailyMap::new(), Range::Month, today());
@@ -778,7 +783,7 @@ mod tests {
         assert_eq!(stats.average_per_active_day(), 0);
     }
 
-    /// 汇总事实也受区间限制。
+    /// Aggregate facts also respect the range.
     #[test]
     fn range_stats_respect_the_range() {
         let today = today();
@@ -789,9 +794,9 @@ mod tests {
         assert_eq!(stats.best_day.map(|(_, t)| t), Some(100));
     }
 
-    // ---- 连续天数 ----
+    // ---- Consecutive days ----
 
-    /// 连续天数从今天往前数，断一天就停。
+    /// The streak counts back from today and stops at the first gap.
     #[test]
     fn streak_counts_back_from_today() {
         let today = today();
@@ -799,13 +804,13 @@ mod tests {
             ("2026-03-15", 10),
             ("2026-03-14", 10),
             ("2026-03-13", 10),
-            // 03-12 缺 → 到此为止
+            // 03-12 missing → stop here
             ("2026-03-11", 10),
         ]);
         assert_eq!(current_streak(&daily, today), 3);
     }
 
-    /// 今天还没用不算断（一天还没过完），从昨天起数。
+    /// Today having no usage yet doesn't break the streak (the day isn't over); counting starts from yesterday.
     #[test]
     fn streak_tolerates_a_quiet_today() {
         let today = today();
@@ -813,7 +818,7 @@ mod tests {
         assert_eq!(current_streak(&daily, today), 2);
     }
 
-    /// 今天和昨天都没量就是断了，不是「上一条记录的残留」。
+    /// Neither today nor yesterday having usage means broken — not "a leftover of the previous record".
     #[test]
     fn streak_is_zero_when_both_today_and_yesterday_are_empty() {
         let today = today();
@@ -821,7 +826,7 @@ mod tests {
         assert_eq!(current_streak(&daily, today), 0);
     }
 
-    /// 0 用量的那天不算活跃，也不能续上连续。
+    /// A zero-usage day is neither active nor streak-extending.
     #[test]
     fn streak_ignores_zero_usage_days() {
         let today = today();
@@ -829,15 +834,15 @@ mod tests {
         assert_eq!(current_streak(&daily, today), 1);
     }
 
-    /// 空账本没有连续。
+    /// An empty ledger has no streak.
     #[test]
     fn streak_of_empty_ledger_is_zero() {
         assert_eq!(current_streak(&DailyMap::new(), today()), 0);
     }
 
-    // ---- 最爱模型 ----
+    // ---- Favorite model ----
 
-    /// 最爱模型取区间内用量最大的那个。
+    /// The favorite model is the range's biggest user.
     #[test]
     fn top_model_picks_the_largest_in_range() {
         let today = today();
@@ -850,7 +855,7 @@ mod tests {
         assert_eq!(total, 90);
     }
 
-    /// 区间内没有模型记录时不给答案，也不编造「未知模型」。
+    /// With no model records in the range, no answer — and never a fabricated "unknown model".
     #[test]
     fn top_model_is_none_without_data() {
         assert_eq!(
@@ -859,7 +864,7 @@ mod tests {
         );
     }
 
-    /// 最爱模型也受区间限制。
+    /// The favorite model also respects the range.
     #[test]
     fn top_model_respects_the_range() {
         let today = today();

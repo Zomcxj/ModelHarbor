@@ -1,9 +1,10 @@
-//! QwenCode 后端：`~/.qwen/settings.json`（JSONC）。
+//! The QwenCode backend: `~/.qwen/settings.json` (JSONC).
 //!
-//! `modelProviders[<pid>]` 的每个数组元素对应一张卡片，卡片名取元素的 `id`，
-//! 所属 pid 记在 [`ProviderRow::qwen_pid`]；密钥在顶层 `env[<envKey>]`。
-//! 自定义 pid 需要 `providerProtocol` 映射，内置 pid 不需要；`qwen-oauth` 下的条目只读。
-//! `$version` 只在全新文件里写。界面认不出的条目原样保留，见 [`unmanaged_of`]。
+//! Each array element of `modelProviders[<pid>]` is one card, named by the element's `id`, with its owning
+//! pid recorded in [`ProviderRow::qwen_pid`]; keys live in the top-level `env[<envKey>]`.
+//! Custom pids need a `providerProtocol` mapping; built-in pids don't; entries under `qwen-oauth` are
+//! read-only. `$version` is written only into brand-new files. Entries the UI doesn't recognize are
+//! preserved verbatim — see [`unmanaged_of`].
 
 use super::{Backend, BackendLoad};
 use crate::format::ConfigFormat;
@@ -25,14 +26,14 @@ pub struct QwenCodeBackend;
 
 pub static BACKEND: QwenCodeBackend = QwenCodeBackend;
 
-/// 内置 pid：协议由 pid 自身决定，不需要 `providerProtocol` 映射。
+/// Built-in pids: the protocol follows the pid itself — no `providerProtocol` mapping needed.
 pub(crate) const BUILTIN_PIDS: [&str; 5] =
     ["openai", "anthropic", "gemini", "vertex-ai", "qwen-oauth"];
 
-/// 只读 pid：Qwen Code 自己的 OAuth 托管条目，写入被忽略。
+/// The read-only pid: Qwen Code's own OAuth-managed entries; writes are ignored.
 pub(crate) const READONLY_PID: &str = "qwen-oauth";
 
-/// `wireApi` 的两个合法值（只对 OpenAI 系协议有效）。
+/// `wireApi`'s two legal values (valid only for OpenAI-family protocols).
 pub(crate) const WIRE_CHAT: &str = "chat-completions";
 pub(crate) const WIRE_RESPONSES: &str = "responses";
 
@@ -40,9 +41,9 @@ fn default_local_path() -> String {
     format!("{}\\.qwen\\settings.json", home_dir_string())
 }
 
-/// 本次保存是否会让条目数变少（供保存流程决定是否先备份原文件）。
+/// Whether this save would shrink the entry count (the save flow uses it to decide on backing up first).
 ///
-/// 原文件读不出时按「会收缩」处理。
+/// An unreadable original counts as "may shrink".
 pub fn shrinks_on_save(before: &Value, after: &Value) -> bool {
     fn count(root: &Value) -> usize {
         providers_map(root)
@@ -57,16 +58,16 @@ pub fn shrinks_on_save(before: &Value, after: &Value) -> bool {
     count(before) > count(after)
 }
 
-/// 这条条目归界面管吗（有可用的 `id`）？
+/// Is this entry UI-managed (has a usable `id`)?
 ///
-/// 无 `id` 的条目留在基底里，由 [`unmanaged_of`] 原样带过去。
+/// Entries without an `id` stay in the base, carried over verbatim by [`unmanaged_of`].
 pub fn is_ui_managed_entry(entry: &Value) -> bool {
     entry_id(entry).is_some()
 }
 
-/// 是否是那个只读的内置 pid（`qwen-oauth`）。
+/// Whether it's that read-only built-in pid (`qwen-oauth`).
 ///
-/// 跨格式保存时 `modelProviders` 归界面接管，`qwen-oauth` 原样留着。
+/// On cross-format saves the UI takes over `modelProviders`, leaving `qwen-oauth` untouched.
 pub fn is_readonly_provider(pid: &str) -> bool {
     pid == READONLY_PID
 }
@@ -85,12 +86,12 @@ impl Backend for QwenCodeBackend {
     }
 
     fn detect(&self, content: &str, path: &str) -> bool {
-        // 路径强命中：用户级设置固定在这个路径与文件名。
+        // Strong path hit: user-level settings live at exactly this path and file name.
         let normalized = path.replace('\\', "/");
         if normalized.contains("/.qwen/") && normalized.ends_with("settings.json") {
             return true;
         }
-        // 内容判定：`modelProviders` 是对象，且至少一个值是非空数组、元素是含 `id` 的对象。
+        // Content verdict: `modelProviders` is an object with at least one non-empty array value whose elements are objects carrying `id`.
         parse_config_content(content)
             .map(|v| {
                 providers_map(&v).is_some_and(|m| {
@@ -114,7 +115,7 @@ impl Backend for QwenCodeBackend {
         Ok(load)
     }
 
-    // `parse_at` 用 trait 缺省实现（直接 `parse`）：主配置就是全部状态。
+    // `parse_at` uses the trait's default implementation (straight `parse`): the main config is the whole state.
 
     fn serialize_root(
         &self,
@@ -123,11 +124,11 @@ impl Backend for QwenCodeBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
-        // 产物就是 Qwen Code 的全部生效状态：`settings.json` 一份文件承担所有条目。
+        // The product is Qwen Code's entire effective state: one `settings.json` carries every entry.
         let base = target_root.unwrap_or(extras);
         let placed = place(providers, base);
         let mut root = base.as_object().cloned().unwrap_or_default();
-        // `$version` 只给全新文件打标（此时 root 是空的），已有文件不动这个键。
+        // `$version` only tags brand-new files (root empty then); existing files never touch this key.
         if root.is_empty() {
             root.insert("$version".into(), Value::Number(4.into()));
         }
@@ -159,8 +160,8 @@ impl Backend for QwenCodeBackend {
         Value::Object(root)
     }
 
-    /// 没有全量副本要写，但挂在保存序列里：[`first_env_name_conflict`] 在主配置落盘前挡住
-    /// envKey 撞名。
+    /// No full copy to write, yet it hangs in the save sequence: [`first_env_name_conflict`] blocks envKey
+    /// collisions before the main config lands.
     fn save_sidecars(&self, _path: &str, providers: &[ProviderRow]) -> Result<(), String> {
         if let Some(conflict) = first_env_name_conflict(providers) {
             return Err(format!("凭据变量名冲突，已取消保存: {conflict}"));

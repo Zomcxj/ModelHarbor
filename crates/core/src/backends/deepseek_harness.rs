@@ -1,6 +1,6 @@
-//! DeepSeek Harness（DSH）后端：`~/.dsh/settings.yaml`。
+//! The DeepSeek Harness (DSH) backend: `~/.dsh/settings.yaml`.
 //!
-//! 只管理 `llm-pi-ai.providers`，其余顶层配置以 raw 为基底原样保留。
+//! Only `llm-pi-ai.providers` is managed; other top-level config is preserved verbatim over raw.
 
 use super::{Backend, BackendLoad};
 use crate::convert;
@@ -44,7 +44,7 @@ fn model_from_dsh(v: &Value) -> ModelRow {
 }
 
 fn model_to_dsh(m: &ModelRow, preserve_raw: bool) -> Value {
-    // DSH 原生往返保留未知字段；跨格式写入用 DSH 的固定字段顺序。
+    // DSH's native round trip keeps unknown fields; cross-format writes use DSH's fixed field order.
     let mut obj = dsh_model_base(m, preserve_raw);
 
     dsh_set_id(m, &mut obj, preserve_raw);
@@ -69,7 +69,7 @@ fn model_to_dsh(m: &ModelRow, preserve_raw: bool) -> Value {
     Value::Object(order_fields(obj, DSH_MODEL_FIELDS))
 }
 
-/// DSH 模型的固定字段顺序。
+/// A DSH model's fixed field order.
 const DSH_MODEL_FIELDS: &[&str] = &[
     "id",
     "name",
@@ -79,7 +79,7 @@ const DSH_MODEL_FIELDS: &[&str] = &[
     "reasoningEfforts",
 ];
 
-/// 基底对象：原生往返沿用 raw，跨格式写入从 id / name / 数值字段重建。
+/// The base object: native round trips reuse raw; cross-format writes rebuild from id / name / numeric fields.
 fn dsh_model_base(m: &ModelRow, preserve_raw: bool) -> Map<String, Value> {
     if preserve_raw {
         return m.raw.as_object().cloned().unwrap_or_default();
@@ -136,7 +136,7 @@ fn dsh_set_input(m: &ModelRow, obj: &mut Map<String, Value>, preserve_raw: bool)
     }
 }
 
-/// 数值字段：空串或非法输入删除该键。
+/// Numeric fields: empty or invalid input deletes the key.
 fn dsh_set_number(obj: &mut Map<String, Value>, key: &str, text: &str, changed: bool) {
     if !changed {
         return;
@@ -151,7 +151,7 @@ fn dsh_set_number(obj: &mut Map<String, Value>, key: &str, text: &str, changed: 
     }
 }
 
-/// `reasoningEfforts`：按规范档位顺序写出；raw 中已有的映射按键原样保留。
+/// `reasoningEfforts`: written in canonical tier order; mappings already in raw keep their keys verbatim.
 fn dsh_set_reasoning_efforts(m: &ModelRow, obj: &mut Map<String, Value>) {
     if m.variants.trim().is_empty() {
         obj.remove("reasoningEfforts");
@@ -205,12 +205,12 @@ fn provider_from_dsh(key: &str, v: &Value, credentials_root: &Value) -> Provider
         original_dsh_timeout_ms: timeout_text.clone(),
         original_dsh_retry_mode: retry_mode,
         original_dsh_max_retries: max_retries,
-        // 切到 opencode 页时沿用 DSH 的 timeoutMs（缺省 180000）。
+        // Switching to the opencode page carries DSH's timeoutMs over (default 180000).
         timeout: timeout_text.clone(),
         original_timeout: timeout_text,
-        // DSH 无 compat 键：api 缺省或 openai-completions 时默认不勾选。
+        // DSH has no compat key: unchecked by default when the api is absent or openai-completions.
         compat: !api.is_empty() && api != "openai-completions",
-        // DSH 无该字段：转到 pi/omp 页面时默认不勾选。
+        // DSH has no such field: unchecked by default when moving to pi/omp pages.
         requires_reasoning_content: false,
         original_requires_reasoning_content: false,
         models,
@@ -223,7 +223,7 @@ fn provider_from_dsh(key: &str, v: &Value, credentials_root: &Value) -> Provider
     }
 }
 
-/// `apiKeyEnv`：缺失或空白时按 provider key 生成默认环境变量名。
+/// `apiKeyEnv`: a missing or blank one generates the default env name from the provider key.
 fn dsh_api_key_env(key: &str, v: &Value) -> String {
     v.get("apiKeyEnv")
         .and_then(Value::as_str)
@@ -232,7 +232,7 @@ fn dsh_api_key_env(key: &str, v: &Value) -> String {
         .unwrap_or_else(|| credentials::default_env_name(key))
 }
 
-/// 没有 timeoutMs 时默认 180000ms。
+/// Without a timeoutMs, 180000ms is the default.
 fn dsh_timeout_text(v: &Value) -> String {
     let t = crate::util::num_at(v, "timeoutMs");
     if t.is_empty() {
@@ -242,7 +242,7 @@ fn dsh_timeout_text(v: &Value) -> String {
     }
 }
 
-/// `retryPolicy.mode`：缺失时按 normal。
+/// `retryPolicy.mode`: normal when missing.
 fn dsh_retry_mode(v: &Value) -> String {
     v.get("retryPolicy")
         .and_then(|value| value.get("mode"))
@@ -251,7 +251,7 @@ fn dsh_retry_mode(v: &Value) -> String {
         .to_string()
 }
 
-/// `retryPolicy.maxRetries`：按原样文本读取，未设置则为空串。
+/// `retryPolicy.maxRetries`: read as raw text, empty when unset.
 fn dsh_max_retries(v: &Value) -> String {
     v.get("retryPolicy")
         .and_then(|value| value.get("maxRetries"))
@@ -260,7 +260,7 @@ fn dsh_max_retries(v: &Value) -> String {
 }
 
 fn dsh_api_for(p: &ProviderRow) -> String {
-    // 与 pi / omp / 延迟测试共用同一优先级。
+    // Shares one priority with pi / omp / the latency tests.
     p.effective_api()
 }
 
@@ -294,7 +294,7 @@ fn yaml_scalar(value: &Value) -> String {
 }
 
 fn yaml_quoted(value: &str) -> String {
-    // JSON 字符串即合法的 YAML 双引号字符串，并能转义引号、反斜杠和换行。
+    // A JSON string is a valid YAML double-quoted string, escaping quotes, backslashes, and newlines.
     serde_json::to_string(value).unwrap_or_else(|_| format!("\"{}\"", value.replace('"', "\\\"")))
 }
 
@@ -446,7 +446,7 @@ fn render_dsh_yaml(root: &Value) -> Result<String, String> {
 }
 
 fn provider_to_dsh(p: &ProviderRow) -> Value {
-    // 保存判定基于来源 agent 格式。
+    // The save verdict keys on the source agent's format.
     let preserve_raw = p.source_format == Some(ConfigFormat::DeepSeekHarness);
     let env = credentials::effective_env_name(p);
     let mut obj = if preserve_raw {
@@ -466,12 +466,12 @@ fn provider_to_dsh(p: &ProviderRow) -> Value {
     if p.base_url.is_empty() {
         obj.remove("baseURL");
     } else {
-        // 与 pi / omp 共用同一套归一化：messages 协议的 base 不带 /v1。
+        // Shares normalization with pi / omp: a messages protocol's base carries no /v1.
         let base_url = convert::without_v1_for_messages(&dsh_api_for(p), &p.base_url);
         obj.insert("baseURL".into(), Value::String(base_url));
     }
     if env.is_empty() {
-        // DSH 原生 provider 未修改 apiKeyEnv 时保留原始引用名。
+        // A native DSH provider with an unmodified apiKeyEnv keeps its original reference name.
         if !preserve_raw {
             obj.remove("apiKeyEnv");
         }
@@ -500,7 +500,7 @@ fn provider_to_dsh(p: &ProviderRow) -> Value {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            // mode 留空但填了 maxRetries 时写 DSH 默认 normal。
+            // With mode empty but maxRetries filled, DSH's default normal is written.
             let mode = if p.dsh_retry_mode.trim().is_empty() {
                 "normal"
             } else {
@@ -518,7 +518,7 @@ fn provider_to_dsh(p: &ProviderRow) -> Value {
             obj.insert("retryPolicy".into(), Value::Object(policy));
         }
     }
-    // retryPolicy 写在 timeoutMs 之前。
+    // retryPolicy writes before timeoutMs.
     if p.dsh_timeout_ms != p.original_dsh_timeout_ms || !preserve_raw {
         match crate::util::parse_number_text(&p.dsh_timeout_ms) {
             Some(value) => {
@@ -563,7 +563,7 @@ impl Backend for DeepSeekHarnessBackend {
         let creds = if path.is_empty() {
             Value::Object(Map::new())
         } else {
-            // 仅供展示：sidecar 读不出时密钥显示为空。
+            // Display only: when the sidecar is unreadable, the key shows empty.
             credentials::load_root(path).unwrap_or(Value::Null)
         };
         let providers = root
@@ -596,8 +596,8 @@ impl Backend for DeepSeekHarnessBackend {
             .as_object()
             .cloned()
             .unwrap_or_default();
-        // 当前文件保存以 UI 状态整体替换（删除即生效）；跨格式目标保存做保守合并：
-        // 同名 provider 按字段合并，目标独有 provider 保留。
+        // Current-file saves replace wholesale per UI state (deletions take effect); cross-format targets merge
+        // conservatively: same-named providers merge by field, target-only providers stay.
         let cross_format = target_root.is_some();
         let existing = root
             .get("llm-pi-ai")
@@ -614,7 +614,7 @@ impl Backend for DeepSeekHarnessBackend {
             };
             provider_values.insert(p.key.clone(), entry);
         }
-        // 不 remove + insert llm-pi-ai：重新插入的键会被移到根节点末尾。
+        // No remove + re-insert of llm-pi-ai: a re-inserted key would move to the root's tail.
         if let Some(llm) = root.get_mut("llm-pi-ai").and_then(Value::as_object_mut) {
             llm.insert("providers".into(), Value::Object(provider_values));
         } else {

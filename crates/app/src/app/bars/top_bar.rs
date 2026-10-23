@@ -6,8 +6,8 @@ use crate::theme::Theme;
 use crate::ui::move_item;
 use eframe::egui;
 
-/// 外观弹层里的一行主题按钮：用主题强调色填充、文字按底色取黑/白，
-/// 当前主题加一圈 `ring` 描边。返回本帧被点中的主题。
+/// One theme button row in the appearance popover: filled with the theme's accent, text picks black/white by background,
+/// and the current theme gets a `ring` border. Returns the theme clicked this frame.
 fn theme_button_row(
     ui: &mut egui::Ui,
     themes: &[Theme],
@@ -20,7 +20,7 @@ fn theme_button_row(
         ui.spacing_mut().item_spacing.x = 4.0;
         for t in themes {
             let accent = t.accent_color();
-            // 文字颜色：根据背景亮暗自动选择黑/白
+            // Text color: black/white chosen automatically by background lightness
             let text_color = if accent.r() as u32 + accent.g() as u32 + accent.b() as u32 > 384 {
                 egui::Color32::BLACK
             } else {
@@ -44,8 +44,8 @@ fn theme_button_row(
     clicked
 }
 
-/// 「卡片不描边」的预设按钮：按预设圆角与描边宽度绘制。
-/// 选中时描边固定 2px：浅底用深描边、深底用白描边。
+/// The "no card borders" preset button: drawn with the preset corner radius and border width.
+/// When selected the border is fixed at 2px: dark border on light fills, white on dark.
 fn shape_button(
     ui: &mut egui::Ui,
     style: crate::theme::UiStyle,
@@ -81,33 +81,33 @@ fn shape_button(
 }
 
 impl App {
-    /// 切换到某个 agent 配置页。
+    /// Switch to an agent's config page.
     ///
-    /// 从 `ui_top_bar` 的页签点击里抽出来：那里原本是一大段内联逻辑，加了
-    /// 「用量视图下页签当筛选器用」的分支后两条路径混在一起更难读。
+    /// Extracted from `ui_top_bar`'s tab clicks: that spot was one big inline block, and after adding the
+    /// "tabs act as filters under the usage view" branch, the two paths tangled into unreadability.
     fn switch_to_page(&mut self, id: ConfigFormat, ctx: &egui::Context) {
-        // 离开的是哪一页：切页归一需要传入刚离开的页面。
+        // Which page is being left: page-switch normalization needs the page just left.
         let previous_page = self.current_page;
         if id == ConfigFormat::DeepSeekHarness && self.current_page != ConfigFormat::DeepSeekHarness
         {
             self.project_dsh_credentials();
         }
         self.sync_provider_secrets(id);
-        // 对应 agent 未在 WSL 安装的页面：关闭 WSL 同步。
-        // 只在探测**确认**未安装时收回勾选，`Unknown` 不算。
+        // Pages whose agent isn't installed on WSL: turn WSL sync off.
+        // The checkbox is withdrawn only on a **confirmed** not-installed verdict; `Unknown` doesn't count.
         if self.sync_wsl && backends::wsl_target_state(id) == backends::WslTargetState::NotInstalled
         {
             self.sync_wsl = false;
             crate::util::wsl_set_enabled(false);
         }
         self.current_page = id;
-        // WorkBuddy 页：进页时收敛成「每个 id 只启用第一条」。
+        // The WorkBuddy page: on entry, converge to "only the first entry per id enabled".
         if id == ConfigFormat::WorkBuddy {
             self.normalize_workbuddy_enable_flags();
         }
-        // opencode 系三页共用同一份 agent 数据，但每页网关不同：进页即把 agent 的
-        // `model` 换成目标页自家网关的首选模型。传入「刚离开的页面」，先把它的
-        // model 视图存下来。
+        // The three opencode-family pages share one agent dataset but have different gateways: on entry, swap the
+        // agent's `model` to the target page's own gateway preferred model. Pass the page just left to save its
+        // model view first.
         if id.is_opencode_family() {
             let leaving = (previous_page != id).then_some(previous_page);
             let replaced = self.normalize_agent_models_for_page(id, leaving);
@@ -119,7 +119,7 @@ impl App {
                 );
             }
         }
-        // 切换页面后重建预览草稿。
+        // Rebuild the preview draft after the page switch.
         self.reset_preview_draft();
         ctx.memory_mut(|m| m.surrender_focus(egui::Id::new(PREVIEW_EDITOR_ID)));
     }
@@ -127,15 +127,15 @@ impl App {
     pub(in crate::app) fn ui_top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.style_mut().spacing.interact_size.y = 18.0;
-            // 第一行：页面切换 / 来源 / 右侧 WSL 同步 + 主题
+            // First row: page switch / source / right-side WSL sync + theme
             ui.horizontal(|ui| {
                 let icons: Vec<Option<egui::TextureHandle>> = self.backend_icons.clone();
-                // 已安装的排在前（可拖动换位），未安装的按名字首字母排在后面。
+                // Installed pages first (drag to reorder); uninstalled ones trail alphabetically.
                 let installed = |id: ConfigFormat| self.config_paths.validate_target(id);
                 let order = self
                     .config_paths
                     .tab_order(&self.tab_order, |id| self.config_paths.validate_target(id));
-                // 已安装的那一段：拖动只在它内部换位。
+                // The installed segment: dragging reorders only within it.
                 let installed_count = order.iter().filter(|id| installed(**id)).count();
                 let mut drop_on: Option<usize> = None;
                 let mut released = false;
@@ -147,16 +147,16 @@ impl App {
                         .position(|b| b.id() == id)
                         .unwrap_or(0);
                     let is_installed = installed(id);
-                    // 未安装的页面把图标调淡：用 `Image` 的 tint 压暗。
-                    // 已安装用 `WHITE`（乘以白 = 原图）。
+                    // Uninstalled pages dim their icons: darkened via `Image`'s tint.
+                    // Installed ones use `WHITE` (multiplying by white = the original image).
                     let is_selected = self.current_page == id;
-                    // 正被抓着的页签（拖动源）。三种状态各用一色：
-                    //   选中（我在这页）= 悬浮色 + 加粗描边；
-                    //   拖动源（我抓着这页）= 橙色；
-                    //   换位目标（要换到这页）= 绿色（在下面用画笔叠）。
+                    // The tab being grabbed (drag source). One color per state:
+                    //   selected (I'm on this page) = hover color + thicker border;
+                    //   drag source (I'm holding this page) = orange;
+                    //   reorder target (moving onto this page) = green (painted over below).
                     let is_dragging = self.tab_drag_src == Some(id);
-                    // 图标保持原色（已安装）或压淡（未安装），不按选中态改 tint。
-                    // 状态靠底色 + 描边表达。
+                    // Icons keep their original color (installed) or stay dimmed (not); the tint doesn't follow selection.
+                    // State is expressed by fill + border.
                     let icon_tint = if is_installed {
                         egui::Color32::WHITE
                     } else {
@@ -170,10 +170,10 @@ impl App {
                         ),
                         None => egui::Button::new(""),
                     };
-                    // 选中态 = 悬浮色底 + 2px 描边。
+                    // Selected = hover-tinted fill + 2px border.
                     let selected_fill = ui.visuals().widgets.hovered.bg_fill;
                     let selected_ring = ui.visuals().widgets.hovered.bg_stroke.color;
-                    // 拖动源用橙色；换位目标的绿环在按钮画完后补画。
+                    // The drag source turns orange; the reorder target's green ring paints after the button.
                     let btn = match (is_dragging, is_selected) {
                         (true, _) => btn
                             .fill(crate::ui::DRAG_SOURCE_FILL)
@@ -184,20 +184,20 @@ impl App {
                         }
                         (false, false) => btn,
                     };
-                    // 悬停提示只报页面名（未安装的补一句状态）。
+                    // The hover tip reports only the page name (uninstalled ones add a status note).
                     let tip = if is_installed {
                         id.label().to_string()
                     } else {
                         format!("{}（未安装）", id.label())
                     };
-                    // click_and_drag：普通 Button 只感应点击，补上拖拽感应。
+                    // click_and_drag: a plain Button senses clicks only — add drag sensing.
                     let btn_resp = ui
                         .add(
                             btn.min_size(egui::vec2(24.0, 22.0))
                                 .sense(egui::Sense::click_and_drag()),
                         )
                         .on_hover_text(tip);
-                    // 光标：悬停张开手掌、按住握成拳头（与拖动把手同一套，见 crate::ui）。
+                    // Cursor: open palm on hover, closed fist while held (same set as drag handles — see crate::ui).
                     let want = crate::ui::grab_cursor_for(&btn_resp);
                     if want != crate::ui::GrabCursor::None {
                         crate::ui::request_grab_cursor(ui.ctx(), want);
@@ -210,16 +210,16 @@ impl App {
                     if btn_resp.clicked() {
                         clicked_page = Some(id);
                     }
-                    // 拖动换位：只认已安装段内的落点。
+                    // Drag reorder: only drop points inside the installed segment count.
                     if is_installed && slot < installed_count {
                         if btn_resp.drag_started() {
                             self.tab_drag_src = Some(id);
                         }
-                        // 换位目标：拖动中指针所在的槽位画绿环（与卡片落点同色）。
-                        // 在按钮画完后补画。
+                        // Reorder target: the slot under the pointer during a drag gets a green ring (same color as card drop targets).
+                        // Painted after the button.
                         //
-                        // 用 `contains_pointer()`，不用 `hovered()`。用 `Inside` 与按钮自身的
-                        // 描边同几何；圆角取**按钮自己的** `corner_radius`。
+                        // Uses `contains_pointer()`, not `hovered()`. `Inside` shares geometry with the button's own border;
+                        // the corner radius is the **button's own** `corner_radius`.
                         if self.tab_drag_src.is_some() && btn_resp.contains_pointer() {
                             if self.tab_drag_src != Some(id) {
                                 ui.painter().rect_stroke(
@@ -237,14 +237,14 @@ impl App {
                     }
                 }
 
-                // 拖动中指针往往已经离开被拖的那个页签，整段拖动期间保持拳头光标，
-                // 直到松手。
+                // During a drag the pointer has usually left the grabbed tab; keep the fist cursor for the whole drag
+                // until release.
                 if self.tab_drag_src.is_some() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     crate::ui::request_grab_cursor(ui.ctx(), crate::ui::GrabCursor::Fist);
                 }
 
-                // 松手：把被拖的页面移到落点位置。
+                // Release: move the dragged page to the drop position.
                 if released {
                     if let (Some(src), Some(dst)) = (self.tab_drag_src, drop_on) {
                         let mut installed_ids: Vec<ConfigFormat> = order
@@ -268,21 +268,21 @@ impl App {
                 }
 
                 if let Some(id) = clicked_page {
-                    // 用量视图下，页签是**筛选器**而不是页面切换：点哪个 agent 就看哪个
-                    // agent 的用量，不动配置页状态（切回提供商管理时用户应看到原页）。
+                    // Under the usage view, tabs are **filters**, not page switches: clicking an agent views that agent's
+                    // usage without touching the config page's state (returning to provider management shows the original page).
                     if self.main_view == MainView::Usage {
                         self.usage_filter = Some(id);
                     } else {
                         self.switch_to_page(id, ctx);
                     }
                 }
-                // 视图切换条：紧接 agent 页签右侧（用户要求的位置）；
-                // 「提供商管理」在前（两按钮交换过位置）。
+                // The view-switch strip: immediately right of the agent tabs (the user-requested position);
+                // "Provider Management" first (the two buttons swapped positions).
                 ui.separator();
                 self.ui_view_switch(ui);
-                // 「全部」：用量视图下的筛选器回到不筛选状态。
-                // 只在用量视图显示 —— 提供商管理没有「全部」这个概念。
-                // 与 agent 页签同组：两者都是「看哪部分数据」的筛选器。
+                // "All": returns the usage view's filter to unfiltered.
+                // Shown only under the usage view — provider management has no "all" concept.
+                // Grouped with the agent tabs: both are "which slice of data" filters.
                 if self.main_view == MainView::Usage {
                     ui.separator();
                     if crate::app::usage::chip(ui, self.usage_filter.is_none(), "全部", 48.0) {
@@ -291,9 +291,9 @@ impl App {
                 }
                 ui.separator();
 
-                // 右侧：WSL 同步 + 主题
+                // Right side: WSL sync + theme
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // WSL 探测在**后台线程**里跑（勾选同步后才启动），界面不等它。
+                    // The WSL probe runs on a **background thread** (started only after checking the box); the UI doesn't wait.
                     let current = self.current_page;
                     let probe_pending = self.sync_wsl && backends::wsl_probe_pending();
                     let (wsl_installed, wsl_tip) = if self.sync_wsl {
@@ -309,7 +309,7 @@ impl App {
                                     current.label()
                                 ),
                             ),
-                            // 探测中：复选框保持可用，结果到达后自动更新。
+                            // While probing: the checkbox stays usable and updates itself when the result arrives.
                             backends::WslTargetState::Unknown => (
                                 true,
                                 format!(
@@ -333,16 +333,16 @@ impl App {
                             egui::Checkbox::new(&mut self.sync_wsl, "WSL同步"),
                         )
                         .on_hover_text(wsl_tip);
-                    // 勾选状态变化 → 同步 WSL 总闸（是否允许拉起 wsl 进程探测 / 读写）。
+                    // Checkbox change → sync the WSL master switch (whether wsl processes may spawn for probing / IO).
                     if wsl_cb.changed() {
                         crate::util::wsl_set_enabled(self.sync_wsl);
                     }
-                    // 探测在途：转圈提示 + 请求重绘。
+                    // Probe in flight: spinner note + repaint request.
                     if probe_pending {
                         ui.add(egui::Spinner::new().size(12.0));
                         ctx.request_repaint_after(std::time::Duration::from_millis(120));
                     }
-                    // 勾选后探测**确认**未安装：自动收回勾选并提示。
+                    // After checking, the probe **confirms** not installed: withdraw the check automatically with a note.
                     if self.sync_wsl && !wsl_installed {
                         self.sync_wsl = false;
                         crate::util::wsl_set_enabled(false);
@@ -352,8 +352,8 @@ impl App {
                         );
                     }
                     ui.separator();
-                    // 常驻任务栏开关（主题左侧）：点亮 = 点 X 只收进托盘。
-                    // 默认常驻点亮（用户要求）。
+                    // The resident-taskbar toggle (left of the theme): lit = clicking X only tucks into the tray.
+                    // Resident-by-default, lit (user request).
                     let resident_tint = ui.visuals().text_color();
                     let resident_btn = toolbar_icon_button(
                         ui,
@@ -387,18 +387,18 @@ impl App {
                     .on_hover_text("外观")
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                     egui::Popup::menu(&look_btn)
-                        // 菜单改成左对齐的普通纵向布局，每项填充贴着文字宽度。
+                        // The menu becomes a left-aligned ordinary vertical layout, each item's fill hugging its text width.
                         .layout(egui::Layout::top_down(egui::Align::LEFT))
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
                             ui.set_min_width(240.0);
                             ui.label(egui::RichText::new("主题").small().weak());
-                            // 当前选中的形状圆角，所有按钮统一使用
+                            // The current selection's shape corner radius, shared by all buttons
                             let current_radius = self.ui_style.radius() as f32;
-                            // 当前主题的强调色（用于形状按钮填充）
+                            // The current theme's accent (for shape-button fills)
                             let current_accent = self.theme.accent_color();
-                            // 两行按钮共用同一个绘制函数（见 theme_button_row）；
-                            // 当前主题的描边色随行不同：深色行用白、亮色行用深灰。
+                            // Both button rows share one drawing function (see theme_button_row);
+                            // the current theme's border color differs per row: dark rows use white, light rows dark gray.
                             ui.label(egui::RichText::new("深色").size(10.0).weak());
                             if let Some(t) = theme_button_row(
                                 ui,
@@ -422,7 +422,7 @@ impl App {
                             ui.add_space(crate::theme::SPACE_2);
                             ui.label(egui::RichText::new("形状").small().weak());
                             let dark = ui.visuals().dark_mode;
-                            // 第一行：前 4 个形状
+                            // First row: the first 4 shapes
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 for style in &crate::theme::UiStyle::ALL[0..4] {
@@ -431,7 +431,7 @@ impl App {
                                     }
                                 }
                             });
-                            // 第二行：后 4 个形状
+                            // Second row: the last 4 shapes
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 for style in &crate::theme::UiStyle::ALL[4..8] {
@@ -441,18 +441,18 @@ impl App {
                                 }
                             });
                             ui.add_space(crate::theme::SPACE_2);
-                            // 亚克力：正交于配色与形状，对全部主题生效。
-                            // 内部标识（`prefs.glass`、`GLASS_*` 常量）不改名。
+                            // Acrylic: orthogonal to palette and shape, effective for every theme.
+                            // Internal identifiers (`prefs.glass`, the `GLASS_*` constants) keep their names.
                             ui.checkbox(&mut self.glass, "亚克力");
                         });
                 });
             });
-            // 第二行：配置文件 / 保存格式
+            // Second row: config file / save format
             ui.horizontal(|ui| {
-                // 行内混排了 14px 小图标、较高的输入框与 24px 图标按钮。
-                // 先把行高钉到 24，所有控件基于同一高度垂直居中。
+                // The row mixes 14px small icons, a taller input box, and 24px icon buttons.
+                // Pin the row height to 24 first; every control vertically centers on that.
                 ui.set_min_height(24.0);
-                // 来源（后端 / agent）图标：只显示各后端官方图标（名称见悬停提示）。
+                // Source (backend / agent) icons: only each backend's official icon shows (names in hover tips).
                 if let Some(icon) = self.icon_for(self.source_format) {
                     ui.add(
                         egui::Image::from_texture(icon)
@@ -464,20 +464,20 @@ impl App {
                 }
                 let path_resp =
                     ui.add(egui::TextEdit::singleline(&mut self.config_path).desired_width(420.0));
-                // 回车确认：按当前输入路径重新加载（egui 单行编辑回车即失焦）
+                // Enter confirms: reload from the currently typed path (egui single-line edits lose focus on Enter)
                 if path_resp.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     && self.config_path != self.loaded_path
                 {
                     if self.config_path.trim().is_empty() {
-                        // 留空 + 回车 = 清除本页路径覆盖，回到默认路径
+                        // Empty + Enter = clear this page's path override, returning to the default path
                         let page = self.current_page;
                         self.reset_page_path(page);
                     } else {
                         self.reload();
                     }
                 }
-                // 「浏览」按钮放回路径框右侧，点击弹出选文件对话框。
+                // The "browse" button sits right of the path box, popping the file dialog on click.
                 let browse_tint = ui.visuals().text_color();
                 if toolbar_icon_button(
                     ui,
@@ -519,7 +519,7 @@ impl App {
                 let hovering = format_btn.hovered();
                 let scroll = ui
                     .input(|i| i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. })));
-                // 滚轮切换：一次连续滚动手势只切换一次。
+                // Scroll-wheel switching: one continuous gesture switches once.
                 if hovering && scroll && !self.save_format_wheel_latch {
                     self.save_format = self.save_format.toggled();
                     self.save_format_wheel_latch = true;
@@ -531,8 +531,8 @@ impl App {
                     self.save_format = self.save_format.toggled();
                 }
 
-                // 顶部工具组：体检、令牌、密钥显隐和右侧预览面板开关。
-                // 右对齐后越晚添加的控件越靠左，保持侧边栏图标贴近工具组外侧。
+                // The top tool group: health, tokens, key visibility, and the preview panel toggle.
+                // Right-aligned, later-added controls land further left, keeping the sidebar icon adjacent to the group.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let sidebar = toolbar_icon_button(
                         ui,
@@ -548,12 +548,12 @@ impl App {
                     if sidebar.clicked() {
                         self.show_preview = !self.show_preview;
                         if self.show_preview {
-                            // 打开时以组件状态重建待保存文档。
+                            // While open, rebuild the pending document from component state.
                             self.reset_preview_draft();
                         }
                     }
 
-                    // 代理支持：放行 / 禁用「模型延迟测试」走系统代理；亮起 = 已放行。
+                    // Proxy support: allow / forbid "model latency tests" through the system proxy; lit = allowed.
                     let mut proxy_tip = if self.allow_model_test_with_proxy {
                         "代理支持：已放行「模型延迟测试」。".to_string()
                     } else {
@@ -580,7 +580,7 @@ impl App {
                     .on_hover_text(proxy_tip);
                     if proxy.clicked() {
                         self.allow_model_test_with_proxy = !self.allow_model_test_with_proxy;
-                        // 状态栏回声。
+                        // Status-bar echo.
                         self.status = if self.allow_model_test_with_proxy {
                             "代理支持：已放行「模型延迟测试」".to_string()
                         } else {
@@ -592,7 +592,7 @@ impl App {
                         }
                     }
 
-                    // 全局密钥显隐：一键切换全部 API Key 的明文 / 掩码。
+                    // Global key visibility: one switch for every API key's plaintext / masked display.
                     let api_keys = toolbar_icon_button(
                         ui,
                         if self.show_api_keys {
@@ -612,7 +612,7 @@ impl App {
                         self.show_api_keys = !self.show_api_keys;
                     }
 
-                    // 令牌：站点面板访问令牌（PAT）管理；填了才能查账号级真实余额。
+                    // Tokens: station panel access token (PAT) management; required for account-level real balances.
                     let tokens = toolbar_icon_button(
                         ui,
                         self.toolbar_icons.key_round.as_ref(),
@@ -623,13 +623,13 @@ impl App {
                     if tokens.clicked() {
                         self.show_tokens = !self.show_tokens;
                         if self.show_tokens {
-                            // 重新打开时清空草稿。
+                            // Clear drafts when reopening.
                             self.token_draft.clear();
                             self.token_uid_draft.clear();
                         }
                     }
 
-                    // 体检：把重名 / 非法数字 / 可疑 URL / 跨网关引用等检查汇总成一张清单。
+                    // Health: gathers duplicate names / invalid numbers / suspicious URLs / cross-gateway references into one list.
                     let (blockers, warnings) =
                         health::count_by_severity(&health::collect(&health::HealthInput {
                             page: self.current_page,

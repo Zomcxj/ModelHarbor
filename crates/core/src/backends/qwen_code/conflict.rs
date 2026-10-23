@@ -1,8 +1,8 @@
 use super::*;
 
-/// 两个 provider 的凭据落到同一个 `envKey` 变量名、且密钥不同时，返回冲突描述。
+/// When two providers' credentials land on the same `envKey` variable name with different keys, return the conflict description.
 pub(crate) fn first_env_name_conflict(providers: &[ProviderRow]) -> Option<String> {
-    // name -> (先到的 provider key, 它的密钥值)
+    // name -> (the earlier provider key, its key value)
     let mut seen: HashMap<String, (&str, &str)> = HashMap::new();
     for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
         let name = env_key_name(p);
@@ -10,7 +10,7 @@ pub(crate) fn first_env_name_conflict(providers: &[ProviderRow]) -> Option<Strin
             continue;
         }
         if let Some((prev_key, prev_value)) = seen.get(name.as_str()) {
-            // 同一个变量名 + 同一个密钥值（如同一站点复制出两条）：不算冲突。
+            // The same variable name + the same key value (two entries copied from one station): not a conflict.
             if *prev_value == p.api_key.trim() {
                 continue;
             }

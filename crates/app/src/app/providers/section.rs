@@ -8,10 +8,10 @@ use crate::ui::card_list;
 use eframe::egui;
 
 impl App {
-    /// Providers 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
+    /// The Providers block: the title row sticks to the top (always visible while scrolling), content right below.
     pub(in crate::app) fn ui_providers_section(&mut self, ui: &mut egui::Ui) {
-        // 吸顶区是**固定高度矩形**（sticky_end 用 max_rect 建子 ui）：
-        // 里面所有内容都必须装在这一个高度里，多出来的行直接画到下面的卡片区上。
+        // The sticky region is a **fixed-height rect** (sticky_end builds the child ui from max_rect):
+        // everything inside must fit within that one height — extra rows would paint straight onto the cards below.
         let anchor = sticky_begin(ui, 30.0);
         let matched: Vec<usize> = (0..self.providers.len()).collect();
 
@@ -21,7 +21,7 @@ impl App {
 
         self.ui_first_run_guide(ui);
 
-        // 拖拽落点必须在**所有卡片渲染完之后**统一聚合再写入 self。
+        // Drag drop targets must aggregate uniformly **after all cards render**, then write into self.
         let mut actions = CardActions::default();
         let card_gap = if crate::theme::active_style(ui.ctx()).has_card_shadow() {
             crate::theme::SPACE_2
@@ -31,12 +31,12 @@ impl App {
         card_list(ui, &matched, card_gap, |ui, idx| {
             self.render_provider_card(ui, idx, &mut actions);
         });
-        // 同一模型 id 全局只能开一个，在所有卡片渲染完之后统一处理。
+        // One model id can be enabled globally only once — handled centrally after all cards render.
         if let Some(picked) = actions.model_enable.take() {
             self.enable_model_exclusively(picked);
         }
-        // 「同步」：把源模型的 context / output 值刷到本页全部模型。
-        // 同样在所有卡片渲染完之后统一应用，避开渲染期的可变借用。
+        // "Sync": brush the source model's context / output values onto every model on the page.
+        // Also applied centrally after all cards render, avoiding a mutable borrow mid-render.
         if let Some((field, value)) = actions.sync.take() {
             self.apply_limit_sync(field, value);
         }
@@ -55,7 +55,7 @@ impl App {
         } else {
             self.provider_drag_target = None;
         }
-        // 模型拖拽落点：与 provider 同样在外层聚合。
+        // Model drag drop targets: aggregated at the outer layer like providers'.
         if self.model_drag_src.is_some() {
             self.model_drag_target = actions.model_hover;
         } else {
@@ -72,9 +72,9 @@ impl App {
         sticky_end(ui, anchor, |ui| {
             ui.horizontal(|ui| {
                 ui.strong(egui::RichText::new("Providers").size(crate::theme::TEXT_HEADING));
-                // 三个动作钮在标题行左侧（与标题同排、随内容左对齐）：
-                // 展开/收起全部、连通性测试、查询用户数据，统一图标样式。
-                // 展开/收起全部（chevrons 图标）：收起全部卡片时也可见。
+                // Three action buttons on the title row's left (same row as the title, left-aligned with content):
+                // expand/collapse all, connectivity test, query user data — one icon style.
+                // Expand/collapse all (chevrons icon): visible even when every card is collapsed.
                 if !self.providers.is_empty() {
                     let all_open = self
                         .providers
@@ -94,9 +94,9 @@ impl App {
                     })
                     .clicked()
                     {
-                        // all_open 为真 = 现在全部展开 → 按钮是「收起全部」
+                        // all_open true = everything is expanded now → the button reads "collapse all"
                         self.set_all_providers_collapsed(all_open);
-                        // 批量不走高度补间。
+                        // Batch actions skip the height tween.
                         let ctx = ui.ctx().clone();
                         let open = !all_open;
                         for provider in &self.providers {
@@ -109,7 +109,7 @@ impl App {
                     }
                 }
 
-                // 连通性测试（zap 图标）：批量测所有厂商连通性。
+                // Connectivity test (zap icon): batch-test every vendor's connectivity.
                 let zap_tint = ui.visuals().text_color();
                 if crate::app::bars::toolbar_icon_button(
                     ui,
@@ -140,8 +140,8 @@ impl App {
                     self.status = format!("已开始连通性测试（{} 个厂商）", count);
                 }
 
-                // 查询用户数据（database 图标，最贴行尾）：一次查完当前页面全部厂商。
-                // 一份结果里能有什么就显示什么：余额 / 已用 / 今日 / 近 7 天 / 签到状态。
+                // Query user data (database icon, closest to the line's end): queries every vendor on the page in one go.
+                // One result shows whatever it holds: balance / used / today / last 7 days / check-in status.
                 let database_tint = ui.visuals().text_color();
                 if crate::app::bars::toolbar_icon_button(
                     ui,
@@ -159,11 +159,11 @@ impl App {
                             key: p.key.clone(),
                             base_url: p.base_url.clone(),
                             secret: credentials::effective_secret(p),
-                            // 站点级面板令牌：没设置就是空串。
+                            // Station-level panel token: an empty string when unset.
                             pat: self.station_pat(&p.base_url),
-                            // 旧版 new-api 要的用户 ID：没填就是空串（不发该头）。
+                            // The user ID older new-api requires: empty when unset (the header isn't sent).
                             user_id: self.station_user_id(&p.base_url),
-                            // sub2api 站点：直连 /v1/usage，跳过面板体系。
+                            // sub2api stations: query /v1/usage directly, skipping the panel system.
                             sub2api: self.station_is_sub2api(&p.base_url),
                         })
                         .collect();
@@ -185,9 +185,9 @@ impl App {
         });
     }
 
-    /// 把某个模型的 context / output 值刷到本页全部模型（「同步」下拉首项）。
+    /// Brush one model's context / output values onto every model on the page (the "sync" dropdown's first item).
     ///
-    /// `value` 是源模型在点下时的值（渲染期已取出，这里只做写回）；空值不刷。
+    /// `value` is the source model's value at click time (extracted during render; this only writes back); empty values don't brush.
     pub(in crate::app) fn apply_limit_sync(&mut self, field: SyncField, value: String) {
         let value = value.trim().to_string();
         if value.is_empty() {

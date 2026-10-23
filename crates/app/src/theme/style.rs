@@ -2,28 +2,28 @@ use super::tokens::{RADIUS_MD, RADIUS_SLIDER_MAX, RADIUS_SM};
 use super::Theme;
 use eframe::egui::{self, Color32};
 
-/// 界面形状预设：圆角、描边粗细、内嵌亮暗边、投影、色带的组合。
+/// The UI's shape presets: a combination of corner radius, border weight, inset bright/dark edges, shadows, and the ribbon.
 ///
-/// 与主题正交：主题管颜色，形状管控件外观。8 档各有一套机制
-/// （描边 / 无边框 / 凸起光线 / 软投影 / 接触影 / 顶部色带）。
+/// Orthogonal to the theme: themes govern color, shapes govern widget appearance. The 8 tiers each carry
+/// one mechanism (bordered / borderless / raised light / soft shadow / contact shadow / top ribbon).
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum UiStyle {
-    /// 圆润：默认档，圆角 10、1px 描边。
+    /// Rounded: the default tier, radius 10 with a 1px border.
     #[default]
     Soft,
-    /// 精致：圆角 6 + 0.5px 细边。
+    /// Refined: radius 6 with a 0.5px hairline.
     Fine,
-    /// 极简：全直角 + 0px 无边框，纯色块。
+    /// Minimal: all square corners, 0px borderless — pure color blocks.
     Minimal,
-    /// 标签：胶囊 20 + 0.5px 细边。
+    /// Pill: capsule 20 with a 0.5px hairline.
     Tag,
-    /// 云朵：大圆角 16 + 软投影。
+    /// Cloud: large radius 16 with a soft shadow.
     Cloud,
-    /// 浮雕：凸起受光线 + 接触影。
+    /// Emboss: raised light-catching edges + contact shadow.
     Emboss,
-    /// 石板：平放石板——深色描边 + 接触影，无受光线。
+    /// Slab: a flat stone — dark border + contact shadow, no light-catching edges.
     Slab,
-    /// 色带：卡片顶部一条主题强调色色带。
+    /// Ribbon: a theme-accent strip across the card's top.
     Band,
 }
 
@@ -52,7 +52,7 @@ impl UiStyle {
         }
     }
 
-    /// 持久化用的稳定标识，与界面文案解耦。
+    /// The stable identifier for persistence, decoupled from UI wording.
     pub fn key(&self) -> &'static str {
         match self {
             UiStyle::Soft => "soft",
@@ -66,7 +66,7 @@ impl UiStyle {
         }
     }
 
-    /// 由持久化标识还原；未知 / 空值回落默认档。
+    /// Restore from a persistence identifier; unknown / empty values fall back to the default tier.
     pub fn from_key(key: &str) -> UiStyle {
         UiStyle::ALL
             .into_iter()
@@ -74,7 +74,7 @@ impl UiStyle {
             .unwrap_or_default()
     }
 
-    /// 该预设的默认圆角。
+    /// This preset's default corner radius.
     pub fn radius(&self) -> u8 {
         match self {
             UiStyle::Soft => RADIUS_MD,
@@ -88,40 +88,40 @@ impl UiStyle {
         }
     }
 
-    /// 控件描边宽度（像素）。
+    /// Widget border width (pixels).
     pub fn border_width(&self) -> f32 {
         match self {
             UiStyle::Soft | UiStyle::Slab | UiStyle::Emboss | UiStyle::Band => 1.0,
             UiStyle::Minimal => 0.0,
             UiStyle::Fine | UiStyle::Tag => 0.5,
-            // 云朵的卡片本身不描边（靠投影成形），输入框 / 按钮仍要 1px。
+            // The cloud's card itself has no border (shaped by its shadow); inputs / buttons still need 1px.
             UiStyle::Cloud => 1.0,
         }
     }
 
-    /// 是否画凸起受光线（卡内左上亮、右下暗）。
+    /// Whether to paint raised light-catching edges (bright top-left inside a card, dark bottom-right).
     pub fn has_bevel(&self) -> bool {
         matches!(self, UiStyle::Emboss)
     }
 
-    /// 是否画接触影（向右下偏移的整圈暗色描边）。
+    /// Whether to paint the contact shadow (a full dark border ring offset toward the bottom-right).
     pub fn has_contact_shadow(&self) -> bool {
         matches!(self, UiStyle::Slab | UiStyle::Emboss)
     }
 
-    /// 是否给卡片画一层软投影（云朵）。
+    /// Whether cards get a soft drop shadow (cloud).
     pub fn has_card_shadow(&self) -> bool {
         matches!(self, UiStyle::Cloud)
     }
 
-    /// 是否在卡片顶部画主题强调色色带。
+    /// Whether to paint a theme-accent ribbon across the card's top.
     pub fn has_accent_bar(&self) -> bool {
         matches!(self, UiStyle::Band)
     }
 
-    /// 写进 egui `WidgetVisuals` 的描边宽度。
+    /// The border width written into egui's `WidgetVisuals`.
     ///
-    /// 浮雕的控件描边换成内嵌暗边（1px）；石板用原宽。
+    /// Emboss swaps widget borders for inset dark edges (1px); slab keeps the original width.
     pub fn widget_stroke_width(&self) -> f32 {
         if self.has_bevel() {
             1.0
@@ -130,7 +130,7 @@ impl UiStyle {
         }
     }
 
-    /// 卡片软投影：深色用黑、浅色用更深的灰。
+    /// The card's soft shadow: black on dark themes, a deeper gray on light ones.
     pub fn card_shadow(&self, dark: bool) -> egui::epaint::Shadow {
         let color = if dark {
             Color32::from_black_alpha(110)
@@ -145,9 +145,9 @@ impl UiStyle {
         }
     }
 
-    /// 凸起受光线的颜色（浮雕专用），返回 `(亮边, 暗边)`。
+    /// The raised light-catching edges' colors (emboss only), returning `(bright edge, dark edge)`.
     ///
-    /// 浅色主题的暗边近实色（alpha 230）；深色主题的亮边负责立体感。
+    /// Light themes' dark edges are near-solid (alpha 230); dark themes' bright edges carry the dimensionality.
     pub fn bevel_colors(&self, dark: bool) -> (Color32, Color32) {
         if dark {
             (
@@ -162,7 +162,7 @@ impl UiStyle {
         }
     }
 
-    /// 接触影颜色：向右下偏移的整圈暗色描边用，石板 / 浮雕共用。
+    /// The contact shadow color: for the full dark ring offset bottom-right, shared by slab / emboss.
     pub fn contact_shadow_color(&self, dark: bool) -> Color32 {
         if dark {
             Color32::from_black_alpha(120)
@@ -172,21 +172,21 @@ impl UiStyle {
     }
 }
 
-/// 当前形状预设存在上下文里的键。
+/// The context key holding the current shape preset.
 pub(super) const ACTIVE_STYLE_ID: &str = "modelharbor_active_ui_style";
 
-/// 当前亚克力档存在上下文里的键。
+/// The context key holding the current acrylic tier.
 pub(super) const GLASS_ID: &str = "modelharbor_active_glass";
 
-/// 当前生效的形状预设（还没套用样式时是默认档）。
+/// The currently effective shape preset (the default tier before styling was applied).
 pub fn active_style(ctx: &egui::Context) -> UiStyle {
     ctx.data(|data| data.get_temp::<UiStyle>(egui::Id::new(ACTIVE_STYLE_ID)))
         .unwrap_or_default()
 }
 
-/// 主题是否需要在本次应用（`applied` 记录已应用的主题，会被就地更新）。
+/// Whether the theme needs applying this pass (`applied` records the applied theme and is updated in place).
 ///
-/// egui 的 `set_style` 按当前主题各存一份 style，主题变了需显式再调一次 `apply`。
+/// egui's `set_style` keeps one style per theme; when the theme changes, `apply` must be called again explicitly.
 pub fn needs_apply(applied: &mut Option<Theme>, theme: Theme) -> bool {
     if *applied == Some(theme) {
         return false;
@@ -195,9 +195,9 @@ pub fn needs_apply(applied: &mut Option<Theme>, theme: Theme) -> bool {
     true
 }
 
-/// 主题、形状或亚克力档变了都要重套样式。
+/// Theme, shape, or acrylic tier changes all re-apply styling.
 ///
-/// `applied` 记录已套用的（主题, 形状, 亚克力），会被就地更新。
+/// `applied` records the applied (theme, shape, acrylic) and is updated in place.
 pub fn needs_apply_style(
     applied: &mut Option<(Theme, UiStyle, bool)>,
     theme: Theme,

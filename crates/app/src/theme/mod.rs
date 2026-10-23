@@ -1,7 +1,7 @@
-//! 设计系统：主题（调色板）、形状预设（UiStyle）、语义色与设计刻度。
+//! The design system: themes (palettes), shape presets (UiStyle), semantic colors, and design scales.
 //!
-//! 按关注点拆分：`tokens` 刻度常量与混色、`style` 形状预设、`palette` 调色板、
-//! `semantics` 语义色；主题本体（`Theme`）在本文件。
+//! Split by concern: `tokens` holds scale constants and color mixing, `style` the shape presets,
+//! `palette` the palettes, `semantics` the semantic colors; the theme proper (`Theme`) lives here.
 
 mod palette;
 mod semantics;
@@ -30,22 +30,22 @@ pub enum Theme {
     Ocean,
     Nord,
     Rose,
-    /// 苔藓：低饱和绿。
+    /// Moss: low-saturation green.
     Moss,
-    /// 薄荷：清新绿。
+    /// Mint: fresh green.
     Mint,
-    /// 薰衣草：柔和紫。
+    /// Lavender: soft purple.
     Lavender,
 }
 
 impl Theme {
     pub const ALL: [Theme; 8] = [
-        // 深色主题（4个）
+        // Dark themes (4)
         Theme::Dark,
         Theme::Ocean,
         Theme::Nord,
         Theme::Moss,
-        // 浅色主题（4个）
+        // Light themes (4)
         Theme::Light,
         Theme::Rose,
         Theme::Mint,
@@ -65,7 +65,7 @@ impl Theme {
         }
     }
 
-    /// 持久化用的稳定标识，与界面文案解耦。
+    /// The stable identifier for persistence, decoupled from UI wording.
     pub fn key(&self) -> &'static str {
         match self {
             Theme::Dark => "dark",
@@ -79,12 +79,12 @@ impl Theme {
         }
     }
 
-    /// 当前主题的强调色。
+    /// The current theme's accent color.
     pub fn accent_color(&self) -> egui::Color32 {
         self.palette().accent
     }
 
-    /// 由持久化标识还原；未知 / 空值回落默认主题。
+    /// Restore from a persistence identifier; unknown / empty values fall back to the default theme.
     pub fn from_key(key: &str) -> Theme {
         Theme::ALL
             .into_iter()
@@ -92,7 +92,7 @@ impl Theme {
             .unwrap_or_default()
     }
 
-    /// 该主题是否深色底。
+    /// Whether this theme has a dark background.
     pub fn is_dark(&self) -> bool {
         self.palette().dark
     }
@@ -120,7 +120,7 @@ impl Theme {
                 false, 0xFBEEF0, 0xF8E5E8, 0xFFFFFF, 0xEAC0C9, 0xE8B9C2, 0x8C5A66, 0x4A2E33,
                 0x947F82, 0xFFFFFF,
             ),
-            // 以下四组取自低饱和家族。
+            // The following four groups come from the low-saturation family.
             Theme::Moss => Palette::new(
                 true, 0x18201A, 0x1E2620, 0x101812, 0x232B24, 0x2C342C, 0x6D9D82, 0xD8DED2,
                 0x767676, 0x000000,
@@ -140,12 +140,12 @@ impl Theme {
         egui::Theme::from_dark_mode(self.palette().dark)
     }
 
-    /// 按当前主题 + 默认形状套用样式。
+    /// Apply styling per the current theme + default shape.
     pub fn apply(&self, ctx: &egui::Context) {
         let style = UiStyle::default();
         self.apply_style(ctx, style, false);
     }
-    /// 按主题 + 形状预设 + 亚克力档套用样式。
+    /// Apply styling per theme + shape preset + acrylic tier.
     pub fn apply_style(&self, ctx: &egui::Context, shape: UiStyle, glass: bool) {
         let mut style = egui::Style::default();
         style.spacing.item_spacing = egui::vec2(SPACE_2 / 2.0, SPACE_2);
@@ -153,7 +153,7 @@ impl Theme {
         style.spacing.interact_size.y = TAP_TARGET_MIN;
         style.spacing.scroll.bar_outer_margin = 0.0;
         style.spacing.scroll.floating = true;
-        // 字号刻度。
+        // Font-size scale.
         style.text_styles.insert(
             egui::TextStyle::Small,
             egui::FontId::new(TEXT_CAPTION, egui::FontFamily::Proportional),
@@ -182,7 +182,7 @@ impl Theme {
         ] {
             w.corner_radius = radius.into();
         }
-        // 描边宽度随形状走，颜色沿用调色板（hovered / active 是强调色）。
+        // Border widths follow the shape; colors come from the palette (hovered / active are the accent).
         for w in [
             &mut style.visuals.widgets.noninteractive,
             &mut style.visuals.widgets.inactive,
@@ -190,7 +190,7 @@ impl Theme {
             w.bg_stroke.width = shape.widget_stroke_width();
         }
         if shape.has_contact_shadow() {
-            // 浮雕：控件描边换成内嵌暗边；悬浮窗给偏右下的投影。
+            // Emboss: widget borders become inset dark edges; popovers get a lower-right drop shadow.
             let (_, edge) = shape.bevel_colors(dark);
             style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0f32, edge);
             style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0f32, edge);
@@ -209,13 +209,13 @@ impl Theme {
         }
         ctx.set_theme(self.egui_theme());
         ctx.set_style(style);
-        // 形状存进上下文：`ui.rs` 里的卡片读它决定描边宽度与内嵌亮线。
+        // The shape goes into the context: cards in `ui.rs` read it for border width and inset bright lines.
         ctx.data_mut(|data| data.insert_temp(egui::Id::new(ACTIVE_STYLE_ID), shape));
-        // 亚克力档也存进上下文：卡片 / 面板的 Frame 读它决定底色透明度。
+        // The acrylic tier goes into the context too: cards' / panels' Frames read it for fill opacity.
         ctx.data_mut(|data| data.insert_temp(egui::Id::new(GLASS_ID), glass));
     }
 
-    /// 当前是否亚克力档（没套过样式时为 `false`）。
+    /// Whether the current tier is acrylic (`false` before any styling was applied).
     pub fn active_glass(ctx: &egui::Context) -> bool {
         ctx.data(|data| data.get_temp::<bool>(egui::Id::new(GLASS_ID)))
             .unwrap_or(false)
@@ -226,7 +226,7 @@ impl Theme {
 mod tests {
     use super::*;
 
-    /// 形状预设的圆角不超过滑块上限 `RADIUS_SLIDER_MAX`。
+    /// Shape presets' corner radii stay within the slider cap `RADIUS_SLIDER_MAX`.
     #[test]
     fn every_shape_radius_is_reachable_by_the_slider() {
         for style in UiStyle::ALL {
@@ -239,7 +239,7 @@ mod tests {
         }
     }
 
-    /// 预设之间圆角 / 描边 / 浮雕 / 投影不重复。
+    /// Presets don't repeat corner radius / border / emboss / shadow.
     #[test]
     fn shape_presets_differ_in_radius_or_border() {
         let seen: Vec<(u8, u32, bool, bool)> = UiStyle::ALL
@@ -247,7 +247,7 @@ mod tests {
             .map(|s| {
                 (
                     s.radius(),
-                    // 云朵卡片不描边，控件仍 1px：uniqueness 按卡片观感算 0。
+                    // The cloud card has no border while widgets keep 1px: uniqueness counts the card's look as 0.
                     if s.has_card_shadow() {
                         0
                     } else {
@@ -282,14 +282,14 @@ mod tests {
         assert_eq!(UiStyle::from_key("fine").key(), "fine");
     }
 
-    /// 石板与浮雕机制不同：浮雕有凸起受光线，石板只有描边 + 接触影。
+    /// Slab and emboss differ in mechanism: emboss has raised light-catching edges; slab is only a border + contact shadow.
     #[test]
     fn slab_and_emboss_use_different_mechanisms() {
         assert!(UiStyle::Emboss.has_bevel(), "浮雕必须有凸起受光线");
         assert!(!UiStyle::Slab.has_bevel(), "石板是平放的板，不该有受光线");
         assert!(UiStyle::Slab.has_contact_shadow());
         assert!(UiStyle::Emboss.has_contact_shadow());
-        // 色带：顶部强调条。
+        // The ribbon: an accent strip at the top.
         assert!(UiStyle::Band.has_accent_bar());
         assert!(!UiStyle::Band.has_bevel());
         assert!(!UiStyle::Band.has_contact_shadow());
@@ -306,17 +306,17 @@ mod tests {
         );
         assert!(light_hi.a() >= dark_hi.a());
         assert!(light_lo.a() > 0 && dark_lo.a() > 0);
-        // 浅色主题的暗边必须近实色。
+        // Light themes' dark edges must be near-solid.
         assert!(
             light_lo.a() >= 190,
             "浅色浮雕暗边 alpha {} 不够实",
             light_lo.a()
         );
-        // 接触影在浅底上也要够实。
+        // Contact shadows must also be solid enough on pale backgrounds.
         assert!(UiStyle::Slab.contact_shadow_color(false).a() >= 120);
     }
 
-    /// 圆角 / 描边真的写进了 Style。
+    /// Corner radius / border genuinely land in the Style.
     #[test]
     fn shape_preset_reaches_the_style() {
         let ctx = egui::Context::default();
@@ -339,7 +339,7 @@ mod tests {
         }
     }
 
-    /// 形状预设变化时 `needs_apply_style` 重套样式。
+    /// A shape-preset change re-applies styling via `needs_apply_style`.
     #[test]
     fn shape_change_reapplies_the_style() {
         let mut applied: Option<(Theme, UiStyle, bool)> = None;
@@ -373,7 +373,7 @@ mod tests {
             UiStyle::Minimal,
             false
         ));
-        // 亚克力档单独变化也要重套（底色 alpha 写在 style 里）。
+        // The acrylic tier changing alone also re-applies (the fill's alpha lives in the style).
         assert!(needs_apply_style(
             &mut applied,
             Theme::Light,
@@ -388,17 +388,17 @@ mod tests {
         ));
     }
 
-    /// 形状能从上下文读回来。
+    /// The shape reads back from the context.
     #[test]
     fn active_style_round_trips_through_the_context() {
         let ctx = egui::Context::default();
-        // 没套过样式时是默认档。
+        // Before any styling, it's the default tier.
         assert_eq!(active_style(&ctx), UiStyle::default());
         for style in UiStyle::ALL {
             Theme::Dark.apply_style(&ctx, style, false);
             assert_eq!(active_style(&ctx), style, "{} 没存进上下文", style.key());
         }
-        // 亚克力档也能从上下文读回来。
+        // The acrylic tier reads back from the context too.
         assert!(!Theme::active_glass(&ctx));
         Theme::Dark.apply_style(&ctx, UiStyle::Soft, true);
         assert!(Theme::active_glass(&ctx));
@@ -409,16 +409,16 @@ mod tests {
         let mut labels = std::collections::HashSet::new();
         for t in Theme::ALL {
             assert!(labels.insert(t.label()), "duplicate label: {}", t.label());
-            // 不带亚克力档也要能构造。
+            // Construction works without the acrylic tier as well.
             let _ = t.palette().into_visuals(false);
-            // 亚克力档也能构造（底色缩 alpha，不得 panic）。
+            // And with it (fill alpha scales; must not panic).
             let glass = t.palette().into_visuals(true);
             assert!(
                 glass.panel_fill.a() < 255,
                 "{} 亚克力档的面板底色没变透明",
                 t.key()
             );
-            // 层次不变量：控件底比面板实。
+            // Hierarchy invariant: widget fills are more solid than the panel's.
             assert!(
                 glass.widgets.inactive.bg_fill.a() > glass.panel_fill.a(),
                 "{} 亚克力档的控件底比面板还透，层次反了",

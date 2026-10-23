@@ -1,9 +1,9 @@
-//! 中转站「已用 / 余额」解析（只读）。
+//! Relay-station "used / balance" parsing (read-only).
 //!
-//! 端点面向 New-API / one-api 系站点，分令牌额度（`GET /api/usage/token/`、
-//! `GET /api/log/token`、`GET /api/status`）与兼容账单（`/dashboard/billing/*`）两条路径；
-//! 另支持 sub2api 站点的 `{base}/v1/usage`（只需 `sk-` key，见 [`sub2api_usage_url`]）。
-//! 余额口径：`额度 − 已用`；占位额度与 `unlimited_quota` 的令牌不显示余额。
+//! Endpoints target New-API / one-api family stations, split into token quota (`GET /api/usage/token/`,
+//! `GET /api/log/token`, `GET /api/status`) and compatible billing (`/dashboard/billing/*`) paths;
+//! sub2api stations' `{base}/v1/usage` is also supported (only the `sk-` key — see [`sub2api_usage_url`]).
+//! Balance accounting: `quota − used`; placeholder quotas and `unlimited_quota` tokens show no balance.
 
 mod endpoints;
 mod money;

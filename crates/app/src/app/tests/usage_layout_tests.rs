@@ -1,29 +1,31 @@
-//! 用量视图的两列布局与顶栏按钮位置。
+//! The usage view's two-column layout and top-bar button placement.
 //!
-//! 两处用户反馈的约束：
+//! Two user-feedback constraints:
 //!
-//! 1. **顶栏**：`[提供商管理] [用量]` 紧接 agent 页签右侧（两个按钮交换过
-//!    位置），不是甩到最右边。
-//! 2. **主体两列**：左列是总览（总览卡 / 趋势图 / 热力图），右列从上到下
-//!    是时间 / Agent / 模型 / 会话四张表；会话表带「项目」与「操作」列。
+//! 1. **Top bar**: `[Provider Management] [Usage]` sits right next to the agent tabs (the two buttons
+//!    were swapped in order), not flung to the far right.
+//! 2. **Two-column body**: the left column is the overview (overview card / trend chart / heatmap); the
+//!    right column stacks the time / Agent / model / session tables top to bottom; the session table
+//!    has "Project" and "Actions" columns.
 //!
-//! 只断言几何关系与元素存在，不断言具体像素值，换主题 / 改字体也不会误报。
+//! Only geometry and element presence are asserted, never pixel values — theme or font changes won't
+//! cause false failures.
 
 use crate::app::App;
 use crate::format::ConfigFormat;
 use crate::usage::{DailyBucket, DayTotals, SessionSnapshot};
 use eframe::egui;
 
-/// 一段被渲染出来的文本及其矩形与字号。
+/// A rendered piece of text with its rect and font size.
 struct TextAt {
     text: String,
     rect: egui::Rect,
-    /// 字号：小节标题是 `TEXT_TITLE`，表格列头是 `TEXT_CAPTION`。
-    /// 「会话」「模型」既是小节标题又是列头，只能靠字号区分。
+    /// Font sizes: section titles are `TEXT_TITLE`; table column headers are `TEXT_CAPTION`.
+    /// "Sessions" and "Models" are both section titles and column headers — only font size tells them apart.
     size: f32,
 }
 
-/// 收集全部文本形状（含嵌套）。
+/// Collect all text shapes (including nested).
 fn texts_of(out: &egui::FullOutput) -> Vec<TextAt> {
     let mut texts = Vec::new();
     fn collect(shape: &egui::Shape, out: &mut Vec<TextAt>) {
@@ -49,7 +51,7 @@ fn texts_of(out: &egui::FullOutput) -> Vec<TextAt> {
     texts
 }
 
-/// 造一条会话快照（带项目）。
+/// Build one session snapshot (with project).
 fn session(id: &str, model: &str, input: i64) -> SessionSnapshot {
     SessionSnapshot {
         client: ConfigFormat::Pi,
@@ -70,8 +72,8 @@ fn session(id: &str, model: &str, input: i64) -> SessionSnapshot {
     }
 }
 
-/// 造一天的分桶：指定模型与用量，并把当天的会话记进 `by_session`
-/// （会话表的行来自 `session_rows_in_range`，它只认 `by_session`）。
+/// Build one day's bucket: given model and usage, and record the day's session into `by_session`
+/// (the session table's rows come from `session_rows_in_range`, which only reads `by_session`).
 fn bucket_for(date: &str, models: &[(&str, i64)], active: &[(&str, i64)]) -> DailyBucket {
     let mut bucket = DailyBucket::new(date);
     for (model, input) in models {
@@ -103,13 +105,13 @@ fn bucket_for(date: &str, models: &[(&str, i64)], active: &[(&str, i64)]) -> Dai
     bucket
 }
 
-/// 离屏渲染用量视图（默认数据），返回全部文本形状。
+/// Offscreen-render the usage view (default data); returns all text shapes.
 fn render(width: f32) -> Vec<TextAt> {
     let (sessions, daily) = standard_data();
     texts_of(&render_output(width, sessions, daily))
 }
 
-/// 测试默认数据：两个会话、两天的量。
+/// Default test data: two sessions, two days of usage.
 fn standard_data() -> (Vec<SessionSnapshot>, crate::usage::DailyMap) {
     let sessions = vec![
         session("session-aaaa", "gpt-5", 1_000_000),
@@ -138,7 +140,7 @@ fn standard_data() -> (Vec<SessionSnapshot>, crate::usage::DailyMap) {
     (sessions, daily)
 }
 
-/// 离屏渲染用量视图（自定义数据），返回完整输出（可取文本与卡片矩形）。
+/// Offscreen-render the usage view (custom data); returns the full output (texts and card rects).
 fn render_output(
     width: f32,
     sessions: Vec<SessionSnapshot>,
@@ -147,7 +149,7 @@ fn render_output(
     let mut app = App {
         main_view: crate::app::MainView::Usage,
         usage_range: crate::app::usage::range::Range::All,
-        // 测试数据是写死的日期，落在「最近 30 天」之外：趋势图区间放开到全部。
+        // The test data uses fixed dates outside "last 30 days": the chart's range is opened to all.
         usage_chart_range: crate::app::usage::range::ChartRange::All,
         guide_dismissed: true,
         ..App::default()
@@ -168,8 +170,8 @@ fn render_output(
         },
         |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                // 照搬 [`App::update`] 的用量分支：状态行（含区间
-                // 切换）画在滚动区**之外**，固定在顶部不跟随滚动。
+                // Copied from [`App::update`]'s usage branch: the status line (with the range switch) paints
+                // **outside** the scroll area, pinned to the top, never scrolling.
                 app.ui_usage_status(ui);
                 ui.add_space(crate::theme::SPACE_4);
                 egui::ScrollArea::vertical()
@@ -182,7 +184,7 @@ fn render_output(
     )
 }
 
-/// 找小节标题（`TEXT_TITLE` 字号）。
+/// Find a section title (`TEXT_TITLE` font size).
 fn heading_of(texts: &[TextAt], label: &str, what: &str) -> egui::Rect {
     texts
         .iter()
@@ -191,7 +193,7 @@ fn heading_of(texts: &[TextAt], label: &str, what: &str) -> egui::Rect {
         .rect
 }
 
-/// 单列纵向流：总览在上，Agent 与模型左右并排，会话表独占一行在最下。
+/// Single-column vertical flow: overview on top, Agent and Models side by side, session table full-width at the bottom.
 #[test]
 fn tables_are_laid_out_in_a_single_column() {
     let texts = render(1600.0);
@@ -204,7 +206,7 @@ fn tables_are_laid_out_in_a_single_column() {
         .expect("没渲染出趋势图标题")
         .rect;
 
-    // Agent 与模型左右并排：顶对齐，Agent 在左。
+    // Agent and Models side by side: top-aligned, Agent on the left.
     assert!(
         (agent.top() - model.top()).abs() < 1.0,
         "Agent 与模型应顶对齐：{:.1} vs {:.1}",
@@ -212,14 +214,14 @@ fn tables_are_laid_out_in_a_single_column() {
         model.top()
     );
     assert!(agent.left() < model.left(), "Agent 应在模型左边");
-    // 会话表在两者之下，独占一行。
+    // The session table sits below both, taking a full row.
     assert!(
         session.top() > agent.top(),
         "会话表应在 Agent / 模型下面：{:.1} vs {:.1}",
         session.top(),
         agent.top()
     );
-    // 总览在表格之上，且与 Agent 卡同列（单列流：左边缘一致）。
+    // The overview sits above the tables, sharing the Agent card's column (single-column flow: same left edge).
     assert!(chart.top() < agent.top(), "总览应在表格上面");
     assert!(
         (chart.left() - agent.left()).abs() < 1.0,
@@ -229,7 +231,7 @@ fn tables_are_laid_out_in_a_single_column() {
     );
 }
 
-/// 会话表带「项目」与「操作」列头，且数据行的项目名画出来了。
+/// The session table has "Project" and "Actions" headers, and data rows render project names.
 #[test]
 fn session_table_shows_project_and_delete_columns() {
     let texts = render(1600.0);
@@ -243,12 +245,12 @@ fn session_table_shows_project_and_delete_columns() {
         texts.iter().any(|t| t.text == "ModelHarbor"),
         "会话行的项目名没画出来"
     );
-    // 每个会话行一个「删」入口。
+    // One "delete" entry per session row.
     let deletes = texts.iter().filter(|t| t.text == "删").count();
     assert_eq!(deletes, 2, "两个会话应各有一个删除入口");
 }
 
-/// 窄窗口下 Agent 与模型仍左右并排、会话表仍独占一行。
+/// In a narrow window, Agent and Models stay side by side and the session table stays full-width.
 #[test]
 fn narrow_window_keeps_agent_and_model_side_by_side() {
     let texts = render(900.0);
@@ -268,7 +270,7 @@ fn narrow_window_keeps_agent_and_model_side_by_side() {
     );
 }
 
-/// 顶栏：`[提供商管理] [用量]` 紧接页签右侧 —— 顺序交换过，且不在最右边。
+/// Top bar: `[Provider Management] [Usage]` right next to the tabs — order was swapped, and it's not far right.
 #[test]
 fn view_switch_keeps_swapped_order_next_to_the_tabs() {
     let mut app = App {
@@ -300,14 +302,14 @@ fn view_switch_keeps_swapped_order_next_to_the_tabs() {
         .find(|t| t.text == crate::app::MainView::Providers.label())
         .expect("顶栏应渲染出「提供商管理」按钮");
 
-    // 交换后的顺序：提供商管理在前，用量在后。
+    // The swapped order: provider management first, usage second.
     assert!(
         providers.rect.left() < usage.rect.left(),
         "「提供商管理」应在「用量」前面：{} vs {}",
         providers.rect.left(),
         usage.rect.left()
     );
-    // 不在最右边：切换条留在页签旁的左半区。
+    // Not at the far right: the switch strip stays in the left half beside the tabs.
     assert!(
         usage.rect.left() < screen.width() / 2.0,
         "「用量」按钮不该在最右边：x={}",
@@ -315,7 +317,7 @@ fn view_switch_keeps_swapped_order_next_to_the_tabs() {
     );
 }
 
-/// Agent / 模型两张表的最后一列是「占比」。
+/// The Agent / Models tables' last column is "share".
 #[test]
 fn agent_and_model_tables_have_a_share_column() {
     let texts = render(1600.0);
@@ -323,7 +325,7 @@ fn agent_and_model_tables_have_a_share_column() {
     assert_eq!(shares.len(), 2, "两张表各一个占比列头");
 }
 
-/// 收集卡片矩形：1px 描边的圆角矩形（组件卡外壳）。
+/// Collect card rects: rounded rects with a 1px border (component card shells).
 fn card_rects_of(out: &egui::FullOutput) -> Vec<egui::Rect> {
     let mut rects = Vec::new();
     fn collect(shape: &egui::Shape, rects: &mut Vec<egui::Rect>) {
@@ -343,7 +345,7 @@ fn card_rects_of(out: &egui::FullOutput) -> Vec<egui::Rect> {
     rects
 }
 
-/// 真实形状的数据：`count` 个会话、每天有费用（成本留在数据层，界面不再展示）。
+/// Realistic data shape: `count` sessions, each day carrying cost (cost stays in the data layer; the UI no longer shows it).
 fn realistic_data_with(count: usize) -> (Vec<SessionSnapshot>, crate::usage::DailyMap) {
     let mut sessions = Vec::new();
     let mut daily: crate::usage::DailyMap = Default::default();
@@ -389,27 +391,28 @@ fn realistic_data_with(count: usize) -> (Vec<SessionSnapshot>, crate::usage::Dai
     (sessions, daily)
 }
 
-/// 12 个会话的默认形状（对齐测试用：12 行矮于预算，卡底能补齐对齐）。
+/// Default shape with 12 sessions (for alignment tests: 12 rows is under budget so card bottoms can be padded equal).
 fn realistic_data() -> (Vec<SessionSnapshot>, crate::usage::DailyMap) {
     realistic_data_with(12)
 }
 
-/// 撑满三张表高度预算的数据：6 个 agent、2 个模型、16 条会话。
+/// Data that saturates all three tables' height budgets: 6 agents, 2 models, 16 sessions.
 ///
-/// 三个数字各为一个断言服务：
+/// Each number serves one assertion:
 ///
-/// * **6 个 agent**（多于 5 行预算）：Agent 表体封顶到 `BODY_MAX_HEIGHT`。
-/// * **2 个模型**（少于 5 行预算）：模型表体本应只有 2 行高。两张表
-///   行数故意不等，才能验证「按较多一方锁定高度」（用户要求：Agent 卡与
-///   模型卡等高）真的生效，而不是行数恰好相同时的空断言。
-/// * **16 条会话**（多于 15 行预算）：会话表体封顶到 `SESSION_BODY_HEIGHT`，
-///   两张卡的差值就是两份预算的差，不掺 `auto_shrink` 的收缩量。
+/// * **6 agents** (more than the 5-row budget): the Agent table body caps at `BODY_MAX_HEIGHT`.
+/// * **2 models** (fewer than the 5-row budget): the model table body would only be 2 rows tall. The
+///   two row counts are intentionally unequal so that "lock height to the taller side" (user request:
+///   the Agent card matches the Models card height) is genuinely exercised, not an empty assertion
+///   that only holds when counts happen to be equal.
+/// * **16 sessions** (more than the 15-row budget): the session table body caps at `SESSION_BODY_HEIGHT`,
+///   so the two cards' height difference is exactly the two budgets' difference, unpolluted by `auto_shrink`.
 fn saturated_data() -> (Vec<SessionSnapshot>, crate::usage::DailyMap) {
     saturated_data_with_prefix("")
 }
 
-/// 与 [`saturated_data`] 同构，但会话 id 加前缀：多轮数据可叠加且键仍与
-/// [`SessionSnapshot::key`] 一致（改名发生在键的客户段会导致账本对不上）。
+/// Isomorphic to [`saturated_data`] but session ids get a prefix: repeated rounds stack, and keys stay
+/// consistent with [`SessionSnapshot::key`] (renaming inside the key's client segment would desync the ledger).
 fn saturated_data_with_prefix(prefix: &str) -> (Vec<SessionSnapshot>, crate::usage::DailyMap) {
     let agents = [
         ConfigFormat::Pi,
@@ -471,7 +474,7 @@ fn saturated_data_with_prefix(prefix: &str) -> (Vec<SessionSnapshot>, crate::usa
     (sessions, daily)
 }
 
-/// 找到包含某个小节标题的卡片矩形。
+/// Find the card rect containing a given section title.
 fn card_of(cards: &[egui::Rect], texts: &[TextAt], label: &str) -> egui::Rect {
     let heading = heading_of(texts, label, label);
     cards
@@ -481,7 +484,7 @@ fn card_of(cards: &[egui::Rect], texts: &[TextAt], label: &str) -> egui::Rect {
         .unwrap_or_else(|| panic!("应找到{label}卡矩形"))
 }
 
-/// 会话卡独占一行：与热力图卡同左、同宽（都占满内容宽度），且排在它下面。
+/// The session card takes a full row: same left edge and width as the heatmap card (both fill content width), placed below it.
 #[test]
 fn session_card_spans_the_full_width() {
     let (sessions, daily) = realistic_data();
@@ -497,15 +500,15 @@ fn session_card_spans_the_full_width() {
         session.left(),
         heatmap.left()
     );
-    // 占满整行：宽度与热力图卡相当。容差放到 8px —— 两张卡的内容各自定宽
-    // （热力图是格子、会话表是列），不会正好等宽。
+    // Fills the row: width comparable to the heatmap card. Tolerance widened to 8px — the two cards' content
+    // each size independently (heatmap cells vs table columns), never exactly equal.
     assert!(
         (session.width() - heatmap.width()).abs() < 8.0,
         "会话卡应占满整行宽度：{:.1} vs 热力图 {:.1}",
         session.width(),
         heatmap.width()
     );
-    // 不是半宽：明显宽于并排的 Agent 卡，证明它没与谁共享一行。
+    // Not half-width: clearly wider than the side-by-side Agent card, proving it shares a row with no one.
     assert!(
         session.width() > agent.width() * 1.8,
         "会话卡应远宽于半宽的 Agent 卡：{:.1} vs {:.1}",
@@ -520,7 +523,7 @@ fn session_card_spans_the_full_width() {
     );
 }
 
-/// Agent 与模型两张卡左右各占一半：同顶、等宽、Agent 在左、互不重叠。
+/// The Agent and Models cards each take half the width: same top, equal width, Agent on the left, no overlap.
 #[test]
 fn agent_and_model_cards_split_the_row() {
     let (sessions, daily) = realistic_data();
@@ -550,10 +553,10 @@ fn agent_and_model_cards_split_the_row() {
     );
 }
 
-/// Agent 卡与模型卡等高：两边行数不同时也按较多的一方对齐底边（用户要求）。
+/// The Agent and Models cards are equal height: with unequal row counts, bottoms align to the taller side (user request).
 ///
-/// 数据造了 6 个 agent 与 2 个模型：行数不等，若表体各按自己的行数
-/// 收缩，两张卡会差三行高；锁定后两卡底边落在同一水平线。
+/// The data has 6 agents vs 2 models: unequal rows — if each table body shrank to its own row count,
+/// the cards would differ by three rows; locked, both bottoms land on the same line.
 #[test]
 fn agent_and_model_cards_have_the_same_height() {
     let (sessions, daily) = saturated_data();
@@ -574,8 +577,8 @@ fn agent_and_model_cards_have_the_same_height() {
         agent.bottom(),
         model.bottom()
     );
-    // 锁定真的生效：两张表行数不同（6 个 agent vs 2 个模型），若不锁定，
-    // 模型卡会比 Agent 卡矮三行高。等高只能由「按较多一方锁定高度」得出。
+    // The lock genuinely works: the two tables' row counts differ (6 agents vs 2 models); unlocked, the
+    // model card would stand three rows shorter. Equal height can only come from "locking to the taller side".
     assert!(
         agent.height() > 2.0 * crate::app::usage::ROW_PITCH,
         "两张卡都该拉到 5 行预算高，而不是只装自己的行数：{:.1}",
@@ -583,10 +586,10 @@ fn agent_and_model_cards_have_the_same_height() {
     );
 }
 
-/// 会话表的可视高度是 Agent / 模型表的三倍（用户要求）。
+/// The session table's visible height is 3x the Agent / Models tables' (user request).
 ///
-/// 数据把三张表都撑过了预算（6 个 agent / 16 条会话），卡高差值就是两份
-/// 预算的差（3 倍 - 1 倍），不掺行数影响。
+/// The data pushes all three tables past budget (6 agents / 16 sessions), so the cards' height
+/// difference is exactly the budgets' difference (3x - 1x), with no row-count interference.
 #[test]
 fn session_card_body_is_three_times_taller() {
     let (sessions, daily) = saturated_data();
@@ -596,8 +599,8 @@ fn session_card_body_is_three_times_taller() {
     let agent = card_of(&cards, &texts, "Agent");
     let session = card_of(&cards, &texts, "会话");
     let extra = session.height() - agent.height();
-    // 两卡除表体外的部分（卡边距 + 小节标题 + 表头）完全相同，差值就是
-    // 3 倍预算 − 1 倍预算 = 2 × `BODY_MAX_HEIGHT`。
+    // Everything besides the table bodies (card margins + section title + header) is identical, so the
+    // difference is 3x budget − 1x budget = 2 × `BODY_MAX_HEIGHT`.
     let expected = 2.0 * 5.0 * crate::app::usage::ROW_PITCH;
     assert!(
         (extra - expected).abs() < 2.0,
@@ -607,7 +610,7 @@ fn session_card_body_is_three_times_taller() {
     );
 }
 
-/// 区间切换组件贴状态行最右侧（用户要求），且位于页面主体之上（固定不滚动）。
+/// The range-switch control hugs the status row's far right (user request) and sits above the page body (fixed, non-scrolling).
 #[test]
 fn range_chips_sit_at_the_right_of_the_status_row() {
     let (sessions, daily) = standard_data();
@@ -621,7 +624,7 @@ fn range_chips_sit_at_the_right_of_the_status_row() {
             .min_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap_or_else(|| panic!("应渲染出区间按钮「{label}」"))
     };
-    // 四个区间按钮同一行（分段控件）。
+    // All four range buttons on one line (a segmented control).
     let today = chip_top("今日");
     for label in ["本周", "本月", "全部"] {
         assert!(
@@ -630,7 +633,7 @@ fn range_chips_sit_at_the_right_of_the_status_row() {
             chip_top(label)
         );
     }
-    // 贴右：这组按钮应在屏幕右半区，与左侧筛选文字拉开。
+    // Right-hugging: this button group belongs in the screen's right half, apart from the left filter text.
     let chip_left = texts
         .iter()
         .filter(|t| {
@@ -643,7 +646,7 @@ fn range_chips_sit_at_the_right_of_the_status_row() {
         chip_left > 700.0,
         "区间切换应贴右（1400 宽下靠右半区）：left={chip_left}"
     );
-    // 固定不滚动：状态行在总览标题之上（总览是滚动区的第一个主体元素）。
+    // Fixed, non-scrolling: the status line sits above the overview title (the overview is the scroll area's first body element).
     let overview_top = texts
         .iter()
         .filter(|t| t.text == "用量趋势")
@@ -658,7 +661,7 @@ fn range_chips_sit_at_the_right_of_the_status_row() {
     );
 }
 
-/// 会话表带「会话名」列：有名字的画名字，没名字的画破折号。
+/// The session table has a "session name" column: names render when present, dashes when absent.
 #[test]
 fn session_table_shows_the_session_title() {
     let (mut sessions, daily) = standard_data();
@@ -679,27 +682,28 @@ fn session_table_shows_the_session_title() {
     );
 }
 
-/// 状态行必须真的占住自己的高度。它画在滚动区**之外**，若只扩
-/// `min_rect` 而不推进 placer 游标，后面的 `ScrollArea` 会从状态行顶部
-/// 起画，首栏就被概览卡盖住（线上截图复现过：归档提示压在大数字上）。
+/// The status row must actually claim its height. It draws **outside** the scroll area; if only
+/// `min_rect` grows without advancing the placer cursor, the following `ScrollArea` starts painting at
+/// the status row's top and the first column gets covered by the overview card (reproduced from a
+/// live screenshot: the archived hint overlapped the big numbers).
 ///
-/// 断言用「状态行首行文字的下沿」对比「首张内容卡的顶」：游标没推进时
-/// 卡片顶会跑到状态行文字下面。
+/// Assertion: compare "bottom of the status row's first text line" with "top of the first content
+/// card" — if the cursor didn't advance, the card top lands below the status row text.
 #[test]
 fn status_row_reserves_its_height_above_the_scrolled_body() {
     let (sessions, daily) = saturated_data();
     let out = render_output(1400.0, sessions, daily);
     let texts = texts_of(&out);
 
-    // 状态行首行是筛选标签（「全部 agent …」），位于页面最顶部。
+    // The status line's first text is the filter label ("all agents …"), at the very top of the page.
     let status_line = texts
         .iter()
         .find(|t| t.text.starts_with("全部 agent"))
         .expect("状态行应渲染出筛选标签");
     let status_bottom = status_line.rect.bottom();
 
-    // 组件卡外壳是 1px 描边圆角矩形；区间切换的外壳窄（约 244），
-    // 用宽度把它排除掉，只留真正的内容卡。
+    // Component card shells are 1px-bordered rounded rects; the range switch's shell is narrow (~244),
+    // excluded by width so only genuine content cards remain.
     let first_card_top = card_rects_of(&out)
         .iter()
         .filter(|r| r.width() > 400.0)
@@ -712,11 +716,12 @@ fn status_row_reserves_its_height_above_the_scrolled_body() {
     );
 }
 
-/// 总览卡图例（输入 / 输出 / 缓存读 / 缓存写）的所有文字须在同一水平线上。
+/// All text of the overview card's legend (input / output / cache read / cache write) must sit on one horizontal line.
 ///
-/// 历史缺陷：前缀走 `label`（行内垂直居中）、数值走逐位滚动（贴行顶画），
-/// 两者相差半个行高（实测 5.5px）。修复后整条图例交给同一个
-/// `rolling_number` 画：非数字字符静态、数字滚动，全部字符共用槽顶。
+/// Historical defect: prefixes went through `label` (vertically centered in the line) while values
+/// were painted by per-digit rolling (flush to the row top), differing by half a line height (measured
+/// 5.5px). After the fix the whole legend goes through a single `rolling_number` draw: non-digits
+/// stay static, digits roll, all characters share the same slot top.
 #[test]
 fn composition_legend_text_shares_one_baseline() {
     let (sessions, daily) = saturated_data();
@@ -728,9 +733,9 @@ fn composition_legend_text_shares_one_baseline() {
         .min_by(|a, b| a.top().partial_cmp(&b.top()).unwrap())
         .copied()
         .expect("应渲染出总览卡");
-    // 总览卡里还有趋势图的坐标注记（同为小字号、位置更低）：只取最上一行
-    // ——图例行。旧缺陷（前缀居中、数值贴行顶）下这一行只剩数值字符，
-    // 「同行须同时有汉字前缀」的断言即失败。
+    // The overview card also holds the trend chart's axis annotations (same small font, positioned lower):
+    // take only the topmost line — the legend row. Under the old defect (centered prefixes, top-painted
+    // values) that line held only digits, so the "same line must also carry a Chinese prefix" assertion failed.
     let captions: Vec<&TextAt> = texts
         .iter()
         .filter(|t| (t.size - crate::theme::TEXT_CAPTION).abs() < 0.01)
@@ -759,8 +764,9 @@ fn composition_legend_text_shares_one_baseline() {
         "图例行缺数值字符：前缀与数值不在同一水平线"
     );
 
-    // 色块与文字行共中心：色块经布局分配、行内垂直居中，文字若贴行顶
-    // 直画就会高出半个行高（用户反馈「没和左侧的方块对齐」）。
+    // Swatch and text share the line's center: the swatch goes through layout, vertically centered in the
+    // line; text painted flush to the line top would stand half a line higher (user feedback: "not aligned
+    // with the block on the left").
     let row_height = row.iter().map(|t| t.rect.height()).fold(0.0f32, f32::max);
     let text_center = min_y + row_height / 2.0;
     let mut swatches: Vec<egui::Rect> = Vec::new();
@@ -801,16 +807,17 @@ fn composition_legend_text_shares_one_baseline() {
     }
 }
 
-/// 会话表内容溢出时，指针悬停表体应画出内部滚动条（轨道 + 手柄）。
+/// When the session table's content overflows, hovering the body should paint an internal scrollbar (track + handle).
 ///
-/// egui 浮动滚动条静止时手柄全透明（`dormant_handle_opacity = 0`），
-/// 悬停才淡入；淡入依赖逐帧动画推进，重绘饿死（[`super::super::usage`]
-/// 轮询空闲分支不要帧的历史缺陷）会让滚动条永远停在透明档——用户
-/// 观感即「会话表内部滚动条消失」。
+/// egui's floating scrollbar is fully transparent when idle (`dormant_handle_opacity = 0`) and fades
+/// in on hover; the fade relies on per-frame animation advancing, and starved repaints (the historical
+/// defect where [`super::super::usage`]'s idle polling branch requested no frames) would leave the
+/// scrollbar stuck at transparent — perceived by users as "the session table's internal scrollbar
+/// disappeared".
 #[test]
 fn session_table_shows_inner_scrollbar_on_hover() {
-    // 三轮 saturated_data（会话 id 加前缀保证唯一）：48 行内容远超
-    // 375 视口，必然溢出。
+    // Three rounds of saturated_data (session ids prefixed for uniqueness): 48 content rows far exceed the
+    // 375 viewport — guaranteed overflow.
     let mut sessions = Vec::new();
     let mut daily: crate::usage::DailyMap = Default::default();
     for prefix in ["", "r1-", "r2-"] {
@@ -882,8 +889,8 @@ fn session_table_shows_inner_scrollbar_on_hover() {
     }
     let mut bars_seen = 0usize;
     for frame in 0..10 {
-        // 第 3 帧起把指针放进会话表体内：浮动滚动条静止时手柄全透明
-        // （dormant_handle_opacity=0），悬停才淡入（active 0.6）。
+        // From frame 3, the pointer sits inside the session table body: the floating scrollbar's handle is fully
+        // transparent at rest (dormant_handle_opacity=0), fading in on hover (active 0.6).
         let events = if frame >= 3 {
             vec![egui::Event::PointerMoved(egui::pos2(700.0, 1550.0))]
         } else {

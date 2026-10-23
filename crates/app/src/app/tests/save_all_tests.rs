@@ -4,8 +4,8 @@ use crate::format::ConfigFormat;
 use crate::model::{ModelRow, ProviderRow};
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
-    // 目录名全局唯一：Windows 时钟粒度粗，并行测试仅靠 pid+纳秒会撞 tick
-    // 共用目录互相覆盖。原子计数器消除碰撞。
+    // Directory names globally unique: Windows clock granularity is coarse, and parallel tests relying on pid+nanoseconds
+    // can collide within a tick, sharing a directory and overwriting each other. An atomic counter removes the collisions.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -52,7 +52,7 @@ fn every_installed_target_is_written_to_its_own_path() {
             available: true,
             path: zcode_path.display().to_string(),
         },
-        // 未安装的后端：一键保存不得创建
+        // Uninstalled backends: save-all must not create them
         SaveTarget {
             backend: ConfigFormat::Opencode,
             available: false,
@@ -77,11 +77,11 @@ fn every_installed_target_is_written_to_its_own_path() {
         app.status
     );
     assert!(!skipped_start.exists(), "未安装的后端不得被创建");
-    // ZCode 那份是跨格式转换结果：必须是 ZCode 方言，不是 pi 的 providers。
+    // The ZCode one is a cross-format conversion result: it must be ZCode's dialect, not pi's providers.
     let written = std::fs::read_to_string(&zcode_path).unwrap();
     assert!(written.contains("providerRules"), "{written}");
     assert!(!written.contains("\"providers\""), "{written}");
-    // 状态栏逐页列出结果（写没写、写到哪）
+    // The status bar lists each page's result (written or not, written where)
     assert!(
         app.status.contains(ConfigFormat::Pi.label()),
         "{}",
@@ -98,8 +98,8 @@ fn every_installed_target_is_written_to_its_own_path() {
 
 #[test]
 fn a_typed_path_on_the_current_page_is_still_honored() {
-    // 当前页输入框里改了路径但未回车加载：一键保存仍写到那个路径；
-    // 其他页面改用各自的目标路径。
+    // The current page's input box had its path edited but Enter never pressed: save-all still writes there;
+    // other pages use their own targets.
     let dir = temp_dir("typed");
     let pi_path = dir.join("pi-models.json");
     let typed_path = dir.join("typed-by-hand.json");
@@ -138,8 +138,8 @@ fn a_typed_path_on_the_current_page_is_still_honored() {
 
 #[test]
 fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
-    // 本测试依赖**真实的 wsl.exe**（写入目标、镜像、读回校验）。
-    // 显式 opt-in：设置 MODELHARBOR_WSL_TEST=1 才执行，否则跳过。
+    // This test depends on a **real wsl.exe** (writing targets, mirroring, read-back verification).
+    // Explicit opt-in: runs only with MODELHARBOR_WSL_TEST=1, otherwise skipped.
     if std::env::var("MODELHARBOR_WSL_TEST").as_deref() != Ok("1") {
         eprintln!("跳过：设置 MODELHARBOR_WSL_TEST=1 才运行真实 WSL 同步测试（会启动 WSL）");
         return;
@@ -148,7 +148,7 @@ fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
         eprintln!("跳过：本机没有可用的 WSL，无法做 WSL 同步测试");
         return;
     }
-    // 预置目标文件前显式开闸。
+    // Open the master switch explicitly before pre-seeding target files.
     crate::util::wsl_set_enabled(true);
     let dir = temp_dir("opencode_wsl");
     let local_path = dir.join("opencode.json");
@@ -187,7 +187,7 @@ fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
         current_page: ConfigFormat::Opencode,
         ..App::default()
     };
-    // `App::default()` 会按 `prefs.sync_wsl` 复位总闸，构造后再开一次。
+    // `App::default()` resets the master switch per `prefs.sync_wsl`; open it again after construction.
     crate::util::wsl_set_enabled(true);
 
     let backup = app
@@ -219,17 +219,17 @@ fn opencode_wsl_sync_mirrors_current_config_and_backups_target() {
     crate::util::remove_config(&backup).ok();
     crate::util::remove_config(&wsl_path).ok();
     std::fs::remove_dir_all(&dir).ok();
-    // 收尾关闸，避免影响其他并行测试。
+    // Close the switch at teardown, so other parallel tests aren't affected.
     crate::util::wsl_set_enabled(false);
 }
 
 #[test]
 fn a_workbuddy_save_that_drops_entries_backs_up_first() {
-    // 生效清单比界面条目少（同 id 只留第一条、未勾选的不写），
-    // 所以同格式保存也必须先备份。
+    // The effective list is smaller than the UI's entries (only the first per id stays; unchecked ones don't
+    // write), so even a same-format save must back up first.
     //
-    // 备份与全量副本是两件事：备份是上一次的 models.json 原文，
-    // 全量副本是 ModelHarbor 维护的全部条目 + 勾选状态。
+    // Backup and full copy are two things: the backup is the previous models.json's original text;
+    // the full copy is ModelHarbor's maintained set of all entries + check states.
     let dir = temp_dir("wb_shrink");
     let wb_path = dir.join("models.json");
     let saved = serde_json::json!([
@@ -265,7 +265,7 @@ fn a_workbuddy_save_that_drops_entries_backs_up_first() {
         2,
         "备份必须是删之前的两条（含被删厂商的 key）"
     );
-    // 全量副本也必须在。
+    // The full copy must be there too.
     let full_path = crate::backends::workbuddy::full_store_path(&wb_path.display().to_string());
     let full: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&full_path).unwrap()).unwrap();
@@ -284,7 +284,7 @@ fn a_workbuddy_save_that_drops_entries_backs_up_first() {
 
 #[test]
 fn workbuddy_reload_restores_unchecked_entries_from_the_full_store() {
-    // 保存 → 重新加载后，界面上的条目数回到保存前（取消勾选只是不生效）。
+    // Save → reload: the UI's entry count returns to pre-save (unchecking only makes them ineffective).
     let dir = temp_dir("wb_restore");
     let wb_path = dir.join("models.json");
     let saved = serde_json::json!([
@@ -314,18 +314,18 @@ fn workbuddy_reload_restores_unchecked_entries_from_the_full_store() {
     app.save_backend_to(ConfigFormat::WorkBuddy, &path)
         .expect("保存应当成功");
 
-    // 生效清单确实变少了。
+    // The effective list genuinely shrank.
     let eff: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&wb_path).unwrap()).unwrap();
     assert_eq!(eff.as_array().unwrap().len(), 2, "生效清单 = 唯一 id 数");
 
-    // 重新加载后条目数回到 3（从全量副本还原）。
+    // After reloading, the entry count returns to 3 (restored from the full copy).
     let reloaded = b
         .parse_at(&std::fs::read_to_string(&wb_path).unwrap(), &path)
         .unwrap();
     let after: usize = reloaded.providers.iter().map(|p| p.models.len()).sum();
     assert_eq!(after, before, "重新加载必须从全量副本还原全部条目");
-    // 被筛掉那条的字段也必须完好。
+    // The filtered-out entry's fields must be intact too.
     let all: Vec<(String, String)> = reloaded
         .providers
         .iter()
@@ -337,7 +337,7 @@ fn workbuddy_reload_restores_unchecked_entries_from_the_full_store() {
 
 #[test]
 fn a_workbuddy_save_that_keeps_everything_writes_no_backup() {
-    // 没删东西就不产生 .bak。
+    // Deleting nothing produces no .bak.
     let dir = temp_dir("wb_keep");
     let wb_path = dir.join("models.json");
     let saved = serde_json::json!([

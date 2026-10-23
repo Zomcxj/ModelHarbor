@@ -10,9 +10,9 @@ pub struct Palette {
     pub hover: Color32,
     pub accent: Color32,
     pub text: Color32,
-    /// 控件描边：把控件从面板底色里分出来。
+    /// Widget borders: separating widgets from the panel's fill.
     pub border: Color32,
-    /// 强调色底上的文字色（选中态 / 主按钮）。
+    /// Text color on accent fills (selected states / primary buttons).
     pub accent_text: Color32,
 }
 
@@ -44,10 +44,10 @@ impl Palette {
         }
     }
 
-    /// 提示 / 淡色小字（输入框占位提示、`.weak()` 小字）的颜色。
+    /// The color of hints / faint small text (input placeholders, `.weak()` small text).
     ///
-    /// 按 [`egui::Ui::disable`] 的淡化算式一路算到不透明：先把 `widget` 淡化叠到
-    /// 面板底上，再把 `text` 淡化叠到那层底上。
+    /// Computed through [`egui::Ui::disable`]'s dimming formula all the way to opaque: first dim `widget` over
+    /// the panel fill, then dim `text` over that.
     pub(super) fn hint_color(&self) -> Color32 {
         let faded = |color: Color32| color.gamma_multiply(DISABLED_ALPHA);
         over(over(self.panel, faded(self.widget)), faded(self.text))
@@ -60,7 +60,7 @@ impl Palette {
         } else {
             Visuals::light()
         };
-        // 亚克力档：底色整体缩放（`gamma_multiply` 连 alpha 一起乘）。
+        // The acrylic tier: fills scale wholesale (`gamma_multiply` multiplies alpha too).
         let surface = |c: Color32| {
             if glass {
                 c.gamma_multiply(super::tokens::GLASS_SURFACE_ALPHA)
@@ -78,9 +78,9 @@ impl Palette {
         v.window_fill = v.panel_fill;
         v.faint_bg_color = surface(self.faint);
         v.extreme_bg_color = surface(self.extreme);
-        // 正文色写进各状态的 `fg_stroke`，不用 `override_text_color`：
-        // 后者会连纯文本 `WidgetText` 的颜色一起钉死，`TextEdit::hint_text`
-        // 与 `.weak()` 小字就拿不到淡色。`Visuals::text_color` 读的也是 `fg_stroke`。
+        // Body color goes into each state's `fg_stroke`, not `override_text_color`: the latter would pin plain
+        // text `WidgetText` colors too, starving `TextEdit::hint_text` and `.weak()` small text of their faint
+        // color. `Visuals::text_color` reads `fg_stroke` as well.
         for widget in [
             &mut v.widgets.noninteractive,
             &mut v.widgets.inactive,
@@ -98,14 +98,14 @@ impl Palette {
         v.widgets.hovered.bg_fill = surface(self.hover);
         v.widgets.active.weak_bg_fill = surface(self.accent);
         v.widgets.active.bg_fill = surface(self.accent);
-        // 控件描边：控件底色与面板底色只差 1.2–1.5:1；输入框用 `extreme` 底，
-        // 同样靠这条线成形。
+        // Widget borders: widget fills sit only 1.2–1.5:1 above the panel fill; inputs use the `extreme` fill,
+        // also shaped by this line.
         let edge = Stroke::new(1.0f32, self.border);
         v.widgets.noninteractive.bg_stroke = edge;
         v.widgets.inactive.bg_stroke = edge;
         v.widgets.hovered.bg_stroke = Stroke::new(1.0f32, self.accent);
         v.widgets.active.bg_stroke = Stroke::new(1.0f32, self.accent);
-        // 强调色底上的文字：选中态行 / 主按钮（浅底主题用白、深底主题用黑）。
+        // Text on accent fills: selected rows / primary buttons (white on light themes, black on dark).
         v.selection.stroke = Stroke::new(1.0f32, self.accent_text);
         v
     }

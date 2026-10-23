@@ -1,10 +1,10 @@
-//! Agent 配置后端注册表 —— 每种配置格式一个后端模块。
+//! Agent config backend registry — one backend module per config format.
 //!
-//! 新增 agent 集成：新建 `src/backends/<id>.rs` 实现 [`Backend`]，在 [`BACKENDS`]
-//! 注册；加载 / 保存 / 判别 / 目标解析全部走本注册表。
+//! Adding an agent integration: create `src/backends/<id>.rs` implementing [`Backend`] and register it in
+//! [`BACKENDS`]; load / save / detection / target resolution all go through this registry.
 //!
-//! 序列化风格（pretty / compact JSON）由 app 层处理，后端只产出 `serde_json::Value`
-//! 形式的 root；跨格式保存的合并语义内置于各后端的 `serialize_root`。
+//! Serialization style (pretty / compact JSON) is handled by the app layer; backends only produce a
+//! `serde_json::Value` root; cross-format save merge semantics are built into each backend's `serialize_root`.
 
 pub mod deepseek_harness;
 pub mod kimi_code;
@@ -22,37 +22,37 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// 一个后端加载结果的完整快照。
+/// Complete snapshot of one backend's load result.
 #[derive(Clone)]
 pub struct BackendLoad {
-    /// 完整原始 root（当前文件保存时的基底）。
+    /// The complete original root (the base when saving the current file).
     pub root: Value,
-    /// opencode 格式的 agents（pi 系为空）。
+    /// opencode's agents (empty for the pi family).
     pub agents: Vec<AgentRow>,
-    /// providers（两种格式都有）。
+    /// providers (both formats have them).
     pub providers: Vec<ProviderRow>,
-    /// 本后端顶层未知字段：opencode 为整个 root，pi 系为 `providers` 之外的顶层字段，
-    /// DSH 为完整 root。
+    /// This backend's unknown top-level fields: opencode holds the whole root, the pi family the top-level
+    /// fields beyond `providers`, DSH the complete root.
     pub extras: Value,
 }
 
-/// 配置后端：一种 agent 配置格式的加载 / 保存 / 判别 / 路径知识。
+/// Config backend: the load / save / detection / path knowledge of one agent config format.
 pub trait Backend: Sync {
-    /// 唯一标识（对应 ConfigFormat 枚举）。
+    /// The unique identifier (matching the ConfigFormat enum).
     fn id(&self) -> ConfigFormat;
 
-    /// 默认本地路径（Windows 风格）。
+    /// The default local path (Windows style).
     fn default_local_path(&self) -> String;
 
-    /// 默认 WSL 路径（None = 不支持 WSL）。
+    /// The default WSL path (None = WSL unsupported).
     fn default_wsl_path(&self) -> Option<String>;
 
-    /// 某个配置路径的等价候选，按优先级排列（首个是主名）。
+    /// A config path's equivalent candidates, in priority order (the primary first).
     fn path_candidates(&self, path: &str) -> Vec<String> {
         vec![path.to_string()]
     }
 
-    /// 实际要读写的本地文件路径：候选里第一个真实存在的；都不存在则用主名。
+    /// The local file path actually read and written: the first candidate that really exists; all absent → the primary.
     fn resolve_local_path(&self, local_path: &str) -> String {
         self.path_candidates(local_path)
             .into_iter()
@@ -60,34 +60,34 @@ pub trait Backend: Sync {
             .unwrap_or_else(|| local_path.to_string())
     }
 
-    /// 本地目标是否可用。默认判定：文件或父目录存在。
-    /// opencode 系覆写为只认文件本体（见 `path_candidates`）。
+    /// Whether the local target is usable. Default verdict: the file or its parent exists.
+    /// The opencode family overrides to accept only the file itself (see `path_candidates`).
     fn local_available(&self, local_path: &str) -> bool {
         let path = Path::new(local_path);
         path.exists() || path.parent().is_some_and(|dir| dir.exists())
     }
 
-    /// WSL 目标是否可用（配置文件或其目录存在）。
-    /// 旗标由注册表批量探测后传入，后端自身不拉起进程。
-    /// opencode 系覆写为只认文件本体。
+    /// Whether the WSL target is usable (the config file or its directory exists).
+    /// Flags arrive from the registry's batch probe; backends never spawn processes themselves.
+    /// The opencode family overrides to accept only the file itself.
     fn wsl_available(&self, probe: WslPathProbe) -> bool {
         probe.path_exists || probe.parent_dir_exists
     }
 
-    /// 内容判别：该内容是否属于本格式。`path` 提供扩展名上下文（可为空）。
+    /// Content detection: whether the content belongs to this format. `path` gives extension context (may be empty).
     fn detect(&self, content: &str, path: &str) -> bool;
 
-    /// 内容 → 结构化数据；读取/解析失败返回 Err。
+    /// Content → structured data; read/parse failure returns Err.
     fn parse(&self, content: &str) -> Result<BackendLoad, String>;
 
-    /// 带源路径解析。默认与 `parse` 相同；需要同级 sidecar 文件的后端覆写。
+    /// Parse with the source path. Defaults to `parse`; backends needing sibling sidecar files override.
     fn parse_at(&self, content: &str, _path: &str) -> Result<BackendLoad, String> {
         self.parse(content)
     }
 
-    /// 构造保存用 root。
-    /// - `target_root = None`：当前文件保存，以 `extras` 为基底整体写入 UI 状态；
-    /// - `target_root = Some`：与目标现有内容合并（upsert）。
+    /// Build the root for saving.
+    /// - `target_root = None`: current-file save — UI state written wholesale over `extras`;
+    /// - `target_root = Some`: merged with the target's existing content (upsert).
     fn serialize_root(
         &self,
         agents: &[AgentRow],
@@ -96,25 +96,24 @@ pub trait Backend: Sync {
         target_root: Option<&Value>,
     ) -> Value;
 
-    /// 保存目标（非当前文件）的现有 root，作为合并基底。
+    /// The save target's (non-current-file) existing root, the merge base.
     ///
-    /// 文件不存在返回空 root（新建场景）；文件存在但读不出 / 解析不了返回 Err，
-    /// 由调用方取消保存。
+    /// A missing file returns an empty root (creation scenario); an existing but unreadable / unparseable file
+    /// returns Err, and the caller cancels the save.
     fn load_target_root(&self, path: &str) -> Result<Value, String>;
 
-    /// 保存与主配置同级的 sidecar 文件（默认无 sidecar）。
-    /// 主配置写入前调用，sidecar 失败会取消本次保存。
+    /// Save sidecar files beside the main config (none by default).
+    /// Called before the main config writes; a sidecar failure cancels the save.
     fn save_sidecars(&self, _path: &str, _providers: &[ProviderRow]) -> Result<(), String> {
         Ok(())
     }
 
-    /// 官方图标：32×32 未预乘 RGBA 原始字节与尺寸；None = 无图标。
+    /// The official icon: 32×32 non-premultiplied RGBA raw bytes and size; None = no icon.
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
         None
     }
 
-    /// root → 文件内容。JSON 后端共用默认实现；YAML 后端（omp / DSH）与数组根的
-    /// WorkBuddy 覆写。
+    /// root → file content. JSON backends share the default; YAML backends (omp / DSH) and WorkBuddy's array root override.
     fn render(&self, root: &Value, compact: bool) -> Result<String, String> {
         Ok(if compact {
             crate::serialize::compact_json(root)
@@ -124,11 +123,12 @@ pub trait Backend: Sync {
     }
 }
 
-/// 全部后端。顺序即语义：第 0 个是判别回落项，其余按「更具体优先」排列
-/// （omp 在 pi 之前；workbuddy / zcode 有各自的唯一顶层标记，放在 pi 系之前）。
+/// All backends. Order is semantics: entry 0 is the detection fallback; the rest are ordered
+/// "more specific first" (omp before pi; workbuddy / zcode carry unique top-level markers and sit before
+/// the pi family).
 ///
-/// opencode 系三者内容形状一致，靠路径互相区分（见 [`opencode::path_matches`]），
-/// 相对顺序不影响判别结果。
+/// The three opencode-family members share content shapes and are told apart by path (see
+/// [`opencode::path_matches`]); their relative order doesn't affect detection.
 pub static BACKENDS: &[&dyn Backend] = &[
     &opencode::BACKEND,
     &opencode::KILOCODE_BACKEND,
@@ -137,14 +137,14 @@ pub static BACKENDS: &[&dyn Backend] = &[
     &zcode::BACKEND,
     &qwen_code::BACKEND,
     &deepseek_harness::BACKEND,
-    // kimi-code 靠 `[providers.` + `[models.` 双表与 `max_context_size` 特征判别，
-    // 排在 pi 系之前。
+    // kimi-code detects via the `[providers.` + `[models.` twin tables plus the `max_context_size` fingerprint,
+    // ranking before the pi family.
     &kimi_code::BACKEND,
     &oh_my_pi::BACKEND,
     &pi::BACKEND,
 ];
 
-/// 按标识查找后端。
+/// Find a backend by identifier.
 pub fn backend(id: ConfigFormat) -> &'static dyn Backend {
     BACKENDS
         .iter()
@@ -153,7 +153,7 @@ pub fn backend(id: ConfigFormat) -> &'static dyn Backend {
         .expect("BACKENDS 必须覆盖所有 ConfigFormat 变体")
 }
 
-/// 内容判别：遍历非回落后端找首个命中，否则回落第 0 个。
+/// Content detection: walk non-fallback backends for the first hit, else fall back to entry 0.
 pub fn detect_format(content: &str, path: &str) -> ConfigFormat {
     for b in BACKENDS.iter().skip(1) {
         if b.detect(content, path) {
@@ -163,22 +163,22 @@ pub fn detect_format(content: &str, path: &str) -> ConfigFormat {
     BACKENDS[0].id()
 }
 
-/// 通用加载：读文件（本地或 WSL）+ 按后端解析。
+/// Generic load: read the file (local or WSL) + parse per backend.
 pub fn load_backend(id: ConfigFormat, path: &str) -> Result<BackendLoad, String> {
     let content = crate::util::read_config_content(path)?;
     backend(id).parse_at(&content, path)
 }
 
-/// WSL 目标路径（存在则返回）。
+/// WSL target path (returned when it exists).
 ///
-/// 探测在后台线程里跑，结果进程级缓存；探测完成前返回 `None`
-/// （需要区分「未安装」与「还没结果」时用 [`wsl_target_state`]）。
-/// 运行期间在 WSL 侧新装 agent 不会被感知，需重启应用。
+/// Probing runs on a background thread, cached per process; returns `None` until the probe completes
+/// (use [`wsl_target_state`] when "not installed" and "no result yet" must be distinguished).
+/// Agents newly installed on the WSL side during runtime aren't noticed until the app restarts.
 pub fn wsl_target(id: ConfigFormat) -> Option<String> {
     target_from_state(wsl_target_state(id))
 }
 
-/// 三态 → 可写路径：只有「已安装」有值，「探测中」与「确认未安装」都返回 `None`。
+/// Three-state → writable path: only "installed" has a value; "probing" and "confirmed missing" return `None`.
 fn target_from_state(state: WslTargetState) -> Option<String> {
     match state {
         WslTargetState::Installed(path) => Some(path),
@@ -186,9 +186,9 @@ fn target_from_state(state: WslTargetState) -> Option<String> {
     }
 }
 
-/// 从探测结果映射取某后端的状态。
+/// Take one backend's state from the probe-result map.
 ///
-/// 「映射里没有这条」 = 探测已完成且该后端未安装。
+/// "Not in the map" = probing finished and that backend is not installed.
 fn state_from_map(map: &HashMap<ConfigFormat, Option<String>>, id: ConfigFormat) -> WslTargetState {
     match map.get(&id).and_then(|path| path.clone()) {
         Some(path) => WslTargetState::Installed(path),
@@ -196,36 +196,36 @@ fn state_from_map(map: &HashMap<ConfigFormat, Option<String>>, id: ConfigFormat)
     }
 }
 
-/// WSL 目标探测的三态结果。
+/// Three-state result of WSL target probing.
 ///
-/// 「未安装」与「还没结果」分开。
+/// "Not installed" and "no result yet" are kept apart.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum WslTargetState {
-    /// 探测中（或总闸关闭）。
+    /// Probing (or the master switch is off).
     Unknown,
-    /// 已安装：目标路径。
+    /// Installed: the target path.
     Installed(String),
-    /// 探测完成且确认未安装。
+    /// Probing finished and confirmed not installed.
     NotInstalled,
 }
 
-/// 后台探测任务的接收端载荷：`(代际号, 各后端的目标路径)`。
+/// Receiver-side payload of the background probe task: `(generation, per-backend target paths)`.
 type WslProbePayload = (u64, HashMap<ConfigFormat, Option<String>>);
 
-/// 后台探测任务：接收端 + 已完成结果 + 代际号。
+/// Background probe task: receiver + finished results + generation.
 #[derive(Default)]
 struct WslProbeTask {
     rx: Option<std::sync::mpsc::Receiver<WslProbePayload>>,
     done: Option<HashMap<ConfigFormat, Option<String>>>,
-    /// 代际：总闸每次关闭都 +1。在途线程的结果代际不符就丢弃。
+    /// Generation: every switch-off bumps it. In-flight results with mismatched generations are discarded.
     generation: u64,
 }
 
 static WSL_PROBE: std::sync::Mutex<Option<WslProbeTask>> = std::sync::Mutex::new(None);
 
-/// 取 WSL 目标状态；必要时启动后台探测（不阻塞）。
+/// Take the WSL target state, starting a background probe when necessary (non-blocking).
 pub fn wsl_target_state(id: ConfigFormat) -> WslTargetState {
-    // 总闸关闭：丢弃缓存并换代，下次开启重新探。
+    // Switch off: drop the cache and bump the generation; the next enable probes fresh.
     if !crate::util::wsl_enabled() {
         if let Ok(mut guard) = WSL_PROBE.lock() {
             if let Some(task) = guard.as_mut() {
@@ -240,7 +240,7 @@ pub fn wsl_target_state(id: ConfigFormat) -> WslTargetState {
         return WslTargetState::Unknown;
     };
     let task = guard.get_or_insert_with(WslProbeTask::default);
-    // 收在途结果：代际不符就丢。
+    // Collect in-flight results: mismatched generations are dropped.
     if task.done.is_none() {
         if let Some(rx) = &task.rx {
             match rx.try_recv() {
@@ -252,7 +252,7 @@ pub fn wsl_target_state(id: ConfigFormat) -> WslTargetState {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    // 线程异常退出：清掉 rx，不把「未知」当成「未安装」。
+                    // The thread died abnormally: drop rx, never reading "unknown" as "not installed".
                     task.rx = None;
                 }
             }
@@ -275,7 +275,7 @@ pub fn wsl_target_state(id: ConfigFormat) -> WslTargetState {
     }
 }
 
-/// 后台探测是否还在进行（供 App 决定要不要请求重绘）。
+/// Whether the background probe is still running (App uses this to decide on repaint requests).
 pub fn wsl_probe_pending() -> bool {
     WSL_PROBE
         .lock()
@@ -287,13 +287,13 @@ pub fn wsl_probe_pending() -> bool {
         .unwrap_or(false)
 }
 
-/// 一次 `wsl` 调用探测全部后端的默认 WSL 路径，返回「已安装」后端的路径。
+/// Probe every backend's default WSL path in one `wsl` call; returns paths of "installed" backends.
 ///
-/// 每个后端可能有多条等价候选路径，全部一起探。选择顺序：先取确实是文件的候选，
-/// 都不存在文件时才退回落到的宽松条件。
+/// Each backend may have several equivalent candidate paths; all are probed together. Selection order:
+/// candidates that are genuinely files first; the loose fallback condition applies only when no file exists.
 fn probe_wsl_targets() -> HashMap<ConfigFormat, Option<String>> {
     let mut out = HashMap::new();
-    // (后端, 候选路径) —— 候选按优先级排（主名在前）。
+    // (backend, candidate paths) — candidates in priority order (primary first).
     let entries: Vec<(ConfigFormat, Vec<String>)> = BACKENDS
         .iter()
         .filter_map(|b| {
@@ -304,7 +304,7 @@ fn probe_wsl_targets() -> HashMap<ConfigFormat, Option<String>> {
     if entries.is_empty() {
         return out;
     }
-    // 扁平化后一次性探测，再按后端切回来。
+    // Flatten, probe in one pass, then split back per backend.
     let mut flat: Vec<String> = Vec::new();
     for (_, candidates) in &entries {
         flat.extend(candidates.iter().cloned());
@@ -315,13 +315,13 @@ fn probe_wsl_targets() -> HashMap<ConfigFormat, Option<String>> {
         let slice = &probes[cursor..cursor + candidates.len()];
         cursor += candidates.len();
         let backend = backend(id);
-        // 优先：候选里真实存在的文件。
+        // Preferred: candidates that are genuinely existing files.
         let by_file = candidates
             .iter()
             .zip(slice)
             .find(|(_, probe)| probe.file_exists)
             .map(|(path, _)| path.clone());
-        // 其次：后端自己的宽松判定。
+        // Then: the backend's own loose verdict.
         let by_rule = candidates
             .iter()
             .zip(slice)
@@ -334,21 +334,21 @@ fn probe_wsl_targets() -> HashMap<ConfigFormat, Option<String>> {
     out
 }
 
-/// 目标是否可用（本地或 WSL）。
+/// Whether a target is usable (local or WSL).
 ///
-/// 探测中的 WSL 不算「可用」（结果用于页签排序 / 保存目标计数）。
+/// A probing WSL target doesn't count as "usable" (the result feeds tab ordering / save-target counts).
 pub fn target_available(id: ConfigFormat, local_path: &str) -> bool {
     backend(id).local_available(local_path) || wsl_target(id).is_some()
 }
 
-/// 本地实际要读写的路径：后端可在默认名之外回退等价文件名。
+/// The local path actually read and written: backends may fall back to equivalent file names beyond the default.
 pub fn resolve_local_path(id: ConfigFormat, local_path: &str) -> String {
     backend(id).resolve_local_path(local_path)
 }
 
-/// 实际写入路径：本地优先，本地不可用回落 WSL，最后回退本地默认。
+/// The actual write path: local first; when local is unavailable, falls back to WSL; finally the local default.
 ///
-/// WSL 侧只认「已安装」：探测中与确认未安装都回落本地默认。
+/// The WSL side only accepts "installed": probing and confirmed-missing both fall back to the local default.
 pub fn target_path(id: ConfigFormat, local_path: &str) -> String {
     let local = backend(id).resolve_local_path(local_path);
     if Path::new(&local).exists() {
@@ -360,7 +360,7 @@ pub fn target_path(id: ConfigFormat, local_path: &str) -> String {
     local
 }
 
-/// 统一写入：WSL 路径走 wsl 命令，本地路径原子写（先写临时文件再替换）。
+/// Unified write: WSL paths go through the wsl command, local paths write atomically (temp file first, then replace).
 pub fn write_config(path: &str, content: &str) -> Result<(), String> {
     if is_wsl_path(path) {
         crate::util::write_wsl_file(path, content)
@@ -369,9 +369,9 @@ pub fn write_config(path: &str, content: &str) -> Result<(), String> {
     }
 }
 
-/// [`Backend::load_target_root`] 的共享实现：各家只提供解析函数与「文件不存在」时的空 root。
+/// Shared implementation of [`Backend::load_target_root`]: each backend only supplies a parse function and an empty root for "file missing".
 ///
-/// 文件存在但读不出 / 解析不了返回 Err，且错误带路径。
+/// An existing but unreadable / unparseable file returns Err, with the path attached.
 pub(crate) fn load_target_root_with(
     path: &str,
     parse: impl Fn(&str) -> Result<Value, String>,
@@ -389,7 +389,7 @@ pub(crate) fn load_target_root_with(
 mod wsl_state_tests {
     use super::*;
 
-    /// 探测结果映射 → 三态：有条目且路径非空 = 已安装；条目为 `None` 或缺失 = 未安装。
+    /// Probe-result map → three states: an entry with a non-empty path = installed; `None` or missing = not installed.
     #[test]
     fn map_maps_to_installed_or_not_installed() {
         let mut map: HashMap<ConfigFormat, Option<String>> = HashMap::new();
@@ -407,14 +407,14 @@ mod wsl_state_tests {
             state_from_map(&map, ConfigFormat::Pi),
             WslTargetState::NotInstalled
         );
-        // 映射里完全没有这条（如该后端没有默认 WSL 路径）：也是「未安装」。
+        // Entirely absent from the map (e.g. the backend has no default WSL path): also "not installed".
         assert_eq!(
             state_from_map(&map, ConfigFormat::KimiCode),
             WslTargetState::NotInstalled
         );
     }
 
-    /// 只有「已安装」能产出可写路径；「未知」与「未安装」都给 `None`。
+    /// Only "installed" produces a writable path; "unknown" and "not installed" both give `None`.
     #[test]
     fn only_installed_yields_a_writable_path() {
         assert_eq!(

@@ -5,8 +5,9 @@ use model_harbor_core::util::parse_yaml_content;
 use serde_json::json;
 
 fn temp_path(name: &str) -> std::path::PathBuf {
-    // 目录名全局唯一：Windows 时钟粒度粗，并行测试仅靠 pid+纳秒会撞 tick
-    // 共用目录互相覆盖（workbuddy 曾因此偶挂）。原子计数器消除碰撞。
+    // Directory names globally unique: Windows clock granularity is coarse, and parallel tests relying on pid+nanoseconds
+    // can collide within a tick, sharing a directory and overwriting each other (workbuddy once failed flakily
+    // because of it). An atomic counter removes the collisions.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -199,8 +200,7 @@ llm-pi-ai:
 #[test]
 fn dsh_cross_format_save_writes_default_timeout() {
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
-    // opencode 来源（缺省 npm，无 timeout 字段）保存到 DSH 时，
-    // timeoutMs 默认值写入目标文件。
+    // An opencode source (default npm, no timeout field) saved to DSH writes the timeoutMs default into the target.
     let raw = json!({
         "options": {"baseURL": "https://x/v1", "apiKey": "sk-test"},
         "models": {}
@@ -217,7 +217,7 @@ fn dsh_native_model_without_optional_fields_stays_without_them() {
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
     provider.source_format = Some(ConfigFormat::DeepSeekHarness);
-    // 走真实加载路径构造模型（raw 无 contextWindow/maxTokens/reasoningEfforts 等可选字段）。
+    // Build models through the real load path (raw without optional fields like contextWindow/maxTokens/reasoningEfforts).
     let raw = json!({"id": "m1", "custom": {"keep": true}});
     let mut model = model_harbor_core::convert::model_from_pi(&raw);
     model.source_format = Some(ConfigFormat::DeepSeekHarness);
@@ -257,10 +257,10 @@ fn dsh_missing_timeout_defaults_to_180000_without_writeback() {
     .unwrap();
     let load = backends::load_backend(ConfigFormat::DeepSeekHarness, settings.to_str().unwrap())
         .expect("DSH 配置应可加载");
-    // 配置没有 timeoutMs 时默认显示 180000ms。
+    // Without a timeoutMs in the config, 180000ms displays by default.
     assert_eq!(load.providers[0].dsh_timeout_ms, "180000");
     assert_eq!(load.providers[0].timeout, "180000");
-    // 未修改时保存不应写回 timeoutMs
+    // Unmodified saves must not write timeoutMs back
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let root = backend.serialize_root(&[], &load.providers, &load.root, None);
     let demo = &root["llm-pi-ai"]["providers"]["demo"];
@@ -270,7 +270,7 @@ fn dsh_missing_timeout_defaults_to_180000_without_writeback() {
 
 #[test]
 fn dsh_max_retries_written_even_when_mode_empty() {
-    // 只填 maxRetries、mode 留空时：mode 按 DSH 默认 normal 写出。
+    // With only maxRetries filled and mode empty: mode writes as DSH's default normal.
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
@@ -285,7 +285,7 @@ fn dsh_max_retries_written_even_when_mode_empty() {
 
 #[test]
 fn dsh_retry_policy_removed_when_mode_and_retries_empty() {
-    // mode 与 maxRetries 都为空时仍不写 retryPolicy。
+    // With both mode and maxRetries empty, retryPolicy still isn't written.
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
@@ -298,7 +298,7 @@ fn dsh_retry_policy_removed_when_mode_and_retries_empty() {
 
 #[test]
 fn dsh_writes_retry_policy_before_timeout_ms() {
-    // 字段顺序：models → retryPolicy → timeoutMs。
+    // Field order: models → retryPolicy → timeoutMs.
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
@@ -323,7 +323,7 @@ fn dsh_writes_retry_policy_before_timeout_ms() {
 
 #[test]
 fn dsh_cross_format_preserves_target_only_provider() {
-    // 跨格式保存到 DSH 目标：目标文件独有的 provider 保留。
+    // Cross-format save to a DSH target: target-only providers are kept.
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let target = json!({
         "llm-pi-ai": {
@@ -347,7 +347,7 @@ fn dsh_cross_format_preserves_target_only_provider() {
 
 #[test]
 fn dsh_retry_max_retries_round_trip_from_file() {
-    // 贴近实际流程：加载文件 → 改 maxRetries → 当前文件保存 → 渲染 YAML 文本
+    // Close to the real flow: load file → edit maxRetries → current-file save → render the YAML text
     let settings = temp_path("retry-roundtrip.yaml");
     std::fs::write(
         &settings,
@@ -375,7 +375,7 @@ fn dsh_retry_max_retries_round_trip_from_file() {
 
 #[test]
 fn dsh_max_retries_accepts_padded_and_float_input() {
-    // UI 允许带空白 / 小数的数字输入（会 trim），保存时必须写入。
+    // The UI allows whitespace / decimals in numeric inputs (trimmed); saving must write them.
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
@@ -396,7 +396,7 @@ fn dsh_max_retries_accepts_padded_and_float_input() {
     assert_eq!(demo["timeoutMs"], 180000, "timeoutMs 带空白输入应写入");
 }
 
-/// sidecar 损坏必须报错并保持原文件不变，而不是拿骨架当基底覆写。
+/// A corrupt sidecar must error and leave the original file untouched — never overwrite it with the skeleton as base.
 #[test]
 fn corrupt_sidecar_is_an_error_and_never_gets_overwritten() {
     let settings = temp_path("settings.yaml");
@@ -424,7 +424,7 @@ fn corrupt_sidecar_is_an_error_and_never_gets_overwritten() {
     std::fs::remove_file(&sidecar).ok();
 }
 
-/// 根不是对象（外来工具 / 手改写成数组）同样报错。
+/// A non-object root (an external tool / hand-edit into an array) errors the same way.
 #[test]
 fn non_object_sidecar_root_is_an_error() {
     let settings = temp_path("settings.yaml");
@@ -436,7 +436,7 @@ fn non_object_sidecar_root_is_an_error() {
     std::fs::remove_file(&sidecar).ok();
 }
 
-/// 文件不存在 = 新建场景：骨架照常返回，保存正常建立 sidecar。
+/// A missing file = creation scenario: the skeleton returns as usual, and saving establishes the sidecar normally.
 #[test]
 fn missing_sidecar_still_loads_as_skeleton() {
     let settings = temp_path("settings.yaml");

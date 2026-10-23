@@ -1,11 +1,11 @@
-//! 用量视图的组件基元：小节标题、卡片容器、可滚动表体。
+//! The usage view's component primitives: section titles, card containers, scrollable table bodies.
 //!
-//! 各模块（总览卡 / 趋势图 / 热力图 / 四张表）共用同一套外壳，保证
-//! 内边距与标题层级一致；改这里 = 所有组件一起变。
+//! The modules (overview card / trend chart / heatmap / four tables) share one set of shells, keeping
+//! padding and title hierarchy consistent; changing here changes every component together.
 
 use eframe::egui;
 
-/// 组件小节标题（`TEXT_TITLE` 加粗）。
+/// A component section title (`TEXT_TITLE`, bold).
 pub(in crate::app) fn heading(ui: &mut egui::Ui, label: &str) {
     ui.label(
         egui::RichText::new(label)
@@ -14,14 +14,14 @@ pub(in crate::app) fn heading(ui: &mut egui::Ui, label: &str) {
     );
 }
 
-/// 组件卡片：统一内边距 + 外框描边，撑满可用宽度。
+/// A component card: uniform padding + outer border, filling the available width.
 ///
-/// 各模块的内容都画在这里面，视觉上是一张张「卡」。
+/// Every module's content paints inside; visually these are the "cards".
 pub(in crate::app) fn card<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let visuals = ui.visuals().clone();
     egui::Frame::NONE
         .inner_margin(egui::Margin::same(crate::theme::SPACE_3 as i8))
-        // 外框描边与圆角跟主题的非交互控件走（换主题一起变）。
+        // The border and radius follow the theme's non-interactive widgets (changing with the theme).
         .stroke(egui::Stroke::new(
             1.0_f32,
             visuals.widgets.noninteractive.bg_stroke.color,
@@ -34,33 +34,33 @@ pub(in crate::app) fn card<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui
         .inner
 }
 
-/// 行距：行高 21 + 行间距 4（用户定的行距）。
+/// Row spacing: row height 21 + line gap 4 (the user-set spacing).
 pub(in crate::app) const ROW_PITCH: f32 = 25.0;
 
-/// 分段控件组的内边距，同时也是组内按钮之间的间隙。
+/// The segmented control group's padding, also the gap between its buttons.
 ///
-/// 按钮间距收到这个值（比全局 `item_spacing.x` 更紧）：它们同属一个控件，
-/// 间隙大了就读成几个独立按钮。
+/// Button gaps tighten to this value (tighter than the global `item_spacing.x`): they belong to one
+/// control, and a wide gap reads as several independent buttons.
 pub(in crate::app) const CHIP_GROUP_PAD: f32 = crate::theme::SPACE_1;
 
-/// `chips` 个等宽按钮包进分段控件组之后的总宽度。
+/// The total width of `chips` equal-width buttons wrapped in a segmented control group.
 ///
-/// 状态行要给右侧这组按钮预留固定宽度，剩下的才留给左侧文字。与
-/// [`chip_group`] 共用 [`CHIP_GROUP_PAD`]，改按钮宽度不会把预留算错。
+/// The status line reserves this fixed width for the right-side button group, giving the rest to the left
+/// text. Shares [`CHIP_GROUP_PAD`] with [`chip_group`], so changing button widths never skews the reservation.
 pub(in crate::app) fn chip_group_width(chips: usize, button_width: f32) -> f32 {
     let n = chips as f32;
     n * button_width + (n - 1.0).max(0.0) * CHIP_GROUP_PAD + 2.0 * CHIP_GROUP_PAD
 }
 
-/// 分段控件组：把一排互斥的切换按钮包成一个组件（用户要求：区间切换用
-/// 组件包起来）。
+/// A segmented control group: wraps a row of mutually exclusive toggle buttons into one component
+/// (user request: the range switch should be a wrapped component).
 ///
-/// 底色与卡片拉开层级：卡是「凸」的（描边 + 面板色），它是「凹」的
-/// （极暗底 + 同一套描边），看上去像一组嵌在状态行里的开关。
+/// Its fill separates it from cards: cards are "raised" (border + panel color), this is "sunken"
+/// (very dark fill + the same border), reading as a set of switches embedded in the status line.
 ///
-/// 组内按钮横向排列，间隙收到 [`CHIP_GROUP_PAD`]：它们同属一个控件，
-/// 全局 `item_spacing.x` 那个间隙会让它们读成几个独立按钮。`body` 只需
-/// 逐个往 `ui` 里加按钮；组宽用 [`chip_group_width`] 预算。
+/// Buttons lay out horizontally with gaps tightened to [`CHIP_GROUP_PAD`]: they belong to one control,
+/// and the global `item_spacing.x` gap would read them as independent buttons. `body` only adds buttons
+/// to `ui` one by one; the group's width is budgeted by [`chip_group_width`].
 pub(in crate::app) fn chip_group<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let visuals = ui.visuals().clone();
     egui::Frame::NONE
@@ -81,37 +81,39 @@ pub(in crate::app) fn chip_group<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut eg
         .inner
 }
 
-/// 表体的最大可视高度：5 行 × 25px。
+/// A table body's max visible height: 5 rows × 25px.
 ///
-/// 行数再多也在组件内部滚动，不把整页撑长；不足 5 行时按实际行数收缩
-/// （`auto_shrink`），不留空行。
+/// More rows scroll inside the component, never lengthening the page; fewer than 5 shrink to the actual
+/// count (`auto_shrink`), leaving no blank rows.
 pub(in crate::app) const BODY_MAX_HEIGHT: f32 = 5.0 * ROW_PITCH;
 
-/// 会话表体的高度：普通表的三倍（用户要求）。
+/// The session table body's height: three times an ordinary table (user request).
 ///
-/// 会话表独占一行、列最多，是逐条核对的主要入口，一屏只给 5 行太少。
+/// The session table takes a full row with the most columns — the main place to inspect entries one by
+/// one; 5 rows a screen is too few.
 pub(in crate::app) const SESSION_BODY_HEIGHT: f32 = BODY_MAX_HEIGHT * 3.0;
 
-/// 表体高度：行数 × 行距，封顶在 `cap`。
+/// Table body height: rows × spacing, capped at `cap`.
 ///
-/// 高度锁死而不按内容伸缩，两个理由：
+/// Height locks instead of fitting content, for two reasons:
 ///
-/// * 并排的两张表行数不同时，按较多一方的高度取预算，两卡底边才落在同
-///   一水平线上（用户要求：Agent 卡高度与模型卡对齐）。
-/// * 不给上限时，`ScrollArea` 会拿页面剩余高度当视口：窗口矮一点，会话表
-///   就看不到三倍的行，用户要求的「可视高度是普通表的三倍」无从谈起。
+/// * When the side-by-side tables' row counts differ, budgeting by the taller side puts both cards'
+///   bottoms on one line (user request: the Agent card matches the Models card height).
+/// * Without a cap, `ScrollArea` takes the page's remaining height as its viewport: a slightly short
+///   window hides the session table's 3x rows, and the user-requested "visible height is 3x an ordinary
+///   table" becomes unreachable.
 ///
-/// 至少一行：高度为 0 会让视口塔成一条线，空表连表头都看不全。
+/// At least one row: a 0 height squashes the viewport to a line where even the header won't fit.
 pub(in crate::app) fn body_height(rows: usize, cap: f32) -> f32 {
     (rows.max(1) as f32 * ROW_PITCH).clamp(ROW_PITCH, cap.max(ROW_PITCH))
 }
 
-/// 可滚动表体：内容超过 `height` 时组件内部出现竖向滚动条。
+/// A scrollable table body: content taller than `height` gets an internal vertical scrollbar.
 ///
-/// 视口高度固定为 `height`（`min_scrolled_height` + 关掉纵向收缩）：行数少
-/// 的一方底部留白，换取并排两卡底边齐平。
+/// The viewport height is fixed at `height` (`min_scrolled_height` + vertical shrinking off): the shorter
+/// side leaves blank space at its bottom, buying the side-by-side cards' aligned bottoms.
 ///
-/// `id` 用于 egui 的滚动状态记忆（每张表一个，切排序 / 筛选不丢位置）。
+/// `id` feeds egui's scroll-state memory (one per table; switching sort / filter never loses position).
 pub(in crate::app) fn scroll_body<R>(
     ui: &mut egui::Ui,
     id: &str,

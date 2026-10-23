@@ -1,6 +1,6 @@
-//! opencode v2 schema 读写回归：给 v1 更新 v1、给 v2 更新 v2，跨版本按目标转换。
+//! opencode v2 schema read/write regression: given v1 update v1, given v2 update v2, cross-version converts to the target.
 //!
-//! 夹具为合成数据（结构与真实样本一致，密钥为假值）。
+//! Fixtures are synthetic (structure matching real samples, keys fakeged).
 
 use model_harbor_core::backends;
 use model_harbor_core::backends::opencode::detect_schema_version;
@@ -11,7 +11,7 @@ use model_harbor_core::model::{
 };
 use serde_json::{json, Value};
 
-/// 合成 v1 内容：顶层单数键、npm / options、modalities / reasoning、variants 对象。
+/// Synthetic v1 content: top-level singular keys, npm / options, modalities / reasoning, a variants object.
 fn v1_content() -> String {
     r#"{
         "$schema": "https://opencode.ai/config.json",
@@ -53,8 +53,8 @@ fn v1_content() -> String {
     .to_string()
 }
 
-/// 合成 v2 内容：顶层复数键、package / settings、capabilities、variants 数组、
-/// agent 的 `model#variant` 与 `request.body.temperature`。
+/// Synthetic v2 content: top-level plural keys, package / settings, capabilities, a variants array,
+/// and the agent's `model#variant` with `request.body.temperature`.
 fn v2_content() -> String {
     r#"{
         "$schema": "https://opencode.ai/config.json",
@@ -103,7 +103,7 @@ fn detect_version_of_both_shapes() {
     let v2: Value = serde_json::from_str(&v2_content()).unwrap();
     assert_eq!(detect_schema_version(&v1), OpencodeSchemaVersion::V1);
     assert_eq!(detect_schema_version(&v2), OpencodeSchemaVersion::V2);
-    // 空文件按 v1 处理（无任何 v2 证据）。
+    // An empty file counts as v1 (no v2 evidence at all).
     assert_eq!(detect_schema_version(&json!({})), OpencodeSchemaVersion::V1);
 }
 
@@ -129,13 +129,13 @@ fn v2_parse_maps_fields_into_rows() {
     let m = &p.models[0];
     assert_eq!(m.schema, OpencodeSchemaVersion::V2);
     assert!(m.tool_call);
-    // v2 无 reasoning 键：默认按勾选处理（用户拍板），跨到 v1 目标时落 true。
+    // v2 has no reasoning key: treated as checked by default (user decision), landing true when crossing to a v1 target.
     assert!(m.reasoning);
     assert_eq!(m.modalities_input, "text");
     assert_eq!(m.modalities_output, "text");
     assert_eq!(m.variants, "medium, high");
     assert!(!m.store);
-    // v2 的 package 名也要能推导协议。
+    // v2's package names must derive protocols too.
     assert_eq!(p.effective_api(), "openai-completions");
 }
 
@@ -144,10 +144,10 @@ fn v2_round_trip_is_lossless() {
     let original: Value = serde_json::from_str(&v2_content()).unwrap();
     let load = backend().parse(&v2_content()).expect("解析失败");
     let root = backend().serialize_root(&load.agents, &load.providers, &load.extras, None);
-    // 未做任何修改：agent / provider 表整体保真（含键序与嵌套结构）。
+    // With nothing modified: the agent / provider tables stay fully faithful (key order and nesting included).
     assert_eq!(root["agents"], original["agents"]);
     assert_eq!(root["providers"], original["providers"]);
-    // 其余顶层字段原样保留。
+    // Other top-level fields preserved verbatim.
     assert_eq!(root["mcp"], original["mcp"]);
     assert_eq!(root["plugins"], original["plugins"]);
 }
@@ -158,13 +158,13 @@ fn v2_edits_write_back_in_v2_shape() {
     let mut agents = load.agents.clone();
     let mut providers = load.providers.clone();
 
-    // 改 agent：variant high → medium，温度 0.3 → 0.7。
+    // Edit the agent: variant high → medium, temperature 0.3 → 0.7.
     agents[0].variant = "medium".into();
     agents[0].temperature = "0.7".into();
-    // 改模型：关闭 tool_call，清空档位。
+    // Edit the model: tool_call off, tiers cleared.
     providers[0].models[0].tool_call = false;
     providers[0].models[0].variants = String::new();
-    // 改 provider 密钥。
+    // Edit the provider key.
     providers[0].api_key = "sk-rotated".into();
 
     let root = backend().serialize_root(&agents, &providers, &load.extras, None);
@@ -172,7 +172,7 @@ fn v2_edits_write_back_in_v2_shape() {
     let a = &root["agents"]["writing"];
     assert_eq!(a["model"], json!("sensenova/flash#medium"));
     assert_eq!(a["request"]["body"]["temperature"], json!(0.7));
-    // v2 无独立 variant / temperature 顶层键。
+    // v2 has no standalone variant / temperature top-level keys.
     assert!(a.get("variant").is_none());
     assert!(a.get("temperature").is_none());
 
@@ -183,9 +183,9 @@ fn v2_edits_write_back_in_v2_shape() {
 
     let m = &p["models"]["flash"];
     assert_eq!(m["capabilities"]["tools"], json!(false));
-    // 清空档位：整块删除。
+    // Tiers cleared: the block is removed whole.
     assert!(m.get("variants").is_none());
-    // v2 永不写 reasoning。
+    // v2 never writes reasoning.
     assert!(m.get("reasoning").is_none());
 }
 
@@ -197,7 +197,7 @@ fn v1_round_trip_stays_v1() {
     assert_eq!(root["agent"], original["agent"]);
     assert_eq!(root["provider"], original["provider"]);
     let m = &root["provider"]["sensenova"]["models"]["flash"];
-    // v1 形状原样保留：npm / options / modalities / reasoning / variants 对象。
+    // The v1 shape preserved verbatim: npm / options / modalities / reasoning / the variants object.
     assert_eq!(
         root["provider"]["sensenova"]["npm"],
         json!("@ai-sdk/openai-compatible")
@@ -233,7 +233,7 @@ fn v1_rows_saved_into_v2_target_become_v2() {
     assert_eq!(m["capabilities"]["tools"], json!(true));
     assert_eq!(m["capabilities"]["input"], json!(["text"]));
     assert_eq!(m["variants"], json!([{ "id": "medium" }, { "id": "high" }]));
-    // v2 不落 reasoning。
+    // v2 writes no reasoning.
     assert!(m.get("reasoning").is_none());
 }
 
@@ -259,16 +259,16 @@ fn v2_rows_saved_into_v1_target_become_v1() {
     assert_eq!(m["tool_call"], json!(true));
     assert_eq!(m["modalities"]["input"], json!(["text"]));
     assert_eq!(m["variants"], json!({ "medium": {}, "high": {} }));
-    // v2 来源默认勾选 reasoning：跨到 v1 落成 true（与目标文件自己的值一致）。
+    // A v2 source's reasoning defaults checked: crossing to v1 lands true (matching the target file's own value).
     assert_eq!(m["reasoning"], json!(true));
 }
 
 #[test]
 fn new_rows_saved_into_v2_file_get_v2_shape() {
-    // 目标文件已是 v2（复数键 + package provider），UI 新建的行默认 v1 形状，
-    // 落盘必须跟随目标文件转成 v2。
+    // The target file is already v2 (plural keys + a package provider); UI-created rows default to the v1 shape,
+    // and the disk write must convert to v2 following the target file.
     let mut extras: Value = serde_json::from_str(&v2_content()).unwrap();
-    // 清空表，模拟「文件里还没有条目」的 v2 空表。
+    // Clear the tables, simulating a v2 file with no entries yet.
     extras["agents"] = json!({});
     extras["providers"] = json!({});
 
@@ -298,7 +298,7 @@ fn new_rows_saved_into_v2_file_get_v2_shape() {
     assert_eq!(agent["request"]["body"]["temperature"], json!(0.3));
 
     let prov = &root["providers"]["sensenova"];
-    // UI 下拉写的是 v1 包名，落盘前翻译成 v2 package 名。
+    // The UI dropdown writes v1 package names; they translate to v2 package names before hitting disk.
     assert_eq!(prov["package"], json!("@opencode/ai/providers/anthropic"));
     assert_eq!(
         prov["settings"]["baseURL"],
@@ -313,7 +313,7 @@ fn new_rows_saved_into_v2_file_get_v2_shape() {
         model["variants"],
         json!([{ "id": "medium" }, { "id": "high" }])
     );
-    // 新建行 reasoning=true 也不得写进 v2。
+    // A new row's reasoning=true must not enter v2 either.
     assert!(model.get("reasoning").is_none());
 }
 
@@ -339,12 +339,12 @@ fn package_suffix_maps_to_api() {
         package_or_npm_to_api("@opencode/ai/providers/mistral"),
         "mistral-conversations"
     );
-    // 未知后缀退回兼容层。
+    // Unknown suffixes fall back to the compatibility layer.
     assert_eq!(
         package_or_npm_to_api("@opencode/ai/providers/custom-thing"),
         "openai-completions"
     );
-    // v1 包名照旧走 npm_to_api。
+    // v1 package names still go through npm_to_api.
     assert_eq!(
         package_or_npm_to_api("@ai-sdk/anthropic"),
         "anthropic-messages"
@@ -352,7 +352,7 @@ fn package_suffix_maps_to_api() {
     assert_eq!(package_or_npm_to_api(""), "openai-completions");
 }
 
-/// 包名末段：v1 / v2 全名取末段一致，自定义包原样。
+/// A package name's last segment: v1 / v2 full names agree on it; custom packages pass through.
 #[test]
 fn package_suffix_strips_known_prefixes() {
     assert_eq!(
@@ -365,12 +365,12 @@ fn package_suffix_strips_known_prefixes() {
     );
     assert_eq!(package_suffix("@ai-sdk/anthropic"), "anthropic");
     assert_eq!(package_suffix("@opencode/ai/providers/google"), "google");
-    // 无斜杠 / 自定义包：原样返回。
+    // No slash / custom package: returned as-is.
     assert_eq!(package_suffix("custom-pkg"), "custom-pkg");
     assert_eq!(package_suffix(""), "");
 }
 
-/// 末段 + 版本 → 全名：v1 用 @ai-sdk/，v2 用 @opencode/ai/providers/。
+/// Last segment + version → full name: v1 uses @ai-sdk/, v2 uses @opencode/ai/providers/.
 #[test]
 fn package_full_name_follows_schema() {
     assert_eq!(
@@ -385,11 +385,11 @@ fn package_full_name_follows_schema() {
         package_full_name("openai-compatible", OpencodeSchemaVersion::V2),
         "@opencode/ai/providers/openai-compatible"
     );
-    // 空末段返回空串（= 不指定包）。
+    // An empty segment returns an empty string (= no package specified).
     assert_eq!(package_full_name("", OpencodeSchemaVersion::V2), "");
 }
 
-/// 往返：末段拼回全名后再取末段，与原末段一致（两版都成立）。
+/// Round trip: assembling the full name from the segment then taking the segment matches the original (both versions).
 #[test]
 fn package_suffix_full_name_round_trip() {
     for suffix in [
@@ -406,9 +406,10 @@ fn package_suffix_full_name_round_trip() {
     }
 }
 
-/// v2 只是 opencode 本家的演进：kilo / mimo 的写盘永远 v1，
-/// 即使目标内容混入了 v2 特征（如手工拷贝的 opencode v2 内容）。
-/// 行 schema 记录 raw 真实形状（可能为 v2），由写盘的 target_version 钳制转换。
+/// v2 is opencode's own evolution: kilo / mimo always write v1 to disk, even when the target content
+/// mixed in v2 fingerprints (like a hand-copied opencode v2 section).
+/// The row's schema records raw's real shape (possibly v2); the write path's target_version clamps the
+/// conversion.
 #[test]
 fn kilocode_and_mimocode_always_write_v1_even_with_v2_content() {
     let v2_content = r#"{
@@ -430,8 +431,8 @@ fn kilocode_and_mimocode_always_write_v1_even_with_v2_content() {
     for id in [ConfigFormat::Kilocode, ConfigFormat::Mimocode] {
         let backend = backends::backend(id);
         let load = backend.parse(v2_content).expect("解析成功");
-        // 写回强制 v1 形状：npm（翻译回 @ai-sdk/*）、options、tool_call，
-        // 不写 package / settings / capabilities。
+        // The write-back is forced into the v1 shape: npm (translated back to @ai-sdk/*), options, tool_call —
+        // never package / settings / capabilities.
         let root = backend.serialize_root(&[], &load.providers, &extras, None);
         let p = &root["provider"]["p1"];
         assert_eq!(p["npm"], json!("@ai-sdk/anthropic"), "{id:?} 写回 v1 包名");
@@ -453,7 +454,7 @@ fn kilocode_and_mimocode_always_write_v1_even_with_v2_content() {
     }
 }
 
-/// opencode 本家不受钳制影响：同样的 v2 内容仍按 v2 解析与写回。
+/// opencode itself is unaffected by the clamp: the same v2 content still parses and writes back as v2.
 #[test]
 fn opencode_itself_still_follows_v2_content() {
     let v2_content = r#"{
@@ -469,7 +470,7 @@ fn opencode_itself_still_follows_v2_content() {
     let backend = backends::backend(ConfigFormat::Opencode);
     let load = backend.parse(v2_content).expect("解析成功");
     assert_eq!(load.providers[0].schema, OpencodeSchemaVersion::V2);
-    // extras 是 v2 内容 → 写回跟随 v2。
+    // extras holds v2 content → the write-back follows v2.
     let root = backend.serialize_root(&[], &load.providers, &extras, None);
     let p = &root["provider"]["p1"];
     assert_eq!(

@@ -1,6 +1,6 @@
 use super::{preset_index, preset_label, preset_value, CONTEXT_PRESETS, OUTPUT_PRESETS};
 
-/// 写入配置的值必须是纯数字。
+/// The value written into the config must be a pure number.
 #[test]
 fn every_preset_writes_a_plain_integer() {
     for k in CONTEXT_PRESETS.iter().chain(OUTPUT_PRESETS.iter()) {
@@ -20,21 +20,21 @@ fn every_preset_writes_a_plain_integer() {
     }
 }
 
-/// 标签与写入值成对：`128k` ↔ `128000`。
+/// Labels pair with written values: `128k` ↔ `128000`.
 #[test]
 fn the_label_and_the_written_value_agree() {
     assert_eq!(preset_label(128), "128k");
     assert_eq!(preset_value(128), "128000");
     assert_eq!(preset_label(1024), "1024k");
-    // 1024k 取 1000 进制（1024000）而不是 1048576。
+    // 1024k takes the decimal reading (1024000), not 1048576.
     assert_eq!(preset_value(1024), "1024000");
-    // 131 / 262 对应厂商的 131072 / 262144，同样按 1000 进制落数。
+    // 131 / 262 match vendors' 131072 / 262144, landing decimal the same way.
     assert_eq!(preset_label(131), "131k");
     assert_eq!(preset_value(131), "131000");
     assert_eq!(preset_value(262), "262000");
 }
 
-/// 预设表覆盖指定值，且从小到大排列（即下拉里的顺序）。
+/// The preset table covers the given values, ascending (the dropdown's order).
 #[test]
 fn the_tables_hold_the_requested_values_in_order() {
     assert_eq!(CONTEXT_PRESETS, [128, 200, 262, 300, 400, 500, 1024]);
@@ -48,7 +48,7 @@ fn the_tables_hold_the_requested_values_in_order() {
     }
 }
 
-/// 占位值 `262000` 命中一个预设，新模型的下拉才能显示出当前档位。
+/// The placeholder `262000` hits a preset, so a new model's dropdown can show its current tier.
 #[test]
 fn the_built_in_placeholder_matches_a_preset() {
     let placeholder = crate::model::ModelRow::new().context;
@@ -57,7 +57,7 @@ fn the_built_in_placeholder_matches_a_preset() {
     assert_eq!(output, preset_value(131));
 }
 
-/// 手填的非预设值不误认成某个预设。
+/// Hand-typed non-preset values are never mistaken for a preset.
 #[test]
 fn a_hand_typed_value_is_not_mistaken_for_a_preset() {
     for value in ["", "  ", "1000", "100000", "999999", "abc", "128000000"] {
@@ -70,7 +70,7 @@ fn a_hand_typed_value_is_not_mistaken_for_a_preset() {
     }
 }
 
-/// 反查：每个预设值本身，以及两侧带空白的写法，都要认出来。
+/// Reverse lookup: every preset value itself, plus whitespace-padded spellings on both sides, must be recognized.
 #[test]
 fn the_current_value_is_recognised_after_a_round_trip() {
     for (i, k) in CONTEXT_PRESETS.iter().enumerate() {

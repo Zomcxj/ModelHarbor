@@ -1,19 +1,19 @@
 use eframe::egui;
 
-/// 吸顶标题占位：在内容流中预留标题行高度，返回绘制锚点。
-/// 与 [`sticky_end`] 配对使用，在 section 内容渲染完成后调用后者。
+/// The sticky title's placeholder: reserves the title row's height in the content flow, returning the paint anchor.
+/// Paired with [`sticky_end`], called after the section's content renders.
 pub(in crate::app) fn sticky_begin(ui: &mut egui::Ui, height: f32) -> (f32, f32, f32, f32) {
     let avail = ui.available_rect_before_wrap();
     ui.allocate_exact_size(egui::vec2(avail.width(), height), egui::Sense::hover());
     (avail.top(), avail.left(), avail.right(), height)
 }
 
-/// 吸顶条的 Y：未滚过时钉在内容流位置，滚过后钉在滚动区可视顶。
+/// The sticky bar's Y: pinned at the content-flow position before scrolling past; at the scroll area's visible top after.
 pub(in crate::app) fn sticky_y(content_top: f32, clip_top: f32, clip_margin: f32) -> f32 {
     content_top.max(clip_top + clip_margin).round()
 }
 
-/// 绘制吸顶标题：未滚过时留在内容流中，滚过后吸附在滚动区顶部。
+/// Paint the sticky title: it stays in the content flow until scrolled past, then sticks to the scroll area's top.
 pub(in crate::app) fn sticky_end(
     ui: &mut egui::Ui,
     anchor: (f32, f32, f32, f32),
@@ -27,13 +27,13 @@ pub(in crate::app) fn sticky_end(
         return;
     }
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(target));
-    // 拦截层：吸顶条空白区域的点击/拖拽在此消费，不穿透到下层的卡片控件。
+    // The interception layer: clicks / drags on the sticky bar's blank areas are consumed here, never falling through to the card widgets below.
     child.interact(
         target,
         child.id().with("sticky-block"),
         egui::Sense::click_and_drag(),
     );
-    // 背景从裁剪顶开始填充，避免吸附后在顶上留缝。
+    // The background fills from the clip top, avoiding a gap at the top after sticking.
     let fill_top = if y > top { clip_top } else { target.top() };
     child.painter().rect_filled(
         egui::Rect::from_min_max(egui::pos2(target.left(), fill_top), target.max),
@@ -41,7 +41,7 @@ pub(in crate::app) fn sticky_end(
         ui.visuals().panel_fill,
     );
     paint(&mut child);
-    // 标题下边线。
+    // The title's bottom rule.
     child.painter().hline(
         target.x_range(),
         target.bottom() - 1.0,

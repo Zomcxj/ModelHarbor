@@ -1,53 +1,58 @@
-//! 从**源**里删除一个会话 —— 用户点「删除」时真把会话从 agent 自己的库里抹掉。
+//! Delete a session **from the source** — when the user clicks "delete", the session really leaves the
+//! agent's own store.
 //!
-//! ## 与账本的关系
+//! ## Relationship with the ledger
 //!
-//! 账本（[`crate::usage::ledger`]）负责「删了之后用量还在」：会话明细摘掉，
-//! 合计与各分解保留。本模块负责删**源**：opencode 系写 SQLite，文件式的删文件。
-//! 两者是同一次动作的两半 —— 只摘账本不删源，用户下次打开 agent 仍能看到那条
-//! 会话；只删源不摘账本，它会被扫描重新捞回来。
+//! The ledger ([`crate::usage::ledger`]) handles "usage survives deletion": session details are
+//! withdrawn while totals and breakdowns stay. This module deletes the **source**: opencode-family
+//! writes SQLite, file-based backends delete files. The two are halves of one action — withdrawing
+//! only the ledger leaves the session visible next time the agent opens; deleting only the source
+//! lets the next scan scoop it back in.
 //!
-//! ## agent 在跑也能删
+//! ## Deleting while the agent runs
 //!
-//! opencode 系用 WAL 模式的 SQLite，而 WAL 本就支持多进程并发写 —— agent 活着时
-//! 从外部删会话是正常用法（cc-switch 的删除路径也不做进程检查）。库真被占着时
-//! 由 `busy_timeout` 等一等，等不到就报 `Failed`，而不是提前假定「不许在线删」。
+//! The opencode family uses WAL-mode SQLite, which supports concurrent multi-process writers by
+//! design — deleting a session externally while the agent is alive is normal usage (cc-switch's delete
+//! path does no process check either). A genuinely locked database is waited out by `busy_timeout`; if
+//! that expires, `Failed` is reported instead of presuming "no online deletes".
 //!
-//! ## 删什么
+//! ## What gets deleted
 //!
-//! opencode 把一次会话摊在多张表里（见 [`opencode_tables`]）。只删 `session`
-//! 主表会留下孤儿消息，反占用量的扫描还会从 message 表把它们读回来，删除就
-//! 白做了。所以这些表一起删，装在一次事务里：要么全删掉，要么一行都不动。
+//! opencode spreads one session across several tables (see [`opencode_tables`]). Deleting only the
+//! `session` main table leaves orphan messages, and the usage-claiming scan would read them back from
+//! the message tables — deletion for nothing. So these tables go together, wrapped in one transaction:
+//! either all deleted or nothing touched.
 //!
-//! ## 不删什么
+//! ## What doesn't get deleted
 //!
-//! - **不改任何非会话表**：`project` / `worktree` / `kv` 等属于用户的环境配置；
-//! - **不回写源方的统计聚合**：opencode 的 `usage_*` 之类如果存在，那是它自己
-//!   的账，本工具只删会话本体。
+//! - **No non-session tables are touched**: `project` / `worktree` / `kv` etc. belong to the user's
+//!   environment configuration;
+//! - **No write-back to the source's own aggregates**: opencode's `usage_*` tables, if present, are its
+//!   own books — this tool only deletes the session itself.
 
 use crate::format::ConfigFormat;
 use crate::prefs;
 use std::path::{Path, PathBuf};
 
-/// 删除失败的原因（每一类都对应界面上不同的处置建议）。
+/// Why a deletion failed (each kind maps to different advice in the UI).
 ///
-/// 没有「agent 正在运行」这一类：opencode 的 WAL 支持多进程写，agent 在跑不影响
-/// 删除（cc-switch 的删除路径同样不做进程检查）。成天拦着用户去关 agent，只是把
-/// 一个不存在的问题当成门槛。
+/// There is no "agent is running" kind: opencode's WAL supports multi-process writes, so a running
+/// agent doesn't block deletion (cc-switch's delete path likewise does no process check). Blocking
+/// users into shutting down agents daily just turns a non-problem into a gate.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeleteError {
-    /// 该后端不支持从源删除（源是只读的、或位置不固定）。
+    /// The backend doesn't support deleting from the source (the source is read-only, or its location isn't fixed).
     Unsupported { client: &'static str },
-    /// 找不到源文件 / 源库。
+    /// The source file / database can't be found.
     SourceMissing { path: String },
-    /// 源里没有这条会话（可能已被 agent 自己删掉，或 id 不属于该后端）。
+    /// The session isn't in the source (possibly deleted by the agent itself, or the id belongs to another backend).
     SessionNotFound,
-    /// 写源失败（权限、库损坏、锁超时……）。
+    /// Writing the source failed (permissions, a corrupt database, lock timeout…).
     Failed { detail: String },
 }
 
 impl DeleteError {
-    /// 给用户看的一句话（界面直接显示，不拼英文错误码）。
+    /// One sentence for the user (shown directly in the UI, never assembled from English error codes).
     pub fn message(&self) -> String {
         match self {
             Self::Unsupported { client } => {
@@ -59,39 +64,42 @@ impl DeleteError {
         }
     }
 
-    /// 这个失败是否要连统计那半也一起拦下。
+    /// Whether this failure should also block the statistics half.
     ///
-    /// `Failed`（库被占着、权限不足、库损坏）源没删成、而用户**能**修
-    /// （关掉占用的程序、换权限、重试），所以统计那半也不做 —— 否则行从列表
-    /// 里消失、用户再也点不到它，源里的会话就水远删不掉了。
+    /// `Failed` (database locked, insufficient permissions, corruption): the source wasn't deleted and the
+    /// user **can** fix it (close the holding program, change permissions, retry) — so the statistics half
+    /// also waits; otherwise the row vanishes from the list, never clickable again, and the source session
+    /// would be stuck undeletable.
     ///
-    /// 其余情形没有「可重试的源删除」可言：后端本就不支持删源、源目录不在
-    /// 本机、源里已经没有它。这些照旧从统计里移除，把选择权留给用户。
+    /// Other cases offer no "retryable source deletion": the backend can't delete sources at all, the source
+    /// directory isn't on this machine, or it's already gone from the source. These proceed with statistics
+    /// removal as usual, leaving the choice to the user.
     pub fn blocks_ledger(&self) -> bool {
         matches!(self, Self::Failed { .. })
     }
 }
 
-/// 一次删除的结果：真删了源就带上删掉的行数（0 表示源里本来就没有）。
+/// Result of one deletion: a real source deletion carries the deleted row count (0 = it wasn't in the source).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Deleted {
-    /// 被删的源文件 / 库路径（界面用来告知用户动过什么）。
+    /// The deleted source file / database path (the UI uses it to tell the user what was touched).
     pub path: PathBuf,
-    /// 源里删掉的记录数（文件式恒为 1）。
+    /// Records deleted from the source (always 1 for file-based backends).
     pub rows: usize,
 }
 
-/// 从源里删掉一个会话。
+/// Delete a session from its source.
 ///
-/// `key` 是账本键（`client:session_id`，见
-/// [`crate::usage::SessionSnapshot::key`]）。
+/// `key` is the ledger key (`client:session_id`, see [`crate::usage::SessionSnapshot::key`]).
 ///
-/// 成功返回删掉的源位置；失败返回 [`DeleteError`] —— **失败时源一定没被动过**
-///（写库走单事务，文件删除是最后一步）。
+/// On success returns the deleted source location; on failure returns [`DeleteError`] — **on failure
+/// the source is guaranteed untouched** (database writes run in a single transaction; file deletion is
+/// the last step).
 ///
-/// **不检查 agent 是否在跑**：opencode 的 WAL 支持多进程写，agent 活着时
-/// 从外部删会话是正常用法（cc-switch 也这么做）。库真被占着时由 `busy_timeout`
-/// 等一等，等不到就报 `Failed`，而不是提前假定「不许在线删」。
+/// **No check for a running agent**: opencode's WAL supports multi-process writes, and deleting a
+/// session externally while the agent lives is normal usage (cc-switch does the same). A genuinely
+/// locked database is waited out by `busy_timeout`; expiring reports `Failed` rather than presuming
+/// "no online deletes".
 pub fn delete_session(key: &str) -> Result<Deleted, DeleteError> {
     let (client, session_id) = split_key(key)?;
     match client {
@@ -100,18 +108,18 @@ pub fn delete_session(key: &str) -> Result<Deleted, DeleteError> {
         }
         ConfigFormat::Pi | ConfigFormat::OhMyPi => delete_pi_like(client, session_id),
         ConfigFormat::DeepSeekHarness => delete_dsh(session_id),
-        // 其余后端的会话源不在本机（workbuddy 的库由它自己的守护进程持有），
-        // 或者本机没有该目录 —— 一律只摘账本，不动源。
+        // Other backends' session sources aren't on this machine (workbuddy's database is held by its own daemon),
+        // or the directory doesn't exist here — always ledger-only, never touching sources.
         other => Err(DeleteError::Unsupported {
             client: other.label(),
         }),
     }
 }
 
-/// 拆账本键：`client:session_id`。客户端名不含 `:`，会话 id 可能含，故只切第一刀。
+/// Split the ledger key: `client:session_id`. Client names never contain `:`, session ids may — so only the first cut counts.
 fn split_key(key: &str) -> Result<(ConfigFormat, &str), DeleteError> {
     let (label, session_id) = key.split_once(':').ok_or(DeleteError::SessionNotFound)?;
-    // label → ConfigFormat 走注册表（不是拼字符串）：两边的命名并不一致。
+    // label → ConfigFormat goes through the registry (not string assembly): the two sides' naming disagrees.
     let client = crate::backends::BACKENDS
         .iter()
         .map(|backend| backend.id())
@@ -120,20 +128,16 @@ fn split_key(key: &str) -> Result<(ConfigFormat, &str), DeleteError> {
     Ok((client, session_id))
 }
 
-/// 该后端是否有进程正在使用它的会话源；有就返回进程名。
+/// Tables of the opencode family (column → the column holding the session id).
 ///
-/// Windows 上用 `tasklist` 查：`windows-sys` 的进程枚举要跑一圈 Toolhelp 快照，
-/// 代码量比一次 `tasklist` 大得多，而删除是低频动作，不值得为它加依赖。
-/// opencode 系要删的表（列 → 会话 id 所在列名）。
+/// Covers **every** table that hangs rows on a session: missing any one lets the scan read usage back
+/// from that table, or leaves the user a pile of invisible orphan rows.
 ///
-/// 覆盖**全部**按会话挂行的表：漏掉任何一张，扫描都会从那张表里把用量读回来，
-/// 或者给用户留下一堆看不见的孤儿行。
+/// Foreign-key cascades can't be trusted: SQLite's `foreign_keys` is off by default and rusqlite
+/// doesn't enable it — those `ON DELETE CASCADE` declarations are inert at runtime. So each table is
+/// deleted explicitly.
 ///
-/// 不能指望外键级联：SQLite 的 `foreign_keys` 默认关闭，rusqlite 也不开，
-/// 那些 `ON DELETE CASCADE` 声明在运行时是不生效的。所以逐表显式删。
-///
-/// 顺序上子表在前：`part` 跟着 `message` 走，`session` / `session_v2` 是父，
-/// 放最后。
+/// Child tables go first: `part` follows `message`; `session` / `session_v2` are parents and go last.
 fn opencode_tables() -> [(&'static str, &'static str); 13] {
     [
         ("part", "session_id"),
@@ -152,14 +156,14 @@ fn opencode_tables() -> [(&'static str, &'static str); 13] {
     ]
 }
 
-/// opencode 系的库路径：`~/.local/share/<agent>/<agent>.db`。
+/// opencode-family database paths: `~/.local/share/<agent>/<agent>.db`.
 ///
-/// 路径与 tokscale 的 `ClientDef` 对齐（`PathRoot::XdgData` + `opencode/*`）：
-/// Windows 上 t okscale 也用 `.local/share`（不吃 `XDG_DATA_HOME`），
-/// 所以这里同样不读环境变量，免得两边指向不同的库。
+/// Paths align with tokscale's `ClientDef` (`PathRoot::XdgData` + `opencode/*`): on Windows tokscale
+/// also uses `.local/share` (ignoring `XDG_DATA_HOME`), so no environment variable is read here either,
+/// lest the two sides point at different databases.
 ///
-/// 对 [`super::titles`] 也开放：删会话与读会话名要指向**同一个**库，
-/// 否则名字来自一处、删除落在另一处。
+/// Also exposed to [`super::titles`]: deleting a session and reading its name must target **the same**
+/// database, otherwise names come from one place and deletion lands in another.
 pub(super) fn opencode_db(client: ConfigFormat) -> Option<PathBuf> {
     let home = prefs::home_dir()?;
     let dir = match client {
@@ -176,7 +180,7 @@ pub(super) fn opencode_db(client: ConfigFormat) -> Option<PathBuf> {
     )
 }
 
-/// 从 opencode 系的库里删会话：13 张表一次事务。
+/// Delete a session from an opencode-family database: 13 tables, one transaction.
 fn delete_from_sqlite(client: ConfigFormat, session_id: &str) -> Result<Deleted, DeleteError> {
     let path = opencode_db(client).ok_or(DeleteError::SourceMissing {
         path: client.label().to_string(),
@@ -189,20 +193,20 @@ fn delete_from_sqlite(client: ConfigFormat, session_id: &str) -> Result<Deleted,
     delete_from_sqlite_at(&path, session_id)
 }
 
-/// 在指定的库上执行删除（与路径解析分开：测试要拿临时库跑同一条路径）。
+/// Run the deletion on a given database (split from path resolution: tests run the same path on a temp database).
 fn delete_from_sqlite_at(path: &Path, session_id: &str) -> Result<Deleted, DeleteError> {
     let connection = rusqlite::Connection::open(path).map_err(|err| DeleteError::Failed {
         detail: err.to_string(),
     })?;
-    // agent 可能在同时写这个库：让 SQLite 自己等锁，而不是一碰就报错。
-    // 5 秒与 rusqlite/SQLite 社区的常用取值一致：够写完一次会话，
-    // 又不会让界面卡到用户以为死掉。等不到就报 Failed，源未被改动。
+    // The agent may be writing this database concurrently: let SQLite wait on the lock rather than erroring
+    // at first touch. 5 seconds matches the rusqlite/SQLite community's usual value: enough for one session
+    // write, without freezing the UI until it seems dead. Expiring reports Failed with the source untouched.
     connection
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|err| DeleteError::Failed {
             detail: err.to_string(),
         })?;
-    // 表可能不存在（老版本库没有 session_v2）：逐表先问有没有。
+    // Tables may not exist (old databases lack session_v2): ask per table first.
     let mut rows = 0usize;
     let transaction = connection
         .unchecked_transaction()
@@ -232,7 +236,7 @@ fn delete_from_sqlite_at(path: &Path, session_id: &str) -> Result<Deleted, Delet
     })
 }
 
-/// 库里有没有这张表。
+/// Whether the database has this table.
 pub(super) fn table_exists(
     connection: &rusqlite::Connection,
     table: &str,
@@ -249,10 +253,11 @@ pub(super) fn table_exists(
     Ok(count > 0)
 }
 
-/// pi 系（pi / oh-my-pi）：删会话的 jsonl 与它的同名转录目录。
+/// pi family (pi / oh-my-pi): delete the session's jsonl and its same-named transcript directory.
 ///
-/// 布局与 id 的解析见 [`super::pi`]：顶层会话的文件名带 id，子 agent 转录
-/// 一律叫 `session.jsonl`、id 只在首行，两者都要能删。
+/// Layout and id parsing are described in [`super::pi`]: top-level sessions carry the id in the file
+/// name, while sub-agent transcripts are all named `session.jsonl` with the id only in the first line —
+/// both must be deletable.
 fn delete_pi_like(client: ConfigFormat, session_id: &str) -> Result<Deleted, DeleteError> {
     let root = super::pi::sessions_root(client).ok_or(DeleteError::SourceMissing {
         path: client.label().to_string(),
@@ -265,10 +270,10 @@ fn delete_pi_like(client: ConfigFormat, session_id: &str) -> Result<Deleted, Del
     delete_pi_like_at(&root, session_id)
 }
 
-/// 在指定的会话根下删除（与路径解析分开：测试要拿临时目录跑同一条路径）。
+/// Delete under a given session root (split from path resolution: tests run the same path on a temp directory).
 ///
-/// 查找按会话 id 而非文件名 —— 子 agent 与 worktree 的转录一律叫
-/// `session.jsonl`，id 只在内容首行（见 `super::pi`）。
+/// Lookup goes by session id, not file name — sub-agent and worktree transcripts are all named
+/// `session.jsonl`, with the id only in the content's first line (see `super::pi`).
 fn delete_pi_like_at(root: &Path, session_id: &str) -> Result<Deleted, DeleteError> {
     let found = super::pi::find_session(root, session_id).ok_or(DeleteError::SessionNotFound)?;
     let mut removed = 0usize;
@@ -278,7 +283,7 @@ fn delete_pi_like_at(root: &Path, session_id: &str) -> Result<Deleted, DeleteErr
         })?;
         removed += 1;
     }
-    // 转录目录：`<同样的路径去掉 .jsonl 后缀>`。
+    // Transcript directory: `<the same path with .jsonl stripped>`.
     let transcript_dir = found.with_extension("");
     if transcript_dir.is_dir() {
         std::fs::remove_dir_all(&transcript_dir).map_err(|err| DeleteError::Failed {
@@ -292,7 +297,7 @@ fn delete_pi_like_at(root: &Path, session_id: &str) -> Result<Deleted, DeleteErr
     })
 }
 
-/// DSH：`~/.dsh/sessions/<编码 cwd>/session-<uuid>/`（含 `session*.jsonl.zstd`）。
+/// DSH: `~/.dsh/sessions/<encoded cwd>/session-<uuid>/` (containing `session*.jsonl.zstd`).
 fn delete_dsh(session_id: &str) -> Result<Deleted, DeleteError> {
     let root = prefs::home_dir()
         .map(|home| home.join(".dsh").join("sessions"))
@@ -316,7 +321,7 @@ fn delete_dsh(session_id: &str) -> Result<Deleted, DeleteError> {
     })
 }
 
-/// 找名字正好是 `name` 的目录（递归，限深）。
+/// Find a directory named exactly `name` (recursive, depth-limited).
 fn find_dir_named(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
     if depth > 4 {
         return None;
@@ -362,9 +367,9 @@ mod tests {
     #[test]
     fn opencode_tables_cover_every_session_table() {
         let tables = opencode_tables();
-        // 主表必须最后删：它是外键的父。
+        // The main table must be deleted last: it's the foreign keys' parent.
         assert_eq!(tables.last().unwrap().0, "session");
-        // 会话内容的表一张都不能漏（SQLite 的外键级联默认不生效）。
+        // Not one table carrying session content may be missed (SQLite's foreign-key cascades are off by default).
         for expected in [
             "part",
             "message",
@@ -386,7 +391,7 @@ mod tests {
         }
     }
 
-    /// 造一个最小 opencode 库：13 张表 + 两条会话，只删其中一条。
+    /// Build a minimal opencode database: 13 tables + two sessions; delete only one.
     fn temp_db(tag: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "modelharbor-delete-{tag}-{}.db",
@@ -394,7 +399,7 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
         let connection = rusqlite::Connection::open(&path).unwrap();
-        // 按真实 schema 建表（列名与真实库一致）。
+        // Tables created per the real schema (column names matching real databases).
         connection
             .execute_batch(
                 "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT);\n                 CREATE TABLE session_v2 (id TEXT PRIMARY KEY);\n                 CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT);\n                 CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT);\n                 CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT);\n                 CREATE TABLE event (id TEXT PRIMARY KEY, aggregate_id TEXT);\n                 CREATE TABLE event_sequence (aggregate_id TEXT PRIMARY KEY, seq INTEGER);\n                 CREATE TABLE todo (id TEXT PRIMARY KEY, session_id TEXT);\n                 CREATE TABLE session_share (id TEXT PRIMARY KEY, session_id TEXT);\n                 CREATE TABLE instruction_entry (id TEXT PRIMARY KEY, session_id TEXT);\n                 CREATE TABLE instruction_state (id TEXT PRIMARY KEY, session_id TEXT);\n                 CREATE TABLE session_pending (id TEXT PRIMARY KEY, session_id TEXT);\n                 CREATE TABLE session_inbox (id TEXT PRIMARY KEY, session_id TEXT);",
@@ -402,7 +407,7 @@ mod tests {
             .unwrap();
         for id in ["ses_target", "ses_other"] {
             for (table, column) in opencode_tables() {
-                // 主键列跟着所在列名走：有的是 id，有的是 session_id / aggregate_id。
+                // The primary-key column follows its own column name: some are id, others session_id / aggregate_id.
                 let sql = match table {
                     "event_sequence" => {
                         format!("INSERT INTO {table} (aggregate_id, seq) VALUES (?1, 1)")
@@ -425,7 +430,7 @@ mod tests {
         path
     }
 
-    /// 真删：每张表都清掉目标会话，其他会话一行不动。
+    /// Really deleted: every table cleared of the target session, other sessions untouched row for row.
     #[test]
     fn sqlite_delete_clears_every_table_and_spares_the_rest() {
         let path = temp_db("real");
@@ -450,7 +455,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 源里没有这条会话：报 `SessionNotFound`，不是静默成功。
+    /// The session isn't in the source: `SessionNotFound` reported, never silent success.
     #[test]
     fn sqlite_delete_reports_a_missing_session() {
         let path = temp_db("missing");
@@ -461,7 +466,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 老库没有 session_v2：照样能删，不报错。
+    /// Old databases without session_v2: deletion still works, no error.
     #[test]
     fn sqlite_delete_tolerates_missing_tables() {
         let path = temp_db("old");
@@ -478,16 +483,16 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 哪些失败要连统计那半一起拦下：可修的（源没删成）拦，不可修的放行。
+    /// Which failures also block the statistics half: fixable ones (source not deleted) block; unfixable ones pass.
     #[test]
     fn only_retryable_failures_block_the_ledger() {
-        // 库被占着 / 权限不足 / 库坏了：用户能修，行要留着让他重试。
+        // Database locked / permissions / corruption: the user can fix it; keep the row so they can retry.
         assert!(DeleteError::Failed {
             detail: "database is locked".to_string()
         }
         .blocks_ledger());
 
-        // 这几种没有「重试源删除」可言：照旧从统计里移除。
+        // These have no "retry the source deletion" to speak of: statistics removal proceeds as usual.
         assert!(!DeleteError::SessionNotFound.blocks_ledger());
         assert!(!DeleteError::Unsupported {
             client: "workbuddy"
@@ -499,7 +504,7 @@ mod tests {
         .blocks_ledger());
     }
 
-    /// 临时会话根：进程 id + 计数器，避免并行测试撞目录。
+    /// A temporary session root: process id + counter, so parallel tests don't collide.
     fn temp_root(tag: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -514,12 +519,12 @@ mod tests {
         root
     }
 
-    /// 删 pi 的**子 agent / worktree 转录**：文件名一律是 `session.jsonl`，
-    /// id 只在内容首行 —— 按文件名匹配的老逻辑找不到它，删不掉。
+    /// Deleting pi's **sub-agent / worktree transcripts**: the file name is always `session.jsonl` with the id
+    /// only in the content's first line — old file-name matching can't find, and can't delete, them.
     #[test]
     fn pi_delete_reaches_subagent_transcripts() {
         let root = temp_root("pi-sub");
-        // 真实布局：cwd / 父会话 / 子 agent uuid / run-0 / session.jsonl
+        // The real layout: cwd / parent session / sub-agent uuid / run-0 / session.jsonl
         let run = root
             .join("--D--X--")
             .join("2026-01-01T00-00-00-000Z_top-id")
@@ -527,7 +532,7 @@ mod tests {
             .join("run-0");
         std::fs::create_dir_all(&run).expect("建目录树");
         let jsonl = run.join("session.jsonl");
-        // 同名转录目录：`session.jsonl` 去掉后缀 = `session`。
+        // The same-named transcript directory: `session.jsonl` minus the suffix = `session`.
         let transcript_dir = run.join("session");
         std::fs::create_dir_all(&transcript_dir).expect("建转录目录");
         std::fs::write(
@@ -542,7 +547,7 @@ mod tests {
         assert!(!jsonl.exists(), "jsonl 应被删除");
         assert!(!transcript_dir.exists(), "同名转录目录也应被删除");
 
-        // 删第二次：源里已没有，报 SessionNotFound（不静默成功）。
+        // Deleting a second time: already gone from the source — SessionNotFound (never silent success).
         assert_eq!(
             delete_pi_like_at(&root, "sub-id"),
             Err(DeleteError::SessionNotFound),
@@ -551,7 +556,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 删 pi 的**顶层会话**：文件名带 id，连带它的分支转录目录一起删。
+    /// Deleting pi's **top-level session**: the file name carries the id, deleted together with its branch transcript directory.
     #[test]
     fn pi_delete_handles_top_level_sessions() {
         let root = temp_root("pi-top");

@@ -1,7 +1,7 @@
 use crate::app::fetch::net_guard_gate;
 use crate::app::App;
 
-/// 守卫值换算：默认拦截，放行开关打开后不再拦截。
+/// Guard-value conversion: blocking by default; with the allow toggle on, no more blocking.
 #[test]
 fn override_releases_the_model_probe_gate() {
     let guard = Some("检测到系统代理".to_string());
@@ -11,12 +11,12 @@ fn override_releases_the_model_probe_gate() {
         "默认必须继续拦截"
     );
     assert_eq!(net_guard_gate(&guard, true), None, "放行后不该再拦");
-    // 没检测到代理时，开关开或关都不产生拦截。
+    // With no proxy detected, the toggle on or off produces no blocking.
     assert_eq!(net_guard_gate(&None, false), None);
     assert_eq!(net_guard_gate(&None, true), None);
 }
 
-/// 开关贯通到 App：既影响门控值，也进 `current_prefs`（才能落盘）。
+/// The toggle reaches into App: it affects the gate value and enters `current_prefs` (so it can persist).
 #[test]
 fn app_gate_and_prefs_follow_the_switch() {
     let blocked = App {

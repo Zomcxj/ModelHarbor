@@ -1,4 +1,4 @@
-//! Provider 编辑 / 新增表单、模型获取弹层与表单字段控件。
+//! Provider edit / add forms, the discovery popover, and form field widgets.
 use super::App;
 use crate::app::fetch::{
     cancel_discovery, discovery_panel, model_latency_label, model_probe_button, net_guard_gate,
@@ -17,7 +17,7 @@ use eframe::egui;
 use model_harbor_core::discovery::DiscoveryCache;
 use std::collections::{HashMap, HashSet};
 
-/// 「获取模型」面板的分栏参数：列间水平间距、单列最小宽度、最大列数。
+/// The discovery panel's layout parameters: horizontal column gap, per-column minimum width, max columns.
 mod combos;
 mod model_row;
 mod presets;
@@ -35,13 +35,13 @@ pub(super) use popup::*;
 
 impl App {
     pub(super) fn ui_new_provider_form(&mut self, ui: &mut egui::Ui) {
-        // 草稿 schema 对齐当前文件版本：v2 文件下协议包下拉拼 v2 包名，
-        // 确认添加的条目不再以 v1 形状混进 v2 文件。
+        // The draft schema matches the current file's version: under a v2 file the protocol-package dropdown
+        // assembles v2 package names, so confirmed entries never slip into a v2 file in the v1 shape.
         self.new_provider.schema = self.current_opencode_schema();
         let (variants_label, variant_names) = self.dialect_variants();
         let flags = ProviderFormFlags::new(self);
         ui.group(|ui| {
-            // 官方预设（可选）：一键填 key / baseUrl / 协议，不套用则手填。
+            // Official presets (optional): one-click key / baseUrl / protocol fill; skipped, everything is hand-typed.
             ui.horizontal_wrapped(|ui| {
                 let dialect = if flags.show_oc {
                     crate::presets::PresetDialect::Opencode
@@ -80,7 +80,7 @@ impl App {
             }
             let mut rm_new: Option<usize> = None;
             let mut move_new_request: Option<(usize, usize)> = None;
-            // 本帧用户点下的探测请求。
+            // Discovery requests the user clicked this frame.
             let mut probe_request: Option<(String, String)> = None;
             for j in 0..self.new_provider.models.len() {
                 let model_count = self.new_provider.models.len();
@@ -97,7 +97,7 @@ impl App {
                             if j + 1 < model_count && ui.button("↓").clicked() {
                                 move_new_request = Some((j, j + 1));
                             }
-                            // 单模型延迟测试：按钮在调整按钮右侧，结果显示在按钮右侧。
+                            // Single-model latency tests: the button right of the adjust button, its result right of the button.
                             let model_id = self.new_provider.models[j].id.trim().to_string();
                             let gate =
                                 net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
@@ -129,7 +129,7 @@ impl App {
                             true,
                             None,
                             &format!("new_provider#{}", j),
-                            // 新增表单不提供「同步」（表单尚未入库）。
+                            // The add form offers no "sync" (the form isn't in the table yet).
                             &mut None,
                         );
                     },
@@ -218,12 +218,12 @@ impl App {
         });
     }
 
-    /// 关闭新增 provider 表单时清理其测试/获取状态。
+    /// Clean a closed add-provider form's test / discovery state.
     pub(super) fn clear_new_provider_state(&mut self) {
         self.latency.remove(NEW_PROVIDER_FETCH_KEY);
-        // 探测状态一并清掉（在飞线程的回包因接收端被丢而作废）。
+        // Discovery state clears with it (in-flight threads' replies are voided by the dropped receiver).
         self.discovery.remove(NEW_PROVIDER_FETCH_KEY);
-        // 释放探测的串行位。
+        // Release the discovery serialization slots.
         self.probe.release(Some(NEW_PROVIDER_FETCH_KEY));
     }
 }

@@ -4,10 +4,10 @@ pub(crate) fn is_builtin_pid(pid: &str) -> bool {
     BUILTIN_PIDS.contains(&pid)
 }
 
-/// 内部协议 → (内置 pid, 该条目要写的 `wireApi`)。
+/// Internal protocol → (built-in pid, the entry's `wireApi`).
 ///
-/// 一律回落到内置 pid。OpenAI 的两种协议共用 `openai` 这一个 pid，
-/// 靠条目自己的 `wireApi` 区分。
+/// Always falls back to a built-in pid. OpenAI's two protocols share the single `openai` pid,
+/// distinguished by the entry's own `wireApi`.
 pub(crate) fn pid_for_api(api: &str) -> (&'static str, &'static str) {
     match api.trim() {
         "openai-responses" => ("openai", WIRE_RESPONSES),
@@ -17,9 +17,9 @@ pub(crate) fn pid_for_api(api: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// 协议桶名（内置 pid 名，或 `providerProtocol` 的值）→ 内部协议。
+/// Protocol bucket name (a built-in pid, or a `providerProtocol` value) → internal protocol.
 ///
-/// `wireApi` 优先于桶名；非 OpenAI 系协议没有 `wireApi` 概念。
+/// `wireApi` beats the bucket name; non-OpenAI protocols have no `wireApi` concept.
 pub(crate) fn bucket_to_api(bucket: &str, wire: &str) -> String {
     match bucket {
         "openai" => {
@@ -29,17 +29,17 @@ pub(crate) fn bucket_to_api(bucket: &str, wire: &str) -> String {
                 "openai-completions".to_string()
             }
         }
-        // 桶名直接叫 `openai-responses` 时也认。
+        // A bucket named `openai-responses` directly is recognized too.
         "openai-responses" => "openai-responses".to_string(),
         "anthropic" => "anthropic-messages".to_string(),
         "gemini" | "vertex-ai" => "google-generative-ai".to_string(),
         "qwen-oauth" => "openai-completions".to_string(),
-        // 未映射的自定义 pid：给兜底协议，条目仍会在界面上显示。
+        // An unmapped custom pid: gets the fallback protocol; the entry still displays in the UI.
         _ => "openai-completions".to_string(),
     }
 }
 
-/// 某个 pid 的协议桶名：内置 pid 就是它自己，自定义 pid 查 `providerProtocol`。
+/// A pid's protocol bucket name: built-in pids are themselves; custom pids look up `providerProtocol`.
 pub(crate) fn bucket_of(protocols: Option<&Map<String, Value>>, pid: &str) -> String {
     if is_builtin_pid(pid) {
         return pid.to_string();
@@ -51,7 +51,7 @@ pub(crate) fn bucket_of(protocols: Option<&Map<String, Value>>, pid: &str) -> St
         .to_string()
 }
 
-/// 条目 → ProviderRow（一条条目 = 一张卡片）。
+/// Entry → ProviderRow (one entry = one card).
 pub(crate) fn provider_from_entry(
     pid: &str,
     protocols: Option<&Map<String, Value>>,
@@ -70,7 +70,7 @@ pub(crate) fn provider_from_entry(
 
     let mut row = ProviderRow::new();
     row.key = id;
-    // 写回时要知道这条属于哪个 pid。
+    // Write-back needs to know which pid this entry belongs to.
     row.qwen_pid = pid.to_string();
     row.pi_api = if bucket.is_empty() {
         "openai-completions".to_string()
@@ -87,7 +87,7 @@ pub(crate) fn provider_from_entry(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    // 密钥在顶层 `env[<envKey>]`；`envKey` 本身也存下来。
+    // The key lives in the top-level `env[<envKey>]`; `envKey` itself is stored too.
     row.api_key_env = env_key.clone();
     row.original_api_key_env = env_key.clone();
     row.api_key = env
@@ -95,7 +95,7 @@ pub(crate) fn provider_from_entry(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    // 条目没写 timeout 时留空。
+    // Entries without a timeout stay empty.
     row.timeout = entry
         .get("generationConfig")
         .and_then(|g| g.get("timeout"))
@@ -107,7 +107,7 @@ pub(crate) fn provider_from_entry(
     Some(row)
 }
 
-/// 条目 → ModelRow。一条条目只有一个模型，字段全在同一条目上。
+/// Entry → ModelRow. One entry is one model, all fields on the same entry.
 pub(crate) fn model_from_entry(entry: &Value) -> ModelRow {
     let mut m = ModelRow::new();
     m.id = entry_id(entry).unwrap_or_default().to_string();
@@ -116,7 +116,7 @@ pub(crate) fn model_from_entry(entry: &Value) -> ModelRow {
         .and_then(Value::as_str)
         .unwrap_or(&m.id)
         .to_string();
-    // 逐个覆盖 `ModelRow::new()` 的默认值：条目没声明的字段一律留空。
+    // Override `ModelRow::new()`'s defaults one by one: fields the entry doesn't declare stay empty.
     m.context = entry
         .get("generationConfig")
         .and_then(|g| g.get("contextWindowSize"))
@@ -133,7 +133,7 @@ pub(crate) fn model_from_entry(entry: &Value) -> ModelRow {
         .get("capabilities")
         .and_then(|c| c.get("reasoning"))
         .is_some_and(|r| r != &Value::Bool(false));
-    // QwenCode 没有「工具调用」与 `store` 字段：不建模。
+    // QwenCode has no "tool use" or `store` fields: not modeled.
     m.tool_call = false;
     m.store = false;
     m.variants = efforts_from_entry(entry).join(", ");
@@ -143,9 +143,9 @@ pub(crate) fn model_from_entry(entry: &Value) -> ModelRow {
     m
 }
 
-/// 条目的输入模态：`capabilities.vision` → `text[, image]`。
+/// The entry's input modalities: `capabilities.vision` → `text[, image]`.
 ///
-/// 未声明时返回空串（不返回 `"text"`）。与 WorkBuddy 同一口径。
+/// Undeclared returns an empty string (never `"text"`). Same accounting as WorkBuddy.
 pub(crate) fn modalities_from_entry(entry: &Value) -> String {
     match entry
         .get("capabilities")
@@ -157,7 +157,7 @@ pub(crate) fn modalities_from_entry(entry: &Value) -> String {
     }
 }
 
-/// 条目的思考档位：`capabilities.reasoning.efforts`。
+/// The entry's reasoning tiers: `capabilities.reasoning.efforts`.
 pub(crate) fn efforts_from_entry(entry: &Value) -> Vec<String> {
     entry
         .get("capabilities")
@@ -173,12 +173,12 @@ pub(crate) fn efforts_from_entry(entry: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 卡片 + 模型 → 条目里由界面接管的字段。
+/// Card + model → the entry's UI-managed fields.
 ///
-/// 以旧条目（`old`）为基底，逐个覆盖界面接管的键；界面没接管的键原样留着，
-/// 所以这里是子键级合并。
+/// The old entry (`old`) is the base; UI-managed keys are overwritten one by one while keys the UI doesn't
+/// manage stay as-is — a sub-key-level merge.
 ///
-/// 界面清空的字段删掉对应的键，而不是写空值。
+/// Fields the UI clears delete their keys rather than writing empty values.
 pub(crate) fn entry_from_provider(
     p: &ProviderRow,
     m: Option<&ModelRow>,
@@ -196,11 +196,11 @@ pub(crate) fn entry_from_provider(
     set_str(&mut obj, "description", p.description.trim());
     set_str(&mut obj, "baseUrl", p.base_url.trim());
     set_str(&mut obj, "envKey", &env_key_name(p));
-    // `wireApi` 只对 OpenAI 系协议有意义。
+    // `wireApi` is meaningful only for OpenAI-family protocols.
     set_str(&mut obj, "wireApi", wire);
 
     if let Some(m) = m {
-        // capabilities：只动界面能表达的两个子键，其余从旧条目继承。
+        // capabilities: only the two sub-keys the UI can express are touched; the rest inherit from the old entry.
         let mut caps = obj
             .get("capabilities")
             .and_then(Value::as_object)
@@ -215,7 +215,7 @@ pub(crate) fn entry_from_provider(
                 Value::Bool(mods.iter().any(|s| s.eq_ignore_ascii_case("image"))),
             );
         }
-        // 勾选框就是「声明 / 不声明」这个键：勾上写、取消删。
+        // The checkbox IS the "declare / don't declare" key: checked writes, unchecked deletes.
         if m.reasoning {
             let mut r = caps
                 .get("reasoning")
@@ -241,8 +241,8 @@ pub(crate) fn entry_from_provider(
             obj.insert("capabilities".into(), Value::Object(caps));
         }
 
-        // generationConfig：只动 `contextWindowSize` / `timeout` /
-        // `samplingParams.max_tokens` 三个子键。
+        // generationConfig: only `contextWindowSize` / `timeout` /
+        // `samplingParams.max_tokens` are touched.
         let mut gen = obj
             .get("generationConfig")
             .and_then(Value::as_object)
@@ -271,11 +271,13 @@ pub(crate) fn entry_from_provider(
     Value::Object(obj)
 }
 
-/// 条目要用的 `envKey` 变量名：界面填了就用界面值；只填了密钥没填变量名时，按
-/// provider key 推一个（与 DSH 的 [`crate::credentials::default_env_name`] 同一约定）。
+/// The `envKey` variable name for the entry: the UI's value wins; with only a key filled and no variable
+/// name, one derives from the provider key (the same convention as DSH's
+/// [`crate::credentials::default_env_name`]).
 ///
-/// 「界面明确清空过」与「从来没填过」分开判断：原来有变量名、现在空 = 用户清掉的，
-/// 尊重清空；本来就空才推导。变量名与密钥都空也返回空串。
+/// "Explicitly cleared in the UI" and "never filled" are judged separately: a previously-set name now
+/// empty = the user cleared it — the clearing is respected; only originally-empty names derive. Both
+/// name and key empty also return an empty string.
 pub(crate) fn env_key_name(p: &ProviderRow) -> String {
     let named = p.api_key_env.trim();
     if !named.is_empty() {

@@ -1,6 +1,7 @@
-//! WorkBuddy 后端：`~/.workbuddy/models.json`，顶层数组，provider 内联在每条模型里；协议由
-//! `useCustomProtocol` + URL 后缀表达。配置分两份：主文件是 WorkBuddy 读的生效清单，只含
-//! 勾选条目、每个 `id` 只留第一条；同目录 `models.full.json` 是全量副本，含逐条 `disabled` 标记。
+//! WorkBuddy backend: `~/.workbuddy/models.json`, a top-level array with provider info inlined into each
+//! model; the protocol is expressed via `useCustomProtocol` + URL suffix. Config comes in two files: the
+//! main file is the effective list WorkBuddy reads — only checked entries, first of each `id` kept; the
+//! same-directory `models.full.json` is a full copy carrying per-entry `disabled` flags.
 
 use super::{Backend, BackendLoad};
 use crate::convert;
@@ -14,24 +15,24 @@ pub struct WorkBuddyBackend;
 
 pub static BACKEND: WorkBuddyBackend = WorkBuddyBackend;
 
-/// 非 Chat 协议保存时补的 URL 后缀。
+/// URL suffix appended when saving a non-Chat protocol.
 const MESSAGES_SUFFIX: &str = "/v1/messages";
 const RESPONSES_SUFFIX: &str = "/v1/responses";
 
-/// 全量副本的文件名，与 `models.json` 同目录。
-/// WorkBuddy 只按精确文件名读 `models.json`。
+/// The full copy's file name, same directory as `models.json`.
+/// WorkBuddy reads `models.json` only by exact file name.
 const FULL_STORE_NAME: &str = "models.full.json";
 
 fn default_local_path() -> String {
     format!("{}\\.workbuddy\\models.json", home_dir_string())
 }
 
-/// 全量副本路径：与主配置同目录、固定文件名，分隔符随主配置路径形态。
+/// Full-copy path: same directory as the main config, fixed file name, separator following the main config path's shape.
 pub fn full_store_path(config_path: &str) -> String {
     crate::util::sibling_path(config_path, FULL_STORE_NAME)
 }
 
-/// 读全量副本的条目；不存在、非数组或解析失败返回 `None`。
+/// Read the full copy's entries; `None` when missing, non-array, or unparseable.
 fn load_full_store(config_path: &str) -> Option<Vec<Value>> {
     if config_path.trim().is_empty() {
         return None;
@@ -49,10 +50,10 @@ fn load_full_store(config_path: &str) -> Option<Vec<Value>> {
     }
 }
 
-/// 合并两份配置，得到界面上要显示的全部条目。
+/// Merge the two configs into everything the UI should show.
 ///
-/// 以全量副本为主（它带每条自己的勾选状态），再补入主配置里有、副本里没有的条目，
-/// 补入的条目按已勾选处理。
+/// The full copy leads (it carries each entry's own check state); entries present in the main config but
+/// missing from the copy are appended, treated as checked.
 fn merge_full_and_effective(full: &[Value], effective: &[Value]) -> Vec<Value> {
     let key_of = |v: &Value| {
         (
@@ -72,13 +73,13 @@ fn merge_full_and_effective(full: &[Value], effective: &[Value]) -> Vec<Value> {
         if known.contains(&key_of(entry)) {
             continue;
         }
-        // 补入的条目按启用处理；`disabled` 键由 `all_entries` 落盘时决定。
+        // Appended entries count as enabled; the `disabled` key is decided when `all_entries` writes.
         out.push(entry.clone());
     }
     out
 }
 
-/// 数组根 → 条目列表；兼容 `{ "models": [...] }` 形态。
+/// Array root → entry list; also accepts the `{ "models": [...] }` shape.
 fn entries_of(root: &Value) -> Option<&Vec<Value>> {
     if let Some(arr) = root.as_array() {
         return Some(arr);
@@ -86,8 +87,8 @@ fn entries_of(root: &Value) -> Option<&Vec<Value>> {
     root.get("models").and_then(Value::as_array)
 }
 
-/// 从 URL 后缀推导协议：`/messages` → Anthropic Messages、`/responses` → Responses，
-/// 其余按 Chat Completions。
+/// Derive the protocol from the URL suffix: `/messages` → Anthropic Messages, `/responses` → Responses,
+/// everything else Chat Completions.
 fn api_from_url(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let trimmed = path.trim_end_matches('/');
@@ -100,7 +101,7 @@ fn api_from_url(url: &str) -> String {
     }
 }
 
-/// 协议 → 保存时要补的后缀；Chat Completions 返回 `None`。
+/// Protocol → suffix to append at save time; Chat Completions returns `None`.
 fn suffix_for_api(api: &str) -> Option<&'static str> {
     match api.trim() {
         "anthropic-messages" => Some(MESSAGES_SUFFIX),
@@ -109,8 +110,8 @@ fn suffix_for_api(api: &str) -> Option<&'static str> {
     }
 }
 
-/// 把基址与后缀拼起来，幂等：先剥掉基址末尾的协议路径段
-/// （`/messages`、`/responses`、`/chat/completions`、`/v1`），再补规范后缀。
+/// Join base and suffix, idempotently: first strip protocol path segments from the base's tail
+/// (`/messages`, `/responses`, `/chat/completions`, `/v1`), then append the canonical suffix.
 fn with_suffix(url: &str, suffix: &str) -> String {
     let mut base = url.trim().trim_end_matches('/');
     loop {
@@ -128,7 +129,7 @@ fn with_suffix(url: &str, suffix: &str) -> String {
     format!("{}{}", base, suffix)
 }
 
-/// 条目 → ProviderRow，一个条目一张卡片。
+/// Entry → ProviderRow; one entry per card.
 fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
     let id = v.get("id").and_then(Value::as_str)?.trim().to_string();
     if id.is_empty() {
@@ -140,8 +141,8 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    // `id` = 模型名（发给 API 的模型），`name` = 提供商标签：
-    // 模型行的 id ← 条目 `id`，provider 的 key ← 条目 `name`。
+    // `id` = model name (sent to the API), `name` = provider label:
+    // the model row's id ← entry `id`; the provider's key ← entry `name`.
     let provider = v
         .get("name")
         .and_then(Value::as_str)
@@ -168,9 +169,9 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
         .get("supportsReasoning")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    // `disabled: true`：选择器里变灰、不可选，但仍在列表里。
+    // `disabled: true`: grayed out and unselectable in the selector, but still in the list.
     model.disabled = v.get("disabled").and_then(Value::as_bool).unwrap_or(false);
-    // WorkBuddy 没有「思考档位」概念，清空 `ModelRow::new()` 带出的默认档位。
+    // WorkBuddy has no "reasoning tiers" concept; clear the default tiers ModelRow::new() brings.
     model.variants.clear();
     model.original_variants.clear();
     model.source_format = Some(ConfigFormat::WorkBuddy);
@@ -183,7 +184,7 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    // 勾选自定义协议时协议由 URL 后缀决定，否则是 Chat Completions。
+    // With the custom protocol checked, the protocol follows the URL suffix; otherwise it's Chat Completions.
     row.pi_api = if custom {
         api_from_url(url)
     } else {
@@ -201,15 +202,15 @@ fn provider_from_entry(v: &Value) -> Option<ProviderRow> {
     Some(row)
 }
 
-/// ProviderRow + 单个模型 → 条目里由界面接管的字段。
+/// ProviderRow + single model → the entry's UI-managed fields.
 ///
-/// 只返回本函数管理的键；条目里其余的键（tags / credits / reasoning 等）由
-/// [`WorkBuddyBackend::serialize_root`] 从同名同模型的旧条目继承。
-/// `id` 是发给 API 的模型名，`name` 是提供商标签，两者不拼接。
+/// Returns only the keys this function manages; the entry's other keys (tags / credits / reasoning etc.)
+/// are inherited by [`WorkBuddyBackend::serialize_root`] from the old entry with the same name and model.
+/// `id` is the model name sent to the API, `name` is the provider label; the two are never concatenated.
 fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
     let mut obj = Map::new();
 
-    // `id` = 模型名（模型行的 id），`name` = 提供商（`ProviderRow.key`）。
+    // `id` = model name (the model row's id), `name` = provider (`ProviderRow.key`).
     let model_id = model
         .map(|m| m.id.trim())
         .filter(|s| !s.is_empty())
@@ -228,7 +229,7 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
 
     let api = p.effective_api();
     match suffix_for_api(&api) {
-        // 非 Chat 协议：URL 补后缀，并置 `useCustomProtocol = true`。
+        // Non-Chat protocol: append the URL suffix and set `useCustomProtocol = true`.
         Some(suffix) => {
             obj.insert(
                 "url".into(),
@@ -236,7 +237,7 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
             );
             obj.insert("useCustomProtocol".into(), Value::Bool(true));
         }
-        // Chat Completions：URL 存基址，后缀由 WorkBuddy 补。
+        // Chat Completions: the URL stores the base; WorkBuddy appends the suffix.
         None => {
             obj.insert("url".into(), Value::String(p.base_url.clone()));
             obj.insert("useCustomProtocol".into(), Value::Bool(false));
@@ -244,14 +245,14 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
     }
 
     if let Some(m) = model {
-        // 只写能解析成整数的值；解析不了则不写该键。
+        // Write only values that parse as integers; unparseable ones skip the key.
         if let Ok(context) = m.context.trim().parse::<i64>() {
             obj.insert("maxInputTokens".into(), Value::Number(context.into()));
         }
         if let Ok(output) = m.output.trim().parse::<i64>() {
             obj.insert("maxOutputTokens".into(), Value::Number(output.into()));
         }
-        // 模态 / 能力：只在原条目已写该键时同步，不新增键。
+        // Modalities / capabilities: synced only when the original entry already had the key; no new keys.
         let mods: Vec<String> = m
             .modalities_input
             .split(',')
@@ -270,13 +271,13 @@ fn entry_from_provider(p: &ProviderRow, model: Option<&ModelRow>) -> Value {
         if obj.contains_key("supportsReasoning") {
             obj.insert("supportsReasoning".into(), Value::Bool(m.reasoning));
         }
-        // 启用/停用不在这里写；勾选状态由全量副本逐条记录。
+        // Enable/disable isn't written here; check states are recorded per entry by the full copy.
     }
 
     Value::Object(obj)
 }
 
-/// 按 (name, id) 二元组索引旧条目；不同 provider 可以有同 id 的模型。
+/// Index old entries by the (name, id) pair; different providers may have same-id models.
 fn existing_index(base: &Value) -> HashMap<(String, String), Value> {
     entries_of(base)
         .map(|items| {
@@ -292,15 +293,15 @@ fn existing_index(base: &Value) -> HashMap<(String, String), Value> {
         .unwrap_or_default()
 }
 
-/// 一家提供商的每个模型各写一条条目，不过滤、不去重。
+/// One entry per model of a provider — no filtering, no dedup.
 ///
-/// 两份配置共用的构造步骤：全量副本要全部条目，生效清单再从结果里筛。
-/// 勾选状态每条都显式写：勾选 `disabled: false`、未勾选 `true`。
+/// Construction shared by both configs: the full copy takes all entries; the effective list filters from
+/// the result. Check state is written explicitly on every entry: checked `disabled: false`, unchecked `true`.
 fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
     let existing = existing_index(base);
     let mut out: Vec<Value> = Vec::new();
     for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
-        // 没有模型的 provider 也留一条，id 回落到 provider key。
+        // A provider with no models still keeps one entry, id falling back to the provider key.
         let models: Vec<Option<&ModelRow>> = if p.models.is_empty() {
             vec![None]
         } else {
@@ -322,7 +323,7 @@ fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
                     entry.insert(k.clone(), v.clone());
                 }
             }
-            // 勾选 = `disabled: false`，未勾选 = `true`。
+            // Checked = `disabled: false`, unchecked = `true`.
             entry.insert(
                 "disabled".into(),
                 Value::Bool(model.map(|m| m.disabled).unwrap_or(false)),
@@ -333,10 +334,10 @@ fn all_entries(providers: &[ProviderRow], base: &Value) -> Vec<Value> {
     out
 }
 
-/// 生效清单：取出勾选的条目，且每个 id 只留第一条。
+/// Effective list: take checked entries, keeping only the first per id.
 ///
-/// WorkBuddy 的选择器按裸 id 全局去重，第二条起不生效；被筛掉的条目仍在全量副本里。
-/// 留下的每条显式写 `disabled: false`。
+/// WorkBuddy's selector dedupes globally by bare id — from the second on it has no effect; filtered-out
+/// entries remain in the full copy. Each kept entry writes `disabled: false` explicitly.
 fn effective_entries(all: &[Value]) -> Vec<Value> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
@@ -354,7 +355,7 @@ fn effective_entries(all: &[Value]) -> Vec<Value> {
             continue;
         }
         let mut entry = entry.clone();
-        // 生效条目一律启用，显式写 `false`。
+        // Effective entries are always enabled, written `false` explicitly.
         if let Some(obj) = entry.as_object_mut() {
             obj.insert("disabled".into(), Value::Bool(false));
         }
@@ -363,17 +364,18 @@ fn effective_entries(all: &[Value]) -> Vec<Value> {
     out
 }
 
-/// 条目列表 → [`BackendLoad`]，两份配置共用。
+/// Entry list → [`BackendLoad`], shared by both configs.
 ///
-/// 同 `name` 的条目合并成一张 provider 卡片，每条各成一个模型行。
+/// Entries with the same `name` merge into one provider card; each entry becomes a model row.
 ///
-/// `trusted_flags` 为 `true`（读全量副本）时逐条采信条目自己写的 `disabled` 键，没写该键
-/// 的条目仍按位置推导（同一 id 只有第一条启用）；为 `false` 时全部按位置推导。
-/// 末尾还有一道按 id 去重兜底：同一 id 至多一条启用，显式标记优先于位置推导。
+/// With `trusted_flags` true (reading the full copy), each entry's own `disabled` key is taken at face
+/// value, entries lacking the key still derive by position (only the first of a same id enabled); with
+/// false, everything derives by position. A final id-based dedup pass backstops: at most one enabled per
+/// id, explicit flags winning over positional derivation.
 fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
-    // 第一遍：按文件顺序逐条定勾选状态，并记录该状态来自显式标记还是位置推导。
+    // Pass one: settle each entry's check state in file order, recording whether it came from an explicit flag or positional derivation.
     let mut seen: HashSet<String> = HashSet::new();
-    // (勾选状态, 是否来自显式标记)
+    // (check state, whether from an explicit flag)
     let mut flags: Vec<Option<(bool, bool)>> = Vec::with_capacity(entries.len());
     for entry in &entries {
         let id = entry
@@ -382,12 +384,12 @@ fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         let Some(id) = id else {
-            // 没有 id 的条目进不了界面；占位 `None` 让 flags 与 entries 同序。
+            // Entries without an id can't reach the UI; a placeholder `None` keeps flags aligned with entries.
             flags.push(None);
             continue;
         };
         let by_position = !seen.insert(id);
-        // 是否显式写了 `disabled` 直接读条目本身，保证与 flags 同序。
+        // Whether `disabled` was explicitly written reads from the entry itself, keeping flags aligned.
         let explicit = trusted_flags && entry.get("disabled").and_then(Value::as_bool).is_some();
         let disabled = match (explicit, entry.get("disabled").and_then(Value::as_bool)) {
             (true, Some(flag)) => flag,
@@ -396,7 +398,7 @@ fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
         flags.push(Some((disabled, explicit)));
     }
 
-    // 第二遍：同一 id 若有多条判成启用，只留一条；显式标记优先，同源取最靠前的。
+    // Pass two: when several entries of one id read as enabled, keep one; explicit flags win, same source takes the earliest.
     let mut winner: HashMap<String, usize> = HashMap::new();
     for (i, entry) in entries.iter().enumerate() {
         let Some((false, explicit)) = flags[i] else {
@@ -409,7 +411,7 @@ fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
             .trim()
             .to_string();
         match winner.get(&id) {
-            // 已有胜出者：仅当本条是显式标记、上一条不是时改判。
+            // An existing winner: re-judged only when this entry is explicit and the previous wasn't.
             Some(&prev) if explicit && !flags[prev].is_some_and(|(_, e)| e) => {
                 winner.insert(id, i);
             }
@@ -419,7 +421,7 @@ fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
             }
         }
     }
-    // 落败的启用条目一律关掉。
+    // Losing enabled entries are all switched off.
     for (i, entry) in entries.iter().enumerate() {
         if flags[i].map(|(disabled, _)| disabled) != Some(false) {
             continue;
@@ -447,12 +449,12 @@ fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
             model.disabled = disabled;
         }
         match providers.iter_mut().find(|p| p.key == row.key) {
-            // 同 provider 以首条为准；后续条目只贡献模型行。
+            // Same provider: the first entry wins; later ones contribute only model rows.
             Some(existing) => existing.models.push(row.models.remove(0)),
             None => providers.push(row),
         }
     }
-    // extras 用原始条目数组：保存时按 (name, id) 继承未知字段取的就是它。
+    // extras uses the original entry array: at save time, inheriting unknown fields by (name, id) looks it up here.
     let extras = Value::Array(entries);
     BackendLoad {
         root: extras.clone(),
@@ -462,7 +464,7 @@ fn build_load(entries: Vec<Value>, trusted_flags: bool) -> BackendLoad {
     }
 }
 
-/// 数组根的 JSON 渲染：两空格缩进，`compact` 时去掉缩进。
+/// JSON rendering of an array root: two-space indent; `compact` drops the indent.
 fn render_array(items: &[Value], compact: bool) -> String {
     if compact {
         let inner: Vec<String> = items
@@ -490,7 +492,7 @@ impl Backend for WorkBuddyBackend {
     }
 
     fn detect(&self, content: &str, _path: &str) -> bool {
-        // 非空数组且首元素带 `id`；`[]` 不认。
+        // A non-empty array whose first element carries `id`; `[]` isn't recognized.
         parse_config_content(content)
             .map(|v| {
                 entries_of(&v)
@@ -507,10 +509,11 @@ impl Backend for WorkBuddyBackend {
         Ok(build_load(entries, false))
     }
 
-    /// 带路径的解析：优先读全量副本（`models.full.json`），它是界面上全部配置的来源。
+    /// Parsing with a path: the full copy (`models.full.json`) is read first — it's the source of everything the
+    /// UI shows.
     ///
-    /// 副本不存在时退回 `models.json`，勾选状态按位置推导。
-    /// 副本存在时仍读主配置并集进去，补入手改主配置新增的条目。
+    /// Without the copy, fall back to `models.json` with check states derived by position. With the copy
+    /// present, the main config is still read and unioned in, picking up entries hand-added to it.
     fn parse_at(&self, content: &str, path: &str) -> Result<BackendLoad, String> {
         if let Some(full) = load_full_store(path) {
             let effective = parse_config_content(content)
@@ -532,21 +535,22 @@ impl Backend for WorkBuddyBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
-        // 产物是 WorkBuddy 的生效清单：只含勾选的条目、每个 `id` 只留第一条。
-        // 全量副本由 `save_sidecars` 另写一份，两者共用 `all_entries` 构造。
-        // `id` 既是选择器的去重键，也是发给上游的模型名，不能加序号。
+        // The product is WorkBuddy's effective list: only checked entries, the first per `id` kept.
+        // The full copy is written separately by `save_sidecars`; both share the `all_entries` construction.
+        // `id` is both the selector's dedup key and the model name sent upstream — no numbering.
         Value::Array(effective_entries(&all_entries(
             providers,
             target_root.unwrap_or(extras),
         )))
     }
 
-    /// 全量副本（`models.full.json`）：所有条目 + 每条自己的勾选状态，即界面上全部配置
-    /// 的落盘形态。取消勾选只是把条目从生效清单移到副本里，字段（含 API key）保留。
+    /// The full copy (`models.full.json`): every entry + its own check state — the on-disk form of everything
+    /// the UI configures. Unchecking merely moves an entry out of the effective list into the copy, with fields
+    /// (API key included) preserved.
     fn save_sidecars(&self, path: &str, providers: &[ProviderRow]) -> Result<(), String> {
-        // 继承未知字段的基底取全量副本，读不出才退回主配置。
-        // 基底里的条目不会因继承而复活：条目一律从 `providers` 生成。
-        // 两者都读不出则取消保存，不静默用空基底。
+        // The base for inheriting unknown fields takes the full copy, falling back to the main config when unreadable.
+        // Entries in the base don't revive through inheritance: entries are always generated from `providers`.
+        // With neither readable, the save is cancelled — never a silent empty base.
         let base = match load_full_store(path).map(Value::Array) {
             Some(base) => base,
             None => self
@@ -558,7 +562,7 @@ impl Backend for WorkBuddyBackend {
     }
 
     fn load_target_root(&self, path: &str) -> Result<Value, String> {
-        // 顶层是数组（provider 内联在每条模型里），空 root 也是数组。
+        // The top level is an array (provider inlined into each model); even an empty root is an array.
         super::load_target_root_with(path, parse_config_content, || Value::Array(Vec::new()))
     }
 
@@ -571,7 +575,7 @@ impl Backend for WorkBuddyBackend {
     }
 
     fn render(&self, root: &Value, compact: bool) -> Result<String, String> {
-        // 数组根必须自己渲染；`app::pretty_json` 假定对象根。
+        // Array roots must render themselves; `app::pretty_json` assumes object roots.
         let items = entries_of(root).cloned().unwrap_or_default();
         Ok(render_array(&items, compact))
     }

@@ -1,9 +1,9 @@
 use eframe::egui::{self, Color32};
 
-/// 语义色（绿 = 正常 / 黄 = 注意 / 红 = 异常 / 蓝 = 信息）。
+/// Semantic colors (green = normal / yellow = caution / red = error / blue = info).
 ///
-/// 所有主题共用同一套（黑白灰随主题变，彩色不变），取中间调色。
-/// 例外：「信息蓝」与主题强调色撞色时改用青蓝，见 [`semantics`]。
+/// All themes share one set (black/white/gray follow the theme; the colors don't), tuned to mid-tones.
+/// Exception: when "info blue" collides with the theme accent, a cyan-blue substitutes — see [`semantics`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Semantics {
     pub ok: Color32,
@@ -12,7 +12,7 @@ pub struct Semantics {
     pub info: Color32,
 }
 
-/// 全主题共用的一套语义色。
+/// The one semantic set shared by all themes.
 pub const SEMANTICS: Semantics = Semantics {
     ok: Color32::from_rgb(0x19, 0x94, 0x4D),
     warn: Color32::from_rgb(0xA9, 0x7A, 0x00),
@@ -20,18 +20,18 @@ pub const SEMANTICS: Semantics = Semantics {
     info: Color32::from_rgb(0x4F, 0x84, 0xCD),
 };
 
-/// 「信息蓝」与强调色撞色时的替代色（青蓝）。
+/// The substitute when "info blue" collides with the accent (cyan-blue).
 const SEMANTICS_INFO_ALT: Color32 = Color32::from_rgb(0x15, 0x90, 0x9A);
 
-/// 和强调色多近算「撞色」（RGB 空间欧氏距离）。
+/// How close to the accent counts as a "collision" (RGB-space Euclidean distance).
 const ACCENT_CLASH: f32 = 45.0;
 
-/// 取当前界面该用的语义色：正常为 [`SEMANTICS`]，信息蓝与强调色撞色时换青蓝。
+/// Take the semantic colors the UI should use now: [`SEMANTICS`] normally; cyan-blue when info blue collides with the accent.
 pub fn semantics(ui: &egui::Ui) -> Semantics {
     semantics_with_accent(ui.visuals().hyperlink_color)
 }
 
-/// 按强调色取语义色（拆出来便于单测）。
+/// Take semantic colors by accent (split out for unit testing).
 fn semantics_with_accent(accent: Color32) -> Semantics {
     let mut colors = SEMANTICS;
     if distance(accent, colors.info) < ACCENT_CLASH {
@@ -40,7 +40,7 @@ fn semantics_with_accent(accent: Color32) -> Semantics {
     colors
 }
 
-/// RGB 欧氏距离。
+/// RGB Euclidean distance.
 fn distance(a: Color32, b: Color32) -> f32 {
     let [ar, ag, ab, _] = a.to_array();
     let [br, bg, bb, _] = b.to_array();
@@ -51,7 +51,7 @@ fn distance(a: Color32, b: Color32) -> f32 {
     (d(ar, br) + d(ag, bg) + d(ab, bb)).sqrt()
 }
 
-/// 对比度（WCAG，1.0 ~ 21.0）。仅供单测使用。
+/// Contrast ratio (WCAG, 1.0–21.0). Unit tests only.
 #[cfg(test)]
 fn contrast(a: Color32, b: Color32) -> f32 {
     let channel = |value: u8| {
@@ -71,13 +71,13 @@ fn contrast(a: Color32, b: Color32) -> f32 {
     (hi + 0.05) / (lo + 0.05)
 }
 
-/// 单测用：其他模块锁定配色对比度时复用同一套公式。
+/// For tests: other modules locking color contrast reuse the same formula.
 #[cfg(test)]
 pub(crate) fn contrast_for_tests(a: Color32, b: Color32) -> f32 {
     contrast(a, b)
 }
 
-/// 单测用：RGB 欧氏距离，判断两块颜色是否看得出区别。
+/// For tests: RGB Euclidean distance, judging whether two colors are visibly distinct.
 #[cfg(test)]
 pub(crate) fn distance_for_tests(a: Color32, b: Color32) -> f32 {
     distance(a, b)
@@ -94,7 +94,7 @@ mod semantics_tests {
 
     #[test]
     fn every_semantic_color_reads_on_every_theme() {
-        // 语义文字在面板、展开卡片和折叠卡片三种底色上都校验对比度。
+        // Semantic text is contrast-checked on three fills: the panel, an expanded card, and a collapsed card.
         for theme in Theme::ALL {
             let palette = theme.palette();
             for (background_name, background) in [
@@ -133,7 +133,7 @@ mod semantics_tests {
             assert_eq!(colors.ok, SEMANTICS.ok, "绿黄红不随主题变：{}", theme.key());
             assert_eq!(colors.warn, SEMANTICS.warn, "{}", theme.key());
             assert_eq!(colors.err, SEMANTICS.err, "{}", theme.key());
-            // 换过之后必须真的拉开距离
+            // After the swap, the distance must genuinely open up
             assert!(
                 distance(colors.info, theme.palette().accent) >= ACCENT_CLASH,
                 "{} 的信息色仍与强调色撞色",
@@ -164,8 +164,8 @@ mod semantics_tests {
                 theme.key()
             );
         }
-        // 同一主题不重复应用。
-        // 用 `ALL` 的末项而不是写死某个主题：主题表增删时这里不跟着改。
+        // The same theme isn't applied twice.
+        // Use `ALL`'s last entry rather than hard-coding one: theme-table changes won't require edits here.
         let last = *Theme::ALL.last().expect("主题表非空");
         assert!(!needs_apply(&mut applied, last));
         assert!(needs_apply(&mut applied, Theme::Dark));
@@ -173,8 +173,8 @@ mod semantics_tests {
 
     #[test]
     fn hint_text_is_a_real_grey_not_a_dimmed_body_color() {
-        // 校验的性质是「提示对背景的对比度明显低于正文」，同时不能淡到读不清。
-        // 下面按 WCAG 对比度查。
+        // The property under test: "the hint's contrast against the background is clearly lower than body text",
+        // while never fading below legibility. Checked by WCAG contrast below.
         let ctx = egui::Context::default();
         let mut applied: Option<Theme> = None;
         for theme in Theme::ALL {
@@ -203,7 +203,7 @@ mod semantics_tests {
 
     #[test]
     fn every_theme_meets_the_text_and_border_contrast_floor() {
-        // 硬指标：正文与强调色是文字（4.5:1），描边是非文字 UI（3:1）。
+        // Hard targets: body text and accents are text (4.5:1); borders are non-text UI (3:1).
         for theme in Theme::ALL {
             let palette = theme.palette();
             for (what, color, floor) in [
@@ -229,7 +229,7 @@ mod semantics_tests {
 
     #[test]
     fn accent_text_reads_on_the_accent_fill() {
-        // 强调色是选中态行与主按钮的底色，其上的文字单独校验。
+        // The accent is the selected row's and the primary button's fill; its text is checked separately.
         for theme in Theme::ALL {
             let palette = theme.palette();
             let ratio = contrast(palette.accent_text, palette.accent);
@@ -255,7 +255,7 @@ mod semantics_tests {
 
     #[test]
     fn spacing_scale_is_used_by_the_style() {
-        // 刻度常量必须真的进了 Style。
+        // Scale constants must genuinely land in the Style.
         let ctx = egui::Context::default();
         Theme::Dark.apply(&ctx);
         let spacing = ctx.style().spacing.clone();
@@ -266,7 +266,7 @@ mod semantics_tests {
 
     #[test]
     fn text_scale_is_used_by_the_style() {
-        // egui 默认 Small 是 9px，这条钉住它走本仓库的刻度。
+        // egui's default Small is 9px — this pins it to this repo's scale.
         let ctx = egui::Context::default();
         Theme::Dark.apply(&ctx);
         let styles = ctx.style().text_styles.clone();
@@ -274,18 +274,18 @@ mod semantics_tests {
         assert_eq!(styles[&egui::TextStyle::Body].size, TEXT_BODY);
         assert_eq!(styles[&egui::TextStyle::Button].size, TEXT_BODY);
         assert_eq!(styles[&egui::TextStyle::Heading].size, TEXT_HEADING);
-        // 副信息字号必须明显高于 egui 默认的 9px。
+        // The secondary-info font size must clearly exceed egui's default 9px.
         let default_small = egui::TextStyle::Small.resolve(&egui::Style::default()).size;
         assert!(
             TEXT_CAPTION > default_small,
             "副信息字号 {TEXT_CAPTION} 不应退回 egui 默认的 {default_small}"
         );
-        // 字阶的严格递增由模块顶部的 `const { assert!() }` 编译期保证。
+        // The type scale's strict increase is guaranteed at compile time by the module-top `const { assert!() }`.
     }
 
-    /// 一次丢弃式渲染：取回本帧所有顶点色（含数量）。
+    /// One throwaway render: collects this frame's vertex colors (with counts).
     ///
-    /// 画三帧：egui 第一帧还没有字体，文字要等下一帧才画得出来。
+    /// Paints three frames: egui's first frame has no fonts yet — text only appears the frame after.
     fn render_colors(theme: Theme, draw: impl Fn(&mut egui::Ui)) -> Vec<(Color32, usize)> {
         let ctx = egui::Context::default();
         theme.apply(&ctx);
@@ -304,7 +304,7 @@ mod semantics_tests {
                 },
             ));
         }
-        // 用 `[r,g,b,a]` 当键：`Color32` 自己没有 `Ord`。
+        // `[r,g,b,a]` as the key: `Color32` itself has no `Ord`.
         let mut counts: std::collections::BTreeMap<[u8; 4], usize> = Default::default();
         for prim in ctx.tessellate(out.expect("应有一帧").shapes, 1.0) {
             if let egui::epaint::Primitive::Mesh(mesh) = prim.primitive {
@@ -323,7 +323,7 @@ mod semantics_tests {
 
     #[test]
     fn hint_color_matches_a_disabled_widget_as_rendered() {
-        // 提示色 = 禁用控件文字叠出来的观感，因此拿 egui 真实画出的顶点色核对算式。
+        // The hint color is what disabled widget text stacks into, so verify the formula against egui's actually-painted vertex colors.
         for theme in Theme::ALL {
             let palette = theme.palette();
             let faded = |color: Color32| color.gamma_multiply(DISABLED_ALPHA);
@@ -357,7 +357,7 @@ mod semantics_tests {
 
     #[test]
     fn a_text_edit_hint_actually_renders_in_the_hint_color() {
-        // 钉住渲染结果：占位提示画出来的必须是提示色，不能是正文色。
+        // Pin the render: the placeholder hint must paint in the hint color, never the body color.
         for theme in Theme::ALL {
             let palette = theme.palette();
             let colors = render_colors(theme, |ui| {

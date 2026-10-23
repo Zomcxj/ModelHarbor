@@ -1,9 +1,9 @@
-//! Agents 区块：卡片列表、编辑表单与新增表单（仅 opencode 系页面使用）。
+//! The Agents block: card list, edit form, and add form (opencode-family pages only).
 
 mod combo;
 mod view;
 
-// 扁平门面：让 `use super::*` 的单测直接看到跨子模块项。
+// Flat facade: lets `use super::*` unit tests see cross-submodule items directly.
 use combo::*;
 #[cfg(test)]
 use view::*;
@@ -16,7 +16,7 @@ use eframe::egui;
 use std::collections::HashSet;
 
 impl App {
-    /// Agents 区块：标题行吸顶（滚动时始终显示在顶部），内容紧跟其下。
+    /// The Agents block: the title row sticks to the top (always visible while scrolling), content right below.
     pub(super) fn ui_agents_section(&mut self, ui: &mut egui::Ui) {
         let anchor = sticky_begin(ui, 30.0);
         let matched: Vec<usize> = (0..self.agents.len()).collect();
@@ -62,8 +62,8 @@ impl App {
         sticky_end(ui, anchor, |ui| {
             ui.horizontal(|ui| {
                 ui.strong(egui::RichText::new("Agents").size(crate::theme::TEXT_HEADING));
-                // agents 只属于 opencode 页：来源不是 opencode 时界面没有 agents 数据，
-                // 跨格式保存不接管目标文件的 agent 容器。
+                // Agents belong only to opencode pages: with a non-opencode source the UI has no agents data,
+                // and cross-format saves don't manage the target file's agent container.
                 if !self.source_format.is_opencode_family() {
                     let src = self.source_format.label();
                     ui.label(
@@ -77,7 +77,7 @@ impl App {
                 }
                 if !self.agents.is_empty() {
                     let all_open = self.agents.iter().all(|a| !self.agent_collapsed(&a.key));
-                    // 与 Providers 标题行同一套图标钮：展开/收起全部。
+                    // The same icon-button set as the Providers title row: expand / collapse all.
                     let chevrons_tint = ui.visuals().text_color();
                     if crate::app::bars::toolbar_icon_button(
                         ui,
@@ -92,7 +92,7 @@ impl App {
                     })
                     .clicked()
                     {
-                        // all_open 为真 = 现在全部展开 → 按钮是「收起全部」
+                        // all_open true = everything is expanded now → the button reads "collapse all"
                         self.set_all_agents_collapsed(all_open);
                         let ctx = ui.ctx().clone();
                         let open = !all_open;
@@ -105,8 +105,8 @@ impl App {
                         }
                     }
                 }
-                // 免费模型的状态与「刷新」统一放在标题行（展开按钮右侧）。
-                // 只对有免费层的后端显示。
+                // The free-model status and "refresh" both live in the title row (right of the expand button).
+                // Shown only for backends with a free tier.
                 let (free_prefix, free_list) =
                     current_free_models(self.current_page, &self.free_models);
                 if free_prefix.is_some() {
@@ -145,8 +145,8 @@ impl App {
         };
         let card_id = egui::Id::new(("agent_card", key.clone()));
         let resp = card_frame(ui, open, highlight, card_id, |ui| {
-            // 同 Provider 卡片头：左组内容不定长，用 `Sides::shrink_left().truncate()`
-            // 先量右组，保证「删除 / 复制」贴在卡片右缘。
+            // Same provider card head: the left group's content is variable-length, so `Sides::shrink_left().truncate()`
+            // measures the right group first, keeping "delete / duplicate" glued to the card's right edge.
             let _ = egui::Sides::new().shrink_left().truncate().show(
                 ui,
                 |ui| {
@@ -190,7 +190,7 @@ impl App {
                     }
                 },
             );
-            // 折叠 / 展开带高度动画；动画 id 按 key 派生，改名即换 id。
+            // Collapse / expand with height animation; the animation id derives from the key — a rename changes the id.
             crate::motion::animated_collapse(ui, card_id, open, |ui| {
                 self.render_agent_form(ui, idx);
             });
@@ -203,7 +203,7 @@ impl App {
     }
 
     pub(super) fn render_agent_form(&mut self, ui: &mut egui::Ui, idx: usize) {
-        // 方言标签（v2 温度在 request.body 下）。
+        // The dialect label (v2's temperature lives under request.body).
         let form_flags = crate::app::providers::ProviderFormFlags::new(self);
         let prev_key = self.agents[idx].key.clone();
         let other_keys: HashSet<String> = self
@@ -252,7 +252,7 @@ impl App {
             field_label(ui, 120.0, "system");
             ui.add(egui::TextEdit::singleline(&mut a.system).desired_width(450.0));
         });
-        // key 重命名后同步展开状态。
+        // Sync the expanded state after a key rename.
         let new_key = self.agents[idx].key.clone();
         if new_key != prev_key {
             self.sync_agent_rename(&prev_key, &new_key);
@@ -260,7 +260,7 @@ impl App {
     }
 
     pub(super) fn ui_new_agent_form(&mut self, ui: &mut egui::Ui) {
-        // 方言标签（v2 温度在 request.body 下）。
+        // The dialect label (v2's temperature lives under request.body).
         let form_flags = crate::app::providers::ProviderFormFlags::new(self);
         ui.group(|ui| {
             ui.horizontal_wrapped(|ui| {
@@ -337,7 +337,7 @@ impl App {
         });
     }
 
-    /// agent key 重命名后同步 UI 状态（卡片折叠集合）。
+    /// Sync UI state (the card-collapse set) after an agent key rename.
     pub(super) fn sync_agent_rename(&mut self, old: &str, new: &str) {
         if old == new || new.is_empty() {
             return;
@@ -352,7 +352,7 @@ mod model_options_tests {
     use crate::format::ConfigFormat;
     use crate::model::{AgentRow, ModelRow, ProviderRow};
 
-    /// 造一个带若干模型的 provider。
+    /// Build a provider with several models.
     fn provider(key: &str, models: &[&str]) -> ProviderRow {
         let mut row = ProviderRow::new();
         row.key = key.to_string();
@@ -367,7 +367,7 @@ mod model_options_tests {
         row
     }
 
-    /// 造一个带 model 的 agent。
+    /// Build an agent with a model.
     fn agent(key: &str, model: &str) -> AgentRow {
         let mut row = AgentRow::new();
         row.key = key.to_string();
@@ -382,7 +382,7 @@ mod model_options_tests {
         assert_eq!(options, vec!["sensenova/deepseek-v4-flash"]);
     }
 
-    /// **核心需求**：自家网关的模型排在最前，自配 provider 的排在其后。
+    /// **The core requirement**: own-gateway models sort first, user-configured providers after.
     #[test]
     fn gateway_models_come_before_configured_providers() {
         let providers = vec![provider("aaa-first-alphabetically", &["m"])];
@@ -394,7 +394,7 @@ mod model_options_tests {
         );
     }
 
-    /// 网关段内部的顺序由调用方给定（首选在最前），不被字典序打乱。
+    /// The gateway segment's internal order is the caller's (preferred first), never disturbed by lexicographic order.
     #[test]
     fn the_gateway_segment_keeps_its_given_order() {
         let gateway = vec![
@@ -406,7 +406,7 @@ mod model_options_tests {
         assert_eq!(options, gateway, "网关段必须原样保留给定顺序");
     }
 
-    /// 自配 provider 段保持用户自己的配置顺序（provider 顺序 → 模型顺序）。
+    /// The user-configured segment keeps the user's own config order (provider order → model order).
     #[test]
     fn the_provider_segment_keeps_configuration_order() {
         let providers = vec![provider("zeta", &["m2", "m1"]), provider("alpha", &["m"])];
@@ -414,7 +414,7 @@ mod model_options_tests {
         assert_eq!(options, vec!["zeta/m2", "zeta/m1", "alpha/m"]);
     }
 
-    /// 关键行为：远程列表变了也不能把已配置的当前值弄丢。
+    /// The key behavior: a changed remote list must never lose the configured current value.
     #[test]
     fn keeps_current_value_even_when_absent_from_the_list() {
         let gateway = vec!["opencode/big-pickle".to_string()];
@@ -426,7 +426,7 @@ mod model_options_tests {
         );
     }
 
-    /// 没有动态列表的页面（mimocode）同样要保留当前值。
+    /// Pages without a dynamic list (mimocode) keep the current value all the same.
     #[test]
     fn keeps_current_value_without_any_gateway_list() {
         let options = model_options(&[], &[], "xiaomi/mimo-v2.5-pro");
@@ -440,7 +440,7 @@ mod model_options_tests {
         assert_eq!(options, vec!["opencode/big-pickle"]);
     }
 
-    /// 自配 provider 的模型与网关模型同名时只留一份（去重仍然生效）。
+    /// A user-configured model sharing a gateway model's name keeps one copy (dedup still applies).
     #[test]
     fn duplicates_between_the_two_segments_are_removed() {
         let providers = vec![provider("kilo", &["kilo-auto/free"])];
@@ -452,13 +452,13 @@ mod model_options_tests {
     #[test]
     fn empty_current_value_adds_nothing() {
         assert!(model_options(&[], &[], "").is_empty());
-        // 只有空白的当前值同样不占位
+        // A whitespace-only current value doesn't take a slot either
         assert!(model_options(&[], &[], "   ").is_empty());
     }
 
-    // ---- 切页 / 保存时的 model 归一 ----
+    // ---- Model normalization on page switches / saves ----
 
-    /// **核心需求**：指向别家网关的 model 换成目标页自家网关的首选模型。
+    /// **The core requirement**: a model pointing at another page's gateway becomes the target page's own preferred model.
     #[test]
     fn a_foreign_gateway_model_is_replaced_with_the_pages_own() {
         let agents = vec![agent("fallback", "opencode/ling-3.0-flash-fin-free")];
@@ -467,7 +467,7 @@ mod model_options_tests {
         assert_eq!(out[0].model, "kilo/kilo-auto/free");
     }
 
-    /// 自家网关与自配 provider 的引用都不动。
+    /// Own-gateway and user-configured references are never touched.
     #[test]
     fn valid_references_are_left_alone() {
         let agents = vec![
@@ -481,7 +481,7 @@ mod model_options_tests {
         assert_eq!(out[1].model, "sensenova/deepseek-v4-flash");
     }
 
-    /// 空 model 是「还没选」，不是「选错了」——不能擅自填默认值。
+    /// An empty model means "not chosen yet", not "chosen wrong" — no default may be filled in behind the user's back.
     #[test]
     fn an_empty_model_is_not_replaced() {
         let agents = vec![agent("blank", ""), agent("spaces", "   ")];
@@ -491,7 +491,7 @@ mod model_options_tests {
         assert_eq!(out[1].model, "   ");
     }
 
-    /// 同一份 agents 数据在三个页面上各自归一成不同的值。
+    /// The same agents data normalizes to different values per page.
     #[test]
     fn the_same_agents_normalize_differently_per_page() {
         let agents = vec![agent("a", "opencode/ling-3.0-flash-fin-free")];
@@ -500,23 +500,23 @@ mod model_options_tests {
         let oc = agents_for_page(&agents, ConfigFormat::Opencode, &[], &[]).0;
         assert_eq!(kilo[0].model, "kilo/kilo-auto/free");
         assert_eq!(mimo[0].model, "mimo/mimo-auto");
-        // opencode 页：本来就是自家网关，原样不动
+        // The opencode page: already its own gateway — untouched as-is
         assert_eq!(oc[0].model, "opencode/ling-3.0-flash-fin-free");
     }
 
-    /// 动态列表拿到后用它的第一个（而不是写死的兜底）。
+    /// Once the dynamic list arrives, its first entry is used (not the hard-coded fallback).
     #[test]
     fn the_live_list_decides_the_replacement_target() {
-        // 引用必须来自别家网关才会被替换。
+        // Only references from another gateway get replaced.
         let agents = vec![agent("a", "kilo/kilo-auto/free")];
         let live = vec!["big-pickle".to_string(), "zzz-free".to_string()];
         let (out, replaced) = agents_for_page(&agents, ConfigFormat::Opencode, &[], &live);
         assert_eq!(replaced, 1);
-        // big-pickle 是首选，被提到第一位
+        // big-pickle is the preferred model, promoted to first
         assert_eq!(out[0].model, "opencode/big-pickle");
     }
 
-    /// 非 opencode 系页面没有 agent 概念，一律不动。
+    /// Non-opencode-family pages have no agent concept — never touched.
     #[test]
     fn non_opencode_pages_are_untouched() {
         let agents = vec![agent("a", "opencode/x")];
@@ -525,7 +525,7 @@ mod model_options_tests {
         assert_eq!(out[0].model, "opencode/x");
     }
 
-    /// 没斜杠的引用在任何页都解析不了，换成自家网关模型。
+    /// A reference without a slash is unparseable on every page; it becomes the own-gateway model.
     #[test]
     fn malformed_references_are_replaced() {
         let agents = vec![agent("a", "no-slash")];

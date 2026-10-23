@@ -1,9 +1,9 @@
-//! 端点拼装（[`Endpoints`]）。
+//! Endpoint assembly ([`Endpoints`]).
 use super::*;
 
-/// 由 baseUrl 推导出的端点（origin 用于面板管理接口与 `/api/status`）。
+/// Endpoints derived from a baseUrl (the origin serves panel management APIs and `/api/status`).
 pub struct Endpoints {
-    /// 只保留 scheme + host（面板管理接口都在站根下）。
+    /// Keep only scheme + host (panel management APIs all live at the station root).
     pub origin: String,
     pub status: String,
     pub subscription: String,
@@ -11,20 +11,20 @@ pub struct Endpoints {
 }
 
 impl Endpoints {
-    /// 令牌额度信息（只需 `sk-` key）：`total_granted` / `total_used` / `total_available`。
+    /// Token quota info (only needs the `sk-` key): `total_granted` / `total_used` / `total_available`.
     pub fn token_usage(&self) -> String {
         format!("{}/api/usage/token/", self.origin)
     }
 
-    /// 签到状态（只读，需面板访问令牌）：`GET /api/user/checkin`。
+    /// Check-in status (read-only, requires the panel access token): `GET /api/user/checkin`.
     ///
-    /// 只读：不代签，只查回状态展示。
+    /// Read-only: never performs the check-in, only reads the status for display.
     pub fn checkin(&self) -> String {
         format!("{}/api/user/checkin", self.origin)
     }
 
-    /// 该令牌的调用日志（用于算今日 / 近 7 天用量，只需 `sk-` key）。
-    /// 只请求首个大分页，未遍历后续页。
+    /// This token's call logs (for today / last-7-days usage; only needs the `sk-` key).
+    /// Only the first large page is requested; later pages aren't walked.
     pub fn token_logs(&self) -> String {
         format!(
             "{}/api/log/token?p=0&page_size={LOG_PAGE_LIMIT}",
@@ -32,10 +32,10 @@ impl Endpoints {
         )
     }
 
-    /// 用户级按天用量统计（`GET /api/data/self`，需面板访问令牌）。
+    /// User-level per-day usage statistics (`GET /api/data/self`, requires the panel access token).
     ///
-    /// 返回按天 × 模型的 `{model_name, count, quota, token_used, created_at}`；
-    /// 面板聚合覆盖全部来源的用量（含非本机），与本地扫描互补。
+    /// Returns per-day × model `{model_name, count, quota, token_used, created_at}`; panel aggregates cover
+    /// usage from all sources (non-local included), complementing the local scan.
     pub fn data_self(&self, start: i64, end: i64) -> String {
         format!(
             "{}/api/data/self?start_timestamp={start}&end_timestamp={end}",
@@ -44,9 +44,9 @@ impl Endpoints {
     }
 }
 
-/// 推导端点：`base` 去掉末尾斜杠；`origin` 只保留 scheme + host。
+/// Derive endpoints: `base` loses trailing slashes; `origin` keeps only scheme + host.
 ///
-/// 缺少 `://` 时按整体当 origin。
+/// Without `://`, the whole string counts as the origin.
 pub fn endpoints(base_url: &str) -> Endpoints {
     let base = base_url.trim().trim_end_matches('/').to_string();
     let origin = match base.split_once("://") {
@@ -64,9 +64,9 @@ pub fn endpoints(base_url: &str) -> Endpoints {
     }
 }
 
-/// 备选端点：baseUrl 只有 origin 时，在 origin 后插一个 `/v1`。
+/// The alternate endpoint: when baseUrl holds only the origin, insert a `/v1` after it.
 ///
-/// 调用方仅在 404 时才回退到这里；baseUrl 已带路径（含 `/v1`）时原样返回。
+/// The caller falls back here only on 404; a baseUrl already carrying a path (`/v1` included) returns as-is.
 pub fn endpoints_v1(base_url: &str) -> Endpoints {
     let base = base_url.trim().trim_end_matches('/');
     match base.split_once("://") {
@@ -85,11 +85,11 @@ pub fn endpoints_v1(base_url: &str) -> Endpoints {
     }
 }
 
-/// Sub2API 用量接口：`{base}/v1/usage`（Bearer sk- key 即可，无需面板令牌）。
+/// The Sub2API usage endpoint: `{base}/v1/usage` (a Bearer sk- key suffices; no panel token needed).
 ///
-/// 用户填 base 的习惯不统一（`https://host` / `https://host/v1` /
-/// 整条路径都有），与其它端点同一套归一口径：末尾已是 `v1/usage` 就不动，
-/// 已是 `/v1` 只补 `usage`，否则补 `v1/usage`。
+/// Users fill the base inconsistently (`https://host` / `https://host/v1` / the whole path) — the same
+/// normalization as other endpoints: an already-`v1/usage` tail is untouched, an existing `/v1` only gets
+/// `usage`, otherwise `v1/usage` completes it.
 pub fn sub2api_usage_url(base_url: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
     if base.ends_with("/v1/usage") {

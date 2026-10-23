@@ -1,10 +1,10 @@
-//! 用量视图的界面：顶部视图切换 + 四维统计表。
+//! The usage view UI: top view switcher + four-dimension stat tables.
 //!
-//! 数据全部来自 [`super::super::usage`] 的后台扫描结果（`App::usage`），这里只负责画；
-//! 聚合与格式化在 [`super::aggregate`] 里，是可单测的纯逻辑。
+//! All data comes from the [`super::super::usage`] background scan (`App::usage`); this module only
+//! draws. Aggregation and formatting live in [`super::aggregate`] as unit-testable pure logic.
 //!
-//! 切维度按钮照顶栏页签的选中样式（`widgets.hovered.bg_fill` + 2px 描边），
-//! 配色一律走 `crate::theme::semantics(ui)`，不硬编码颜色。
+//! The dimension-switch buttons reuse the top-bar tab selected style (`widgets.hovered.bg_fill` + 2px
+//! border); colors always come from `crate::theme::semantics(ui)` — nothing hard-coded.
 
 use super::aggregate::{self, AgentUsage, Dimension, ModelUsage};
 use super::range::Range;
@@ -12,19 +12,20 @@ use crate::app::App;
 use crate::usage::SessionSnapshot;
 use eframe::egui;
 
-/// 左右并排的两张表：Agent / 模型。
+/// Two side-by-side tables: Agents / Models.
 ///
-/// 会话表不并排：它列最多（会话名 / id / Agent / 模型 / 项目 / 用量 /
-/// 状态 / 操作），挤半宽会把每列压成省略号，因此独占一行（用户要求）。
+/// The session table is not side-by-side: it has the most columns (name / id / Agent / model /
+/// project / usage / status / actions) and squeezing it into half width turns every column into
+/// ellipses, so it takes a full row (per user request).
 const SIDE_BY_SIDE: [Dimension; 2] = [Dimension::Agent, Dimension::Model];
 
-/// 会话 id 在表里最多显示多少个字符。
+/// Max characters shown for a session id in the table.
 const SESSION_ID_CHARS: usize = 20;
 
 impl App {
-    /// 视图切换：`[提供商管理] [用量]` 二选一。
+    /// View switch: `[Provider Management] [Usage]`, one of two.
     ///
-    /// 两个按钮交换过位置（用户要求）：提供商管理在前。画在 agent 页签右侧。
+    /// The two buttons swapped positions (user request): provider management first. Painted right of the agent tabs.
     pub(in crate::app) fn ui_view_switch(&mut self, ui: &mut egui::Ui) {
         let views = [
             super::super::MainView::Providers,
@@ -37,18 +38,18 @@ impl App {
         }
     }
 
-    /// 单个视图切换按钮：选中态 = 悬浮色底 + 2px 描边（与顶栏页签同一套）。
+    /// One view-switch button: selected = hover-tinted fill + 2px border (same set as the top-bar tabs).
     fn view_switch_button(&self, ui: &mut egui::Ui, view: super::super::MainView) -> bool {
         super::chip(ui, self.main_view == view, view.label(), 72.0)
     }
 
-    /// 用量视图主体：单列纵向流。
+    /// The usage view's body: a single-column vertical flow.
     ///
-    /// 布局（用户要求）：总览（含趋势图与热力图）占满宽 → Agent 与模型
-    /// 左右并排 → 会话表独占一行。不再分左右两栏，每张表能拿到更多列宽。
+    /// Layout (user request): the overview (trend chart + heatmap) takes full width → Agent and Models side
+    /// by side → the session table takes a full row. No more left/right split; each table gets more column width.
     ///
-    /// 状态行（含区间切换）不在这里：它固定在滚动区之上，不跟随页面滚动
-    /// （用户要求），由 [`App::update`] 先画。
+    /// The status line (with the range switch) is not here: it's pinned above the scroll area, not scrolling
+    /// with the page (user request), painted first by [`App::update`].
     pub(in crate::app) fn ui_usage_section(&mut self, ui: &mut egui::Ui) {
         let sessions: Vec<SessionSnapshot> = self.usage_sessions().to_vec();
         let daily = self.usage_daily_filtered();
@@ -56,7 +57,7 @@ impl App {
             self.ui_usage_empty(ui);
             return;
         }
-        // 总览（总览卡 + 趋势图 + 热力图）占满宽。
+        // The overview (overview card + trend chart + heatmap) takes full width.
         self.ui_usage_overview(ui);
         ui.add_space(crate::theme::SPACE_5);
 
@@ -66,8 +67,9 @@ impl App {
         let sort = self.usage_sort;
         let pending_delete = self.usage_delete_pending.clone();
 
-        // 表格在独立闭包里画，`self` 借不进来：交互（排序 / 删除）用 `RefCell`
-        // 收集，画完统一处理。不同交互不可能同帧同时发生，逐个处理即可。
+        // Tables draw inside their own closures where `self` can't be borrowed: interactions (sort / delete) are
+        // collected via `RefCell` and processed together after painting. Two interactions can't happen in the
+        // same frame, so handling them one by one suffices.
         let collected: std::cell::RefCell<Vec<TableAction>> = std::cell::RefCell::new(Vec::new());
         let record = |result: Option<TableAction>| {
             if let Some(action) = result {
@@ -75,8 +77,8 @@ impl App {
             }
         };
 
-        // 并排两张表的行集先算出来：表体高度按较多一方的行数锁定，
-        // 两卡底边才齐平（用户要求：Agent 卡高度与模型卡对齐）。
+        // The side-by-side tables' row sets are computed first: body height locks to the taller side's row count,
+        // so both cards bottom-align (user request: the Agent card matches the Models card height).
         let side: Vec<TableRows> = SIDE_BY_SIDE
             .iter()
             .copied()
@@ -85,7 +87,7 @@ impl App {
         let side_rows = side.iter().map(TableRows::len).max().unwrap_or(0);
         let side_body = super::component::body_height(side_rows, super::component::BODY_MAX_HEIGHT);
 
-        // Agent 与模型左右并排，各占一半：间距不计入比例。
+        // Agent and Models side by side, half each: spacing stays out of the ratio.
         let gap = crate::theme::SPACE_4;
         let half = ((ui.available_width() - gap) / 2.0).max(1.0);
         ui.horizontal_top(|ui| {
@@ -98,9 +100,9 @@ impl App {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.set_width(half);
-                        // 解除列高限制：allocate_ui_with_layout 的 0 高期望会把内部
-                        // 所有 ScrollArea 的视口压到「剩余可用高度」，表体装不满
-                        // 卡内空间（用户反馈：列表要铺满组件）。
+                        // Lift the inner height limit: allocate_ui_with_layout's 0-height expectation squashes every internal
+                        // ScrollArea's viewport to the "remaining available height", leaving the body unable to fill the card
+                        // (user feedback: lists must fill the component).
                         ui.set_max_height(f32::INFINITY);
                         record(self.ui_dimension_table(
                             ui,
@@ -116,7 +118,7 @@ impl App {
             }
         });
         ui.add_space(crate::theme::SPACE_5);
-        // 会话表独占一行（全宽）：它的列最多，挤半宽每列都只剩省略号。
+        // The session table takes a full row: it has the most columns, and half width turns every column into ellipses.
         let session_rows = TableRows::of(Dimension::Session, &sessions, &daily, range, today);
         record(self.ui_dimension_table(
             ui,
@@ -124,8 +126,8 @@ impl App {
             now_ms,
             range,
             sort,
-            // 表体高度是其余两表的三倍（用户要求）。同样走锁定：只给上限
-            // 时，视口会被页面剩余高度夹住，窗口矮一点就看不到三倍的行。
+            // The table body is three times the other tables' height (user request). Locked the same way: with only a
+            // cap, the viewport gets squeezed by the page's remaining height, and a short window hides the 3x rows.
             super::component::body_height(
                 session_rows.len(),
                 super::component::SESSION_BODY_HEIGHT,
@@ -137,8 +139,8 @@ impl App {
         self.handle_table_actions(collected.into_inner(), frame_time);
     }
 
-    /// 处理本轮表格交互：排序立即生效；删除走两段式确认
-    /// （第一击标待确认，再击同一行才真删）。
+    /// Handle this round's table interactions: sorts apply immediately; deletes go through two-step confirmation
+    /// (first click arms, clicking the same row again really deletes).
     fn handle_table_actions(&mut self, actions: Vec<TableAction>, frame_time: f64) {
         for action in actions {
             match action {
@@ -154,19 +156,19 @@ impl App {
         }
     }
 
-    /// 顶部状态行：筛选 / 扫描进度 / 数据新鲜度 / 错误 + 最右侧的区间切换。
+    /// The top status line: filter / scan progress / data freshness / errors + the range switch on the far right.
     ///
-    /// 这一行由 [`App::update`] 画在滚动区之上，因此固定不动
-    /// （用户要求）：滚到长表里也能看到当前区间与筛选条件。
+    /// This line is painted by [`App::update`] above the scroll area, so it stays fixed (user request): even
+    /// deep in a long table, the current range and filter remain visible.
     ///
-    /// 排版：左侧文字占满「整行减去区间组件宽度」，区间切换组件贴右边缘；
-    /// 两格顶对齐，整行高度取两者较高的那个。
+    /// Layout: the left text fills "the row minus the range control's width", the range switch hugs the right
+    /// edge; both cells top-align, and the row's height takes the taller of the two.
     pub(in crate::app) fn ui_usage_status(&mut self, ui: &mut egui::Ui) {
         let semantics = crate::theme::semantics(ui);
         let now_ms = unix_now_ms();
         let frame_time = ui.input(|input| input.time);
-        // 先把要画的数据取出来：后面 `self` 还要可变借用（维度切换），
-        // 提前结束对 `self.usage` 的借用更省心。
+        // Extract the data to paint first: `self` still needs a mutable borrow later (dimension switching),
+        // so ending the `self.usage` borrow early keeps things simple.
         let report = match self.usage.result.as_ref() {
             Some(Ok(report)) => Some((
                 report.sessions.len(),
@@ -186,12 +188,11 @@ impl App {
         let filter = self.usage_filter_label();
         let weak = ui.visuals().weak_text_color();
 
-        // 排版：左侧文字铺满剩余宽度，区间切换组件贴右（用户要求）。
+        // Layout: the left text fills the remaining width, the range switch hugs the right (user request).
         //
-        // 两格各自拿到一个死矩形的子 `Ui`：`allocate_ui_with_layout` 只把
-        // 实际用掉的宽度（`min_rect`）还给父级，于是筛选文字一短，整组
-        // 区间按钮就跟着往左跑。先把两格的位置定死，再把整行高度还给
-        // 父级（两格里较高的那个）。
+        // Each cell gets a dead-rect child `Ui`: `allocate_ui_with_layout` only hands the actually-used width
+        // (`min_rect`) back to the parent, so short filter text would drag the whole range-button group leftward.
+        // Pin both cells' positions first, then hand the row's height back to the parent (the taller cell's).
         let chips_width = Self::usage_range_chips_width();
         let row = ui.available_rect_before_wrap();
         let left_width = (row.width() - crate::theme::SPACE_3 - chips_width).max(1.0);
@@ -204,8 +205,8 @@ impl App {
                 ))
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        // 文字可能折行，也可能多一行错误 / 账本提示：不能拿子 `Ui` 的
-        // 剩余高度当上限，否则第二行就被压成 0 高。
+        // The text may wrap, or grow an error / ledger line: the child `Ui`'s remaining height can't serve as the
+        // cap, or the second line would be squeezed to zero.
         left.set_max_height(f32::INFINITY);
         self.usage_status_text(
             &mut left,
@@ -228,26 +229,27 @@ impl App {
                     egui::pos2(row.max.x - chips_width, row.min.y),
                     egui::vec2(chips_width, 0.0),
                 ))
-                // 横向对齐留 `Align::Min`：竖向布局下的 `Max` 会让
-                // `prefer_right_to_left()` 成立，`chip_group` 里的
-                // `ui.horizontal` 跟着反向，四个按钮就排成「全部 … 今日」。
+                // Keep `Align::Min` for horizontal alignment: `Max` in a vertical layout satisfies
+                // `prefer_right_to_left()`, reversing the `ui.horizontal` inside `chip_group`,
+                // and the four buttons would read "All … Today" right-to-left.
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         right.set_max_height(f32::INFINITY);
         self.ui_usage_range_chips(&mut right);
         let right_height = right.min_rect().height();
 
-        // 把整行高度还给父级：`new_child` 只画不占位，父级游标还停在行首，
-        // 不推进的话后面的 `ScrollArea` 会从状态行顶部起画，把整行盖住
-        // （首栏被覆盖的缺陷就是这么来的）。`expand_to_include_rect` 只并
-        // `min_rect`/`max_rect`、不动游标，所以这里必须用推进游标的版本。
+        // Hand the row's height back to the parent: `new_child` only paints, never reserves — the parent's cursor
+        // still sits at the line start, and without advancing it the following `ScrollArea` paints from the status
+        // line's top, covering the whole row (exactly how the covered-first-column defect arose).
+        // `expand_to_include_rect` merges only `min_rect`/`max_rect` and never moves the cursor, so the
+        // cursor-advancing variant is required here.
         ui.advance_cursor_after_rect(egui::Rect::from_min_max(
             row.min,
             egui::pos2(row.max.x, row.min.y + left_height.max(right_height)),
         ));
     }
 
-    /// 状态行左侧的文字：筛选 / 缓存或扫描新鲜度 / 错误 / 账本归档提示。
+    /// The status line's left text: filter / cache or scan freshness / errors / ledger-archive note.
     #[allow(clippy::too_many_arguments)]
     fn usage_status_text(
         &mut self,
@@ -270,8 +272,8 @@ impl App {
                     .strong(),
             );
             if let Some(saved_ms) = cached_saved_at {
-                // 缓存秒显：账本数据先顶上（后台扫完自动替换）。标清数据新旧，
-                // 避免把几分钟前的数字当成实时值；超过 5 分钟用警示色。
+                // Instant cache display: ledger data surfaces first (auto-replaced when the background scan finishes).
+                // State the data's age clearly so minutes-old numbers aren't mistaken for live ones; past 5 minutes, warning color.
                 let sessions = report.map_or(0, |(sessions, _, _, _)| *sessions);
                 let stale = now_ms - saved_ms > aggregate::CACHED_STALE_MS;
                 ui.label(
@@ -288,7 +290,7 @@ impl App {
                     ui.spinner();
                 }
             } else if let Some((sessions, messages, _scan_ms, scanned_at)) = report {
-                // 「更新于 N 秒前」：把 egui 时间轴上的扫描时刻换算成距今多久。
+                // "Updated N seconds ago": convert the scan moment on egui's timeline into elapsed time.
                 let age_ms = ((frame_time - scanned_at).max(0.0) * 1_000.0) as i64;
                 ui.label(
                     egui::RichText::new(format!(
@@ -305,9 +307,9 @@ impl App {
                         .color(semantics.warn),
                 );
                 if scanning {
-                    // 首次打开、扫描还在路上：给个「扫描中」指示（用户反馈：
-                    // 刚打开需要）。有了数据就不再画，免得在数字旁边常驻
-                    //（此前按用户反馈删过一次）。
+                    // First open, scan still on the way: show a "scanning" indicator (user feedback: needed right after opening).
+                    // Once data exists it stops painting, so it doesn't sit beside the numbers permanently
+                    // (it was removed once before on user feedback).
                     ui.spinner();
                     ui.label(
                         egui::RichText::new("扫描中…")
@@ -320,13 +322,15 @@ impl App {
         if let Some(err) = error {
             ui.label(egui::RichText::new(format!("上次扫描失败：{err}")).color(semantics.err));
         }
-        // 源侧删除失败（进程在跑 / 写库失败）：说清统计那半是否也已处理。
-        // 拦下整次删除的情形不能写成「已从统计里移除」，否则用户会以为删成了。
+        // Source-side deletion failure (process running / write failed): state clearly whether the statistics half
+        // was also handled. A fully blocked deletion must not read "removed from statistics", or the user
+        // would believe it succeeded.
         if let Some(err) = self.usage_source_error.clone() {
             ui.label(egui::RichText::new(err).color(semantics.err));
         }
-        // 账本那句只说「历史比磁盘上多」：是不是「已从源里消失」是实现细节，
-        // 用户关心的是数字为何比源目录里看到的多。
+        // The ledger line only says "history exceeds what's on disk": whether that means "vanished from the
+        // sources" is an implementation detail — what the user cares about is why the numbers exceed what the
+        // source directory shows.
         if ledger_archived > 0 {
             ui.label(
                 egui::RichText::new(format!(
@@ -338,11 +342,11 @@ impl App {
         }
     }
 
-    /// 画一张维度的表（带小节标题），返回它的交互结果。
+    /// Draw one dimension's table (with section title); returns its interaction result.
     ///
-    /// 标题用 `Dimension::label`：四个表同屏后，不标就分不清哪张是哪张。
-    /// `body` 由调用方给：并排的两张表共用一个预算，两卡才等高。
-    /// `pending_delete` 只对会话表有意义：标着哪一行正等二次确认。
+    /// Titles use `Dimension::label`: with four tables on screen, unlabeled ones are indistinguishable.
+    /// `body` comes from the caller: the side-by-side pair shares one budget so both cards stay equal height.
+    /// `pending_delete` only matters for the session table: it marks the row awaiting second confirmation.
     #[allow(clippy::too_many_arguments)]
     fn ui_dimension_table(
         &self,
@@ -354,7 +358,7 @@ impl App {
         body: f32,
         pending_delete: Option<&str>,
     ) -> Option<TableAction> {
-        // 标题画在卡片**里面**：与趋势图 / 热力图的组件外壳一致。
+        // The title paints **inside** the card: consistent with the trend chart / heatmap component shells.
         super::component::card(ui, |ui| {
             super::component::heading(ui, rows.dimension().label());
             ui.add_space(crate::theme::SPACE_2);
@@ -368,7 +372,7 @@ impl App {
         })
     }
 
-    /// 空状态：一行说明 + 一行「怎么让数字出现」。
+    /// Empty state: one explanatory line + one line on "how to make numbers appear".
     fn ui_usage_empty(&self, ui: &mut egui::Ui) {
         let semantics = crate::theme::semantics(ui);
         egui::Frame::NONE
@@ -393,16 +397,17 @@ impl App {
     }
 }
 
-/// 当前时间（Unix 毫秒）。
+/// Current time (Unix millis).
 fn unix_now_ms() -> i64 {
     super::unix_now_secs().saturating_mul(1_000)
 }
 
-/// 一张表的行集。
+/// A table's row set.
 ///
-/// 三个维度的行类型不同，用枚举收拢：并排的两张表要先各自算出行数，
-/// 按较多的一方锁定表体高度，两卡底边才齐平（用户要求：Agent 卡高度
-/// 与模型卡对齐）。行集在画之前算好，高度就不会随绘制顺序漂移。
+/// The three dimensions have different row types, gathered into one enum: the two side-by-side tables
+/// count their rows first and lock the table body height to the taller side so both cards bottom-align
+/// (user request: the Agent card must match the Models card height). Row sets are computed before
+/// drawing so height can't drift with paint order.
 enum TableRows {
     Agent(Vec<AgentUsage>),
     Model(Vec<ModelUsage>),
@@ -410,10 +415,10 @@ enum TableRows {
 }
 
 impl TableRows {
-    /// 按维度与区间聚合出行集。
+    /// Aggregate rows by dimension and range.
     ///
-    /// 会话维度也必须走区间：拿会话总量当「本月」会虚高（一个会话可以
-    /// 横跨几十天）。
+    /// The session dimension must also honor the range: using lifetime totals as "this month" overstates
+    /// (one session can span dozens of days).
     fn of(
         dimension: Dimension,
         sessions: &[SessionSnapshot],
@@ -430,7 +435,7 @@ impl TableRows {
         }
     }
 
-    /// 这组行属于哪个维度：卡片标题与交互都按它走。
+    /// Which dimension these rows belong to: the card title and interactions both follow it.
     fn dimension(&self) -> Dimension {
         match self {
             Self::Agent(_) => Dimension::Agent,
@@ -439,7 +444,7 @@ impl TableRows {
         }
     }
 
-    /// 行数：并排两表取较大值当作共同的高度预算。
+    /// Row count: the side-by-side pair takes the larger as their shared height budget.
     fn len(&self) -> usize {
         match self {
             Self::Agent(rows) => rows.len(),
@@ -449,14 +454,16 @@ impl TableRows {
     }
 }
 
-/// 文本列伸缩的下限比例：再窄就只剩省略号，没有信息量了。
+/// Lower ratio bound for text columns: any narrower and only ellipses remain, carrying no information.
 const MIN_TEXT_SCALE: f32 = 0.35;
 
-/// 把列宽收进可用宽度。
+/// Fit declared column widths into the available width.
 ///
-/// 数字列保持声明宽度（`123.4M` 被截断比名字被截断更难读），文本列按声明
-/// 宽度的比例伸缩：两列布局下每张表只分到第二列的宽度，固定列宽会溢出。
-/// 伸缩上限是 1.0 —— 文本列不因容器宽就跟着变宽，列宽稳定才好对位。
+/// Number columns keep their declared width (a truncated `123.4M` is harder to read than a truncated
+/// name); text columns scale proportionally to their declared width. In the two-column layout each
+/// table only gets the second column's width, so fixed widths would overflow. The scale cap is 1.0 —
+/// text columns don't widen just because the container is wide; stable column widths are what keeps
+/// columns aligned.
 fn fit_columns<const N: usize>(columns: &[Column; N], available: f32) -> [Column; N] {
     let fixed: f32 = columns
         .iter()
@@ -473,14 +480,14 @@ fn fit_columns<const N: usize>(columns: &[Column; N], available: f32) -> [Column
     }
     let mut out = *columns;
     if available >= fixed + text {
-        // 宽窗口（用户反馈：表格宽度要跟随自适应）：全部列等比拉伸，
-        // 表格铺满卡片 —— 数字列也分到余量，否则多余的空间全堆给名字列。
+        // Wide windows (user feedback: table width should follow): all columns stretch proportionally and the
+        // table fills the card — number columns also get slack, otherwise all spare width piles onto the name column.
         let scale = available / (fixed + text);
         for column in out.iter_mut() {
             column.width *= scale;
         }
     } else {
-        // 窄窗口：只压文本列（数字列保住可读性），压到下限为止。
+        // Narrow windows: only text columns compress (number columns keep readability), down to the floor.
         let scale = ((available - fixed) / text).clamp(MIN_TEXT_SCALE, 1.0);
         for column in out.iter_mut() {
             if !column.numeric {
@@ -492,46 +499,47 @@ fn fit_columns<const N: usize>(columns: &[Column; N], available: f32) -> [Column
 }
 
 // ---------------------------------------------------------------------------
-// 表格：列对齐的排版基元
+// Table: column-aligned layout primitive
 // ---------------------------------------------------------------------------
 //
-// 排版照参考实现（tokscale 的 `tui-daily.png`）：表头弱化、**数字右对齐**、
-// 列宽固定。不用 `egui::Grid` 是因为它不支持逐列对齐（`grid.rs` 里明确写了
-// "Grid not yet available for right-to-left layouts"），数字只能左对齐，
-// 位数不同的数就排成参差的 —— 正是「丑」的来源。
+// Layout follows the reference (tokscale's `tui-daily.png`): de-emphasized headers,
+// **right-aligned numbers**, fixed column widths. `egui::Grid` is not used because it lacks
+// per-column alignment (stated in `grid.rs`: "Grid not yet available for right-to-left layouts"),
+// so numbers would be left-aligned and mixed-digit values would stagger — exactly where the
+// ugliness came from.
 //
-// 关键在**每列都要精确占掉声明的宽度**。`allocate_ui_with_layout` 做不到：
-// 它只把实际用掉的宽度（`min_rect`）还给父 `Ui`（见 egui `ui.rs` 的
-// `allocate_ui_with_layout_dyn`："the amount of space actually used (min_rect)
-// will be allocated"），于是窄内容后面的列整体左移，列与列对不上。
-// 这里改用 `allocate_exact_size`：它按请求的尺寸预留空间，列宽是死的。
+// The key is that **every column must occupy exactly its declared width**. `allocate_ui_with_layout`
+// can't do that: it only hands back the actually-used width (`min_rect`) to the parent `Ui` (see
+// egui `ui.rs`, `allocate_ui_with_layout_dyn`: "the amount of space actually used (min_rect) will be
+// allocated"), so columns after narrow content shift left and stop aligning. This uses
+// `allocate_exact_size` instead: it reserves exactly the requested size, making widths dead-strict.
 
-/// 行高（也是每个单元格的高度）。
-/// 行高 21 + 行距 4 = 25px（用户定的行距）：5 行预算 = 125px。
+/// Row height (also each cell's height).
+/// Row height 21 + spacing 4 = 25px (user-set spacing): a 5-row budget = 125px.
 const CELL_HEIGHT: f32 = 21.0;
 
-/// 数值列的常用宽度：`123.4M` 这类最长 6-7 字符。
+/// Typical width for number columns: `123.4M` is at most 6-7 characters.
 const NUM_W: f32 = 68.0;
 
-/// 单元格左右内边距：列宽固定，内容两侧各留这么多，
-/// 否则数字会顶到下一列的表头上（列宽是死的，贴边看起来像连在一起）。
+/// Horizontal cell padding: with fixed column widths, leave this much on both sides of the content,
+/// otherwise numbers touch the next column's header (a flush edge looks glued together).
 const CELL_PAD_X: f32 = 6.0;
 
-/// 一列的定义。
+/// A column definition.
 #[derive(Clone, Copy)]
 struct Column {
-    /// 表头文字。
+    /// Header text.
     header: &'static str,
-    /// 列宽（点）。
+    /// Column width (points).
     width: f32,
-    /// 数字列：右对齐 + 等宽字体。
+    /// Number column: right-aligned + monospace font.
     numeric: bool,
-    /// 排序键：`None` = 该列不可排序（如会话 id、模型名这类文本列）。
+    /// Sort key: `None` = not sortable (text columns like session id, model name).
     sort: Option<SortKey>,
 }
 
 impl Column {
-    /// 文本列（左对齐，不可排序）。
+    /// Text column (left-aligned, unsortable).
     const fn text(header: &'static str, width: f32) -> Self {
         Self {
             header,
@@ -541,7 +549,7 @@ impl Column {
         }
     }
 
-    /// 数字列（右对齐 + 等宽），可点表头排序。
+    /// Number column (right-aligned + monospace), clickable header to sort.
     const fn number(header: &'static str, width: f32, sort: SortKey) -> Self {
         Self {
             header,
@@ -551,10 +559,10 @@ impl Column {
         }
     }
 
-    /// 固定宽度列：不参与伸缩。
+    /// Fixed-width column: excluded from stretching.
     ///
-    /// 复用 `numeric` 标志：`fit_columns` 把它当「保持声明宽度」。用于删除
-    /// 按钮这类交互列 —— 压扁了点不中。
+    /// Reuses the `numeric` flag: `fit_columns` treats it as "keep declared width". For interactive columns
+    /// like the delete button — squashing them would make them unclickable.
     const fn fixed(header: &'static str, width: f32) -> Self {
         Self {
             header,
@@ -564,7 +572,7 @@ impl Column {
         }
     }
 
-    /// 文本列 + 可排序（用于日期、Agent 名这类）。
+    /// Text column + sortable (for dates, Agent names, etc.).
     const fn sorted_text(header: &'static str, width: f32, sort: SortKey) -> Self {
         Self {
             header,
@@ -575,34 +583,34 @@ impl Column {
     }
 }
 
-/// 可排序的键。
+/// Sortable keys.
 ///
-/// 只列真正有意义的几个：每个维度都能按「用量」与「名称」排，加时间维度
-/// 自己就是时间序。再多就是给用户出选择题。
+/// Only the genuinely meaningful ones: every dimension sorts by "usage" and "name"; the time
+/// dimension is inherently time-ordered. More options would just be quiz questions.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(in crate::app) enum SortKey {
-    /// 名称 / 模型 id / 日期。
+    /// Name / model id / date.
     Name,
-    /// 合计 token。
+    /// Total tokens.
     Total,
-    /// 输入 token。
+    /// Input tokens.
     Input,
-    /// 输出 token。
+    /// Output tokens.
     Output,
-    /// 缓存读 token。
+    /// Cache-read tokens.
     CacheRead,
 }
 
-/// 排序状态：当前键 + 是否降序。
+/// Sort state: current key + descending flag.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::app) struct SortState {
     pub key: SortKey,
-    /// `true` = 大在前。数字列默认降序（看用量），名称列默认升序。
+    /// `true` = larger first. Number columns default descending (usage is what you scan for), name columns ascending.
     pub descending: bool,
 }
 
 impl SortState {
-    /// 默认：按合计降序（用户最关心「谁用得最多」）。
+    /// Default: total descending ("who used the most" is what users care about).
     pub(in crate::app) const fn by_total() -> Self {
         Self {
             key: SortKey::Total,
@@ -610,7 +618,7 @@ impl SortState {
         }
     }
 
-    /// 点表头：同一个键则翻转方向，换键则取该键的默认方向。
+    /// Header click: same key flips direction, a new key takes that key's default direction.
     pub(in crate::app) fn toggled(self, key: SortKey) -> Self {
         if self.key == key {
             Self {
@@ -620,13 +628,13 @@ impl SortState {
         } else {
             Self {
                 key,
-                // 名称升序（A→Z 更自然），其余降序（大在前）。
+                // Names ascending (A→Z reads naturally), everything else descending (larger first).
                 descending: key != SortKey::Name,
             }
         }
     }
 
-    /// 排序指示箭头。
+    /// The sort direction arrow.
     fn arrow(self, key: SortKey) -> &'static str {
         if self.key != key {
             return "";
@@ -639,7 +647,7 @@ impl SortState {
     }
 }
 
-/// 排序：按当前键与方向排，方向相同时用名称正序兜底，保证界面不跳动。
+/// Sort by current key and direction; ties fall back to ascending name so the UI doesn't jump.
 fn sort_rows<T>(
     rows: &mut [T],
     state: SortState,
@@ -658,15 +666,15 @@ fn sort_rows<T>(
     });
 }
 
-/// 表格：表头 + 逐行，列按固定宽度排。
+/// Table: header + rows, columns laid out at fixed widths.
 ///
-/// 每行是一个闭包，负责往当前行里塞单元格（用 [`cell_text`] / [`cell_number`]）；
-/// 这样四个维度共用一套列宽与对齐规则，不用各写一遍排版。
+/// Each row is a closure that fills cells into the current row (via [`cell_text`] / [`cell_number`]);
+/// all four dimensions share one set of width/alignment rules instead of restating the layout.
 ///
-/// 行背景：隔行加一层极淡的底色（斑马纹），鼠标所在行再叠一层悬浮色 ——
-/// 列宽固定、行高只有 16 点，不给背景提示很容易看串行。
+/// Row background: a very faint fill on alternate rows (zebra stripes), plus a hover tint on the row
+/// under the pointer — with fixed widths and 16pt rows, missing cues make rows easy to misread.
 ///
-/// 返回被点的表头列（没有则 `None`）。
+/// Returns the clicked header column (`None` if none).
 fn table<F>(
     ui: &mut egui::Ui,
     id: &str,
@@ -678,18 +686,19 @@ fn table<F>(
 where
     F: FnOnce(&mut egui::Ui),
 {
-    // 行距从**表头**起就自控：默认 item_spacing 会叠在 add_space 上，表头
-    // 与首行之间多出 ~11px 死区。5 行指 5 个**数据行**，不含小标题与表头。
+    // Row spacing is self-managed from the **header** on: the default item_spacing stacks onto add_space,
+    // leaving an ~11px dead zone between header and first row. "5 rows" means 5 **data rows**,
+    // excluding the section title and header.
     ui.spacing_mut().item_spacing.y = 0.0;
     let clicked = table_header(ui, columns, sort);
     ui.add_space(crate::theme::SPACE_1);
     let faint = ui.visuals().faint_bg_color;
     let hover = ui.visuals().widgets.hovered.weak_bg_fill;
     let row_width: f32 = columns.iter().map(|column| column.width).sum();
-    // 行区在组件内部滚动（表头固定）：行数再多也不把整页撑长。
+    // The row region scrolls inside the component (header fixed): any row count leaves the page length alone.
     super::component::scroll_body(ui, id, body, |ui| {
         for (index, row) in rows.into_iter().enumerate() {
-            // 先占位拿到本行的矩形，再把背景画在内容下面。
+            // Reserve first to get this row's rect, then paint the background beneath the content.
             let (rect, response) =
                 ui.allocate_exact_size(egui::vec2(row_width, CELL_HEIGHT), egui::Sense::hover());
             if index % 2 == 1 {
@@ -698,7 +707,7 @@ where
             if response.hovered() {
                 ui.painter().rect_filled(rect, 0.0, hover);
             }
-            // 内容画在占位矩形内：新建一个子 `Ui`，游标从行首开始。
+            // Content paints inside the reserved rect: a fresh child `Ui`, cursor starting at the line's head.
             let mut row_ui = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(rect)
@@ -712,9 +721,10 @@ where
     clicked
 }
 
-/// 表头：弱化 + 与数据列同宽同对齐，于是表头正好落在数字上方。
+/// Header: de-emphasized, same width and alignment as its data column so it sits exactly above the numbers.
 ///
-/// 可排序的列画成可点的按钮（悬停变手型），当前排序列带 ▲/▼ 指示。
+/// Sortable columns render as clickable buttons (pointer cursor on hover); the active sort column
+/// carries a ▲/▼ indicator.
 fn table_header(ui: &mut egui::Ui, columns: &[Column], sort: SortState) -> Option<SortKey> {
     let mut clicked = None;
     ui.horizontal(|ui| {
@@ -756,7 +766,7 @@ fn table_header(ui: &mut egui::Ui, columns: &[Column], sort: SortState) -> Optio
     clicked
 }
 
-/// 把 galley 按列的对齐方式放进单元格：数字贴右内边距、文本贴左内边距，纵向居中。
+/// Place a galley in its cell per the column's alignment: numbers flush right, text flush left, vertically centered.
 fn paint_in_cell(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -773,7 +783,7 @@ fn paint_in_cell(
         .galley(egui::pos2(x, y), galley, egui::Color32::PLACEHOLDER);
 }
 
-/// 文本单元格（左对齐，过长截断 + 悬停看全文）。
+/// Text cell (left-aligned; truncates long text, full text on hover).
 fn cell_text(ui: &mut egui::Ui, columns: &[Column], index: usize, text: &str, strong: bool) {
     let column = columns[index];
     let (rect, response) =
@@ -783,7 +793,7 @@ fn cell_text(ui: &mut egui::Ui, columns: &[Column], index: usize, text: &str, st
     } else {
         ui.visuals().text_color()
     };
-    // 超宽就省略号截断（`max_rows = 1`），全文走悬停。
+    // Over-wide truncates to ellipses (`max_rows = 1`); full text on hover.
     let mut job = egui::text::LayoutJob::simple(
         text.to_string(),
         egui::FontId::proportional(crate::theme::TEXT_SMALL),
@@ -800,13 +810,13 @@ fn cell_text(ui: &mut egui::Ui, columns: &[Column], index: usize, text: &str, st
     }
 }
 
-/// 数字单元格（右对齐 + 等宽，位数不同的数也能对齐）。
+/// Number cell (right-aligned + monospace so mixed-digit values still align).
 fn cell_number(ui: &mut egui::Ui, columns: &[Column], index: usize, text: &str, strong: bool) {
     let column = columns[index];
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(column.width, CELL_HEIGHT), egui::Sense::hover());
-    // 强调态换个颜色区分「合计」列，**不加粗**：等宽体加粗会改变字宽，
-    // 同一列里粗体与常规体的数字右边缘就不齐了。
+    // The emphasized state gets a different color for the "total" column, **not bold**: bolding a monospace
+    // face changes glyph widths, and within one column the bold and regular numbers' right edges misalign.
     let color = if strong {
         ui.visuals().strong_text_color()
     } else {
@@ -820,22 +830,23 @@ fn cell_number(ui: &mut egui::Ui, columns: &[Column], index: usize, text: &str, 
     paint_in_cell(ui, rect, galley, true);
 }
 
-/// 表格交互的结果。
+/// Result of table interaction.
 enum TableAction {
-    /// 点了某个表头：切换排序。
+    /// A header was clicked: toggle sorting.
     Sort(SortKey),
-    /// 点了会话行的删除（两段式：是否已是待确认行由调用方判断）。
+    /// A session row's delete was clicked (two-step: whether it's already armed is the caller's call).
     DeleteSession(String),
 }
 
-/// 把表头的点击合成一个动作。
+/// Combine header clicks into one action.
 fn table_action(clicked: Option<SortKey>) -> Option<TableAction> {
     clicked.map(TableAction::Sort)
 }
 
-/// Agent 维度表：Agent / 合计 / 输入 / 输出 / 缓存读 / 占比。
+/// Agent dimension table: Agent / total / input / output / cache read / share.
 ///
-/// 不列会话数：一个会话可以横跨多天，按区间求和时「会话数」相加会重复计数。
+/// No session count column: one session can span many days, and summing "session count" over a
+/// range would double-count.
 fn agent_table(
     ui: &mut egui::Ui,
     rows: &[AgentUsage],
@@ -853,7 +864,7 @@ fn agent_table(
         ],
         ui.available_width(),
     );
-    // 占比分母 = 区间内所有 agent 的合计。
+    // The share's denominator = all agents' total within the range.
     let grand: i64 = rows.iter().map(|row| row.totals.total()).sum();
     let mut rows: Vec<AgentUsage> = rows.to_vec();
     sort_rows(
@@ -916,7 +927,7 @@ fn agent_table(
     table_action(clicked)
 }
 
-/// 模型维度表：模型 / 合计 / 输入 / 输出 / 缓存读 / 占比。
+/// Model dimension table: Model / total / input / output / cache read / share.
 fn model_table(
     ui: &mut egui::Ui,
     rows: &[ModelUsage],
@@ -934,7 +945,7 @@ fn model_table(
         ],
         ui.available_width(),
     );
-    // 占比分母 = 区间内所有模型的合计。
+    // The share's denominator = all models' total within the range.
     let grand: i64 = rows.iter().map(|row| row.totals.total()).sum();
     let mut rows: Vec<ModelUsage> = rows.to_vec();
     sort_rows(
@@ -997,11 +1008,12 @@ fn model_table(
     table_action(clicked)
 }
 
-/// 会话维度表：会话名 / 会话 / Agent / 模型 / 项目 / 区间内用量 / 状态 / 操作。
+/// Session dimension table: name / session / Agent / model / project / in-range usage / status / actions.
 ///
-/// 区间不是「全部」时，用量列是该会话在区间内的部分，不是它的一生总量。
-/// 会话名与项目列都可能缺（源里没存名字、旧账本条目没有项目），缺了画「—」。
-/// 操作列是两段式删除：第一击标待确认，再击同一行才真删（见 [`delete_cell`]）。
+/// When the range isn't "all", the usage column shows the session's in-range portion, not its
+/// lifetime total. Name and project may be missing (sources may store no name; old ledger entries
+/// lack projects) — missing values render as "—". The action column is two-step delete: first click
+/// arms confirmation, clicking the same row again really deletes (see [`delete_cell`]).
 #[allow(clippy::too_many_arguments)]
 fn session_table(
     ui: &mut egui::Ui,
@@ -1012,7 +1024,7 @@ fn session_table(
     body: f32,
     pending_delete: Option<&str>,
 ) -> Option<TableAction> {
-    // 表头是 `&'static str`：按区间二选一，不动态拼字符串。
+    // The header is `&'static str`: one of two per range, never dynamically assembled.
     let total_column = if range == Range::All {
         Column::number("合计", NUM_W, SortKey::Total)
     } else {
@@ -1035,8 +1047,8 @@ fn session_table(
     sort_rows(
         &mut rows,
         sort,
-        // 有会话名的按名字排，没有的退回会话 id；前缀仍是 Agent，
-        // 保证同一个 agent 的会话能聚在一起。
+        // Named sessions sort by name, unnamed fall back to session id; the prefix stays the Agent,
+        // keeping one agent's sessions grouped together.
         |row| {
             format!(
                 "{}:{}",
@@ -1051,7 +1063,7 @@ fn session_table(
             _ => row.total(),
         },
     );
-    // 行闭包拿不到可变借用：删除事件用 `RefCell` 收集，画完取第一个。
+    // Row closures can't take the mutable borrow: delete events collect in a `RefCell`, first one wins after painting.
     let deletions: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
     let items: Vec<_> = rows
         .iter()
@@ -1067,15 +1079,15 @@ fn session_table(
             let confirming = pending_delete == Some(key.as_str());
             let deletions = &deletions;
             move |ui: &mut egui::Ui| {
-                // 会话名加粗当主标识，会话 id 退为辅助列（用户要求增加会话名）。
+                // The session name bolds as the primary identifier; the session id demotes to a secondary column (user request to add names).
                 cell_text(ui, &columns, 0, &title, true);
                 cell_text(ui, &columns, 1, &short, false);
                 cell_text(ui, &columns, 2, client.label(), false);
                 cell_text(ui, &columns, 3, &model_id, false);
                 cell_text(ui, &columns, 4, &project, false);
                 cell_number(ui, &columns, 5, &aggregate::format_tokens(total), true);
-                // 状态列只画最近活动：源里已消失的会话不进列表（见
-                // [`crate::usage::Ledger::view`]），不存在「已归档」这个状态。
+                // The status column only shows the latest activity: sessions gone from the sources never enter the list (see
+                // [`crate::usage::Ledger::view`]), so there is no "archived" status.
                 let when = aggregate::relative_time(last_seen_ms, now_ms);
                 cell_text(ui, &columns, 6, &when, false);
                 delete_cell(ui, &columns, 7, &key, confirming, deletions);
@@ -1085,16 +1097,17 @@ fn session_table(
     let clicked = table(ui, "session-table", &columns, sort, body, items);
     let deleted = deletions.into_inner().into_iter().next();
     if let Some(key) = deleted {
-        // 删除优先：同一个单元格同帧不可能又排序又删除。
+        // Delete wins: one cell can't sort and delete in the same frame.
         return Some(TableAction::DeleteSession(key));
     }
     table_action(clicked)
 }
 
-/// 会话表的删除单元格：两段式确认，防在密集表格里误触。
+/// The session table's delete cell: two-step confirmation against mis-clicks in a dense table.
 ///
-/// 第一击把该行标成待确认（按钮变「确认」，红色）；再击同一行才真删。
-/// 待确认状态存在 `App::usage_delete_pending`，点别行会转移过去。
+/// First click marks the row as pending (button turns "confirm", red); a second click on the same
+/// row really deletes. Pending state lives in `App::usage_delete_pending` and moves if another
+/// row is clicked.
 fn delete_cell(
     ui: &mut egui::Ui,
     columns: &[Column],

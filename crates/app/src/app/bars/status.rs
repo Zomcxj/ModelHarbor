@@ -6,7 +6,7 @@ impl App {
         egui::TopBottomPanel::bottom("bottom")
             .exact_height(32.0)
             .show(ctx, |ui| {
-                // 底部文字：靠下且左对齐，右侧统计靠右。
+                // Bottom text: flush low and left-aligned; right-side stats flush right.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::BOTTOM), |ui| {
                     if let Some(err) = &self.load_error {
                         ui.label(
@@ -14,8 +14,8 @@ impl App {
                                 .color(crate::theme::semantics(ui).err),
                         );
                     }
-                    // 底部状态文字限制在左侧约七成宽度内，超宽时向左滚动（跑马灯），
-                    // 循环从起点对齐开始。
+                    // The bottom status text is capped at about 70% of the left width, scrolling left when over-long (a marquee),
+                    // with each loop starting aligned at its origin.
                     let max_w = (ui.available_width() * 0.72).max(160.0);
                     let row_h = ui.available_height();
                     let (rect, _) =
@@ -33,18 +33,18 @@ impl App {
                         painter.galley(egui::pos2(rect.left(), y), galley, color);
                     } else {
                         let t = ui.ctx().input(|i| i.time) as f32;
-                        let span = text_w + 48.0; // 尾部留白，循环衔接
+                        let span = text_w + 48.0; // Trailing whitespace, joining the loop
                         let phase = (t * 48.0) % span; // 48 px/s
                         painter.galley(egui::pos2(rect.left() - phase, y), galley, color);
-                        // 持续重绘以驱动滚动；仅溢出时开动画。
+                        // Continuous repaints drive the scrolling; the animation runs only on overflow.
                         ui.ctx()
                             .request_repaint_after(std::time::Duration::from_millis(32));
                     }
-                    // 右侧：当前页 + 数量统计
+                    // Right side: current page + counts
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
                         ui.horizontal(|ui| {
                             let wk = ui.visuals().weak_text_color();
-                            // 当前页：后端图标 + 名称
+                            // Current page: backend icon + name
                             if let Some(icon) = self.icon_for(self.current_page) {
                                 ui.add(
                                     egui::Image::from_texture(icon)
@@ -57,7 +57,7 @@ impl App {
                                     .weak(),
                             );
                             ui.separator();
-                            // agents 计数（bot 图标）
+                            // The agents count (bot icon)
                             if let Some(tex) = self.toolbar_icons.bot.as_ref() {
                                 ui.add(
                                     egui::Image::from_texture(tex)
@@ -72,7 +72,7 @@ impl App {
                                     .weak(),
                             );
                             ui.add_space(crate::theme::SPACE_2);
-                            // providers 计数（server 图标）
+                            // The providers count (server icon)
                             if let Some(tex) = self.toolbar_icons.server.as_ref() {
                                 ui.add(
                                     egui::Image::from_texture(tex)

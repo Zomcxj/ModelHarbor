@@ -1,6 +1,6 @@
-//! ZCode 后端：`~/.zcode/v2/provider_config.json`。
+//! The ZCode backend: `~/.zcode/v2/provider_config.json`.
 //!
-//! 结构（自定 provider 与模型级属性分两处存放）：
+//! Structure (custom-provider and model-level attributes live in two places):
 //! ```jsonc
 //! { "schemaVersion": 1, "config": {
 //!     "providerOrder": ["<providerId>"],
@@ -16,11 +16,11 @@
 //!       "manualProviderModelRules": [] } } }
 //! ```
 //!
-//! 只接管本文件，内置 provider / 凭据 / 模型库不属于用户可编辑面。
+//! Only this file is managed; built-in providers / credentials / the model library are not user-editable surface.
 //!
-//! 模型级字段落在 `config.properties`（`contextWindow` / `supports*` 布尔）与
-//! `config.optionSpecs`（`maxOutputTokens.max` / `reasoningLevel.values`）。
-//! `optionSpecs.*.map` 原样保留、不解析。
+//! Model-level fields land in `config.properties` (`contextWindow` / `supports*` booleans) and
+//! `config.optionSpecs` (`maxOutputTokens.max` / `reasoningLevel.values`).
+//! `optionSpecs.*.map` is preserved verbatim, never parsed.
 
 use super::{Backend, BackendLoad};
 use crate::convert;
@@ -37,12 +37,12 @@ fn default_local_path() -> String {
     format!("{}\\.zcode\\v2\\provider_config.json", home_dir_string())
 }
 
-/// `config` 对象（顶层 `config` 键下的内容）。
+/// The `config` object (the content under the top-level `config` key).
 fn config_of(root: &Value) -> Option<&Map<String, Value>> {
     root.get("config").and_then(Value::as_object)
 }
 
-/// provider 规则数组。
+/// The provider rules array.
 fn provider_rules(root: &Value) -> Option<&Vec<Value>> {
     config_of(root)?
         .get("providerConfigRules")?
@@ -50,7 +50,7 @@ fn provider_rules(root: &Value) -> Option<&Vec<Value>> {
         .as_array()
 }
 
-/// 模型规则数组（`modelConfigRules.providerModelRules`）。
+/// The model rules array (`modelConfigRules.providerModelRules`).
 fn model_rules(root: &Value) -> Option<&Vec<Value>> {
     config_of(root)?
         .get("modelConfigRules")?
@@ -58,7 +58,7 @@ fn model_rules(root: &Value) -> Option<&Vec<Value>> {
         .as_array()
 }
 
-/// 从 provider 规则里取模型 id 列表（`personalModelIds`，缺失时回落 `modelOrder`）。
+/// Take a model id list from provider rules (`personalModelIds`, falling back to `modelOrder` when missing).
 fn model_ids_of(rule: &Value) -> Vec<String> {
     let cfg = rule.get("config");
     let pick = |key: &str| {
@@ -80,7 +80,7 @@ fn model_ids_of(rule: &Value) -> Vec<String> {
     }
 }
 
-/// 在模型规则里按 (providerId, modelId) 找该模型的 `config`。
+/// Find a model's `config` in the model rules by (providerId, modelId).
 fn model_config_of(root: &Value, provider_id: &str, model_id: &str) -> Option<Value> {
     model_rules(root)?
         .iter()
@@ -92,10 +92,9 @@ fn model_config_of(root: &Value, provider_id: &str, model_id: &str) -> Option<Va
         .cloned()
 }
 
-/// 模型级 raw → ModelRow。
+/// Model-level raw → ModelRow.
 ///
-/// `config` 为 `providerModelRules` 里那条规则的 `config`（可能缺失）。
-/// `raw` 整体保留。
+/// `config` is that rule's `config` inside `providerModelRules` (may be missing). `raw` is preserved whole.
 fn model_from_zcode(id: &str, config: Value) -> ModelRow {
     let mut row = ModelRow::new();
     row.id = id.to_string();
@@ -125,7 +124,7 @@ fn model_from_zcode(id: &str, config: Value) -> ModelRow {
     row
 }
 
-/// provider 规则 → ProviderRow。
+/// Provider rule → ProviderRow.
 fn provider_from_zcode(rule: &Value, root: &Value) -> Option<ProviderRow> {
     let id = rule.get("providerId").and_then(Value::as_str)?.to_string();
     let cfg = rule.get("config");
@@ -146,13 +145,13 @@ fn provider_from_zcode(rule: &Value, root: &Value) -> Option<ProviderRow> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    // ZCode 的 api.type 词表与 pi 系差一个 `chat`，转换后进内部表示。
+    // ZCode's api.type vocabulary differs from the pi family by one `chat`; convert into the internal representation.
     row.pi_api = convert::zcode_api_to_api(
         api.and_then(|a| a.get("type"))
             .and_then(Value::as_str)
             .unwrap_or_default(),
     );
-    // baseUrl 归一化后进界面：不带 `/v1` 等端点后缀。
+    // baseUrl is normalized before entering the UI: no `/v1`-style endpoint suffix.
     let raw_base = api
         .and_then(|a| a.get("baseUrl"))
         .and_then(Value::as_str)
@@ -166,14 +165,14 @@ fn provider_from_zcode(rule: &Value, root: &Value) -> Option<ProviderRow> {
         .to_string();
     row.models = models;
     row.source_format = Some(ConfigFormat::ZCode);
-    // raw 用 provider 规则里的 `config`：序列化时以它为基底保留 group 等未知键。
+    // raw uses the provider rule's `config`: at serialization it's the base preserving unknown keys like group.
     row.raw = cfg.cloned().unwrap_or(Value::Null);
     Some(row)
 }
 
-/// ProviderRow → provider 规则的 `config`。
+/// ProviderRow → the provider rule's `config`.
 fn provider_config_to_zcode(p: &ProviderRow) -> Value {
-    // 以 raw 为基底保留 ZCode 自有字段（group 等）；来自其它方言的 raw 全新构造。
+    // raw is the base keeping ZCode's own fields (group etc.); raw from other dialects builds fresh.
     let mut obj = if convert::is_workbuddy_shaped(&p.raw)
         || convert::is_opencode_shaped_provider(&p.raw)
         || convert::is_dsh_shaped_provider(&p.raw)
@@ -183,7 +182,7 @@ fn provider_config_to_zcode(p: &ProviderRow) -> Value {
         p.raw.as_object().cloned().unwrap_or_default()
     };
 
-    // `group` 是必填项，缺省写 `standard-personal`；已有 `group` 则保留。
+    // `group` is required: write `standard-personal` when missing; keep an existing `group`.
     if !obj.contains_key("group") {
         obj.insert("group".into(), Value::String("standard-personal".into()));
     }
@@ -206,7 +205,7 @@ fn provider_config_to_zcode(p: &ProviderRow) -> Value {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    // 写出侧同样归一化：剥掉 `/v1` 等端点后缀。
+    // The write side normalizes too: strip `/v1`-style endpoint suffixes.
     let effective = p.effective_api();
     api.insert(
         "type".into(),
@@ -230,13 +229,13 @@ fn provider_config_to_zcode(p: &ProviderRow) -> Value {
     Value::Object(obj)
 }
 
-/// ModelRow → 模型规则的 `config`。
+/// ModelRow → the model rule's `config`.
 ///
-/// `enabled` 是 `config` 的直接子键（与 `properties` 平级）。
-/// 能力布尔只在原文件已写该键或界面给出模态列表时改写。
+/// `enabled` is a direct child of `config` (sibling of `properties`). Capability booleans are rewritten only
+/// when the original file already had the key or the UI supplied a modality list.
 fn model_config_to_zcode(m: &ModelRow) -> Value {
-    // raw 为基底：`optionSpecs.*.map` 这类表达式与未知键原样保留；
-    // 来自其它方言的 raw 全新构造。
+    // raw is the base: expressions like `optionSpecs.*.map` and unknown keys are preserved verbatim;
+    // raw from other dialects builds fresh.
     let mut obj = if convert::is_workbuddy_shaped(&m.raw)
         || convert::is_opencode_shaped_model(&m.raw)
         || convert::is_dsh_shaped_model(&m.raw)
@@ -246,7 +245,7 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         m.raw.as_object().cloned().unwrap_or_default()
     };
 
-    // enabled 与 properties 平级：不接管该开关，只在原文件没写该键时补 true。
+    // enabled sits beside properties: the switch isn't managed — only backfill true when the original file lacked the key.
     if obj.get("enabled").and_then(Value::as_bool).is_none() {
         obj.insert("enabled".into(), Value::Bool(true));
     }
@@ -256,12 +255,12 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    // 只写能解析成整数的值，解析不了保持原样（props 是 raw 的克隆）。
+    // Write only values that parse as integers; unparseable ones stay as-is (props is a clone of raw).
     if let Ok(context) = m.context.trim().parse::<i64>() {
         props.insert("contextWindow".into(), Value::Number(context.into()));
     }
-    // 模态：界面给出列表时按它写，列表为空时不动原有键；
-    // 落点是 `properties.inputFormat`。
+    // Modalities: when the UI supplies a list, write per it; an empty list leaves existing keys alone;
+    // the landing spot is `properties.inputFormat`.
     if !m.modalities_input.trim().is_empty() {
         let mut input_format = props
             .get("inputFormat")
@@ -277,7 +276,7 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
                 "audio" => "supportsAudio",
                 _ => continue,
             };
-            // 只同步原本已声明的键或新打开的模态（on），不给未声明的键补 false。
+            // Sync only originally-declared keys or newly switched-on modalities (on); never backfill false for undeclared keys.
             if input_format.contains_key(field) || on {
                 input_format.insert(field.into(), Value::Bool(on));
             }
@@ -288,7 +287,7 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
             props.insert("inputFormat".into(), Value::Object(input_format));
         }
     }
-    // 只在原文件已有该键时同步 tool_call。
+    // Sync tool_call only when the original file already had the key.
     if props.contains_key("supportsToolCall") {
         props.insert("supportsToolCall".into(), Value::Bool(m.tool_call));
     }
@@ -310,7 +309,7 @@ fn model_config_to_zcode(m: &ModelRow) -> Value {
         max.insert("max".into(), Value::Number(output.into()));
         specs.insert("maxOutputTokens".into(), Value::Object(max));
     }
-    // 档位：UI 有值时只改写 `values`，`map` 表达式原样保留。
+    // Tiers: when the UI has values, rewrite only `values`; the `map` expression stays verbatim.
     let variants: Vec<Value> = m
         .variants
         .split(',')
@@ -348,7 +347,7 @@ impl Backend for ZCodeBackend {
     }
 
     fn detect(&self, content: &str, _path: &str) -> bool {
-        // 两个独立标记：providerRules 或 providerOrder 任一为数组即认。
+        // Two independent markers: either providerRules or providerOrder being an array counts.
         parse_config_content(content)
             .map(|v| {
                 let Some(cfg) = config_of(&v) else {
@@ -405,7 +404,7 @@ impl Backend for ZCodeBackend {
             .cloned()
             .unwrap_or_default();
 
-        // providerOrder：按 UI 顺序（含删除生效）。
+        // providerOrder: per UI order (deletions included).
         let order: Vec<Value> = providers
             .iter()
             .filter(|p| !p.key.trim().is_empty())
@@ -413,7 +412,7 @@ impl Backend for ZCodeBackend {
             .collect();
         cfg.insert("providerOrder".into(), Value::Array(order));
 
-        // providerRules：按 UI 顺序重建；同 key 的旧规则作基底保留未知键。
+        // providerRules: rebuilt per UI order; same-key old rules serve as the base preserving unknown keys.
         let existing: Map<String, Value> = cfg
             .get("providerConfigRules")
             .and_then(|r| r.get("providerRules"))
@@ -455,8 +454,8 @@ impl Backend for ZCodeBackend {
         let provider_cfg = convert::order_fields(provider_cfg, &["providerRules"]);
         cfg.insert("providerConfigRules".into(), Value::Object(provider_cfg));
 
-        // modelConfigRules：按 UI 的 (providerId, modelId) 重写；
-        // 未被接管的旧规则与 manualProviderModelRules 全量保留。
+        // modelConfigRules: rewritten per the UI's (providerId, modelId);
+        // rules the UI doesn't manage and manualProviderModelRules are preserved whole.
         let managed: Vec<(String, String)> = providers
             .iter()
             .filter(|p| !p.key.trim().is_empty())
@@ -477,7 +476,7 @@ impl Backend for ZCodeBackend {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        // 旧规则里属于本 provider 的条目按模型查基底（保留 optionSpecs.map 等）。
+        // Entries of this provider in the old rules look up their base by model (keeping optionSpecs.map etc.).
         let lookup = |pid: &str, mid: &str| -> Option<&Value> {
             old_rules.iter().find(|r| {
                 r.get("providerId").and_then(Value::as_str) == Some(pid)
@@ -496,7 +495,7 @@ impl Backend for ZCodeBackend {
                 new_rules.push(Value::Object(rule));
             }
         }
-        // 保留未被 UI 接管的规则：provider 已不在 UI 的、或该 provider 下模型已删的。
+        // Keep rules the UI doesn't manage: providers gone from the UI, or models deleted under a kept provider.
         for rule in &old_rules {
             let pid = rule.get("providerId").and_then(Value::as_str).unwrap_or("");
             let mid = rule.get("modelId").and_then(Value::as_str).unwrap_or("");
@@ -510,16 +509,16 @@ impl Backend for ZCodeBackend {
         if !model_cfg.contains_key("manualProviderModelRules") {
             model_cfg.insert("manualProviderModelRules".into(), Value::Array(Vec::new()));
         }
-        // modelConfigRules 内部同样是固定顺序（providerModelRules 在前、
-        // manualProviderModelRules 在后），来源文件缺后者时补空数组。
+        // Inside modelConfigRules the order is likewise fixed (providerModelRules first,
+        // manualProviderModelRules after); a missing latter gets an empty array.
         let model_cfg = convert::order_fields(
             model_cfg,
             &["providerModelRules", "manualProviderModelRules"],
         );
         cfg.insert("modelConfigRules".into(), Value::Object(model_cfg));
 
-        // 顶层与 config 的键序显式固定：schemaVersion → config，
-        // config 内 providerOrder → providerConfigRules → modelConfigRules。
+        // Top-level and config key order is explicitly pinned: schemaVersion → config;
+        // inside config: providerOrder → providerConfigRules → modelConfigRules.
         let cfg = convert::order_fields(
             cfg,
             &["providerOrder", "providerConfigRules", "modelConfigRules"],

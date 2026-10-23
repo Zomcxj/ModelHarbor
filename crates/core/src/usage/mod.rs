@@ -1,18 +1,18 @@
-//! 本机用量统计 —— 扫描 10 个 agent 的本地会话账本，按 agent / 模型 / 会话 / 时间
-//! 四个维度汇总 token 使用量。
+//! Local usage statistics — scans 10 agents' local session ledgers, summing token usage across four
+//! dimensions: agent / model / session / time.
 //!
-//! 扫描内核用 [`tokscale_core`]（上游 `junhoyeo/tokscale`，MIT）：它原生解析 56 个
-//! agent 的会话格式，本模块只做四件事 ——
+//! The scan engine is [`tokscale_core`] (upstream `junhoyeo/tokscale`, MIT): it natively parses 56 agents'
+//! session formats. This module does four things —
 //!
-//! 1. [`agents`]：把 [`ConfigFormat`](crate::format::ConfigFormat) 映射到 tokscale 的
-//!    client id（**6/10 拼写不一致**，必须显式映射）；
-//! 2. [`scan`]：调 `parse_local_clients` 拿回扁平消息列表，再按维度汇总；
-//! 3. [`titles`]：补会话名（tokscale 的消息流不带名字）；
-//! 4. [`ledger`]：把每次扫描到的会话快照落盘，**已删除的会话用量永久保留**。
+//! 1. [`agents`]: maps [`ConfigFormat`](crate::format::ConfigFormat) to tokscale's client ids
+//!    (**6 of 10 spellings disagree** — the mapping must be explicit);
+//! 2. [`scan`]: calls `parse_local_clients` for the flat message list, then aggregates per dimension;
+//! 3. [`titles`]: backfills session titles (tokscale's message stream carries none);
+//! 4. [`ledger`]: persists each scan's session snapshots, **keeping deleted sessions' usage forever**.
 //!
-//! 口径（与 tokscale 一致，勿自行调整）：
-//! - `input` 是**新鲜输入**，已排除 `cache_read`，不要重复相加；
-//! - `cache_write_1h` 是 `cache_write` 的子集，**不参与合计**。
+//! Accounting (matches tokscale; don't adjust on your own):
+//! - `input` is **fresh input**, already excluding `cache_read` — don't add it twice;
+//! - `cache_write_1h` is a subset of `cache_write` and **excluded from totals**.
 
 pub mod agents;
 pub mod daily;
@@ -20,7 +20,7 @@ pub mod delete;
 pub mod ledger;
 pub mod titles;
 
-// pi 系的存储布局：删除与读名字共用，不对外暴露。
+// The pi family's storage layout: shared by deletion and title reading, not exported.
 mod pi;
 
 pub use agents::{config_format_for_client, tokscale_client_for};
@@ -30,9 +30,9 @@ pub use ledger::{Ledger, SessionSnapshot};
 
 use std::collections::HashMap;
 
-/// 扫描内核的公开入口：只扫 ModelHarbor 支持的这些 agent。
+/// The scan engine's public entry: scans only the agents ModelHarbor supports.
 ///
-/// 顺序取 [`crate::backends::BACKENDS`]（权威注册表），便于 UI 稳定排序。
+/// Order follows [`crate::backends::BACKENDS`] (the authoritative registry), keeping UI sorting stable.
 pub fn tokscale_clients() -> Vec<String> {
     crate::backends::BACKENDS
         .iter()
@@ -40,28 +40,28 @@ pub fn tokscale_clients() -> Vec<String> {
         .collect()
 }
 
-/// 一次扫描的原始结果（未经账本合并）。
+/// One scan's raw result (before ledger merge).
 pub struct ScanResult {
-    /// 按 `client:session_id` 归并后的会话快照。
+    /// Session snapshots merged by `client:session_id`.
     pub sessions: HashMap<String, SessionSnapshot>,
-    /// 按本地日历日分桶的用量（热力图与「今日 / 本月 / 总计」的基础）。
+    /// Usage bucketed per local calendar day (the heatmap's and "today / month / total" foundation).
     ///
-    /// 会话级汇总做不到这件事：一个会话可以横跨几十天，按它的
-    /// `last_seen_ms` 归日会把整月的量堆到最后一天。
+    /// Session-level sums can't do this: one session can span dozens of days, and bucketing by its
+    /// `last_seen_ms` would pile a whole month onto its last day.
     pub daily: DailyMap,
-    /// 消息条数（tokscale 的 `ParsedMessage` 计数）。
+    /// Message count (tokscale's `ParsedMessage` count).
     pub message_count: usize,
-    /// 内核自报的扫描耗时（毫秒）。
+    /// Scan duration self-reported by the engine (milliseconds).
     pub processing_time_ms: u32,
 }
 
-/// 扫描本机全部已知 agent 的本地会话账本。
+/// Scan every known agent's local session ledger.
 ///
-/// `ignored` 是用户已删除并永久忽略的会话键（`client:session_id`）：扫到也不
-/// 进结果，否则删掉的会话会在下一轮扫描里复活。
+/// `ignored` holds keys of sessions the user deleted and permanently ignored (`client:session_id`): seen
+/// in a scan, they stay out of the result — otherwise deleted sessions would revive on the next scan.
 ///
-/// **这是全量扫描，调用方必须放在后台线程**；UI 线程按指纹变化 + debounce
-/// 决定何时重扫，见 `app::usage`。
+/// **This is a full scan; callers must run it on a background thread.** The UI thread decides when to
+/// rescan via fingerprint changes + debounce — see `app::usage`.
 pub fn scan(ignored: &std::collections::BTreeSet<String>) -> Result<ScanResult, String> {
     let options = tokscale_core::LocalParseOptions {
         home_dir: None,
@@ -74,13 +74,14 @@ pub fn scan(ignored: &std::collections::BTreeSet<String>) -> Result<ScanResult, 
     };
     let mut parsed = tokscale_core::parse_local_clients(options)?;
     let message_count = parsed.messages.len();
-    // 定价：tokscale 的解析通道不套定价（上游源码注释明说 "This lane applies
-    // no pricing"），只有上游实报的 cost 有值；其余用本机定价缓存现算
-    // （%APPDATA%\tokscale\cache，同步、离线，无网络请求）。缓存不存在时
-    // 保持 0：界面不显示金额，不能拿 $0.00 冒充「没花钱」。
+    // Pricing: tokscale's parsing lane applies no pricing (the upstream source comments say so plainly:
+    // "This lane applies no pricing"); only upstream-reported cost carries a value. Everything else
+    // computes from the local pricing cache (%APPDATA%\tokscale\cache — synced, offline, no network
+    // requests). With no cache, costs stay 0: the UI shows no amounts, and $0.00 must never impersonate
+    // "cost nothing".
     if let Some(pricing) = tokscale_core::pricing::PricingService::load_cached_any_age() {
         for message in &mut parsed.messages {
-            // 上游实报过的不再现算；空模型名没法定价，也跳过。
+            // Upstream-reported costs aren't recomputed; empty model names can't be priced and skip too.
             if message.cost != 0.0 || message.model_id.is_empty() {
                 continue;
             }
@@ -109,20 +110,21 @@ pub fn scan(ignored: &std::collections::BTreeSet<String>) -> Result<ScanResult, 
     let mut daily = DailyMap::new();
     for message in &parsed.messages {
         let Some(client) = config_format_for_client(&message.client) else {
-            // tokscale 支持的 agent 比 ModelHarbor 多（56 个）：不在映射表里的
-            // 客户端直接丢弃，避免 UI 出现无法切页的孤儿条目。
+            // tokscale supports more agents than ModelHarbor (56): clients missing from the mapping are dropped
+            // outright, so the UI never grows orphan entries that can't be paged to.
             continue;
         };
         let key = SessionSnapshot::key(client, &message.session_id);
         if ignored.contains(&key) {
-            // 用户删掉的会话：不进会话汇总，也不进按天分桶。
+            // User-deleted sessions: into neither the session aggregation nor the daily buckets.
             continue;
         }
         let entry = sessions.entry(key).or_insert_with(|| {
             SessionSnapshot::new(client, &message.session_id, &message.model_id)
         });
         entry.absorb(message);
-        // 同一条消息同时进会话汇总与按天分桶：两者服务于不同视图，不能互相推导。
+        // The same message enters both the session aggregation and the daily buckets: the two serve different
+        // views and can't be derived from each other.
         if !message.date.is_empty() {
             daily
                 .entry(message.date.clone())
@@ -130,8 +132,9 @@ pub fn scan(ignored: &std::collections::BTreeSet<String>) -> Result<ScanResult, 
                 .add_message(client, message);
         }
     }
-    // 会话名：tokscale 的消息流里没这个字段，单独一趟从源里读
-    // （opencode 系读库里的 title，pi 系取首条用户消息）。读不到就留空。
+    // Session titles: absent from tokscale's message stream — a separate pass reads them from the sources
+    // (the opencode family reads the database's title; the pi family takes the first user message).
+    // Unreadable stays empty.
     titles::collect(&mut sessions);
     Ok(ScanResult {
         sessions,

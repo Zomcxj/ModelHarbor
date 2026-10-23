@@ -3,7 +3,7 @@ use crate::app::fetch::chat_url;
 use crate::app::providers_form::{fetch_grid_columns, FETCH_GRID_GAP_X};
 use crate::app::App;
 
-/// 卡片 / 列表里的单行摘要：状态码后面保留人话原因，丢掉耗时与处理建议。
+/// The one-line summary in cards / lists: keeps the human reason after the status code, drops elapsed time and advice.
 #[test]
 fn short_err_keeps_status_code_with_reason() {
     assert_eq!(
@@ -12,14 +12,14 @@ fn short_err_keeps_status_code_with_reason() {
         ),
         "HTTP 503 服务临时不可用"
     );
-    // 拉取模型失败那种多行错误：只取第一行的状态码 + 原因
+    // The multi-line error of a failed model fetch: take only the first line's status code + reason
     assert_eq!(
             short_err("HTTP 404 接口或模型不存在：Not Found\nBase URL 路径或模型名写错；检查接口地址与模型 id"),
             "HTTP 404 接口或模型不存在"
         );
-    // 未收录的状态码：只给数字。
+    // Unlisted status codes: number only.
     assert_eq!(short_err("HTTP 599（200 ms）"), "HTTP 599");
-    // 非 HTTP 错误：原样短文本（超长才截断）
+    // Non-HTTP errors: short text as-is (truncated only when over-long)
     assert_eq!(
         short_err("网络错误：Connection refused"),
         "网络错误：Connection refused"
@@ -29,25 +29,25 @@ fn short_err_keeps_status_code_with_reason() {
 
 #[test]
 fn fetch_grid_columns_never_exceed_available_width() {
-    // 总宽 = 列数 * 列宽 + 间距 * (列数 - 1)，不得超过可用宽度。
+    // Total width = columns * column width + gaps * (columns - 1), never exceeding the available width.
     let total =
         |(cols, col_w): (usize, f32)| cols as f32 * col_w + FETCH_GRID_GAP_X * (cols - 1) as f32;
-    // 宽窗口：取满 5 列并把宽度均分（5 * 217.6 + 4 * 28 = 1200）。
+    // Wide window: the full 5 columns with widths split evenly (5 * 217.6 + 4 * 28 = 1200).
     let wide = fetch_grid_columns(50, 1200.0);
     assert_eq!(wide.0, 5);
     assert!((wide.1 - 217.6).abs() < 0.01);
     assert!(total(wide) <= 1200.5);
-    // 中等宽度：列数随可用宽度下降，仍恰好铺满。
+    // Medium width: column count drops with available width, still exactly filling.
     let mid = fetch_grid_columns(50, 400.0);
     assert_eq!(mid.0, 2);
     assert!(total(mid) <= 400.5);
-    // 极窄窗口：退化为单列。
+    // Extremely narrow window: degrades to one column.
     let narrow = fetch_grid_columns(50, 120.0);
     assert_eq!(narrow.0, 1);
     assert!(narrow.1 <= 120.0);
-    // 模型很少时不空出多余列。
+    // Few models leave no surplus columns.
     assert_eq!(fetch_grid_columns(3, 1200.0).0, 3);
-    // 空列表不 panic，也不返回 0 列。
+    // An empty list neither panics nor returns 0 columns.
     assert_eq!(fetch_grid_columns(0, 300.0).0, 1);
 }
 
@@ -103,7 +103,7 @@ fn chat_url_openai_and_anthropic() {
 
 #[test]
 fn chat_url_streaming_only_changes_google() {
-    // 除 Google 系外，流式与非流式是同一个端点（靠请求体里的 stream 字段区分）
+    // Except Google's family, streaming and non-streaming share one endpoint (distinguished by the body's stream field)
     assert_eq!(
         chat_url(
             "https://gw.example.com/v1",
@@ -118,7 +118,7 @@ fn chat_url_streaming_only_changes_google() {
             true
         )
     );
-    // Google 系要换动词（streamGenerateContent）并加 SSE 查询参数
+    // Google's family swaps the verb (streamGenerateContent) and adds the SSE query parameter
     assert_eq!(
             chat_url(
                 "https://generativelanguage.googleapis.com/v1beta",
@@ -146,7 +146,7 @@ fn query_key_appends_after_existing_query() {
         with_query_key("https://gw.example.com/models", AuthKind::QueryKey, "sk-1"),
         "https://gw.example.com/models?key=sk-1"
     );
-    // Google 流式端点已带 ?alt=sse，密钥用 & 接着拼
+    // Google's streaming endpoint already carries ?alt=sse; the key joins with &
     assert_eq!(
         with_query_key(
             "https://gw.example.com/models/m:streamGenerateContent?alt=sse",
@@ -160,7 +160,7 @@ fn query_key_appends_after_existing_query() {
 #[test]
 fn chat_url_follows_selected_protocol() {
     let base = "https://gw.example.com/v1";
-    // Responses 系走 /responses（含 Azure）
+    // The Responses family goes through /responses (Azure included)
     assert_eq!(
         chat_url(base, "openai-responses", "gpt-4o", false),
         "https://gw.example.com/v1/responses"
@@ -169,17 +169,17 @@ fn chat_url_follows_selected_protocol() {
         chat_url(base, "azure-openai-responses", "gpt-4o", false),
         "https://gw.example.com/v1/responses"
     );
-    // Mistral 会话协议仍是 chat/completions
+    // Mistral's conversation protocol is still chat/completions
     assert_eq!(
         chat_url(base, "mistral-conversations", "mistral-large", false),
         "https://gw.example.com/v1/chat/completions"
     );
-    // pi 自己的协议是 /messages（不带 v1 前缀时也直接用 base）
+    // pi's own protocol is /messages (used directly on the base even without a v1 prefix)
     assert_eq!(
         chat_url(base, "pi-messages", "some-model", false),
         "https://gw.example.com/v1/messages"
     );
-    // Google 系需要模型名参与路径
+    // Google's family needs the model name in the path
     assert_eq!(
         chat_url(
             "https://generativelanguage.googleapis.com/v1beta",
@@ -203,14 +203,14 @@ fn chat_url_follows_selected_protocol() {
 #[test]
 fn api_wire_classifies_and_flags_unsupported() {
     use crate::app::fetch::{api_wire, auth_kind, unsupported_reason, ApiWire, AuthKind};
-    // 未知值与空值都归到兼容层。
+    // Unknown and empty values both land on the compatibility layer.
     assert_eq!(api_wire("openai-completions"), ApiWire::ChatCompletions);
     assert_eq!(api_wire("unknown-api"), ApiWire::ChatCompletions);
     assert_eq!(api_wire(""), ApiWire::ChatCompletions);
     assert_eq!(api_wire("openai-codex-responses"), ApiWire::Responses);
     assert_eq!(api_wire("anthropic-messages"), ApiWire::AnthropicMessages);
     assert_eq!(api_wire("pi-messages"), ApiWire::PiMessages);
-    // 鉴权方式随协议变化
+    // Auth mode follows the protocol
     assert_eq!(
         auth_kind(api_wire("anthropic-messages")),
         AuthKind::AnthropicKey
@@ -224,7 +224,7 @@ fn api_wire_classifies_and_flags_unsupported() {
         AuthKind::QueryKey
     );
     assert_eq!(auth_kind(api_wire("openai-responses")), AuthKind::Bearer);
-    // 需要专有鉴权的协议提前报错。
+    // Protocols needing proprietary auth error early.
     assert!(unsupported_reason("google-gemini-cli").is_some());
     assert!(unsupported_reason("bedrock-converse-stream").is_some());
     assert!(unsupported_reason("openai-completions").is_none());
@@ -245,12 +245,12 @@ fn minimal_body_matches_protocol() {
     let google = minimal_body(api_wire("google-generative-ai"), "m", question);
     assert_eq!(google["contents"][0]["parts"][0]["text"], question);
     assert_eq!(google["generationConfig"]["maxOutputTokens"], 16);
-    // 全部走流式（Google 除外：它的流式靠换端点，请求体里没有 stream 字段）
+    // Everything streams (Google excepted: its streaming swaps endpoints, no stream field in the body)
     assert_eq!(chat["stream"], true);
     assert_eq!(resp["stream"], true);
     assert_eq!(anthropic["stream"], true);
     assert!(google.get("stream").is_none());
-    // 字段名不得互相串用（Responses 没有 messages，Google 没有 model）
+    // Field names must not cross over (Responses has no messages, Google has no model)
     assert!(resp.get("messages").is_none());
     assert!(google.get("model").is_none());
 }
@@ -258,13 +258,13 @@ fn minimal_body_matches_protocol() {
 #[test]
 fn probe_user_agent_matches_whitelisted_clients() {
     use crate::app::fetch::{api_wire, probe_user_agent};
-    // Anthropic 系用 Claude Code 的身份，其余用 opencode 的身份。
+    // Anthropic-family uses Claude Code's identity; the rest use opencode's.
     assert!(probe_user_agent(api_wire("anthropic-messages")).starts_with("claude-cli/"));
     assert!(probe_user_agent(api_wire("pi-messages")).starts_with("claude-cli/"));
     assert!(probe_user_agent(api_wire("openai-completions")).starts_with("opencode/"));
     assert!(probe_user_agent(api_wire("openai-responses")).starts_with("opencode/"));
     assert!(probe_user_agent(api_wire("google-generative-ai")).starts_with("opencode/"));
-    // 版本号跟随主流在用版本：不能还是旧的 1.18。
+    // Versions follow the mainstream current release: must not stay at the old 1.18.
     assert!(!probe_user_agent(api_wire("openai-completions")).contains("1.18"));
     assert!(!probe_user_agent(api_wire("anthropic-messages")).contains("1.18"));
 }
@@ -276,7 +276,7 @@ fn chunk_content_detection_per_protocol() {
         Ok(value) => value,
         Err(err) => panic!("测试用例不是合法 JSON：{err}"),
     };
-    // Chat Completions：role 块不算出字，content / reasoning_content 才算
+    // Chat Completions: role blocks don't count as output; content / reasoning_content do
     let chat = api_wire("openai-completions");
     assert!(!chunk_has_content(
         chat,
@@ -290,12 +290,12 @@ fn chunk_content_detection_per_protocol() {
         chat,
         &parse(r#"{"choices":[{"delta":{"reasoning_content":"嗯"}}]}"#)
     ));
-    // 内容块数组形态也要认（部分中转站回 parts）
+    // The content-block-array shape counts too (some relays reply with parts)
     assert!(chunk_has_content(
         chat,
         &parse(r#"{"choices":[{"delta":{"content":[{"text":"你"}]}}]}"#)
     ));
-    // Responses：只有 *.delta 事件且带 delta 文本才算
+    // Responses: only *.delta events carrying delta text count
     let responses = api_wire("openai-responses");
     assert!(!chunk_has_content(
         responses,
@@ -305,7 +305,7 @@ fn chunk_content_detection_per_protocol() {
         responses,
         &parse(r#"{"type":"response.output_text.delta","delta":"你"}"#)
     ));
-    // Anthropic：content_block_delta 里的 text / thinking
+    // Anthropic: text / thinking inside content_block_delta
     let anthropic = api_wire("anthropic-messages");
     assert!(!chunk_has_content(
         anthropic,
@@ -315,7 +315,7 @@ fn chunk_content_detection_per_protocol() {
         anthropic,
         &parse(r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"你"}}"#)
     ));
-    // Google：candidates[0].content.parts[*].text
+    // Google: candidates[0].content.parts[*].text
     let google = api_wire("google-generative-ai");
     assert!(!chunk_has_content(
         google,
@@ -331,7 +331,7 @@ fn chunk_content_detection_per_protocol() {
 fn stream_ttft_reads_first_content_and_drains() {
     use crate::app::fetch::{api_wire, read_stream_ttft};
     let started = std::time::Instant::now();
-    // role 块在前：首字必须落在 content 块上，且读完流后不能报错
+    // A role block first: the first byte must land on a content block, and reading the stream mustn't error
     let sse = concat!(
         "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"content\":\"尼罗河\"}}]}\n\n",
@@ -343,7 +343,7 @@ fn stream_ttft_reads_first_content_and_drains() {
         started,
     );
     assert!(matches!(ttft, Some(ms) if ms < 1_000));
-    // 只有元事件（没有任何内容）：退回第一个数据包的时刻，不返回 None
+    // Meta events only (no content at all): fall back to the first packet's moment, never None
     let meta = "data: {\"type\":\"response.created\"}\n\n";
     let fallback = read_stream_ttft(
         std::io::Cursor::new(meta.as_bytes()),
@@ -351,7 +351,7 @@ fn stream_ttft_reads_first_content_and_drains() {
         started,
     );
     assert!(fallback.is_some());
-    // 空流（连数据包都没有）算失败
+    // An empty stream (not even packets) counts as failure
     let empty: &[u8] = b"";
     assert!(read_stream_ttft(
         std::io::Cursor::new(empty),
@@ -367,11 +367,11 @@ fn stream_end_markers_are_recognized() {
     assert!(is_stream_end("data: [DONE]"));
     assert!(is_stream_end("event: message_stop"));
     assert!(is_stream_end("data: {\"type\":\"response.completed\"}"));
-    // 普通内容块不能被误判成结束
+    // Ordinary content blocks must not be misjudged as the end
     assert!(!is_stream_end(
         "data: {\"choices\":[{\"delta\":{\"content\":\"尼罗河\"}}]}"
     ));
-    // content_block_stop 里含 stop，但不是结束事件
+    // content_block_stop contains stop but isn't the end event
     assert!(!is_stream_end(
         "event: content_block_stop\ndata: {\"type\":\"content_block_stop\"}"
     ));
@@ -383,13 +383,13 @@ fn probe_gate_throttles_per_provider() {
     let mut gate = ProbeGate::default();
     assert_eq!(gate.state("a", 100.0, None), ProbeGateState::Ready);
     gate.start("a", 100.0);
-    // 同一 provider 在飞期间 Busy（探测最长 10s，可能超过 5s 间隔）
+    // Same provider in flight → Busy (a probe may run up to 10s, exceeding the 5s interval)
     assert_eq!(gate.state("a", 101.0, None), ProbeGateState::Busy);
-    // 不同 provider 互不牵连：另一个厂商立即可测（可并行）
+    // Different providers don't interfere: another vendor is testable immediately (parallelizable)
     assert_eq!(gate.state("b", 100.0, None), ProbeGateState::Ready);
     gate.start("b", 100.0);
     gate.finish("a");
-    // 同一 provider 的任意两次探测（同模型 / 不同模型都算）统一间隔 5 秒
+    // Any two probes of one provider (same or different models) share the 5-second spacing
     match gate.state("a", 102.0, None) {
         ProbeGateState::Cooling(left) => {
             assert!(left > 0.0 && left <= PROBE_PROVIDER_GAP_S)
@@ -397,15 +397,15 @@ fn probe_gate_throttles_per_provider() {
         other => panic!("应为 Cooling，实际 {other:?}"),
     }
     assert_eq!(gate.state("a", 105.0, None), ProbeGateState::Ready);
-    // b 仍在飞，不影响 a
+    // b still in flight doesn't affect a
     assert_eq!(gate.state("b", 106.0, None), ProbeGateState::Busy);
     gate.finish("b");
-    // 网络守卫优先级最高：即使冷却结束也不允许探测
+    // The network guard has top priority: probing stays blocked even after cooldown ends
     assert!(matches!(
         gate.state("a", 200.0, Some("检测到系统代理")),
         ProbeGateState::NetBlocked(_)
     ));
-    // 释放：重载 / 关闭表单时解除某个 provider 的占用
+    // Release: reloading / closing the form releases a provider's hold
     gate.start("c", 300.0);
     gate.release(Some("a"));
     assert_eq!(gate.state("c", 400.0, None), ProbeGateState::Busy);
@@ -416,12 +416,12 @@ fn probe_gate_throttles_per_provider() {
 #[test]
 fn probe_questions_rotate_per_provider() {
     use crate::app::fetch::{probe_question, ProbeGate, PROBE_QUESTIONS};
-    // 同一 provider 连续取题不重复
+    // Consecutive picks for one provider never repeat
     let mut gate = ProbeGate::default();
     let first = gate.next_question("relay-a");
     let second = gate.next_question("relay-a");
     assert_ne!(first, second);
-    // 不同 provider 的起始偏移不同（同一游标下题目不同）
+    // Different providers start at different offsets (the same cursor yields different questions)
     let other = probe_question("relay-b", 0);
     assert_ne!(probe_question("relay-a", 0), other);
     assert!(PROBE_QUESTIONS.contains(&other));

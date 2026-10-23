@@ -16,15 +16,16 @@ pub fn card_frame<R>(
     } else {
         ui.visuals().extreme_bg_color
     };
-    // 悬停 id 按卡片 id 稳定派生，不用 auto_id；矩形画完才有，存进临时存储供
-    // 下一帧判定指针是否悬停（悬停状态滞后一帧）。
+    // The hover id derives stably from the card's id, never auto_id; the rect exists only after painting,
+    // stored in temp storage so the next frame can judge pointer hover (hover state lags one frame).
     let hover_id = id.with("hover");
     let mut hover_t = 0.0f32;
     let (stroke_color, stroke_width) = match highlight {
         1 => (DRAG_SOURCE_COLOR, 2.0), // source: orange
         2 => (DROP_TARGET_COLOR, 2.0), // target: green
-        // 无高亮时跟随形状预设的描边宽度（恒宽），颜色向强调色做悬停过渡；
-        // 高亮环由 [`draw_hover_ring`] 用 painter 画在矩形内侧，不参与布局。
+        // Without a highlight, follow the shape preset's border width (constant), with the color transitioning
+        // toward the accent on hover; the highlight ring is painted inside the rect by [`draw_hover_ring`],
+        // taking no part in layout.
         _ => {
             let last_rect = ui
                 .ctx()
@@ -67,8 +68,9 @@ pub fn card_frame<R>(
     frame.response
 }
 
-/// 石板 / 浮雕的「坐在底上」质感：接触影为向右下偏移 1px 的整圈暗色描边
-/// （跟随圆角，一半落在卡外）；浮雕再叠加凸起受光线（卡内左上亮、右下暗）。
+/// The slab / emboss "sitting on the surface" texture: the contact shadow is a full dark border ring offset
+/// 1px toward the bottom-right (following the corners, half falling outside the card); emboss then adds
+/// raised light-catching edges (bright top-left inside the card, dark bottom-right).
 fn draw_relief(ui: &egui::Ui, rect: egui::Rect) {
     let style = crate::theme::active_style(ui.ctx());
     if !style.has_contact_shadow() {
@@ -95,7 +97,7 @@ fn draw_relief(ui: &egui::Ui, rect: egui::Rect) {
     }
 }
 
-/// 色带在卡片上的覆盖区：**只有顶部 3px**。
+/// The ribbon's coverage on a card: **only the top 3px**.
 pub fn accent_bar_rect(rect: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(
         rect.min,
@@ -103,13 +105,13 @@ pub fn accent_bar_rect(rect: egui::Rect) -> egui::Rect {
     )
 }
 
-/// 色带高度（像素）。
+/// The ribbon's height (pixels).
 pub const ACCENT_BAR_HEIGHT: f32 = 3.0;
 
-/// 色带：卡片顶部一条 3px 主题强调色，随顶角圆弧收边。
+/// The ribbon: a 3px theme-accent strip along the card's top, trimmed by the top corners' arcs.
 ///
-/// 只画顶部条带（painter 裁剪区限制），条带 = 整卡圆角矩形裁剪到顶部 3px，
-/// 顶角圆弧天然对齐。painter 绘制，不参与布局。
+/// Only the top strip paints (painter clip limits): the strip is the card's full rounded rect clipped to
+/// the top 3px, so the corner arcs align naturally. Painted — no layout participation.
 fn draw_accent_bar(ui: &egui::Ui, rect: egui::Rect) {
     let style = crate::theme::active_style(ui.ctx());
     if !style.has_accent_bar() {
@@ -121,7 +123,7 @@ fn draw_accent_bar(ui: &egui::Ui, rect: egui::Rect) {
     painter.rect_filled(rect, corner, accent);
 }
 
-/// 悬停高亮的目标色：深色主题用强调色，浅色主题用中性深灰（`from_gray(110)`）。
+/// The hover highlight's target color: the accent on dark themes, a neutral deep gray on light ones (`from_gray(110)`).
 fn hover_target_color(ui: &egui::Ui) -> egui::Color32 {
     if ui.visuals().dark_mode {
         ui.visuals().hyperlink_color
@@ -130,8 +132,8 @@ fn hover_target_color(ui: &egui::Ui) -> egui::Color32 {
     }
 }
 
-/// 悬停高亮环：只给**平时无边框**的形状（极简 / 云朵卡片）画，
-/// 沿卡片内侧 1px，宽度随悬停进度浮现；painter 绘制，不参与布局。
+/// The hover highlight ring: painted only for **usually borderless** shapes (minimal / cloud cards),
+/// along the card's inner 1px, its width emerging with hover progress; painter-painted, no layout.
 fn draw_hover_ring(ui: &egui::Ui, rect: egui::Rect, hover_t: f32, rest_stroke_width: f32) {
     if hover_t <= 0.01 || rest_stroke_width > 0.0 {
         return;
@@ -146,9 +148,10 @@ fn draw_hover_ring(ui: &egui::Ui, rect: egui::Rect, hover_t: f32, rest_stroke_wi
     );
 }
 
-/// 凸起浮雕的内嵌线段：`(亮边, 暗边)`，各两条。
+/// The raised emboss's inset line segments: `(bright edge, dark edge)`, two of each.
 ///
-/// 亮边在内侧左上，暗边在内侧右下；线段落在矩形内侧，两端避开圆角。
+/// Bright edges inset top-left, dark edges inset bottom-right; segments sit inside the rect, avoiding
+/// the corners at both ends.
 pub fn bevel_segments(
     rect: egui::Rect,
     radius: f32,

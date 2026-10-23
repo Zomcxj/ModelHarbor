@@ -1,7 +1,8 @@
-//! `/models` 探测核心：URL 候选规范化、模型列表探测、错误分级与结果缓存。
+//! `/models` discovery core: URL candidate normalization, model-list probing, error classification, result caching.
 //!
-//! 职责边界：本模块只做纯逻辑与单次 HTTP 探测，不碰界面（调度与展示在 app crate）。
-//! 与 netguard 的口径一致：探测请求始终直连，不使用系统代理。
+//! Scope: this module does pure logic and one-shot HTTP probing only — no UI (scheduling and display
+//! live in the app crate). Matches netguard's policy: probe requests always connect directly, never
+//! through a system proxy.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -9,34 +10,35 @@ use std::error::Error as _;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-/// 缓存有效期：24 小时（与 opencode_models 的免费模型缓存一致）。
+/// Cache lifetime: 24 hours (matches opencode_models' free-model cache).
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// 响应体摘要长度：非 JSON 报错时附带的正文前缀字符数。
+/// Body digest length: number of body prefix characters attached when a non-JSON error is reported.
 const BODY_SNIPPET_CHARS: usize = 160;
 
 // ---------------------------------------------------------------------------
-// 1. URL 规范化
+// 1. URL normalization
 // ---------------------------------------------------------------------------
 
-/// 按尝试顺序列出「模型列表」端点的候选 URL。
+/// List candidate "model list" endpoint URLs in attempt order.
 ///
-/// 规则：
-/// - 显式 `custom_path` 优先且唯一生效：用户明确指定了端点就不再追加自动候选。
-///   相对路径按 origin（协议 + 域名端口）解析、直接拼到 host 上，**绝不追加到
-///   带版本号的 baseURL 后面**（避免 `https://host/v1` + `v1/models` 拼出
-///   `/v1/v1/models`）；绝对 URL（带 http(s)://）直接使用。
-/// - baseURL 以 `/v1` 结尾 → 只试 `{base}/models`。
-/// - 其余 → 先试 `{base}/v1/models`，失败再退 `{base}/models`。
-/// - 子路径原样保留（`https://host/api/v1` 不会丢 `/api/v1`）。
-/// - baseURL 为空时返回空列表（上层应提示先填地址）。
+/// Rules:
+/// - An explicit `custom_path` takes priority and wins alone: once the user names an endpoint, no
+///   automatic candidates are appended. Relative paths resolve against the origin (scheme + host:port)
+///   and attach directly to the host — **never appended after a versioned baseURL** (avoids
+///   `https://host/v1` + `v1/models` producing `/v1/v1/models`); absolute URLs (with http(s)://) are
+///   used as-is.
+/// - baseURL ending in `/v1` → only `{base}/models` is tried.
+/// - Otherwise → `{base}/v1/models` first, falling back to `{base}/models`.
+/// - Sub-paths are preserved (`https://host/api/v1` keeps `/api/v1`).
+/// - Empty baseURL returns an empty list (the caller should prompt for an address first).
 pub fn models_endpoint_candidates(base_url: &str, custom_path: Option<&str>) -> Vec<String> {
     if let Some(custom) = custom_path.map(str::trim).filter(|s| !s.is_empty()) {
         let lower = custom.to_ascii_lowercase();
         if lower.starts_with("http://") || lower.starts_with("https://") {
             return vec![custom.to_string()];
         }
-        // 相对路径：只保留 origin，直接拼在 host 后面。
+        // Relative path: keep only the origin and attach directly after the host.
         let path = custom.trim_start_matches('/');
         return vec![format!("{}/{}", origin_of(base_url), path)];
     }
@@ -58,7 +60,7 @@ pub fn models_endpoint_candidates(base_url: &str, custom_path: Option<&str>) -> 
     }
 }
 
-/// 取 URL 的 origin（协议 + 域名端口）。没有协议头时取首个 `/` 前的部分。
+/// Take a URL's origin (scheme + host:port). Without a scheme, everything before the first `/`.
 fn origin_of(url: &str) -> String {
     let trimmed = url.trim();
     let (head, rest) = match trimmed.split_once("://") {
@@ -69,7 +71,7 @@ fn origin_of(url: &str) -> String {
     format!("{head}{authority}")
 }
 
-/// 取 baseURL 的路径段（origin 之后的部分）：去掉结尾的全部斜杠，不含开头斜杠。
+/// Take baseURL's path segment (after the origin): all trailing slashes removed, no leading slash.
 fn base_path(url: &str) -> String {
     let trimmed = url.trim();
     let rest = match trimmed.split_once("://") {
@@ -82,7 +84,7 @@ fn base_path(url: &str) -> String {
     }
 }
 
-/// 路径末段是否为 `v1`（大小写不敏感）。
+/// Whether the path's last segment is `v1` (case-insensitive).
 fn ends_with_v1(path: &str) -> bool {
     path.rsplit('/')
         .next()
@@ -90,42 +92,43 @@ fn ends_with_v1(path: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// 2. 探测
+// 2. Probing
 // ---------------------------------------------------------------------------
 
-/// 探测请求的鉴权方式：决定把 key 放进哪些请求头。
+/// Auth mode of a probe request: decides which headers carry the key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeAuth {
-    /// 只发 `Authorization: Bearer <key>`（OpenAI 兼容网关的默认形态）。
+    /// Send only `Authorization: Bearer <key>` (the default shape of OpenAI-compatible gateways).
     Bearer,
-    /// Bearer 与 `x-api-key` 双发（同一个 key 放两处，兼容两种网关）。
+    /// Send both Bearer and `x-api-key` (the same key in two places, compatible with both gateway kinds).
     Both,
-    /// 只发 `api-key: <key>`（Azure OpenAI）。
+    /// Send only `api-key: <key>` (Azure OpenAI).
     Azure,
-    /// 不带任何鉴权头（本地 Ollama 等无鉴权服务）。
+    /// No auth headers at all (local Ollama and other unauthenticated services).
     None,
 }
 
-/// 一次探测的结果：成功带模型列表与耗时，失败带分类错误。
+/// One probe's outcome: success carries the model list and elapsed time; failure carries a classified error.
 #[derive(Debug)]
 pub enum ProbeOutcome {
-    /// 探测成功。
+    /// Probe succeeded.
     Success {
-        /// 模型 id 列表（保持响应顺序）。
+        /// The model id list (response order preserved).
         models: Vec<String>,
-        /// 从发起请求到拿到可解析响应的耗时（毫秒）。
+        /// Elapsed from request issue to a parseable response (milliseconds).
         elapsed_ms: u64,
     },
-    /// 探测失败：已分类的错误。
+    /// Probe failed: a classified error.
     Failure(ProbeError),
 }
 
-/// 探测 `{base_url}` 的模型列表端点：按候选顺序请求，成功即返回。
+/// Probe `{base_url}`'s model-list endpoint: request candidates in order, return on first success.
 ///
-/// 鉴权头按 `auth` 决定；key 缺省或鉴权方式为 None 时不带凭据，服务端的
-/// 401/403 会归类为「未配置 API Key」。请求始终直连，`timeout` 同时约束
-/// 连接阶段与整个请求（含响应体读取）。404/405 会自动换下一个候选
-/// （`/v1/models` 失败退 `/models`），其余错误与路径无关、立即返回。
+/// Auth headers follow `auth`; with no key or `None` auth, requests go out without credentials and the
+/// server's 401/403 classifies as "API key not configured". Requests always connect directly;
+/// `timeout` bounds both the connection phase and the whole request (including body read). 404/405
+/// automatically advance to the next candidate (`/v1/models` falls back to `/models`); all other
+/// errors are path-independent and return immediately.
 pub fn probe(
     base_url: &str,
     api_key: Option<&str>,
@@ -134,7 +137,7 @@ pub fn probe(
 ) -> ProbeOutcome {
     let started = Instant::now();
     let key = api_key.map(str::trim).filter(|k| !k.is_empty());
-    // 本次请求是否实际携带了 key：决定 401/403 时说「未配置」还是「无效」。
+    // Whether this request actually carried a key: decides whether 401/403 say "not configured" or "invalid".
     let key_sent = !matches!(auth, ProbeAuth::None) && key.is_some();
     let candidates = models_endpoint_candidates(base_url, None);
     if candidates.is_empty() {
@@ -163,7 +166,7 @@ pub fn probe(
                         models,
                         elapsed_ms: started.elapsed().as_millis() as u64,
                     },
-                    // 2xx 却解析不出模型列表：按非 JSON 处理并附正文摘要。
+                    // 2xx yet no model list parses: treat as non-JSON with a body digest attached.
                     Err(_) => ProbeOutcome::Failure(ProbeError::BadJson {
                         body: body_snippet(&text),
                     }),
@@ -172,7 +175,7 @@ pub fn probe(
             Err(ureq::Error::Status(code, response)) => {
                 let body = response.into_string().unwrap_or_default();
                 let classified = classify_status(code, &body, key_sent);
-                // 路径不对时换下一个候选；其余错误与路径无关，直接返回。
+                // Wrong path advances to the next candidate; all other errors are path-independent and return immediately.
                 if !matches!(classified, ProbeError::NotFound) {
                     return ProbeOutcome::Failure(classified);
                 }
@@ -187,24 +190,24 @@ pub fn probe(
             }
         }
     }
-    // 所有候选都返回 404/405：路径确实不对。
+    // Every candidate returned 404/405: the path is genuinely wrong.
     ProbeOutcome::Failure(ProbeError::NotFound)
 }
 
-/// 探测专用 agent：短超时、直连。
+/// Probe-specific agent: short timeout, direct connection.
 ///
-/// ureq 2 默认不读环境代理（`proxy-from-env` 特性未开启），也不读系统代理，
-/// 与 netguard「探测始终直连」的口径一致。
+/// ureq 2 does not read environment proxies by default (the `proxy-from-env` feature is off) nor the
+/// system proxy — consistent with netguard's "probes always connect directly" policy.
 fn agent(timeout: Duration) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(timeout)
-        // 整体超时兜底：覆盖重定向与响应体读取，防止慢速响应拖住探测。
+        // Whole-request timeout backstop: covers redirects and body reads so a slow response can't stall the probe.
         .timeout(timeout)
         .build()
 }
 
-/// 按 `auth` 把 key 放进对应的请求头；没有可用 key 时保持原样
-/// （服务端会以 401 回应，由错误分级说清「未配置」）。
+/// Place the key in the matching headers per `auth`; without a usable key, headers stay as-is
+/// (the server answers 401 and the error classification explains "not configured").
 fn apply_auth(request: ureq::Request, key: Option<&str>, auth: ProbeAuth) -> ureq::Request {
     let Some(key) = key else {
         return request;
@@ -220,34 +223,34 @@ fn apply_auth(request: ureq::Request, key: Option<&str>, auth: ProbeAuth) -> ure
 }
 
 // ---------------------------------------------------------------------------
-// 3. 错误分级
+// 3. Error classification
 // ---------------------------------------------------------------------------
 
-/// 探测失败的分类。Display 输出中文人话，供界面直接展示。
+/// Classification of probe failures. Display renders human-readable Chinese for direct UI display.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeError {
-    /// 401/403：请求里没带 key（本地未配置，或鉴权方式选择了不发）。
+    /// 401/403: the request carried no key (not configured locally, or the auth mode sends none).
     MissingKey,
-    /// 401/403：响应体点明了 key 问题（invalid api key / unauthorized 等）。
+    /// 401/403: the body names a key problem (invalid api key / unauthorized etc.).
     InvalidKey,
-    /// 401/403：Cloudflare 1010 访问策略拦截，非 key 问题。
+    /// 401/403: a Cloudflare 1010 access-policy block — not a key problem.
     Cloudflare1010,
-    /// 404/405：路径不对（含 `/models` 回退候选在内全部失败），供上层触发回退重试。
+    /// 404/405: wrong path (every candidate including the `/models` fallback failed); the caller triggers fallback retry.
     NotFound,
-    /// 429：限流。
+    /// 429: rate-limited.
     RateLimited,
-    /// 连接 / 读取超时。
+    /// Connect / read timeout.
     Timeout,
-    /// 响应不是合法 JSON，附响应体前 160 字符。
+    /// The response isn't valid JSON, with the body's first 160 characters attached.
     BadJson {
-        /// 响应体前缀（按字符截断到 160）。
+        /// The body prefix (character-truncated to 160).
         body: String,
     },
-    /// 其他 HTTP 状态码（文案复用 http_status 的人话表）。
+    /// Other HTTP status codes (text reuses http_status's human table).
     Status(u16),
-    /// Base URL 为空，连候选 URL 都拼不出来。
+    /// Empty base URL — not even a candidate URL can be assembled.
     BadBaseUrl,
-    /// 网络 / 传输错误（文本已脱敏：剥离 URL 的 query 与 fragment）。
+    /// Network / transport error (text sanitized: the URL's query and fragment stripped).
     Transport(String),
 }
 
@@ -270,22 +273,22 @@ impl fmt::Display for ProbeError {
 
 impl std::error::Error for ProbeError {}
 
-/// 把 HTTP 状态码 + 响应体分类成探测错误。
+/// Classify an HTTP status code + response body into a probe error.
 ///
-/// `key_sent` 表示本次请求是否实际携带了 key：决定 401/403 说「未配置」
-/// 还是「无效」。
+/// `key_sent` records whether the request actually carried a key: it decides whether 401/403 say
+/// "not configured" or "invalid".
 fn classify_status(code: u16, body: &str, key_sent: bool) -> ProbeError {
     match code {
         401 | 403 => {
             if is_cloudflare_1010(body) {
-                // 1010 在鉴权之前就拦截了，跟 key 无关，别误导用户去改 key。
+                // 1010 blocks before auth even happens — unrelated to the key; don't mislead users into changing it.
                 ProbeError::Cloudflare1010
             } else if !key_sent {
                 ProbeError::MissingKey
             } else if body_mentions_key_problem(body) {
                 ProbeError::InvalidKey
             } else {
-                // 响应体没点明原因：不武断下结论，按状态码给通用文案。
+                // The body doesn't name a cause: no hasty conclusions — generic text by status code.
                 ProbeError::Status(code)
             }
         }
@@ -295,10 +298,10 @@ fn classify_status(code: u16, body: &str, key_sent: bool) -> ProbeError {
     }
 }
 
-/// 响应体是否为 Cloudflare 1010（基于浏览器签名的访问拦截）。
+/// Whether the body is a Cloudflare 1010 (browser-signature-based access block).
 ///
-/// 拦截响应有两种形态：完整拦截页（`Error 1010` … Cloudflare）与 Worker
-/// 短正文（`error code: 1010`）。
+/// Block pages come in two shapes: the full interstitial (`Error 1010` … Cloudflare) and a Worker's
+/// short body (`error code: 1010`).
 fn is_cloudflare_1010(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
     lower.contains("error code: 1010")
@@ -306,7 +309,7 @@ fn is_cloudflare_1010(body: &str) -> bool {
         || (lower.contains("1010") && lower.contains("cloudflare"))
 }
 
-/// 响应体是否点明了 key 问题（invalid api key / unauthorized 等关键词）。
+/// Whether the body names a key problem (invalid api key / unauthorized and similar keywords).
 fn body_mentions_key_problem(body: &str) -> bool {
     const KEYWORDS: [&str; 7] = [
         "invalid api key",
@@ -321,12 +324,12 @@ fn body_mentions_key_problem(body: &str) -> bool {
     KEYWORDS.iter().any(|keyword| lower.contains(keyword))
 }
 
-/// 响应体前 160 字符（按字符截断，避免劈开多字节中文）。
+/// First 160 characters of the body (character-wise, so multi-byte Chinese isn't split).
 fn body_snippet(body: &str) -> String {
     body.trim().chars().take(BODY_SNIPPET_CHARS).collect()
 }
 
-/// 响应体读取错误是否为超时。
+/// Whether a body-read error is a timeout.
 fn is_io_timeout(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
@@ -334,7 +337,7 @@ fn is_io_timeout(err: &std::io::Error) -> bool {
     )
 }
 
-/// 传输错误是否为超时（连接超时与读取超时都以 io::Error(TimedOut) 为 source）。
+/// Whether a transport error is a timeout (both connect and read timeouts surface as io::Error(TimedOut) sources).
 fn is_timeout_transport(transport: &ureq::Transport) -> bool {
     transport
         .source()
@@ -343,15 +346,15 @@ fn is_timeout_transport(transport: &ureq::Transport) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// 4. 解析
+// 4. Parsing
 // ---------------------------------------------------------------------------
 
-/// 解析失败的分类。
+/// Classification of parse failures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiscoveryError {
-    /// 响应不是合法 JSON。
+    /// The response isn't valid JSON.
     NotJson,
-    /// JSON 合法，但找不到模型列表（既没有 `data[]` 也没有 `models[]`）。
+    /// Valid JSON, but no model list found (neither `data[]` nor `models[]`).
     UnexpectedShape,
 }
 
@@ -368,12 +371,12 @@ impl fmt::Display for DiscoveryError {
 
 impl std::error::Error for DiscoveryError {}
 
-/// 从 `/models` 响应中提取模型 id 列表，保持原有顺序。
+/// Extract the model id list from a `/models` response, preserving original order.
 ///
-/// 兼容两种主流形态：OpenAI 的 `{"data":[{"id":"..."}]}` 与 Ollama 的
-/// `{"models":[{"name":"..."}]}`；元素可以是对象（取 `id` 或 `name` 字段）
-/// 也可以是裸字符串；`models/<id>`、`model/<id>` 前缀会被剥掉；未知字段
-/// 一律忽略；空列表返回空 Vec。
+/// Handles the two mainstream shapes: OpenAI's `{"data":[{"id":"..."}]}` and Ollama's
+/// `{"models":[{"name":"..."}]}`; elements may be objects (taking `id` or `name`) or bare strings;
+/// `models/<id>` / `model/<id>` prefixes are stripped; unknown fields are ignored; an empty list
+/// returns an empty Vec.
 pub fn parse_models_json(body: &str) -> Result<Vec<String>, DiscoveryError> {
     let root: Value = serde_json::from_str(body).map_err(|_| DiscoveryError::NotJson)?;
     let Some(items) = models_array(&root) else {
@@ -382,7 +385,7 @@ pub fn parse_models_json(body: &str) -> Result<Vec<String>, DiscoveryError> {
     Ok(items.iter().filter_map(item_id).collect())
 }
 
-/// 找到承载模型条目的数组：顶层 / `data` / `models`，先到先得。
+/// Find the array holding model entries: top level / `data` / `models`, first match wins.
 fn models_array(root: &Value) -> Option<&Vec<Value>> {
     if let Some(array) = root.as_array() {
         return Some(array);
@@ -392,7 +395,7 @@ fn models_array(root: &Value) -> Option<&Vec<Value>> {
         .find_map(|key| root.get(*key).and_then(Value::as_array))
 }
 
-/// 单个条目 → 模型 id：裸字符串直接用，对象取 `id` / `name`，其余形态忽略。
+/// One entry → model id: bare strings pass through, objects take `id` / `name`, other shapes are ignored.
 fn item_id(item: &Value) -> Option<String> {
     let raw = match item {
         Value::String(text) => text.as_str(),
@@ -405,7 +408,7 @@ fn item_id(item: &Value) -> Option<String> {
     (!id.is_empty()).then_some(id)
 }
 
-/// 剥掉网关加在 id 前的 `models/` 或 `model/` 前缀（其余如 `openai/gpt-4o` 保留）。
+/// Strip a gateway's `models/` or `model/` prefix from an id (others like `openai/gpt-4o` are kept).
 fn strip_model_prefix(id: &str) -> String {
     id.strip_prefix("models/")
         .or_else(|| id.strip_prefix("model/"))
@@ -414,28 +417,28 @@ fn strip_model_prefix(id: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 5. 缓存
+// 5. Cache
 // ---------------------------------------------------------------------------
 
-/// 探测结果缓存：`(base_url, custom_path)` → `(模型列表, 抓取时刻)`。
+/// Probe-result cache: `(base_url, custom_path)` → `(model list, fetched at)`.
 ///
-/// **绝不存 api_key / 鉴权头**：结构里没有任何存放凭据的字段，key 只在
-/// 探测请求的瞬间使用，缓存命中也绝不会把 key 带出去。
+/// **Never stores api_key / auth headers**: the struct has no credential fields — the key exists only
+/// for the instant of the probe request, and cache hits can never leak it.
 #[derive(Debug, Default)]
 pub struct DiscoveryCache {
     entries: HashMap<(String, String), (Vec<String>, Instant)>,
 }
 
 impl DiscoveryCache {
-    /// 写入一条探测结果（重复写入覆盖旧值并刷新时间戳）。
+    /// Insert one probe result (re-inserting overwrites the old value and refreshes the timestamp).
     pub fn insert(&mut self, base_url: &str, custom_path: Option<&str>, models: Vec<String>) {
         self.entries
             .insert(cache_key(base_url, custom_path), (models, Instant::now()));
     }
 
-    /// 有效期内（24h）的缓存；过期或不存在返回 `None`。
+    /// Cache within its lifetime (24h); `None` when expired or absent.
     ///
-    /// 过期条目留在表里等下次 `insert` 覆盖：`fresh` 只借不删，避免可变借用。
+    /// Expired entries stay in the table awaiting the next `insert` overwrite: `fresh` only borrows, never deletes, avoiding a mutable borrow.
     pub fn fresh(
         &self,
         base_url: &str,
@@ -447,7 +450,7 @@ impl DiscoveryCache {
     }
 }
 
-/// 缓存键：base_url + 自定义端点（未填用空串）。
+/// Cache key: base_url + custom endpoint (empty string when unset).
 fn cache_key(base_url: &str, custom_path: Option<&str>) -> (String, String) {
     (
         base_url.trim().to_string(),
@@ -456,11 +459,11 @@ fn cache_key(base_url: &str, custom_path: Option<&str>) -> (String, String) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. 只填空合并
+// 6. Fill-only merge
 // ---------------------------------------------------------------------------
 
-/// 只填空合并：已有条目原样保留、顺序不变，只把缺失的发现项追加到尾部；
-/// 大小写不敏感去重（`GPT-4o` 与 `gpt-4o` 视为同一个模型）。
+/// Fill-only merge: existing entries are kept verbatim and in order, with newly discovered items
+/// appended at the tail; dedup is case-insensitive (`GPT-4o` and `gpt-4o` are the same model).
 pub fn merge_missing(existing: &[String], discovered: Vec<String>) -> Vec<String> {
     let mut merged = existing.to_vec();
     for model in discovered {
@@ -482,7 +485,7 @@ pub fn merge_missing(existing: &[String], discovered: Vec<String>) -> Vec<String
 mod tests {
     use super::*;
 
-    // ---------- URL 候选 ----------
+    // ---------- URL candidates ----------
 
     #[test]
     fn candidates_without_v1_try_both_paths() {
@@ -495,7 +498,7 @@ mod tests {
         );
     }
 
-    /// 尾斜杠三态（无 / 一个 / 多个）与首尾空白都不影响候选。
+    /// Trailing-slash shapes (none / one / many) and leading/trailing whitespace don't affect candidates.
     #[test]
     fn candidates_tolerate_trailing_slashes() {
         for base in [
@@ -515,7 +518,7 @@ mod tests {
         }
     }
 
-    /// 已带 /v1 的 baseURL 不能再拼出 /v1/v1/models。
+    /// A baseURL already carrying /v1 must not produce /v1/v1/models.
     #[test]
     fn candidates_for_versioned_base_only_try_base_models() {
         for base in [
@@ -531,14 +534,14 @@ mod tests {
         }
     }
 
-    /// 子路径不能丢：/api/v1 整体保留，只在其后补 /models。
+    /// Sub-paths can't be lost: /api/v1 stays whole, with /models appended after it.
     #[test]
     fn candidates_keep_sub_paths() {
         assert_eq!(
             models_endpoint_candidates("https://gw.example.com/api/v1", None),
             vec!["https://gw.example.com/api/v1/models".to_string()]
         );
-        // 非版本结尾的子路径：先补 /v1/models，再退 /models。
+        // Sub-paths not ending in a version: /v1/models first, falling back to /models.
         assert_eq!(
             models_endpoint_candidates("https://gw.example.com/api/", None),
             vec![
@@ -548,8 +551,8 @@ mod tests {
         );
     }
 
-    /// 显式端点唯一生效：绝对 URL 直接用；相对路径拼到 host 上，
-    /// 绝不追加到带版本号的 baseURL。
+    /// An explicit endpoint wins alone: absolute URLs used as-is; relative paths attach to the host —
+    /// never appended after a versioned baseURL.
     #[test]
     fn explicit_endpoint_wins_and_resolves_against_origin() {
         assert_eq!(
@@ -567,7 +570,7 @@ mod tests {
             models_endpoint_candidates("https://api.example.com/v1", Some("/api/models")),
             vec!["https://api.example.com/api/models".to_string()]
         );
-        // 空白自定义路径视为未填，走自动候选。
+        // Whitespace-only custom paths count as unset, going through automatic candidates.
         assert_eq!(
             models_endpoint_candidates("https://api.example.com/v1", Some("  ")),
             vec!["https://api.example.com/v1/models".to_string()]
@@ -580,7 +583,7 @@ mod tests {
         assert!(models_endpoint_candidates("   ", None).is_empty());
     }
 
-    // ---------- 错误分级 ----------
+    // ---------- Error classification ----------
 
     #[test]
     fn unauthorized_without_key_reports_missing_key() {
@@ -589,7 +592,7 @@ mod tests {
         assert_eq!(err.to_string(), "未配置 API Key");
     }
 
-    /// 响应体点明 key 问题时，明确说「无效或已过期」。
+    /// When the body names a key problem, say clearly "invalid or expired".
     #[test]
     fn unauthorized_with_key_and_keyword_reports_invalid_key() {
         let err = classify_status(
@@ -601,7 +604,7 @@ mod tests {
         assert_eq!(err.to_string(), "API Key 无效或已过期");
     }
 
-    /// 响应体没点明原因时不武断下结论，按状态码给通用文案。
+    /// When the body names no cause, no hasty conclusions — generic text by status code.
     #[test]
     fn unauthorized_with_key_without_keyword_stays_generic() {
         let err = classify_status(401, "denied", true);
@@ -609,7 +612,7 @@ mod tests {
         assert_eq!(err.to_string(), "HTTP 401 认证失败");
     }
 
-    /// 1010 是访问策略拦截，有没有 key 都不该误导用户去改 key。
+    /// 1010 is an access-policy block: with or without a key, users must not be told to change it.
     #[test]
     fn cloudflare_1010_is_not_a_key_problem() {
         for body in [
@@ -645,7 +648,7 @@ mod tests {
         assert!(ProbeError::Timeout.to_string().contains("本地服务未启动"));
     }
 
-    /// 非 JSON 报错附带的正文摘要按字符截断到 160。
+    /// The body digest attached to non-JSON errors is character-truncated to 160.
     #[test]
     fn bad_json_carries_truncated_body() {
         let snippet = body_snippet(&"x".repeat(300));
@@ -660,7 +663,7 @@ mod tests {
         assert_eq!(err.to_string(), "网络错误：connection refused");
     }
 
-    // ---------- 探测流程（不联网的部分） ----------
+    // ---------- Probe flow (the offline part) ----------
 
     #[test]
     fn probe_without_base_url_fails_fast() {
@@ -671,7 +674,7 @@ mod tests {
         ));
     }
 
-    /// 非法 URL 在本地解析阶段就失败（无网络 IO），归入传输错误。
+    /// Malformed URLs fail at local parsing (no network IO), classified as transport errors.
     #[test]
     fn probe_with_unparseable_url_reports_transport_error() {
         let outcome = probe("not-a-url", None, ProbeAuth::None, Duration::from_secs(1));
@@ -681,7 +684,7 @@ mod tests {
         ));
     }
 
-    // ---------- 解析 ----------
+    // ---------- Parsing ----------
 
     #[test]
     fn parse_openai_data_ids() {
@@ -693,7 +696,7 @@ mod tests {
         );
     }
 
-    /// Ollama 形态：models[].name，其余字段（size、modified_at…）忽略。
+    /// The Ollama shape: models[].name; other fields (size, modified_at…) ignored.
     #[test]
     fn parse_ollama_model_names() {
         let body = r#"{"models":[{"name":"llama3:latest","model":"llama3:latest","size":1}]}"#;
@@ -715,7 +718,7 @@ mod tests {
         );
     }
 
-    /// 只剥约定的 `models/`、`model/` 前缀；`厂商/模型` 与大小写不同的前缀保留。
+    /// Strip only the agreed `models/` / `model/` prefixes; `vendor/model` and case-different prefixes are kept.
     #[test]
     fn parse_strips_gateway_prefixes_only() {
         let body = r#"{"data":[
@@ -740,7 +743,7 @@ mod tests {
         assert_eq!(parse_models_json(r#"{"data":[]}"#), Ok(Vec::new()));
     }
 
-    /// 未知字段容忍；不含 id/name 的条目与数字 id 跳过；裸字符串照常收。
+    /// Tolerates unknown fields; entries without id/name and numeric ids are skipped; bare strings collected as usual.
     #[test]
     fn parse_tolerates_unknown_fields_and_skips_unshaped_items() {
         let body = r#"{"data":[{"id":"m-1","owned_by":"x","created":1},{"object":"model"},{"id":42},"str-item"]}"#;
@@ -765,9 +768,9 @@ mod tests {
             .contains("模型列表"));
     }
 
-    // ---------- 合并 ----------
+    // ---------- Merging ----------
 
-    /// 已有条目原样保留、顺序不变，只追加缺失项。
+    /// Existing entries stay verbatim and in order; only missing items are appended.
     #[test]
     fn merge_keeps_existing_order_and_appends_only_missing() {
         assert_eq!(
@@ -799,7 +802,7 @@ mod tests {
         );
     }
 
-    /// 空白发现项丢弃；与已有条目仅差首尾空白的视为重复（已有条目不动）。
+    /// Whitespace-only finds are dropped; finds differing from an existing entry only in edge whitespace count as duplicates (the existing one untouched).
     #[test]
     fn merge_ignores_blank_and_padded_duplicates() {
         assert_eq!(
@@ -824,7 +827,7 @@ mod tests {
         );
     }
 
-    // ---------- 缓存 ----------
+    // ---------- Cache ----------
 
     #[test]
     fn cache_returns_fresh_entries_within_ttl() {
@@ -836,13 +839,13 @@ mod tests {
         assert_eq!(models, &["m-1".to_string()]);
         assert!(fetched_at.elapsed() < CACHE_TTL);
 
-        // 键里带上自定义端点：不同端点互不干扰。
+        // The key carries the custom endpoint: different endpoints never interfere.
         assert!(cache
             .fresh("https://api.example.com", Some("v1/models"))
             .is_none());
     }
 
-    /// 直接构造一条 25 小时前的旧记录验证 TTL 判定（平台时钟表示不了时跳过）。
+    /// Construct a 25-hour-old record directly to verify the TTL verdict (skipped when the platform clock can't express it).
     #[test]
     fn cache_expires_after_ttl() {
         let mut cache = DiscoveryCache::default();
@@ -856,8 +859,8 @@ mod tests {
         assert!(cache.fresh("https://api.example.com", None).is_none());
     }
 
-    /// 结构上只有 (base_url, custom_path) → (模型列表, 时刻)，没有任何存
-    /// key / 鉴权头的字段；用 Debug 输出反向守住这一点。
+    /// Structurally only (base_url, custom_path) → (model list, moment) exists — no field anywhere holds
+    /// a key or auth header; the Debug output guards that in reverse.
     #[test]
     fn cache_structure_holds_no_credentials() {
         let mut cache = DiscoveryCache::default();

@@ -1,6 +1,6 @@
-//! 顶栏 / 状态栏 / 页头等外围栏位，以及吸顶标题与错误文本处理小工具。
+//! The peripheral bars — top bar / status bar / page header — plus sticky titles and error-text helpers.
 //!
-//! 公共 API 从这里再导出，`crate::app::bars::X` 路径不变。
+//! The public API re-exports from here; `crate::app::bars::X` paths stay unchanged.
 
 mod errors;
 mod page_header;
@@ -11,7 +11,7 @@ mod widgets;
 
 pub(crate) use crate::util::sanitize_network_error;
 pub(in crate::app) use errors::{http_status_code, short_err};
-/// 仅单测直接断言其几何性质；应用代码只用 `begin` / `end`。
+/// Unit tests assert its geometry directly; application code only uses `begin` / `end`.
 #[cfg(test)]
 pub(in crate::app) use sticky::sticky_y;
 pub(in crate::app) use sticky::{sticky_begin, sticky_end};
@@ -40,17 +40,17 @@ mod tests {
 
     #[test]
     fn sticky_stays_put_until_it_hits_the_clip() {
-        let margin = 3.0; // egui 默认 clip_rect_margin
-                          // 滚动为零时 clip_top = 内容顶 - margin，标题钉在内容流位置。
+        let margin = 3.0; // egui's default clip_rect_margin
+                          // Zero scroll: clip_top = content top − margin, the title pinned at its content-flow position.
         assert_eq!(sticky_y(40.0, 40.0 - margin, margin), 40.0);
-        // 刚滚过可视顶：钉在可视顶，一格都不多滚。
+        // Just scrolled past the visible top: pinned at the visible top, not one pixel more.
         assert_eq!(sticky_y(39.0, 40.0 - margin, margin), 40.0);
         assert_eq!(sticky_y(40.0, 52.0, margin), 55.0);
     }
 
     #[test]
     fn sticky_does_not_jump_for_a_subpixel_gap() {
-        // 内容顶就是可视顶，亚像素差收成同一格。
+        // Content top equals the visible top; sub-pixel differences collapse into the same cell.
         assert_eq!(sticky_y(0.4, -3.0, 3.0), 0.0);
         assert_eq!(sticky_y(0.0, -2.6, 3.0), 0.0);
     }

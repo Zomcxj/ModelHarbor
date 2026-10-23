@@ -1,21 +1,22 @@
-//! 探针：删除会话时「源删了、明细真删、总量保留」是否端到端成立。
+//! Probe: does "source deleted, details really removed, totals kept" hold end to end when deleting a session?
 //!
-//! 需求分两面：
-//! - 用户看得见的：删掉的会话不再出现在列表里，但它已计入的 token 仍然
-//!   留在总量 / 热力图 / 时间表与按 agent、模型的维度里；
-//! - 用户看不见的：会话明细（快照与逐日 `by_session`）真删，
-//!   账本不随会话数无上限增长。
+//! The requirement has two faces:
+//! - User-visible: the deleted session leaves the list, but its already-counted tokens stay in the totals /
+//!   heatmap / time table and the per-agent and per-model dimensions;
+//! - Invisible: session details (snapshots and per-day `by_session`) really delete, so the ledger never
+//!   grows without bound with session count.
 //!
-//! 走 `apply_session_removal`（删除的后半段）而不是 `forget_usage_session`：
-//! 后者会调 `usage::delete_session` 真去动本机 agent 的会话库，测试不该碰
-//! 用户的数据。源侧的结果在这里直接构造，覆盖「删成了」与「被拦下」两条路。
+//! Goes through `apply_session_removal` (the deletion's second half) rather than `forget_usage_session`: the
+//! latter calls `usage::delete_session` and would really touch this machine's agents' session stores — tests
+//! must not touch user data. Source-side results are constructed here directly, covering both "deleted" and
+//! "blocked" paths.
 
 use crate::app::usage::range::{totals_in_range, Range};
 use crate::app::App;
 use crate::format::ConfigFormat;
 use crate::usage::{DailyBucket, DailyMap, DayTotals, DeleteError, Deleted, SessionSnapshot};
 
-/// 源删除成功的结果（测试用：路径与行数不参与后半段逻辑）。
+/// A successful source-deletion result (test use: path and row count take no part in the second half's logic).
 fn source_deleted() -> Result<Deleted, DeleteError> {
     Ok(Deleted {
         path: std::path::PathBuf::from("C:/fake/opencode.db"),
@@ -23,7 +24,7 @@ fn source_deleted() -> Result<Deleted, DeleteError> {
     })
 }
 
-/// 造一条会话快照。
+/// Build one session snapshot.
 fn session(client: ConfigFormat, id: &str, input: i64) -> SessionSnapshot {
     SessionSnapshot {
         client,
@@ -44,7 +45,7 @@ fn session(client: ConfigFormat, id: &str, input: i64) -> SessionSnapshot {
     }
 }
 
-/// 造一天的分桶（两个会话各一条）。
+/// Build one day's bucket (one entry per of the two sessions).
 fn day_bucket(date: &str, a_input: i64, b_input: i64) -> DailyBucket {
     let a = DayTotals {
         input: a_input,
@@ -88,7 +89,7 @@ fn day_bucket(date: &str, a_input: i64, b_input: i64) -> DailyBucket {
     bucket
 }
 
-/// 构造一个已注入扫描结果的 App。
+/// Construct an App with a scan result injected.
 fn app_with_data() -> App {
     let mut app = App {
         main_view: crate::app::MainView::Usage,
@@ -109,19 +110,19 @@ fn app_with_data() -> App {
     app
 }
 
-/// 区间内总量（全部区间）。
+/// The in-range total (the all range).
 fn total_of(app: &App) -> i64 {
     let daily = app.usage_daily_filtered();
     let today = app.usage_today();
     totals_in_range(&daily, Range::All, today).total()
 }
 
-/// 被删会话的账本键。
+/// The deleted session's ledger key.
 fn deleted_key() -> String {
     SessionSnapshot::key(ConfigFormat::Opencode, "oc-delete-me")
 }
 
-/// 删除会话：列表少一行，总量不变。
+/// Delete the session: one fewer list row, totals unchanged.
 #[test]
 fn deleting_a_session_hides_the_row_but_keeps_the_total() {
     let mut app = app_with_data();
@@ -148,8 +149,8 @@ fn deleting_a_session_hides_the_row_but_keeps_the_total() {
     assert!(app.usage_source_error.is_none(), "源删成了就不该报错");
 }
 
-/// 删除后各维度分解同样保留（按 agent 筛选不能因此变少），
-/// 而会话**明细**真删（快照不在列表里，逐日 `by_session` 也不留）。
+/// After deletion, every dimension's breakdown is preserved too (per-agent filtering mustn't shrink),
+/// while the session's **details** really delete (the snapshot leaves the list, and per-day `by_session` keeps nothing).
 #[test]
 fn deleting_a_session_keeps_every_breakdown() {
     let mut app = app_with_data();
@@ -172,8 +173,8 @@ fn deleting_a_session_keeps_every_breakdown() {
         "会话明细真删：留着会随会话数无上限增长"
     );
 
-    // 筛选到被删会话所属的 agent：数字照旧（走 UI 真正用的那条筛选路径）。
-    // 先把全量总量存下来：一旦设置了筛选，`total_of` 读的就是筛选后的数了。
+    // Filter to the deleted session's agent: the numbers hold (going through the UI's real filtering path).
+    // Save the unfiltered total first: once the filter is set, `total_of` reads the filtered number.
     let full_total = total_of(&app);
     app.usage_filter = Some(ConfigFormat::Opencode);
     let scoped = app.usage_daily_filtered();
@@ -185,7 +186,7 @@ fn deleting_a_session_keeps_every_breakdown() {
     assert_eq!(full_total, before_total, "全量总量不变");
 }
 
-/// 重复删除同一个会话：幂等，不重复扣减也不报错。
+/// Deleting the same session twice: idempotent — no double subtraction, no error.
 #[test]
 fn deleting_the_same_session_twice_is_idempotent() {
     let mut app = app_with_data();
@@ -201,8 +202,8 @@ fn deleting_the_same_session_twice_is_idempotent() {
     assert_eq!(app.usage_sessions().len(), 1, "行数稳定");
 }
 
-/// 源删不掉且用户能修（库被占着 / 没权限）：**两半都不做** ——
-/// 行从列表里消失后用户再也点不到它，源里的会话就永远删不掉了。
+/// Source undeletable but user-fixable (database locked / no permission): **neither half proceeds** — once the
+/// row leaves the list the user can never click it again, and the source session would be stuck undeletable.
 #[test]
 fn a_blocked_source_delete_keeps_the_row_and_reports_why() {
     let mut app = app_with_data();
@@ -223,7 +224,7 @@ fn a_blocked_source_delete_keeps_the_row_and_reports_why() {
         "源没删成，行要留在列表里让用户重试"
     );
     assert_eq!(total_of(&app), before_total, "总量也没动");
-    // 逐日明细同样保留：下次重试要按同一份数据再走一遍。
+    // Per-day details persist too: the next retry walks the same data again.
     assert!(app
         .usage_daily_filtered()
         .get("2026-01-01")
@@ -237,8 +238,8 @@ fn a_blocked_source_delete_keeps_the_row_and_reports_why() {
     );
 }
 
-/// 源删不掉且用户**没法**修（后端不支持删源）：统计照旧收走 ——
-/// 留着它只会让列表里永远挂着一条删不掉的会话。
+/// Source undeletable and user-**unfixable** (the backend can't delete sources): statistics proceed as usual —
+/// keeping it would only leave a permanently stuck undeletable session in the list.
 #[test]
 fn an_unfixable_source_delete_still_clears_the_stats() {
     let mut app = app_with_data();

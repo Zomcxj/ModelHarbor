@@ -1,7 +1,7 @@
-//! 厂商连通性与模型延迟探测，以及模型列表获取。
+//! Vendor connectivity and model latency probes, plus model-list fetching.
 //!
-//! 探测请求直连（不经系统代理），按协议伪装成白名单客户端；节流与串行由
-//! [`ProbeGate`] 统一把关。
+//! Probe requests connect directly (never via a system proxy), masquerading as whitelisted clients per
+//! protocol; throttling and serialization are unified in [`ProbeGate`].
 
 use eframe::egui;
 use serde_json::Value;
@@ -10,9 +10,9 @@ use std::collections::{HashMap, HashSet};
 use super::App;
 use crate::app::bars::{sanitize_network_error, short_err};
 
-/// 模型探测（「探测模型」按钮）：后台线程 + 通道 + generation 取消。
+/// Model discovery (the "discover models" button): background thread + channel + generation cancellation.
 mod discovery;
-/// 单个 provider 的模型获取状态（后台线程 + 通道）。
+/// Per-provider model-fetch state (background thread + channel).
 mod net;
 mod polling;
 mod ui;
@@ -20,16 +20,16 @@ pub(crate) use discovery::*;
 pub(crate) use net::*;
 pub(crate) use ui::*;
 
-/// 单个后端的「内置网关免费模型」状态（列表 + 拉取通道 + 失败原因）。
+/// One backend's "built-in gateway free models" state (list + fetch channel + failure reason).
 ///
-/// 裸 id 存这里，界面显示时再拼 `provider_id/` 前缀（见 [`crate::opencode_models`]）。
+/// Bare ids are stored here; the `provider_id/` prefix is added at display time (see [`crate::opencode_models`]).
 #[derive(Default)]
 pub(super) struct FreeModelsState {
-    /// 免费模型 id（裸 id，按字典序）。
+    /// Free-model ids (bare ids, lexicographic).
     pub(super) models: Vec<String>,
-    /// 后台拉取通道（`Some` = 正在飞）。
+    /// The background fetch channel (`Some` = in flight).
     pub(super) rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
-    /// 最近一次拉取失败的原因（成功后清空），在模型下拉旁提示。
+    /// The last fetch failure's reason (cleared on success), noted beside the model dropdown.
     pub(super) error: Option<String>,
 }
 
@@ -39,13 +39,13 @@ impl FreeModelsState {
     }
 }
 
-/// 新增 Provider 表单使用固定的内部 key 保存获取状态。
+/// The add-provider form uses a fixed internal key to store fetch state.
 pub(super) const NEW_PROVIDER_FETCH_KEY: &str = "__new_provider__";
 
-/// 传给延迟测试门控的守卫值：`Some(原因)` = 拦截，`None` = 放行。
+/// Guard value passed to the latency-test gate: `Some(reason)` = block, `None` = allow.
 ///
-/// 用户打开 `allow_model_test_with_proxy` 后，检测到的代理不再拦截模型探测。
-/// 只吃两个字段的自由函数，便于在持有 `&mut self.providers[idx]` 时调用。
+/// After the user enables `allow_model_test_with_proxy`, detected proxies no longer block model probing.
+/// A free function over two fields only, callable while holding `&mut self.providers[idx]`.
 pub(super) fn net_guard_gate(net_guard: &Option<String>, allow: bool) -> Option<String> {
     if allow {
         return None;
@@ -53,37 +53,38 @@ pub(super) fn net_guard_gate(net_guard: &Option<String>, allow: bool) -> Option<
     net_guard.clone()
 }
 
-/// 单个 provider 的延迟测试状态（provider 级 + 模型级并发）。
+/// One provider's latency-test state (provider-level + model-level concurrency).
 #[derive(Default)]
 pub(super) struct LatencyState {
-    /// provider 级：模型列表接口往返耗时（毫秒）。
+    /// Provider level: the model-list endpoint's round-trip time (milliseconds).
     pub(super) provider: Option<Result<u64, String>>,
     pub(super) provider_rx: Option<std::sync::mpsc::Receiver<Result<u64, String>>>,
-    /// 模型级：模型 id → 往返耗时（毫秒）。
+    /// Model level: model id → round-trip time (milliseconds).
     pub(super) models: HashMap<String, Result<u64, String>>,
     pub(super) model_rx: Option<std::sync::mpsc::Receiver<(String, Result<u64, String>)>>,
-    /// 模型级测试进度：已完成 / 总数。
+    /// Model-level test progress: completed / total.
     pub(super) done: usize,
     pub(super) total: usize,
-    /// 本次测试中尚未返回结果的模型 id（用于显示测试中的乱码动画）。
+    /// Model ids still awaiting results in this test run (for the scrambling placeholder animation).
     pub(super) pending: HashSet<String>,
 }
 
-/// 延迟测试的读取超时与「超时」判定阈值（毫秒）：单个读操作 / 首字的等待上限。
+/// The latency test's read timeout and "timed out" threshold (milliseconds): the cap for a single read / first byte.
 pub(super) const LATENCY_TIMEOUT_MS: u64 = 10_000;
-/// 首字延迟着色阈值（毫秒）：低于此值为绿色。
+/// First-byte latency coloring threshold (milliseconds): below this is green.
 pub(super) const LATENCY_GOOD_MS: u64 = 2_000;
-/// 首字延迟超过此值算慢（红）。
+/// First-byte latency above this counts as slow (red).
 pub(super) const LATENCY_SLOW_MS: u64 = 5_000;
 
-/// 模型延迟探测的风控节流参数：**同一个 provider** 的任意两次探测（同模型、
-/// 不同模型都算）间隔 ≥5 秒；**不同 provider 互不牵连**（各自独立计数、可并行）。
+/// Risk-control throttle for model latency probes: any two probes of the **same provider** (same model or
+/// different models) are spaced ≥5 seconds; **different providers don't affect each other** (independent
+/// counters, parallelizable).
 pub(super) const PROBE_PROVIDER_GAP_S: f64 = 5.0;
 
-/// 探测用的中性短问句库：跨领域的常识名词（地理 / 天文 / 生物 / 化学 / 物理 /
-/// 文学 / 艺术 / 音乐 / 历史），都是「一句话能答」的定论型题目。
+/// Library of neutral short questions for probes: cross-domain common-sense nouns (geography / astronomy /
+/// biology / chemistry / physics / literature / art / music / history) — all settled, one-sentence-answer facts.
 ///
-/// 不校验答案：判定只看 HTTP 是否成功与往返耗时。
+/// Answers are never validated: the verdict only looks at HTTP success and round-trip time.
 pub(super) const PROBE_QUESTIONS: [&str; 24] = [
     "世界上最长的河流是哪条？只回答河名",
     "世界上面积最大的国家是哪个？只回答国名",
@@ -111,7 +112,7 @@ pub(super) const PROBE_QUESTIONS: [&str; 24] = [
     "泰姬陵位于哪个国家？只回答国名",
 ];
 
-/// FNV-1a：给 provider key 一个稳定的起始题号偏移。
+/// FNV-1a: gives each provider key a stable starting question offset.
 pub(super) fn fnv1a(value: &str) -> usize {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in value.as_bytes() {
@@ -121,40 +122,40 @@ pub(super) fn fnv1a(value: &str) -> usize {
     hash as usize
 }
 
-/// 取一条探测问句：provider 偏移 + 轮换游标，同一 provider 连续探测不重复同一题。
+/// Take one probe question: provider offset + rotation cursor, so consecutive probes of one provider never repeat the same question.
 pub(super) fn probe_question(provider_key: &str, cursor: usize) -> &'static str {
     let index = fnv1a(provider_key).wrapping_add(cursor) % PROBE_QUESTIONS.len();
     PROBE_QUESTIONS[index]
 }
 
-/// 单次探测的门控结论。
+/// One probe's gate verdict.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum ProbeGateState {
-    /// 可以探测。
+    /// Probing is allowed.
     Ready,
-    /// 节流冷却中，剩余秒数。
+    /// Throttle cooldown, seconds remaining.
     Cooling(f64),
-    /// 全局串行：上一个探测还没结束。
+    /// Global serialization: the previous probe hasn't finished.
     Busy,
-    /// 网络守卫拦截（系统代理 / VPN）。
+    /// Blocked by the network guard (system proxy / VPN).
     NetBlocked(String),
 }
 
-/// 模型延迟探测的节流与串行状态（按 provider 各自一份）。
+/// Throttle and serialization state for model latency probes (one per provider).
 ///
-/// 纯内存、重启清零，不落盘。
+/// Purely in-memory, reset on restart, never written to disk.
 #[derive(Default)]
 pub(super) struct ProbeGate {
-    /// provider key → 上次探测时刻（egui 秒）。
+    /// provider key → the last probe's moment (egui seconds).
     last_provider: HashMap<String, f64>,
-    /// 正在飞的探测（provider key）：同一 provider 一次只允许一个。
+    /// Probes in flight (provider key): one provider runs one at a time.
     in_flight: HashSet<String>,
-    /// 每个 provider 的题目轮换游标。
+    /// Each provider's question-rotation cursor.
     cursor: HashMap<String, usize>,
 }
 
 impl ProbeGate {
-    /// 累加一个「还需等待」的约束。
+    /// Accumulate one "must still wait" constraint.
     fn accumulate(wait: &mut Option<f64>, left: Option<f64>) {
         if let Some(left) = left.filter(|left| *left > 0.0) {
             *wait = Some(match *wait {
@@ -164,9 +165,9 @@ impl ProbeGate {
         }
     }
 
-    /// 当前是否允许探测；不允许时给出原因（按钮禁用 + 倒计时 + 悬停说明）。
+    /// Whether probing is allowed now; when not, gives the reason (button disabled + countdown + hover note).
     ///
-    /// 只看本 provider 的状态，不看别的 provider（跨厂商不排队）。
+    /// Looks only at this provider's state, never others' (no cross-vendor queueing).
     pub(super) fn state(
         &self,
         provider_key: &str,
@@ -176,7 +177,7 @@ impl ProbeGate {
         if let Some(reason) = net_guard {
             return ProbeGateState::NetBlocked(reason.to_string());
         }
-        // 同一 provider 一次只允许一个探测在飞。
+        // One provider allows only one probe in flight.
         if self.in_flight.contains(provider_key) {
             return ProbeGateState::Busy;
         }
@@ -193,20 +194,20 @@ impl ProbeGate {
         }
     }
 
-    /// 记录一次探测并占用该 provider 的串行位。
+    /// Record a probe and take the provider's serialization slot.
     pub(super) fn start(&mut self, provider_key: &str, now: f64) {
         self.last_provider.insert(provider_key.to_string(), now);
         self.in_flight.insert(provider_key.to_string());
     }
 
-    /// 探测结束（拿到结果 / 失败 / 超时）后释放该 provider 的串行位。
+    /// Release the provider's serialization slot once the probe ends (result / failure / timeout).
     pub(super) fn finish(&mut self, provider_key: &str) {
         self.in_flight.remove(provider_key);
     }
 
-    /// 探测状态整体被丢弃时释放串行位（重载配置 / 关闭新增表单）。
+    /// Release the serialization slots when a provider's whole state is dropped (config reload / add form closed).
     ///
-    /// `provider_key` 为 `None` 表示全部释放。
+    /// A `None` provider_key releases everything.
     pub(super) fn release(&mut self, provider_key: Option<&str>) {
         match provider_key {
             Some(key) => {
@@ -216,7 +217,7 @@ impl ProbeGate {
         }
     }
 
-    /// 取该 provider 的下一条探测问句并推进游标。
+    /// Take this provider's next probe question and advance the cursor.
     pub(super) fn next_question(&mut self, provider_key: &str) -> &'static str {
         let cursor = self.cursor.entry(provider_key.to_string()).or_insert(0);
         let question = probe_question(provider_key, *cursor);

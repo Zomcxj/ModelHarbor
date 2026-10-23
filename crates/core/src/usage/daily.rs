@@ -1,18 +1,18 @@
-//! 按天的用量桶 —— 热力图与「今日 / 本周 / 本月 / 总计」的数据基础。
+//! Per-day usage buckets — the data foundation for the heatmap and "today / week / month / total".
 //!
-//! 不能只靠会话级汇总：一个会话可以横跨几十天，用它的 `last_seen_ms` 归日会把
-//! 整月的量堆到最后一天。tokscale 的 `ParsedMessage.date` 已经按消息算好了
-//! 本地日历日，这里按那个粒度分桶。
+//! Session-level sums alone won't do: one session can span dozens of days, and bucketing by its
+//! `last_seen_ms` would pile a whole month onto its last day. tokscale's `ParsedMessage.date` already
+//! computes the local calendar day per message; buckets follow that granularity.
 //!
-//! 桶里除了合计还留了**按 agent / 按模型**的分解：时间筛选与维度筛选叠加时
-//! （「本月 × pi」「本周 × claude-opus-5」）必须用同粒度的数据，否则总览卡片的
-//! 数字会和下面的明细表对不上。
+//! Besides totals, buckets keep **per-agent / per-model** breakdowns: when time filtering and dimension
+//! filtering stack ("this month × pi", "this week × claude-opus-5"), same-granularity data is required,
+//! otherwise the overview card's numbers won't match the detail tables below.
 
 use crate::format::ConfigFormat;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-/// 一组 token 计数（不含会话数：按天分解时一个会话会落进多天，不能相加）。
+/// A group of token counts (no session count: in per-day terms one session falls into several days and must not be summed).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DayTotals {
     pub input: i64,
@@ -20,15 +20,15 @@ pub struct DayTotals {
     pub cache_read: i64,
     pub cache_write: i64,
     pub reasoning: i64,
-    /// 该桶里出现的消息条数（同一天同一会话的多条消息各计一次）。
+    /// The message count appearing in this bucket (each message of the same session on the same day counts once).
     pub messages: i64,
-    /// 折算费用（美元）：上游实报或按本机定价缓存现算。旧账本条目没有，为 0。
+    /// Converted cost (USD): as reported upstream, or computed from the local pricing cache. Old entries have none — 0.
     pub cost: f64,
 }
 
 impl DayTotals {
-    /// 合计 token。口径与 `SessionSnapshot::total` 一致：
-    /// `cache_write` 是子集不重复加，`cache_write_1h` 同理不参与。
+    /// Total tokens. Same accounting as `SessionSnapshot::total`:
+    /// `cache_write` is a subset and isn't added twice; likewise `cache_write_1h` stays out.
     pub fn total(&self) -> i64 {
         self.input
             .saturating_add(self.output)
@@ -37,12 +37,12 @@ impl DayTotals {
             .saturating_add(self.reasoning)
     }
 
-    /// 是否有任何计数（全 0 的桶不值得落盘）。
+    /// Whether any count exists (all-zero buckets aren't worth persisting).
     pub fn is_empty(&self) -> bool {
         self.total() == 0 && self.messages == 0
     }
 
-    /// 并入一条消息。
+    /// Absorb one message.
     pub fn add_message(&mut self, message: &tokscale_core::ParsedMessage) {
         self.input = self.input.saturating_add(message.input);
         self.output = self.output.saturating_add(message.output);
@@ -55,8 +55,8 @@ impl DayTotals {
         self.cost += message.cost;
     }
 
-    /// 逐字段取较大值。账本合并用：token 只增不减，源里偶发的重扫回退不该让
-    /// 历史缩水。
+    /// Take the larger value per field. Used by the ledger merge: tokens only grow, and an occasional
+    /// source-side rescan dip must not shrink history.
     pub fn merge_max(&mut self, other: &Self) {
         self.input = self.input.max(other.input);
         self.output = self.output.max(other.output);
@@ -67,7 +67,7 @@ impl DayTotals {
         self.cost = self.cost.max(other.cost);
     }
 
-    /// 累加（跨天求和用）。
+    /// Accumulate (for cross-day sums).
     pub fn add_assign(&mut self, other: &Self) {
         self.input = self.input.saturating_add(other.input);
         self.output = self.output.saturating_add(other.output);
@@ -104,32 +104,32 @@ impl DayTotals {
     }
 }
 
-/// 一天的用量：合计 + 按 agent / 模型 / 会话的分解。
+/// One day's usage: total + per-agent / model / session breakdowns.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DailyBucket {
-    /// 本地日历日，`YYYY-MM-DD`（由 tokscale 的 `ParsedMessage.date` 给出；
-    /// 上游用 `chrono::Local` 算，所以已经是本地日，不需再换算时区）。
+    /// The local calendar day, `YYYY-MM-DD` (given by tokscale's `ParsedMessage.date`; upstream computes with
+    /// `chrono::Local`, so it's already a local day — no timezone conversion needed).
     pub date: String,
-    /// 当天合计。
+    /// The day's total.
     pub totals: DayTotals,
-    /// 当天按 agent 分解（键是 [`ConfigFormat::label`]）。
+    /// The day's per-agent breakdown (keys are [`ConfigFormat::label`]).
     pub by_client: BTreeMap<String, DayTotals>,
-    /// 当天按模型分解（键是模型 id，空名归入 [`UNKNOWN_MODEL`]）。
+    /// The day's per-model breakdown (keys are model ids; empty names go to [`UNKNOWN_MODEL`]).
     pub by_model: BTreeMap<String, DayTotals>,
-    /// 当天按会话分解（键同 [`crate::usage::SessionSnapshot::key`]：`client:session_id`）。
+    /// The day's per-session breakdown (keys match [`crate::usage::SessionSnapshot::key`]: `client:session_id`).
     ///
-    /// 会话维度在时间筛选下必须用这个：一个会话可以横跨几十天，拿它的总量
-    /// 当成「本月用量」会虚高。
+    /// The session dimension must use this under time filtering: one session can span dozens of days, and
+    /// using its lifetime total as "this month's usage" would overstate.
     pub by_session: BTreeMap<String, DayTotals>,
-    /// 当天按「agent × 模型」交叉分解（外层键是 agent label，内层是模型 id）。
+    /// The day's "agent × model" cross-breakdown (outer keys are agent labels, inner are model ids).
     ///
-    /// 模型维度在时间筛选下需要它：`by_client` 与 `by_model` 是两个独立维度，
-    /// 交叉不出「这个模型是哪个 agent 用的」。用嵌套 map 而不是拼字符串键，
-    /// 避免模型名里含分隔符时的歧义。
+    /// The model dimension needs it under time filtering: `by_client` and `by_model` are two independent
+    /// dimensions that can't cross into "which agent used this model". A nested map instead of assembled
+    /// string keys avoids ambiguity when model names contain separators.
     pub by_client_model: BTreeMap<String, BTreeMap<String, DayTotals>>,
 }
 
-/// 模型名为空时的占位，与 app 层的展示保持一致。
+/// Placeholder for an empty model name, kept consistent with the app layer's display.
 pub const UNKNOWN_MODEL: &str = "(未知模型)";
 
 impl DailyBucket {
@@ -140,7 +140,7 @@ impl DailyBucket {
         }
     }
 
-    /// 并入一条消息（同时更新合计与三个分解）。
+    /// Absorb one message (updating the total and all three breakdowns).
     pub fn add_message(&mut self, client: ConfigFormat, message: &tokscale_core::ParsedMessage) {
         self.totals.add_message(message);
         let label = client.label();
@@ -164,7 +164,7 @@ impl DailyBucket {
             ))
             .or_default()
             .add_message(message);
-        // 交叉分解：模型维度要靠它才能说出「这个模型是哪个 agent 用的」。
+        // The cross-breakdown is what lets the model dimension say "which agent used this model".
         self.by_client_model
             .entry(label.to_string())
             .or_default()
@@ -173,10 +173,11 @@ impl DailyBucket {
             .add_message(message);
     }
 
-    /// 逐字段取较大值（账本合并用）。
+    /// Take the larger value per field (for the ledger merge).
     ///
-    /// 分解表按**键**合并而不是整体替换：一次扫描可能只看到当天的一部分
-    /// （例如某个 agent 的账本当时读不到），整体替换会把已经记下的分解抹掉。
+    /// Breakdown tables merge **by key** instead of wholesale replacement: one scan may only see part of the
+    /// day (say one agent's ledger was unreadable at the time) — wholesale replacement would erase the
+    /// breakdown already recorded.
     pub fn merge_max(&mut self, other: &Self) {
         self.totals.merge_max(&other.totals);
         merge_breakdown(&mut self.by_client, &other.by_client);
@@ -188,18 +189,18 @@ impl DailyBucket {
         }
     }
 
-    /// 摘掉一个会话在当天的**明细**（只从 `by_session` 移除该键）。
+    /// Withdraw a session's **details** for the day (removing the key from `by_session` only).
     ///
-    /// 合计与按 agent / 模型 / 交叉分解**原样保留**：删除收走的是会话明细，
-    /// 不是用量。这与 cc-switch 的 `usage_daily_rollups`（表里根本没有会话
-    /// 维度）和 token-monitor 的 `periods.allTime`（剪枝只删 today / month
-    /// 窗口）一致 —— 两家都只留聚合、不留会话明细。
+    /// The total and the agent / model / cross breakdowns **stay untouched**: deletion withdraws session
+    /// details, not usage. This matches cc-switch's `usage_daily_rollups` (no session dimension at all) and
+    /// token-monitor's `periods.allTime` (pruning drops only the today / month windows) — both keep
+    /// aggregates and drop session details.
     ///
-    /// 会话表以 `by_session` 为行来源、以账本快照为模板，被删会话的快照已随
-    /// [`crate::usage::Ledger::ignore_session`] 移除，所以摘掉明细不会让界面
-    /// 少一行；留着它只会让账本随会话数无限膨胀。
+    /// The session table takes rows from `by_session` and templates from ledger snapshots; the deleted
+    /// session's snapshot already left via [`crate::usage::Ledger::ignore_session`], so withdrawing details
+    /// costs the UI no row — keeping them would only bloat the ledger without bound as sessions accumulate.
     ///
-    /// 返回是否真的摘掉了（该会话当天没有记录时为 `false`）。
+    /// Returns whether anything was actually withdrawn (`false` when the session has no record that day).
     pub fn remove_session_detail(&mut self, key: &str) -> bool {
         self.by_session.remove(key).is_some()
     }
@@ -241,7 +242,7 @@ impl DailyBucket {
     }
 }
 
-/// 按键合并一张分解表（见 [`DailyBucket::merge_max`]）。
+/// Merge a breakdown table by key (see [`DailyBucket::merge_max`]).
 fn merge_breakdown(target: &mut BTreeMap<String, DayTotals>, other: &BTreeMap<String, DayTotals>) {
     for (key, totals) in other {
         target.entry(key.clone()).or_default().merge_max(totals);
@@ -267,7 +268,7 @@ fn breakdown_from_value(value: &Value) -> BTreeMap<String, DayTotals> {
         .unwrap_or_default()
 }
 
-/// 按天分桶的集合，键是 `YYYY-MM-DD`（字典序即时间序）。
+/// Collection of daily buckets, keyed by `YYYY-MM-DD` (lexicographic = chronological).
 pub type DailyMap = BTreeMap<String, DailyBucket>;
 
 #[cfg(test)]
@@ -300,7 +301,7 @@ mod tests {
         }
     }
 
-    /// 成本随 add_message 累加、JSON 往返保留；旧条目（无 cost 键）按 0 读回。
+    /// Cost accumulates with add_message and survives the JSON round trip; old entries (no cost key) read back as 0.
     #[test]
     fn cost_accumulates_and_survives_json() {
         let mut m = message(1, 2, "2026-01-01", "m");
@@ -316,7 +317,7 @@ mod tests {
         assert_eq!(legacy.cost, 0.0);
     }
 
-    /// 合计口径：五个桶相加，不重复计子集。
+    /// Total accounting: five buckets summed, subsets never double-counted.
     #[test]
     fn totals_sum_every_bucket() {
         let mut t = DayTotals::default();
@@ -328,7 +329,7 @@ mod tests {
         assert_eq!(t.messages, 1);
     }
 
-    /// 一条消息同时进合计、按 agent、按模型三个地方。
+    /// One message enters three places at once: the total, per-agent, and per-model.
     #[test]
     fn one_message_updates_totals_and_both_breakdowns() {
         let mut bucket = DailyBucket::new("2026-01-01");
@@ -342,7 +343,7 @@ mod tests {
         );
     }
 
-    /// 会话分解：同一天同一会话的多条消息累加到同一键。
+    /// Session breakdown: multiple messages of one session on one day accumulate onto the same key.
     #[test]
     fn session_breakdown_accumulates_within_a_day() {
         let mut bucket = DailyBucket::new("2026-01-01");
@@ -353,7 +354,7 @@ mod tests {
         assert_eq!(bucket.totals.input, 150);
     }
 
-    /// 会话分解要能区分不同 agent 下的同名会话 id。
+    /// The session breakdown must distinguish same-named session ids under different agents.
     #[test]
     fn session_breakdown_separates_clients() {
         let mut bucket = DailyBucket::new("2026-01-01");
@@ -364,7 +365,7 @@ mod tests {
         assert_eq!(bucket.by_session["qwen-code:s"].input, 7);
     }
 
-    /// 空模型名归入占位，不产生空字符串键。
+    /// Empty model names go to the placeholder; no empty-string keys.
     #[test]
     fn blank_model_falls_back_to_placeholder() {
         let mut bucket = DailyBucket::new("2026-01-01");
@@ -373,7 +374,7 @@ mod tests {
         assert!(!bucket.by_model.contains_key(""));
     }
 
-    /// 分解表按键合并：一次只看到部分 agent 的扫描不该抹掉其他 agent 的记录。
+    /// Breakdown tables merge by key: a scan seeing only some agents must not erase other agents' records.
     #[test]
     fn merge_keeps_breakdown_keys_from_both_sides() {
         let mut left = DailyBucket::new("2026-01-01");
@@ -387,7 +388,7 @@ mod tests {
         assert_eq!(left.by_model.len(), 2, "两个模型都在");
     }
 
-    /// 合并取较大值，回退的扫描不让历史缩水。
+    /// Merges take the larger value; a dipping rescan doesn't shrink history.
     #[test]
     fn merge_max_never_shrinks() {
         let mut left = DailyBucket::new("2026-01-01");
@@ -398,7 +399,7 @@ mod tests {
         assert_eq!(left.totals.input, 1000);
     }
 
-    /// 交叉分解：同一天两个 agent 用不同模型，不能互相串。
+    /// Cross-breakdown: two agents using different models the same day never cross-contaminate.
     #[test]
     fn cross_breakdown_separates_models_per_client() {
         let mut bucket = DailyBucket::new("2026-01-01");
@@ -417,7 +418,7 @@ mod tests {
         assert!(!bucket.by_client_model["qwen-code"].contains_key("glm-5"));
     }
 
-    /// 交叉分解的合并：不同 agent 的键都要保留。
+    /// The cross-breakdown's merge: every agent's keys are kept.
     #[test]
     fn cross_breakdown_merges_per_client() {
         let mut left = DailyBucket::new("2026-01-01");
@@ -430,7 +431,7 @@ mod tests {
         assert_eq!(left.by_client_model["opencode"]["m2"].input, 50);
     }
 
-    /// JSON 往返一致。
+    /// The JSON round trip is consistent.
     #[test]
     fn json_round_trip() {
         let mut bucket = DailyBucket::new("2026-01-01");
@@ -441,7 +442,7 @@ mod tests {
         assert_eq!(restored, bucket);
     }
 
-    /// 全 0 的桶应被识别（落盘时过滤掉）。
+    /// All-zero buckets are recognized (filtered out at flush time).
     #[test]
     fn empty_bucket_is_detected() {
         assert!(DayTotals::default().is_empty());

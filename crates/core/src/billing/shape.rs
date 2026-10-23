@@ -1,147 +1,148 @@
-//! 账单形状与结果结构（[`Shape`] / [`Source`] / [`Billing`]）。
+//! Billing shapes and result structures ([`Shape`] / [`Source`] / [`Billing`]).
 use super::*;
 
-/// 面板返回的账单形状。
+/// The billing shape the panel returned.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Shape {
-    /// OpenAI 兼容账单：`hard_limit_usd` / `soft_limit_usd` + `total_usage`（美分）。
+    /// OpenAI-compatible billing: `hard_limit_usd` / `soft_limit_usd` + `total_usage` (cents).
     Subscription,
-    /// 非标准 `credit_summary`：三个原值字段，单位未标注。
+    /// The non-standard `credit_summary`: three raw fields, unit unlabeled.
     CreditSummary,
-    /// 令牌额度（`/api/usage/token/`）：该令牌不限额度。
+    /// Token quota (`/api/usage/token/`): this token is unlimited.
     TokenUnlimited,
-    /// 令牌额度（`/api/usage/token/`）：有具体额度与余额。
+    /// Token quota (`/api/usage/token/`): a concrete quota and balance.
     TokenQuota,
-    /// 只有调用日志（站点未提供 `/api/usage/token/`）：今日 / 近 7 天可用，额度三项为空。
+    /// Call logs only (the station offers no `/api/usage/token/`): today / last-7-days available, the three quota fields empty.
     TokenLogsOnly,
-    /// 无法识别（站点不支持，或返回了别的结构）。
+    /// Unrecognized (the station doesn't support it, or returned some other structure).
     #[default]
     Unknown,
 }
 
-/// 数据来源：决定数字怎么读、怎么换算。
+/// Data source: decides how numbers are read and converted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Source {
-    /// OpenAI 兼容账单接口（`/dashboard/billing/*`）：额度多为占位值。
+    /// The OpenAI-compatible billing endpoint (`/dashboard/billing/*`): quotas are mostly placeholders.
     #[default]
     Compat,
-    /// 令牌额度接口（`/api/usage/token/`，只需 `sk-` key）：无限制站也能读到真实已用。
+    /// The token-quota endpoint (`/api/usage/token/`, only needs the `sk-` key): even unlimited stations yield real usage.
     Token,
-    /// Sub2API 站点的 `/v1/usage`（只需 `sk-` key）：站点级剩余 / 已用 / 总额。
+    /// A Sub2API station's `/v1/usage` (only needs the `sk-` key): station-level remaining / used / total.
     Sub2api,
 }
 
-/// Sub2API `/v1/usage` 的读数（三个读数都可能缺，不同版本给的字段不一样）。
+/// Sub2API `/v1/usage` readings (all three may be missing; versions expose different fields).
 ///
-/// 单位缺省 USD；剩余额度的兜底口径是 `total - used`。
+/// Unit defaults to USD; the remaining-quota fallback is `total - used`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sub2apiUsage {
-    /// 剩余额度。
+    /// Remaining quota.
     pub remaining: Option<f64>,
-    /// 已用额度。
+    /// Used quota.
     pub used: Option<f64>,
-    /// 额度上限。
+    /// The quota cap.
     pub total: Option<f64>,
-    /// 单位（站点给的；缺省 USD）。
+    /// The unit (as the station gives it; defaults to USD).
     pub unit: String,
 }
 
-/// 面板账号额度（`/api/user/self`，填了面板访问令牌才有）：账号级，不是令牌级。
+/// Panel account quota (`/api/user/self`, present only with a panel access token): account-level, not token-level.
 ///
-/// 同一个站点下的所有 `sk-` 令牌共用一份；令牌额度见 [`Source::Token`]。
+/// All `sk-` tokens under one station share it; token-level quota is [`Source::Token`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AccountInfo {
-    /// 账号剩余额度（美元）。
+    /// The account's remaining quota (USD).
     pub balance_usd: Option<f64>,
-    /// 账号累计已用（美元）。
+    /// The account's lifetime used (USD).
     pub used_usd: Option<f64>,
-    /// 历史请求次数。
+    /// Historical request count.
     pub requests: Option<u64>,
-    /// 所属分组（站点未给时为空串）。
+    /// The owning group (empty when the station doesn't say).
     pub group: String,
 }
 
-/// 一次用量查询的结果。
+/// Result of one usage query.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Billing {
-    /// 面板名（`system_name` + 版本），可能为空。
+    /// The panel name (`system_name` + version), possibly empty.
     pub panel: String,
     pub shape: Shape,
-    /// 已用额度（美元）。
+    /// Used quota (USD).
     pub used_usd: Option<f64>,
-    /// 站点给出的额度上限（美元）。
+    /// The quota cap the station reports (USD).
     pub limit_usd: Option<f64>,
-    /// 余额（美元）= 额度 − 已用。
+    /// Balance (USD) = quota − used.
     pub balance_usd: Option<f64>,
-    /// 额度是占位值：不算、不显示余额，只说清已用。
+    /// The quota is a placeholder: no computing, no balance display — only usage is stated.
     ///
-    /// 界面据此只显示「已用」。
+    /// The UI shows only "used" based on this.
     pub placeholder_limit: bool,
-    /// 该令牌是「不计额度」的：只有已用有意义，没有余额概念。
+    /// This token is "quota-free": only usage is meaningful; there is no balance concept.
     pub unlimited: bool,
-    /// `credit_summary` 的原值说明（单位未标注）。
+    /// `credit_summary`'s raw-value note (unit unlabeled).
     pub raw_credit: Option<String>,
-    /// 数据来源（兼容账单 / 令牌额度 / 面板账户）。
+    /// The data source (compatible billing / token quota / panel account).
     pub source: Source,
-    /// 今日已用（美元，本地时区 0 点起）。
+    /// Today's usage (USD, since local midnight).
     pub today_usd: Option<f64>,
-    /// 今日请求数。
+    /// Today's request count.
     pub today_calls: Option<u64>,
-    /// 今日数据已跨日失效；累计、余额和近 7 天继续展示。
+    /// Today's data has gone stale across midnight; lifetime, balance, and last-7-days keep showing.
     pub today_stale: bool,
-    /// 今日各模型消耗（美元，降序，最多 3 项）。
+    /// Today's per-model spend (USD, descending, at most 3).
     pub today_models: Vec<(String, f64)>,
-    /// 近 7 天已用（美元，含今日）。
+    /// Last-7-days usage (USD, today included).
     pub week_usd: Option<f64>,
-    /// 站点没给 `quota_per_unit`，换算按默认 500000 假设（悬停里说明）。
+    /// The station gave no `quota_per_unit`; conversion assumes the default 500000 (noted in the hover).
     pub unit_assumed: bool,
-    /// 签到状态（`GET /api/user/checkin`，只读，需面板令牌）。
+    /// Check-in status (`GET /api/user/checkin`, read-only, requires the panel token).
     ///
-    /// 与额度无关；站点没开签到、没填面板令牌或接口读不到时都是 `None`，卡片上不写这一项。
+    /// Unrelated to quota; when the station has none, no panel token is set, or the endpoint can't be read,
+    /// it's `None` and the card omits the line.
     pub checkin: Option<CheckinStatus>,
-    /// 降级 / 缺数据时的原因（调用日志不可用、面板令牌失效等）。
+    /// The reason for degradation / missing data (call logs unavailable, panel token invalid, etc.).
     ///
-    /// 卡片小窗不渲染这一项。
+    /// The card's small window doesn't render this.
     pub note: Option<String>,
-    /// 面板账号额度（`/api/user/self`）：填了面板访问令牌才有；有它时余额以它为准。
+    /// Panel account quota (`/api/user/self`): present only with a panel access token; when present, the balance follows it.
     pub account: Option<AccountInfo>,
-    /// 面板按天用量（`/api/data/self`，需面板访问令牌）：近期在前。
+    /// Panel per-day usage (`/api/data/self`, requires the panel access token): recent days first.
     ///
-    /// 面板聚合覆盖全部来源（含非本机）；只进卡片悬停，不并入账本，
-    /// 避免与本地扫描双重计数。
+    /// Panel aggregates cover all sources (non-local included); shown only in the card hover, never merged
+    /// into the ledger, avoiding double counting with the local scan.
     pub panel_days: Vec<PanelDay>,
-    /// 令牌 / 订阅到期（`/api/usage/token` 的 `expires_at`、兼容账单的
-    /// `access_until`）；0 / 负值（无期限）为 `None`。
+    /// Token / subscription expiry (`/api/usage/token`'s `expires_at`, compatible billing's
+    /// `access_until`); 0 / negative (no expiry) is `None`.
     pub expires: Option<KeyExpiry>,
 }
 
-/// 令牌 / 订阅到期信息。
+/// Token / subscription expiry info.
 ///
-/// `ts` 由 core 解析填写；`label` / `days_left` 由应用层按本地时区补全
-/// （未填时悬停里不展示该行）。
+/// `ts` is parsed and filled by core; `label` / `days_left` are completed by the app layer in the local
+/// timezone (the hover omits the line when unset).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct KeyExpiry {
-    /// 到期时刻（Unix 秒）。
+    /// The expiry moment (Unix seconds).
     pub ts: i64,
-    /// 本地日期标签（`YYYY-MM-DD`），应用层填。
+    /// The local date label (`YYYY-MM-DD`), filled by the app layer.
     pub label: String,
-    /// 距到期的本地日历日差；已过期为负。应用层填。
+    /// Local calendar days until expiry; negative when expired. Filled by the app layer.
     pub days_left: Option<i64>,
 }
 
-/// 面板侧一天的用量聚合（`/api/data/self` 的 `data` 行按日合并）。
+/// The panel side's per-day usage aggregate (`/api/data/self`'s `data` rows merged per day).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PanelDay {
-    /// 站点按天聚合的 0 点时间戳（秒）。
+    /// The station's per-day midnight timestamp (seconds).
     pub day_ts: i64,
-    /// 展示标签（今天 / 昨天 / N 天前 / MM-DD），由应用层填。
+    /// The display label (today / yesterday / N days ago / MM-DD), filled by the app layer.
     pub date: String,
-    /// 当天消耗（美元，按站点 quota_per_unit 换算）。
+    /// That day's spend (USD, converted by the station's quota_per_unit).
     pub usd: f64,
-    /// 当天请求数。
+    /// That day's request count.
     pub calls: u64,
-    /// 当天 token 量。
+    /// That day's token volume.
     pub tokens: i64,
-    /// 当天消耗最大的模型名。
+    /// That day's heaviest model's name.
     pub top_model: String,
 }

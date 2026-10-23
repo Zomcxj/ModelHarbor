@@ -3,7 +3,7 @@ use crate::prefs::ConfigPathPrefs;
 use crate::util::{is_wsl_path, read_wsl_file};
 use std::path::Path;
 
-/// 配置格式标识。新增后端时在 `backends` 模块实现并注册，这里加变体。
+/// Config format identifier. When adding a backend, implement and register it in the `backends` module, then add a variant here.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ConfigFormat {
     Opencode,
@@ -19,10 +19,10 @@ pub enum ConfigFormat {
 }
 
 impl ConfigFormat {
-    /// 展示名，同时是账本键的前缀（`client:session_id`）。
+    /// Display name, also the ledger key's prefix (`client:session_id`).
     ///
-    /// 返回 `&'static str`：全部取值都是字面量，放宽生命周期后调用方
-    /// 可以把它存进 `DeleteError` 之类的「不借 self」的结构里。
+    /// Returns `&'static str`: every value is a literal, so relaxing the lifetime lets callers store it in
+    /// structures like `DeleteError` that don't borrow self.
     pub fn label(&self) -> &'static str {
         match self {
             ConfigFormat::Opencode => "opencode",
@@ -38,13 +38,14 @@ impl ConfigFormat {
         }
     }
 
-    /// 是否属于 opencode 系：opencode / kilocode / mimocode。
+    /// Whether it belongs to the opencode family: opencode / kilocode / mimocode.
     ///
-    /// 三者 schema 的字段与结构一致，解析、序列化、字段可见性、agents 支持共用一套实现；
-    /// 差别只有配置目录名、主配置文件名与图标，判别只能靠路径。
+    /// The three share identical schema fields and structure — parsing, serialization, field visibility, and
+    /// agents support all reuse one implementation; only the config directory, primary file name, and icon
+    /// differ, so detection must go by path.
     ///
-    /// mimocode 额外要求 `modalities` 成对（见
-    /// `backends::opencode::complete_required_model_fields`）。
+    /// mimocode additionally requires `modalities` pairs (see
+    /// `backends::opencode::complete_required_model_fields`).
     pub fn is_opencode_family(&self) -> bool {
         matches!(
             self,
@@ -52,16 +53,16 @@ impl ConfigFormat {
         )
     }
 
-    /// 该后端是否有模型级启用开关（仅 WorkBuddy）。
+    /// Whether the backend has a model-level enable switch (WorkBuddy only).
     ///
-    /// 开启时模型写 `disabled`，生效清单只含启用条目。ZCode 的 `config.enabled` 由它
-    /// 自己的界面维护，本工具只原样保留。
+    /// When on, models write `disabled` and the effective list holds only enabled entries. ZCode's
+    /// `config.enabled` is maintained by its own UI; this tool preserves it verbatim.
     pub fn has_model_enable(&self) -> bool {
         matches!(self, ConfigFormat::WorkBuddy)
     }
 }
 
-/// 各后端的解析后路径容器（含用户可覆盖的本地路径）。
+/// Each backend's parsed path container (including user-overridable local paths).
 pub struct ConfigPaths {
     pub opencode: String,
     pub kilocode: String,
@@ -93,7 +94,7 @@ impl Default for ConfigPaths {
 }
 
 impl ConfigPaths {
-    /// 本后端实际使用的本地路径。
+    /// The local path this backend actually uses.
     pub fn local_path(&self, format: ConfigFormat) -> String {
         match format {
             ConfigFormat::Opencode => self.opencode.clone(),
@@ -109,7 +110,7 @@ impl ConfigPaths {
         }
     }
 
-    /// 写入某一后端的本地路径（用户手动覆盖 / 恢复默认都走这里）。
+    /// Write a backend's local path (both manual overrides and restoring the default come through here).
     pub fn set_local_path(&mut self, format: ConfigFormat, path: &str) {
         match format {
             ConfigFormat::Opencode => self.opencode = path.to_string(),
@@ -125,12 +126,12 @@ impl ConfigPaths {
         }
     }
 
-    /// 该后端「探测到的默认路径」（用于判断某一页是否被用户覆盖过）。
+    /// The backend's "probed default path" (for judging whether a page was overridden by the user).
     pub fn default_local_path(format: ConfigFormat) -> String {
         backends::backend(format).default_local_path()
     }
 
-    /// 用 prefs 里的覆盖项替换默认路径（空串 = 不覆盖，保持自动探测值）。
+    /// Replace default paths with overrides from prefs (empty string = no override, keep the auto-detected value).
     pub fn apply_overrides(&mut self, overrides: &ConfigPathPrefs) {
         for backend in backends::BACKENDS {
             let path = overrides.get(backend.id());
@@ -140,7 +141,7 @@ impl ConfigPaths {
         }
     }
 
-    /// 启动探测：优先「用户覆盖过且文件存在」的页面，其次才是默认路径探测。
+    /// Startup probing: pages whose "user-overridden path exists" win; default-path probing comes second.
     pub fn detect_preferring_overrides(
         &self,
         overrides: &ConfigPathPrefs,
@@ -150,7 +151,7 @@ impl ConfigPaths {
             if overrides.get(id).trim().is_empty() {
                 continue;
             }
-            // 覆盖路径也走候选解析（`.json` / `.jsonc`）。
+            // Overridden paths go through candidate resolution too (`.json` / `.jsonc`).
             let path = backends::resolve_local_path(id, &self.local_path(id));
             if Path::new(&path).exists() {
                 return Some((id, path));
@@ -159,9 +160,9 @@ impl ConfigPaths {
         Self::detect()
     }
 
-    /// 启动探测：找到第一个本地存在的默认配置。
+    /// Startup probing: find the first locally-existing default config.
     ///
-    /// 路径走候选解析（opencode 系的 `.json` / `.jsonc`）。
+    /// Paths go through candidate resolution (the opencode family's `.json` / `.jsonc`).
     pub fn detect() -> Option<(ConfigFormat, String)> {
         for b in backends::BACKENDS {
             let id = b.id();
@@ -173,13 +174,13 @@ impl ConfigPaths {
         None
     }
 
-    /// 根据文件内容判别配置格式（无扩展名上下文，jsonc 测试用）。
+    /// Detect the config format from file content (no extension context; used by the jsonc test).
     pub fn detect_from_content(content: &str) -> ConfigFormat {
         backends::detect_format(content, "")
     }
 
-    /// 根据路径 + 内容判别配置格式（支持 WSL 路径）。
-    /// 内容不可得（新建场景）时按扩展名推断：`.yml/.yaml` 归 oh-my-pi，其余回落 opencode。
+    /// Detect the config format from path + content (WSL paths supported).
+    /// When content is unavailable (creation scenarios), infer by extension: `.yml/.yaml` → oh-my-pi, else opencode.
     pub fn detect_for_path(path: &str) -> (ConfigFormat, String) {
         let content = if is_wsl_path(path) {
             read_wsl_file(path).ok()
@@ -192,15 +193,15 @@ impl ConfigPaths {
         }
     }
 
-    /// 目标是否可用（本地或 WSL）。
+    /// Whether the target is usable (local or WSL).
     pub fn validate_target(&self, format: ConfigFormat) -> bool {
         backends::target_available(format, &self.local_path(format))
     }
 
-    /// 页面在顶栏的显示顺序：已安装在前、未安装在后，各组内按名字首字母。
+    /// Pages' top-bar display order: installed first, uninstalled after, name-initial within each group.
     ///
-    /// `saved_order` 是用户拖动过的顺序（后端标识，即 `ConfigFormat::label()` 的值），
-    /// 只对已安装的那一组生效。
+    /// `saved_order` is the user's drag order (backend identifiers, i.e. `ConfigFormat::label()` values) and
+    /// applies to the installed group only.
     pub fn tab_order(
         &self,
         saved_order: &[String],
@@ -216,7 +217,7 @@ impl ConfigPaths {
                 missing.push(id);
             }
         }
-        // 已安装组：先按用户拖动顺序，其余按名字首字母补在其后。
+        // Installed group: the user's drag order first, the rest appended by name initial.
         let rank = |id: ConfigFormat| {
             saved_order
                 .iter()
@@ -232,7 +233,7 @@ impl ConfigPaths {
         installed
     }
 
-    /// 本地优先：本地文件存在时写本地，否则回落 WSL，最后回退本地默认路径（新建场景）。
+    /// Local first: write local when the local file exists, else fall back to WSL, finally the local default (creation scenarios).
     pub fn target_path(&self, format: ConfigFormat) -> String {
         backends::target_path(format, &self.local_path(format))
     }
@@ -243,11 +244,11 @@ mod tests {
     use super::*;
     use crate::prefs::ConfigPathPrefs;
 
-    /// 顶栏顺序：已安装在前（按字母）、未安装在后（按字母）。
+    /// Top-bar order: installed first (alphabetical), uninstalled after (alphabetical).
     #[test]
     fn tab_order_puts_installed_first_then_alphabetical() {
         let paths = ConfigPaths::default();
-        // 假装只有 pi / zcode / workbuddy 装了
+        // Pretend only pi / zcode / workbuddy are installed
         let order = paths.tab_order(&[], |id| {
             matches!(
                 id,
@@ -273,7 +274,7 @@ mod tests {
         );
     }
 
-    /// 保存的拖动顺序只作用于已安装的那一段。
+    /// The saved drag order affects the installed segment only.
     #[test]
     fn tab_order_applies_saved_order_to_installed_only() {
         let paths = ConfigPaths::default();
@@ -284,7 +285,7 @@ mod tests {
         let labels: Vec<&str> = order.iter().map(|id| id.label()).collect();
         assert_eq!(labels[0], "zcode", "拖动顺序生效");
         assert_eq!(labels[1], "pi");
-        // 未安装的仍按字母序跟在后面，不受 saved 影响
+        // Uninstalled ones still trail alphabetically, unaffected by saved
         assert_eq!(
             &labels[2..],
             &[
@@ -300,12 +301,12 @@ mod tests {
         );
     }
 
-    /// 拖动顺序里未安装的项被忽略。
+    /// Uninstalled entries in the drag order are ignored.
     #[test]
     fn tab_order_ignores_saved_entries_that_are_not_installed() {
         let paths = ConfigPaths::default();
         let saved = vec![
-            "workbuddy".to_string(), // 没装
+            // not installed
             "zcode".to_string(),
         ];
         let order = paths.tab_order(&saved, |id| {
@@ -316,7 +317,7 @@ mod tests {
         assert_eq!(labels[1], "pi", "剩下的按字母补在后面");
     }
 
-    /// 新装一个 agent：按字母插进已安装段，不打断已有顺序。
+    /// A newly installed agent: inserted alphabetically into the installed segment without disturbing existing order.
     #[test]
     fn tab_order_keeps_saved_prefix_when_a_new_agent_appears() {
         let paths = ConfigPaths::default();
@@ -330,7 +331,7 @@ mod tests {
         assert_eq!(labels[2], "deepseek-harness", "未安装段不受影响");
     }
 
-    /// 一个都没装时全按字母序。
+    /// With none installed, everything is alphabetical.
     #[test]
     fn tab_order_all_alphabetical_when_nothing_installed() {
         let paths = ConfigPaths::default();
@@ -353,7 +354,7 @@ mod tests {
         );
     }
 
-    /// 顺序是全部后端的一个排列，且不重复。
+    /// The order is a permutation of all backends, without repeats.
     #[test]
     fn tab_order_covers_every_backend_exactly_once() {
         let paths = ConfigPaths::default();
@@ -412,14 +413,14 @@ mod tests {
         let file = temp_config("prefer");
         let mut paths = ConfigPaths::default();
         let mut overrides = ConfigPathPrefs::default();
-        // 只覆盖 pi，且文件存在 → 启动定位到 pi，不走默认顺序探测
+        // Only pi overridden, and the file exists → startup lands on pi, skipping default-order probing
         overrides.set(ConfigFormat::Pi, &file);
         paths.apply_overrides(&overrides);
         assert_eq!(
             paths.detect_preferring_overrides(&overrides),
             Some((ConfigFormat::Pi, file.clone()))
         );
-        // 覆盖的路径不存在 → 不被优先选中，回落默认探测
+        // The overridden path doesn't exist → not preferred, falls back to default probing
         let mut missing = ConfigPathPrefs::default();
         missing.set(ConfigFormat::Pi, r"D:\not-exist\models.json");
         let mut fresh = ConfigPaths::default();

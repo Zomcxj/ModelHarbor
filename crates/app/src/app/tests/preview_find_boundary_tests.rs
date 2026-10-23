@@ -1,10 +1,10 @@
 use crate::app::preview::{find_matches, floor_char_boundary};
 
-/// 过期查找偏移可能落在多字节字符中间，跳转前必须向下钳回字符边界。
+/// Stale find offsets may land inside a multi-byte character; jumps must clamp down to a character boundary first.
 #[test]
 fn floor_char_boundary_never_lands_inside_a_multibyte_char() {
-    // "ab模型cd"：a=0 b=1 | 模=2..5 | 型=5..8 | c=8 d=9，len=10。
-    // 字符边界：0,1,2,5,8,9,10；其余都落在「模」或「型」内部。
+    // Fixture: "ab" + two 3-byte CJK glyphs + "cd" — a=0 b=1 | glyph 1 = 2..5 | glyph 2 = 5..8 | c=8 d=9, len=10.
+    // Character boundaries: 0,1,2,5,8,9,10; every other offset falls inside glyph 1 or glyph 2.
     let text = "ab模型cd";
     assert_eq!(floor_char_boundary(text, 0), 0);
     assert_eq!(floor_char_boundary(text, 2), 2, "字符起点不动");
@@ -21,7 +21,7 @@ fn floor_char_boundary_never_lands_inside_a_multibyte_char() {
     assert_eq!(floor_char_boundary(text, 999), text.len(), "超界钳到长度内");
 }
 
-/// 查找返回的偏移始终是所匹配文本的字符边界。
+/// Offsets find returns are always character boundaries of the matched text.
 #[test]
 fn find_matches_offsets_are_always_char_boundaries_of_the_text_they_matched() {
     let text = "前缀模型后缀 模型 再一个模型";

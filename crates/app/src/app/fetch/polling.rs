@@ -1,14 +1,14 @@
 use super::*;
 
 impl super::App {
-    /// 按 provider 的 api 类型构造模型列表接口地址。
+    /// Build the model-list endpoint's address per the provider's api type.
     pub(in crate::app) fn models_url(base_url: &str, api: &str) -> String {
         let base = base_url.trim().trim_end_matches('/');
         if base.is_empty() {
             return String::new();
         }
         match api_wire(api) {
-            // Anthropic 的模型接口固定为 /v1/models。
+            // Anthropic's model endpoint is fixed at /v1/models.
             ApiWire::AnthropicMessages => {
                 if base.ends_with("/v1") {
                     format!("{}/models", base)
@@ -16,14 +16,14 @@ impl super::App {
                     format!("{}/v1/models", base)
                 }
             }
-            // Vertex 的模型列表挂在 publishers/google 下。
+            // Vertex's model list hangs under publishers/google.
             ApiWire::GoogleVertex => format!("{}/publishers/google/models", base),
             _ => format!("{}/models", base),
         }
     }
 
-    /// 启动 provider 级延迟测试（后台线程，结果经通道回传）。
-    /// 接收 `&mut HashMap` 而非 `&mut self`，以便与 `providers[idx]` 借用共存。
+    /// Start a provider-level latency test (background thread; results return over a channel).
+    /// Takes `&mut HashMap` rather than `&mut self` so it can coexist with the `providers[idx]` borrow.
     pub(in crate::app) fn start_provider_latency(
         latency: &mut HashMap<String, LatencyState>,
         key: &str,
@@ -43,9 +43,9 @@ impl super::App {
         state.provider_rx = Some(rx);
     }
 
-    /// 单模型探测的统一入口：门控 → 选问句 → 启动后台线程 → 返回状态栏消息。
+    /// The unified entry for single-model probes: gate → pick question → start the background thread → return the status note.
     ///
-    /// 写成关联函数（不借 `&mut self`）以便在 provider 卡片内部调用。
+    /// An associated function (no `&mut self` borrow) so provider cards can call it internally.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::app) fn run_model_probe(
         probe: &mut ProbeGate,
@@ -83,9 +83,9 @@ impl super::App {
         }
     }
 
-    /// 启动单个模型的延迟探测（后台线程，结果经通道回传）。
+    /// Start one model's latency probe (background thread; results return over a channel).
     ///
-    /// 一次只测一个，节流与串行由 [`ProbeGate`] 把关。
+    /// One at a time, with [`ProbeGate`] handling throttle and serialization.
     pub(in crate::app) fn start_model_latency(
         latency: &mut HashMap<String, LatencyState>,
         key: &str,
@@ -114,14 +114,14 @@ impl super::App {
         state.model_rx = Some(rx);
     }
 
-    /// 每帧轮询延迟测试结果，并更新状态栏。
+    /// Poll latency-test results each frame, updating the status bar.
     pub(in crate::app) fn poll_latency(&mut self) {
         let mut notices: Vec<String> = Vec::new();
         for (key, state) in self.latency.iter_mut() {
             if let Some(rx) = &state.provider_rx {
                 match rx.try_recv() {
                     Ok(result) => {
-                        // 失败原因已就地显示在厂商行（红字 + 悬停详情），不推送到底部状态栏。
+                        // Failure reasons already display in place on the vendor row (red text + hover details), never pushed to the bottom status bar.
                         if let Ok(ms) = &result {
                             notices.push(format!("provider 延迟测试完成：{} ms", ms));
                         }
@@ -130,7 +130,7 @@ impl super::App {
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        // 测量线程异常退出时收不到结果：终止等待，不在底部报错。
+                        // An abnormally exited measurement thread never delivers results: end the wait, no bottom-bar error.
                         state.provider_rx = None;
                     }
                 }
@@ -142,14 +142,14 @@ impl super::App {
                             state.pending.remove(&id);
                             state.models.insert(id, result);
                             state.done += 1;
-                            // 单模型探测：拿到结果即释放该 provider 的串行位。
+                            // Single-model probes: release the provider's serialization slot as soon as a result arrives.
                             self.probe.finish(key);
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                             state.model_rx = None;
                             state.total = state.done;
-                            // 单模型探测：total 恒为 1，只区分「已回传结果」与「线程异常退出」。
+                            // Single-model probes: total is always 1, distinguishing only "result delivered" from "thread died".
                             let unfinished = !state.pending.is_empty();
                             state.pending.clear();
                             notices.push(if unfinished {
@@ -168,8 +168,8 @@ impl super::App {
         }
     }
 
-    /// 后台拉取某个后端的内置网关免费模型列表（已有请求在飞时不重复发起）。
-    /// 请求公共模型库，不需要 baseURL / API Key。
+    /// Fetch a backend's built-in gateway free-model list in the background (no repeat while a request is in flight).
+    /// Hits the public model library — no baseURL / API Key needed.
     pub(in crate::app) fn start_free_models_fetch(&mut self, format: crate::format::ConfigFormat) {
         if crate::opencode_models::source_for(format).is_none() {
             return;
@@ -185,8 +185,8 @@ impl super::App {
         state.rx = Some(rx);
     }
 
-    /// 每帧轮询各后端的免费模型拉取结果：成功则刷新列表并落盘缓存。
-    /// 拉取失败不清空已有列表，只在 Agents 区块旁提示。
+    /// Poll each backend's free-model fetch results each frame: on success, refresh the list and persist the cache.
+    /// Failures don't clear the existing list — only a note beside the Agents block.
     pub(in crate::app) fn poll_free_models(&mut self) {
         for (format, state) in self.free_models.iter_mut() {
             let Some(rx) = &state.rx else {
@@ -197,7 +197,7 @@ impl super::App {
                     state.rx = None;
                     state.error = None;
                     if !models.is_empty() {
-                        // 缓存写失败不影响本次使用。
+                        // A failed cache write doesn't affect this round's use.
                         let _ = crate::opencode_models::save_cache(*format, &models);
                         state.models = models;
                     }
@@ -207,7 +207,7 @@ impl super::App {
                     state.error = Some(err);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                // 线程异常退出：终止等待。
+                // The thread died abnormally: end the wait.
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     state.rx = None;
                 }

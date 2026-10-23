@@ -5,8 +5,8 @@ use crate::util::parse_number_text;
 use std::collections::HashSet;
 
 impl App {
-    /// 将已加载的公共 provider 凭据投影到 DSH 专属字段。
-    /// 只在进入 DSH 页面时调用一次。
+    /// Project the loaded shared provider credentials onto DSH-specific fields.
+    /// Called once when entering the DSH page.
     pub(in crate::app) fn project_dsh_credentials(&mut self) {
         for provider in &mut self.providers {
             if provider.api_key_env.trim().is_empty() {
@@ -15,9 +15,9 @@ impl App {
         }
     }
 
-    /// 页面切换时保持 provider 密钥一致：DSH 页使用 api_key_secret（对应
-    /// .credentials.yaml 的 refs），其他页面使用 api_key。非空值同步到目标页
-    /// 字段；在 DSH 页被清空过的密钥（原本有、当前空）不再回填。
+    /// Keep provider keys consistent across page switches: the DSH page uses api_key_secret (matching
+    /// .credentials.yaml's refs), other pages use api_key. Non-empty values sync to the target page's field;
+    /// a key cleared on the DSH page (previously set, now empty) never backfills.
     pub(in crate::app) fn sync_provider_secrets(&mut self, target: ConfigFormat) {
         for provider in &mut self.providers {
             if target == ConfigFormat::DeepSeekHarness {
@@ -30,7 +30,7 @@ impl App {
                 let cleared_on_dsh = !provider.original_api_key_secret.is_empty()
                     && provider.api_key_secret.is_empty();
                 if cleared_on_dsh {
-                    // 在 DSH 页清空过的密钥不再用旧值填充其他页面。
+                    // A key cleared on the DSH page never refills other pages from its old value.
                     provider.api_key = String::new();
                 } else if !provider.api_key_secret.trim().is_empty() {
                     provider.api_key = provider.api_key_secret.clone();
@@ -39,7 +39,7 @@ impl App {
         }
     }
 
-    /// 统计非法数字字段数（非空且解析失败）。
+    /// Count invalid numeric fields (non-empty and unparseable).
     pub(in crate::app) fn count_invalid_numeric_fields(&self) -> usize {
         fn bad(s: &str) -> bool {
             !s.trim().is_empty() && parse_number_text(s).is_none()
@@ -63,7 +63,7 @@ impl App {
         n
     }
 
-    /// 校验 agent / provider / model key 唯一性，返回首个冲突描述。
+    /// Validate agent / provider / model key uniqueness, returning the first conflict's description.
     pub(in crate::app) fn find_duplicate_keys(&self) -> Option<String> {
         let mut seen = HashSet::new();
         for a in &self.agents {

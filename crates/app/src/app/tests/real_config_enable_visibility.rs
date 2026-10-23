@@ -8,9 +8,9 @@ fn only_the_workbuddy_page_offers_the_enable_toggle() {
     let home = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default());
     let opencode = home.join(".config/opencode/opencode.json");
     if !opencode.exists() {
-        return; // 非用户机器（CI）跳过
+        return; // Skipped on non-user machines (CI)
     }
-    // 先加载 opencode 的文件（source ≠ 当前页）。
+    // Load opencode's file first (source ≠ the current page).
     let mut app = App {
         config_path: opencode.display().to_string(),
         ..App::default()

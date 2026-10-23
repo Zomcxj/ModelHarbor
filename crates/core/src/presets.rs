@@ -1,31 +1,32 @@
-//! 官方 provider 预设：新增 provider 时一键填充 key / baseUrl / 协议。
-//! 下拉首项为「(自定义 / 不套用)」；套用后各字段仍可改，预设只写 key / baseUrl / 协议，
-//! 不写密钥、不动模型列表与超时等字段。`azure-openai-responses` 未收录（端点含账号名）。
+//! Official provider presets: one-click key / baseUrl / protocol fill when adding a provider.
+//! The dropdown's first item is "(custom / don't apply)"; after applying, fields stay editable — presets
+//! write only key / baseUrl / protocol, never keys, never touching the model list or timeout. `azure-openai-responses`
+//! isn't collected (its endpoint carries an account name).
 
 use crate::model::ProviderRow;
 
-/// 预设所属页面的方言，决定协议落在哪个字段。
+/// The dialect of the page a preset belongs to, deciding which field holds the protocol.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PresetDialect {
-    /// opencode 页：协议用 npm 包表达
+    /// The opencode page: the protocol is expressed as an npm package
     Opencode,
-    /// pi / oh-my-pi / DSH 页：协议落在 api 字段
+    /// The pi / oh-my-pi / DSH pages: the protocol lands in the api field
     PiLike,
 }
 
-/// 一个官方 provider 的预设值。
+/// One official provider's preset values.
 pub struct ProviderPreset {
-    /// provider key（写进配置里的对象键）
+    /// The provider key (the object key written into the config)
     pub key: &'static str,
-    /// 下拉里的显示名
+    /// The display name in the dropdown
     pub label: &'static str,
-    /// 官方 baseUrl；极少数是需用户补占位符的模板（Cloudflare / Vertex）
+    /// The official baseUrl; a rare few are templates needing user placeholders (Cloudflare / Vertex)
     pub base_url: &'static str,
-    /// pi 方言 api；opencode 页由 `convert::api_to_npm` 推导出 npm
+    /// The pi-dialect api; the opencode page derives npm via `convert::api_to_npm`
     pub api: &'static str,
 }
 
-/// 预设表，常用的排在前面（顺序即下拉顺序）。
+/// The preset table, common ones first (order = dropdown order).
 pub const PRESETS: &[ProviderPreset] = &[
     ProviderPreset {
         key: "openai",
@@ -257,15 +258,15 @@ pub const PRESETS: &[ProviderPreset] = &[
     },
 ];
 
-/// 按 key 精确查找预设（大小写敏感，与配置里的 key 一致）。
+/// Find a preset by exact key (case-sensitive, matching the config's key).
 pub fn find(key: &str) -> Option<&'static ProviderPreset> {
     PRESETS.iter().find(|p| p.key == key)
 }
 
-/// 套用预设：只写 key / baseUrl / 协议，其余字段保持原样。
+/// Apply a preset: writes only key / baseUrl / protocol, leaving other fields as-is.
 ///
-/// - opencode 页：有对应 npm 时写 npm 并清空 `pi_api`，否则写 `pi_api`；
-/// - pi / oh-my-pi / DSH 页：写 `pi_api`。
+/// - opencode page: writes npm when one corresponds and clears `pi_api`, else writes `pi_api`;
+/// - pi / oh-my-pi / DSH pages: write `pi_api`.
 pub fn apply(row: &mut ProviderRow, preset: &ProviderPreset, dialect: PresetDialect) {
     row.key = preset.key.to_string();
     row.base_url = preset.base_url.to_string();
@@ -307,7 +308,7 @@ mod tests {
                 p.base_url
             );
             assert!(!p.api.is_empty(), "{} 缺少 api", p.key);
-            // key 里不应有空格
+            // Keys shouldn't contain spaces
             assert!(!p.key.contains(' '), "{} 的 key 含空格", p.key);
         }
     }
@@ -320,7 +321,7 @@ mod tests {
         }
     }
 
-    /// 预设的 api 必须存在于 pi/omp 协议列表。
+    /// A preset's api must exist in the pi/omp protocol list.
     #[test]
     fn preset_apis_exist_in_dialect_lists() {
         for p in PRESETS {
@@ -333,7 +334,7 @@ mod tests {
         }
     }
 
-    /// 套用预设只改 key / baseUrl / 协议；密钥、超时、模型列表保持原样。
+    /// Applying a preset changes only key / baseUrl / protocol; keys, timeouts, and the model list stay as-is.
     #[test]
     fn apply_only_touches_identity_fields() {
         let mut row = ProviderRow::new();
@@ -349,7 +350,7 @@ mod tests {
         assert_eq!(row.key, "deepseek");
         assert_eq!(row.base_url, "https://api.deepseek.com");
         assert_eq!(row.pi_api, "openai-completions");
-        // 手工内容保持不变
+        // Hand-written content stays untouched
         assert_eq!(row.api_key, "手填的密钥");
         assert_eq!(row.timeout, "60000");
         assert_eq!(row.models.len(), models_before);
@@ -368,7 +369,7 @@ mod tests {
         assert_eq!(row.api_key, "sk-keep");
     }
 
-    /// opencode 页遇到没有对应 npm 的协议：写 api，保留用户已填的 npm。
+    /// The opencode page meeting a protocol without an npm counterpart: writes api, keeping the user's npm.
     #[test]
     fn apply_opencode_keeps_api_without_npm_equivalent() {
         let mut row = ProviderRow::new();
@@ -380,7 +381,7 @@ mod tests {
         assert_eq!(row.npm, "@ai-sdk/openai-compatible");
     }
 
-    /// 自定义 key 不套预设时不被任何校验拦截。
+    /// A custom key not applying a preset passes every validator.
     #[test]
     fn custom_provider_is_not_restricted() {
         let mut row = ProviderRow::new();

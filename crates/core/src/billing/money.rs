@@ -1,13 +1,13 @@
-//! 数字格式化（金额、千分位）。
+//! Number formatting (amounts, thousands separators).
 use serde_json::Value;
 
-/// 金额格式化：`$1,234.50`。
+/// Amount formatting: `$1,234.50`.
 pub fn money(value: f64) -> String {
     let sign = if value < 0.0 { "-$" } else { "$" };
     format!("{}{}", sign, grouped(value.abs(), 2))
 }
 
-/// 原值格式化（单位未知）：整数不带小数，非整数保留两位。
+/// Raw-value formatting (unit unknown): integers without decimals, non-integers keeping two.
 pub(crate) fn raw_num(value: Option<&Value>) -> String {
     let Some(v) = value else {
         return "?".to_string();
@@ -24,7 +24,7 @@ pub(crate) fn raw_num(value: Option<&Value>) -> String {
     }
 }
 
-/// 千分位分组；`decimals` 为小数位数。
+/// Thousands grouping; `decimals` is the decimal count.
 fn grouped(value: f64, decimals: usize) -> String {
     let text = format!("{:.*}", decimals, value);
     let (int_part, frac) = match text.split_once('.') {
@@ -32,7 +32,7 @@ fn grouped(value: f64, decimals: usize) -> String {
         None => (text, None),
     };
     let mut out = String::with_capacity(int_part.len() + int_part.len() / 3);
-    // 内容来自 format!("{:.*}") 的浮点输出，必定是 ASCII。
+    // The content comes from format!("{:.*}")'s float output — always ASCII.
     let total = int_part.len();
     for (idx, ch) in int_part.char_indices() {
         if idx > 0 && (total - idx) % 3 == 0 {

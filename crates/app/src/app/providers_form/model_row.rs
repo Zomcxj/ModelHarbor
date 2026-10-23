@@ -1,18 +1,18 @@
 use super::*;
 
-/// 模型字段编辑行之一：id / name / reasoning / tool_call / store / context / output。
+/// One of the model field edit rows: id / name / reasoning / tool_call / store / context / output.
 ///
-/// `relaxed` = 新增表单语境：`ProviderFormFlags` 里内容型开关放宽为常显；
-/// 方言门控（oc / dsh）照旧保留。
+/// `relaxed` = add-form context: content toggles relax to always-visible in `ProviderFormFlags`,
+/// while dialect gates (oc / dsh) stay.
 ///
-/// `dup` 给出模型 id 的重复判定集合（编辑表单）：命中时在 id 字段旁画 ⚠ 提示；
-/// 新增表单传 `None`。
+/// `dup` supplies the model-id duplicate set (the edit form): a hit draws a ⚠ beside the id field;
+/// the add form passes `None`.
 ///
-/// `salt` 区分同一页里的多个表单实例：下拉的展开状态按 `Id` 记在 egui 里，
-/// 两处共用同一个 id 会互相串开合状态。
+/// `salt` distinguishes a page's multiple form instances: dropdowns record expand state in egui by
+/// `Id`, and two places sharing one id would tangle each other's open/closed state.
 ///
-/// `sync` 收集本帧被点下的「同步」目标（context / output）：点中时写入，
-/// 由调用方冒泡到区块层统一应用。新增表单（`relaxed`）不提供同步。
+/// `sync` collects this frame's clicked "sync" targets (context / output): a hit writes and the caller
+/// bubbles it up to the block level for centralized application. The add form (`relaxed`) offers no sync.
 pub(super) fn model_core_fields_row(
     ui: &mut egui::Ui,
     m: &mut ModelRow,
@@ -30,8 +30,8 @@ pub(super) fn model_core_fields_row(
             if !m.id.trim().is_empty()
                 && (same_provider.contains(m.id.trim()) || global.contains(m.id.trim()))
             {
-                // 保存不会因为模型 id 重复而失败，只有 provider key 重复才拦。
-                // WorkBuddy 是唯一按 id 全局去重的后端：重复的 id 只有第一条生效。
+                // Saving doesn't fail on duplicate model ids — only duplicate provider keys block.
+                // WorkBuddy is the only backend deduping globally by id: of duplicates, only the first takes effect.
                 let hint = if flags.show_model_disabled {
                     "这个模型名在**全局**出现多次（含其他厂商）。\n\
                      WorkBuddy 的选择器按模型 id 全局去重，同名只会列出一行、\
@@ -56,8 +56,8 @@ pub(super) fn model_core_fields_row(
             field_label(ui, 120.0, "name:");
             ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(120.0));
         }
-        // v2 schema 无 reasoning 键：即使新增表单（relaxed）也不显示；
-        // 跨版本写到 v1 目标时由默认勾选值落 reasoning: true。
+        // The v2 schema has no reasoning key: hidden even in the add form (relaxed);
+        // crossing to a v1 target lands reasoning: true via the default-checked value.
         if on(flags.show_model_reasoning) && !flags.oc_v2 && (flags.show_oc || !flags.show_dsh) {
             ui.checkbox(&mut m.reasoning, "reasoning");
         }
@@ -70,7 +70,7 @@ pub(super) fn model_core_fields_row(
         if on(flags.show_model_context) {
             field_label(ui, 120.0, flags.context_label);
             numeric_text_edit(ui, &mut m.context, 53.0, "");
-            // 新增表单不提供同步（本模型尚未入表，无「全部模型」可刷）。
+            // The add form offers no sync (this model isn't in the table yet — no "all models" to brush).
             let sync_tip = if relaxed {
                 None
             } else {
@@ -109,7 +109,7 @@ pub(super) fn model_core_fields_row(
     });
 }
 
-/// 模型字段编辑行之二：模态（input / output）与档位（variants）下拉。
+/// Model field edit row two: modalities (input / output) and the tiers (variants) dropdown.
 pub(super) fn model_modalities_row(
     ui: &mut egui::Ui,
     m: &mut ModelRow,
@@ -141,9 +141,9 @@ pub(super) fn model_modalities_row(
     });
 }
 
-/// 「添加 Model」子表单（两份表单共用）：字段行 + 添加按钮。
+/// The "add model" sub-form (shared by both forms): field rows + the add button.
 ///
-/// 添加后模型进入 `p.models`，子表单清空并收起（`show_key` 是展开状态的键）。
+/// On add, the model enters `p.models` and the sub-form clears and collapses (`show_key` keys the expand state).
 pub(super) fn new_model_subform(
     ui: &mut egui::Ui,
     p: &mut ProviderRow,
@@ -151,9 +151,9 @@ pub(super) fn new_model_subform(
     variants: &mut VariantsCtx<'_>,
     show_key: &str,
 ) {
-    // `show_key` 逐表单唯一（编辑表单带 provider key），用作预设下拉的 id 盐。
-    // 新增表单不提供同步，故传入的 sync 出参恒为 None。
-    // 草稿 schema 对齐所在 provider：v2 文件下新条目不落 v1 形状。
+    // `show_key` is unique per form (the edit form carries the provider key), serving as the preset dropdown's id salt.
+    // The add form offers no sync, so the passed-in sync out-param is always None.
+    // The draft schema matches its provider: new entries in a v2 file never land in the v1 shape.
     p.new_model.schema = p.schema;
     model_core_fields_row(ui, &mut p.new_model, flags, true, None, show_key, &mut None);
     model_modalities_row(ui, &mut p.new_model, flags, variants, true);

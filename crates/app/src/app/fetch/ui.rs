@@ -1,8 +1,8 @@
 use super::*;
 
-/// 延迟配色：<2s 绿色、2~5s 黄色、≥5s 红色（超时同样显示红色错误）。
+/// Latency coloring: <2s green, 2–5s yellow, ≥5s red (timeouts show the red error too).
 ///
-/// 色值由 [`crate::theme::semantics`] 提供，全部主题共享一套语义色。
+/// Color values come from [`crate::theme::semantics`] — all themes share one semantic set.
 pub(crate) fn latency_color(ms: u64, colors: crate::theme::Semantics) -> egui::Color32 {
     if ms < LATENCY_GOOD_MS {
         colors.ok
@@ -13,15 +13,15 @@ pub(crate) fn latency_color(ms: u64, colors: crate::theme::Semantics) -> egui::C
     }
 }
 
-/// 延迟测试进行中的「乱码」动画字符集（半角片假名 + 数字）。
+/// The scrambling animation's character set while a latency test runs (half-width katakana + digits).
 pub(crate) const MATRIX_CHARS: &str = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789";
 
-/// 乱码动画每帧时长（毫秒）与每行字符数。
+/// The scramble animation's per-frame duration (ms) and characters per line.
 pub(crate) const MATRIX_FRAME_MS: u64 = 70;
 
 pub(crate) const MATRIX_LEN: usize = 8;
 
-/// 生成一帧乱码：同一帧号 + 同一 salt 结果稳定。
+/// Generate one scramble frame: the same frame number + salt gives a stable result.
 pub(crate) fn matrix_glyphs(frame: u64, salt: &str, len: usize) -> String {
     let mut state = 0xcbf2_9ce4_8422_2325u64 ^ frame.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     for byte in salt.as_bytes() {
@@ -39,7 +39,7 @@ pub(crate) fn matrix_glyphs(frame: u64, salt: &str, len: usize) -> String {
     out
 }
 
-/// 测试进行中的乱码标签：每帧换一组字符，并请求下一次重绘。
+/// The scrambling label while a test runs: a new character set each frame, requesting the next repaint.
 pub(crate) fn matrix_label(ui: &mut egui::Ui, salt: &str) {
     let frame = (ui.ctx().input(|i| i.time) * 1000.0 / MATRIX_FRAME_MS as f64) as u64;
     ui.label(
@@ -52,14 +52,14 @@ pub(crate) fn matrix_label(ui: &mut egui::Ui, salt: &str) {
         .request_repaint_after(std::time::Duration::from_millis(MATRIX_FRAME_MS));
 }
 
-/// 模型行延迟显示：测试中显示乱码动画，完成后按阈值着色。
+/// A model row's latency display: the scramble animation while testing, threshold-colored once done.
 pub(crate) fn model_latency_label(ui: &mut egui::Ui, state: Option<&LatencyState>, model_id: &str) {
     let Some(state) = state else {
         return;
     };
     match state.models.get(model_id) {
         Some(Ok(ms)) => {
-            // 固定宽度右对齐：数字位数变化时按钮不会左右跳动。
+            // Fixed-width, right-aligned: the button doesn't jitter left-right as digit counts change.
             let (rect, response) = ui.allocate_exact_size(
                 egui::vec2(72.0, ui.spacing().interact_size.y),
                 egui::Sense::hover(),
@@ -85,9 +85,9 @@ pub(crate) fn model_latency_label(ui: &mut egui::Ui, state: Option<&LatencyState
     }
 }
 
-/// 模型行上的单模型延迟测试按钮（位于拖动按钮右侧，结果标签就在它右侧）。
+/// The model row's single-model latency test button (right of the drag button, its result label to its right).
 ///
-/// 返回 `true` 表示用户点了测试；调用方负责在 UI 循环外真正发起探测。
+/// Returns `true` when the user clicked test; the caller actually issues the probe outside the UI loop.
 pub(crate) fn model_probe_button(
     ui: &mut egui::Ui,
     gate: &ProbeGate,
@@ -96,7 +96,7 @@ pub(crate) fn model_probe_button(
     net_guard: Option<&str>,
 ) -> bool {
     let state = gate.state(provider_key, now, net_guard);
-    // 状态一律写在按钮文案里（`测试中` / `测试(5s)`），不挂悬停提示。
+    // State always lives in the button's text (`testing` / `test(5s)`), never a hover tip.
     let label = match &state {
         ProbeGateState::Ready => "测试".to_string(),
         ProbeGateState::Busy => "测试中".to_string(),

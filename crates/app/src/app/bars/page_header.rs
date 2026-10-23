@@ -3,7 +3,7 @@ use crate::app::App;
 use eframe::egui;
 
 impl App {
-    /// 页头：本页保存按钮 + 写入路径。
+    /// The page header: this page's save button + write path.
     pub(in crate::app) fn ui_page_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             let fmt = self.current_page;
@@ -16,8 +16,8 @@ impl App {
                     (p.clone(), ok)
                 }
             };
-            // 一键保存：把同一份界面状态写到每个已安装后端的目标路径。
-            // 按钮带目标数量，点击前即可见本次会写几个文件。
+            // Save all: writes the same UI state to every installed backend's target path.
+            // The button carries the target count, so the number of files this write touches is visible before clicking.
             let installed: Vec<(String, String)> = self
                 .targets
                 .iter()
@@ -63,11 +63,11 @@ impl App {
             if let Some(icon) = self.icon_for(fmt) {
                 ui.add(egui::Image::from_texture(icon).fit_to_exact_size(egui::vec2(12.0, 12.0)));
             }
-            // 路径可能很长（吸顶区固定高度，不能换行）：截断显示，全文放悬停。
+            // Paths can be long (the sticky region has fixed height, no wrapping): truncate for display, full text on hover.
             ui.add(
                 egui::Label::new(egui::RichText::new(format!("写入: {path}")).weak()).truncate(),
             );
-            // 该格式不支持的区块提前提示。
+            // Blocks the format doesn't support get an early note.
             if !fmt.is_opencode_family() && !self.agents.is_empty() {
                 ui.label(
                     egui::RichText::new(format!(

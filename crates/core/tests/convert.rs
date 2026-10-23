@@ -5,7 +5,7 @@ use serde_json::json;
 
 #[test]
 fn cross_format_opencode_source_writes_compat_false() {
-    // 从 opencode 加载后保存到 pi/omp：未显式声明的 supportsDeveloperRole 写入 false。
+    // Loaded from opencode, saved to pi/omp: an undeclared supportsDeveloperRole writes false.
     let raw = json!({
         "options": {"baseURL": "https://x/v1", "apiKey": "sk-test"},
         "models": {}
@@ -18,7 +18,7 @@ fn cross_format_opencode_source_writes_compat_false() {
 
 #[test]
 fn requires_reasoning_content_maps_pi_and_omp_keys() {
-    // omp 键 → pi 页面：值被映射到 pi 的键
+    // omp keys → the pi page: values map onto pi's keys
     let omp_raw = json!({
         "baseUrl": "https://x/v1",
         "apiKey": "k",
@@ -28,7 +28,7 @@ fn requires_reasoning_content_maps_pi_and_omp_keys() {
     });
     let provider = convert::provider_from_pi("p", &omp_raw);
     assert!(!provider.requires_reasoning_content);
-    // 同格式未修改 → 保存时保留 raw。
+    // Same format unmodified → the save preserves raw.
     let out = convert::provider_to_pi(&provider);
     assert_eq!(
         out["compat"]["requiresReasoningContentForAllAssistantTurns"],
@@ -41,7 +41,7 @@ fn requires_reasoning_content_maps_pi_and_omp_keys() {
 
 #[test]
 fn requires_reasoning_content_defaults_false_from_opencode() {
-    // 加载 opencode（无该字段）→ pi 页面不勾选，保存时写入 false。
+    // Loaded from opencode (field absent) → the pi page is unchecked and saving writes false.
     let raw = json!({
         "options": {"baseURL": "https://x/v1", "apiKey": "sk-test"},
         "models": {}
@@ -65,14 +65,14 @@ fn api_to_npm_mapping() {
         convert::api_to_npm("google-generative-ai"),
         "@ai-sdk/google"
     );
-    // Chat Completions 在 opencode 侧对应兼容层包名。
+    // Chat Completions maps to the compatibility-layer package on the opencode side.
     assert_eq!(
         convert::api_to_npm("openai-completions"),
         "@ai-sdk/openai-compatible"
     );
-    // Responses 对应 @ai-sdk/openai。
+    // Responses maps to @ai-sdk/openai.
     assert_eq!(convert::api_to_npm("openai-responses"), "@ai-sdk/openai");
-    // 无对应 npm 包的 api：留空。
+    // An api with no npm counterpart: left empty.
     for api in [
         "openai-codex-responses",
         "azure-openai-responses",
@@ -95,7 +95,7 @@ fn npm_to_api_mapping() {
         "google-generative-ai"
     );
     assert_eq!(convert::npm_to_api("@ai-sdk/openai"), "openai-responses");
-    // 未写 npm（空值）/ 显式兼容层 / 未知包都归到 openai-completions。
+    // Unwritten npm (empty) / the explicit compatibility layer / unknown packages all land on openai-completions.
     for npm in ["", "@ai-sdk/openai-compatible", "custom-npm"] {
         assert_eq!(convert::npm_to_api(npm), "openai-completions", "{}", npm);
     }
@@ -164,9 +164,9 @@ fn provider_from_pi_basic() {
     assert_eq!(provider.key, "openai");
     assert_eq!(provider.base_url, "https://api.openai.com/v1");
     assert_eq!(provider.api_key, "sk-test");
-    // api=openai-completions 在 opencode 侧对应兼容层包名。
+    // api=openai-completions maps to the compatibility-layer package on the opencode side.
     assert_eq!(provider.npm, "@ai-sdk/openai-compatible");
-    // 回写 pi 按 npm 反查得同一个 api。
+    // Writing back to pi via the npm reverse lookup yields the same api.
     assert_eq!(
         convert::provider_to_pi(&provider)["api"],
         "openai-completions"
@@ -300,7 +300,7 @@ fn provider_to_pi_omits_compat_when_true() {
 
 #[test]
 fn openai_completions_defaults_compat_false() {
-    // chat/completions 未显式声明 compat 时，supportsDeveloperRole 默认不打勾。
+    // chat/completions without an explicit compat: supportsDeveloperRole defaults unchecked.
     let v = json!({
         "baseUrl": "https://api.openai.com/v1",
         "apiKey": "sk-test",
@@ -336,7 +336,7 @@ fn anthropic_url_v1_stripped_on_load_and_save() {
         "models": []
     });
     let provider = convert::provider_from_pi("anthropic", &v);
-    // 读入即归一化：界面显示与落盘都不带 /v1。
+    // Normalized at load: neither display nor disk carries /v1.
     assert_eq!(provider.base_url, "https://api.anthropic.com");
     let output = convert::provider_to_pi(&provider);
     assert_eq!(output["baseUrl"], "https://api.anthropic.com");
@@ -354,7 +354,7 @@ fn responses_api_maps_to_openai_package() {
     let provider = convert::provider_from_pi("k", &v);
     assert_eq!(provider.pi_api, "openai-responses");
     assert_eq!(provider.npm, "@ai-sdk/openai");
-    // 回写 pi 经 npm 反查仍得 openai-responses。
+    // Writing back to pi through the npm reverse lookup still yields openai-responses.
     let output = convert::provider_to_pi(&provider);
     assert_eq!(output["api"], "openai-responses");
     assert_eq!(output["baseUrl"], "https://example.com/v1");
@@ -362,7 +362,7 @@ fn responses_api_maps_to_openai_package() {
 
 #[test]
 fn empty_api_option_clears_raw_fallback() {
-    // 无对应 npm 包的协议：判定为「显式指定」，下拉不显示「(空)」。
+    // A protocol with no npm counterpart counts as "explicitly set"; the dropdown shows no "(none)".
     let v = json!({
         "baseUrl": "https://us-central1-aiplatform.googleapis.com/v1",
         "apiKey": "sk-test",
@@ -374,7 +374,7 @@ fn empty_api_option_clears_raw_fallback() {
     assert!(provider.has_explicit_api());
     assert_eq!(provider.effective_api(), "google-vertex");
 
-    // 选「(空)」：npm / pi_api / raw.api 都清掉。
+    // Selecting "(none)": npm / pi_api / raw.api all clear.
     provider.clear_api();
     assert!(!provider.has_explicit_api());
     assert_eq!(provider.effective_api(), "openai-completions");
@@ -395,14 +395,14 @@ fn pi_api_survives_oc_roundtrip_without_npm() {
     let provider = convert::provider_from_pi("k", &v);
     assert_eq!(provider.npm, "@ai-sdk/anthropic");
 
-    // OC 保存：npm 为空的 provider 丢失 npm 字段（oc 格式用 npm 表达 api）。
+    // OC save: a provider with empty npm loses the npm field (the oc format expresses api via npm).
     let mut oc = serde_json::Map::new();
     oc.insert("k".into(), provider_from_row_npm(&provider, ""));
 
-    // 从 oc 读回，npm 为空
+    // Reading back from oc, npm is empty
     let back = convert::provider_from_pi("k", &oc["k"]);
     let _ = back;
-    // 断言在 row 层：row 保留 pi_api。
+    // The assertion lives at the row level: the row keeps pi_api.
     assert_eq!(provider.pi_api, "anthropic-messages");
     let out = convert::provider_to_pi(&provider);
     assert_eq!(out["api"], "anthropic-messages");
@@ -412,7 +412,7 @@ fn provider_from_row_npm(
     p: &model_harbor_core::model::ProviderRow,
     npm: &str,
 ) -> serde_json::Value {
-    // 模拟 ProviderRow::to_value 的 oc 输出（npm 为空时字段被移除）。
+    // Simulate ProviderRow::to_value's oc output (the field is removed when npm is empty).
     let mut m = serde_json::Map::new();
     let mut options = serde_json::Map::new();
     options.insert("baseURL".into(), p.base_url.clone().into());
@@ -448,7 +448,7 @@ fn thinking_level_map_asymmetric_roundtrip() {
 
 #[test]
 fn pi_roundtrip_preserves_provider_and_model_extras() {
-    // pi 同格式往返：provider / model 级扩展字段保留。
+    // pi same-format round trip: provider / model-level extension fields preserved.
     let v = json!({
         "baseUrl": "https://gw/v1",
         "api": "openai-completions",
@@ -480,7 +480,7 @@ fn pi_roundtrip_preserves_provider_and_model_extras() {
 
 #[test]
 fn pi_save_clearing_fields_removes_them() {
-    // raw 基底下清空字段删除对应键。
+    // On a raw base, clearing a field deletes the corresponding key.
     let v = json!({
         "baseUrl": "https://x/v1",
         "api": "openai-completions",
@@ -504,7 +504,7 @@ fn pi_save_clearing_fields_removes_them() {
 
 #[test]
 fn pi_save_from_omp_raw_translates_thinking_and_keeps_extras() {
-    // omp raw → pi 输出：thinking 块翻译为 thinkingLevelMap 后移除，其余扩展保留。
+    // omp raw → pi output: the thinking block translates to thinkingLevelMap and is removed; other extensions kept.
     let mut m = model_harbor_core::model::ModelRow::new();
     m.id = "m".into();
     m.reasoning = true;
@@ -526,7 +526,7 @@ fn pi_save_from_omp_raw_translates_thinking_and_keeps_extras() {
 
 #[test]
 fn opencode_rows_from_pi_raw_build_fresh() {
-    // pi raw 不得泄漏 api/compat/id/contextWindow/input 等方言键到 opencode 输出。
+    // pi raw must not leak api/compat/id/contextWindow/input or other dialect keys into the opencode output.
     let v = json!({
         "baseUrl": "https://x/v1",
         "api": "openai-completions",
@@ -536,7 +536,7 @@ fn opencode_rows_from_pi_raw_build_fresh() {
         ]
     });
     let p = convert::provider_from_pi("p", &v);
-    let out = p.to_value(); // opencode 方言
+    let out = p.to_value(); // the opencode dialect
     assert!(out.get("api").is_none(), "pi 的 api 键不得泄漏");
     assert!(out.get("compat").is_none(), "pi 的 compat 键不得泄漏");
     let m = &out["models"]["m"];
@@ -561,7 +561,7 @@ fn opencode_rows_from_pi_raw_build_fresh() {
 
 #[test]
 fn anthropic_proxy_url_v1_also_stripped() {
-    // 第三方代理与官方端点同一规则：pi / omp / dsh 读入时去掉末尾 /v1。
+    // Third-party proxies and official endpoints share one rule: pi / omp / dsh strip the trailing /v1 at load.
     let v = json!({
         "baseUrl": "https://my-gateway.example/v1",
         "apiKey": "sk-test",
@@ -576,7 +576,7 @@ fn anthropic_proxy_url_v1_also_stripped() {
 
 #[test]
 fn pi_model_with_thinking_only_counts_as_reasoning() {
-    // 只写 thinkingLevelMap / thinking 块（DSH 为 reasoningEfforts）时，reasoning 也判为开启。
+    // Writing only thinkingLevelMap / the thinking block (reasoningEfforts on DSH) still judges reasoning on.
     assert!(
         convert::model_from_pi(&json!({"id": "m", "thinkingLevelMap": {"high": "high"}})).reasoning
     );
@@ -589,7 +589,7 @@ fn pi_model_with_thinking_only_counts_as_reasoning() {
 
 #[test]
 fn provider_to_pi_places_compat_between_api_and_models() {
-    // compat 固定排在 api 之后、models 之前。
+    // compat always sits between api and models.
     let mut provider = ProviderRow::new();
     provider.key = "demo".into();
     provider.base_url = "https://example.com/v1".into();
@@ -608,7 +608,7 @@ fn provider_to_pi_places_compat_between_api_and_models() {
         "字段顺序应为 baseUrl → apiKey → api → compat → models，实际 {keys:?}"
     );
 
-    // pi 原生 provider（raw 里 compat 在末尾）保存后也归位。
+    // A native pi provider (compat last in raw) also lands in place after saving.
     let mut native = ProviderRow::new();
     native.key = "demo".into();
     native.base_url = "https://example.com/v1".into();
@@ -638,7 +638,7 @@ fn provider_to_pi_places_compat_between_api_and_models() {
 
 #[test]
 fn pi_variants_written_in_canonical_order() {
-    // pi 的 thinkingLevelMap 按规范档位顺序写出。
+    // pi's thinkingLevelMap is written in canonical tier order.
     let mut model = model_harbor_core::model::ModelRow::new();
     model.id = "m".into();
     model.variants = "max, xhigh, medium".into();
@@ -654,7 +654,7 @@ fn pi_variants_written_in_canonical_order() {
 
 #[test]
 fn without_v1_only_strips_the_messages_api() {
-    // messages 协议：去掉末尾 /v1
+    // The messages protocol: strip the trailing /v1
     assert_eq!(
         convert::without_v1_for_messages("anthropic-messages", "https://gw.test/v1"),
         "https://gw.test"
@@ -663,17 +663,17 @@ fn without_v1_only_strips_the_messages_api() {
         convert::without_v1_for_messages("anthropic-messages", "https://gw.test/v1/"),
         "https://gw.test"
     );
-    // 更深路径只去掉末尾版本段，前缀保留
+    // Deeper paths strip only the trailing version segment, keeping the prefix
     assert_eq!(
         convert::without_v1_for_messages("anthropic-messages", "https://gw.test/api/v1"),
         "https://gw.test/api"
     );
-    // v10 不是 /v1，不能误伤
+    // v10 is not /v1 — must not be hit by mistake
     assert_eq!(
         convert::without_v1_for_messages("anthropic-messages", "https://gw.test/v10"),
         "https://gw.test/v10"
     );
-    // 其他协议保留 /v1。
+    // Other protocols keep /v1.
     assert_eq!(
         convert::without_v1_for_messages("openai-completions", "https://gw.test/v1"),
         "https://gw.test/v1"
@@ -682,7 +682,7 @@ fn without_v1_only_strips_the_messages_api() {
 
 #[test]
 fn pi_and_omp_load_strip_v1_for_messages_api_only() {
-    // omp 的 parse 也走 load_pi_providers，覆盖 pi 与 omp。
+    // omp's parse also goes through load_pi_providers, covering pi and omp.
     let root = json!({
         "providers": {
             "claude_gw": {
@@ -708,14 +708,14 @@ fn pi_and_omp_load_strip_v1_for_messages_api_only() {
         .iter()
         .find(|p| p.key == "openai_gw")
         .expect("openai_gw 应存在");
-    // messages base 不带 /v1，其他协议不动。
+    // A messages base without /v1; other protocols untouched.
     assert_eq!(claude.base_url, "https://gw.test");
     assert_eq!(openai.base_url, "https://gw.test/v1");
 }
 
 #[test]
 fn saving_messages_provider_drops_v1_for_pi_and_omp_but_not_opencode() {
-    // 从 opencode 读取：@ai-sdk/anthropic 的 baseURL 含 /v1。
+    // Read from opencode: @ai-sdk/anthropic's baseURL carries /v1.
     let oc = ProviderRow::from(
         "claude_gw",
         &json!({
@@ -725,12 +725,12 @@ fn saving_messages_provider_drops_v1_for_pi_and_omp_but_not_opencode() {
         }),
     );
     assert_eq!(oc.base_url, "https://gw.test/v1");
-    // 写回 opencode：保留 /v1。
+    // Write back to opencode: keep /v1.
     assert_eq!(oc.to_value()["options"]["baseURL"], "https://gw.test/v1");
-    // 写进 pi / omp：去掉 /v1。
+    // Write into pi / omp: strip /v1.
     assert_eq!(convert::provider_to_pi(&oc)["baseUrl"], "https://gw.test");
     assert_eq!(oh_my_pi::provider_to_omp(&oc)["baseUrl"], "https://gw.test");
-    // 不含 /v1 的自定义路径原样保留。
+    // Custom paths without /v1 are preserved as-is.
     let mut custom = oc.clone();
     custom.base_url = "https://gw.test/anthropic".into();
     assert_eq!(
@@ -741,7 +741,7 @@ fn saving_messages_provider_drops_v1_for_pi_and_omp_but_not_opencode() {
 
 #[test]
 fn opencode_load_and_save_ensure_v1_for_messages_api() {
-    // opencode 的 @ai-sdk/anthropic：读入补齐 /v1，写出保证带 /v1。
+    // opencode's @ai-sdk/anthropic: /v1 completed at load, guaranteed present at write.
     let bare = ProviderRow::from(
         "claude_gw",
         &json!({
@@ -752,7 +752,7 @@ fn opencode_load_and_save_ensure_v1_for_messages_api() {
     );
     assert_eq!(bare.base_url, "https://gw.test/v1");
     assert_eq!(bare.to_value()["options"]["baseURL"], "https://gw.test/v1");
-    // 已带 /v1（含尾斜杠）不重复追加，去掉尾斜杠。
+    // /v1 already present (trailing slash included) isn't appended again; the slash is stripped.
     let with_v1 = ProviderRow::from(
         "claude_gw",
         &json!({
@@ -766,7 +766,7 @@ fn opencode_load_and_save_ensure_v1_for_messages_api() {
         with_v1.to_value()["options"]["baseURL"],
         "https://gw.test/v1"
     );
-    // 其他协议不动：openai 兼容层 baseURL 原样保留。
+    // Other protocols untouched: the openai compatibility layer's baseURL is preserved as-is.
     let compat = ProviderRow::from(
         "openai_gw",
         &json!({
@@ -781,7 +781,7 @@ fn opencode_load_and_save_ensure_v1_for_messages_api() {
 
 #[test]
 fn cross_format_messages_provider_gains_v1_when_written_to_opencode() {
-    // pi 侧读入已去掉 /v1；跨格式写进 opencode 时补回 /v1。
+    // The pi side strips /v1 at load; cross-format writes into opencode restore it.
     let v = json!({
         "baseUrl": "https://gw.test/v1",
         "apiKey": "sk-test",
@@ -793,7 +793,7 @@ fn cross_format_messages_provider_gains_v1_when_written_to_opencode() {
     let oc = pi_row.to_value();
     assert_eq!(oc["npm"], "@ai-sdk/anthropic");
     assert_eq!(oc["options"]["baseURL"], "https://gw.test/v1");
-    // 其他协议跨写 opencode 不补 /v1。
+    // Other protocols don't get /v1 when cross-writing opencode.
     let v2 = json!({
         "baseUrl": "https://gw.test",
         "apiKey": "sk-test",

@@ -2,9 +2,10 @@ use super::*;
 use crate::model::ProviderRow;
 use serde_json::Value;
 
-/// 三选一的凭据冲突描述；`None` = 无冲突。
+/// The one-of-three credential conflict's description; `None` = no conflict.
 ///
-/// 判据与源码 `declaredProviderCredential` 逐条对齐；返回文本直接进状态栏 / 保存错误。
+/// Criteria align item-by-item with the source's `declaredProviderCredential`; the returned text goes
+/// straight into the status bar / save errors.
 pub(crate) fn credential_conflict(name: &str, entry: &Value) -> Option<String> {
     let inline = non_empty_str(entry.get("api_key")).is_some();
     let env = non_empty_str(entry.get("api_key_env")).is_some();
@@ -23,19 +24,19 @@ pub(crate) fn credential_conflict(name: &str, entry: &Value) -> Option<String> {
     })
 }
 
-/// 全部 provider 里的凭据冲突（保存前挡下来）。
-/// 写盘前的结构冲突体检：保留前缀与别名撞名。
+/// Credential conflicts across every provider (blocked before saving).
+/// The pre-write structural health check: reserved-prefix vs alias collisions.
 ///
-/// `managed:*` 在 [`build_load`] 里被跳过；撞名的别名在模型表里后写覆盖先写。
+/// `managed:*` is skipped in [`build_load`]; colliding aliases in the model table mean later writes overwrite earlier ones.
 pub(crate) fn first_structural_conflict(providers: &[ProviderRow]) -> Option<String> {
-    // `managed:` 是 `/login` 的保留前缀，这类 provider 不进界面。
+    // `managed:` is /login's reserved prefix; such providers never enter the UI.
     if let Some(p) = providers.iter().find(|p| is_managed_provider(p.key.trim())) {
         return Some(format!(
             "provider \"{}\" 占用了保留前缀 managed:（那是 Kimi 登录态的命名空间），请改名",
             p.key.trim()
         ));
     }
-    // 别名就是 TOML 表键，撞名会静默覆盖。这里拦跨 provider 的组合撞名。
+    // The alias IS the TOML table key — collisions silently overwrite. Cross-provider combination collisions are blocked here.
     let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     for p in providers.iter().filter(|p| !p.key.trim().is_empty()) {
         for m in &p.models {

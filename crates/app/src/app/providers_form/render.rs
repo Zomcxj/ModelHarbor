@@ -20,8 +20,8 @@ impl super::App {
         let (variants_label, variant_names) = self.dialect_variants();
         let flags = ProviderFormFlags::new(self);
         let show_model_disabled = flags.show_model_disabled;
-        // 全局重复 id 集合：跨所有 provider 按裸 id 去重。
-        // 必须在取 `p = &mut self.providers[idx]` 之前算好。
+        // The global duplicate-id set: deduped by bare id across all providers.
+        // Computed before taking `p = &mut self.providers[idx]`.
         let global_dup_ids: HashSet<String> = if show_model_disabled {
             let mut seen: HashSet<String> = HashSet::new();
             let mut dup: HashSet<String> = HashSet::new();
@@ -51,7 +51,7 @@ impl super::App {
 
         ui.add_space(crate::theme::SPACE_2);
         ui.add_space(crate::theme::SPACE_2);
-        // 本帧用户点下的探测请求（provider key, model id），UI 循环外统一发起。
+        // Discovery requests the user clicked this frame (provider key, model id) — issued centrally outside the UI loop.
         let mut probe_request: Option<(String, String)> = None;
         let fetch_secret = credentials::effective_secret(p);
         let mut fetch_ctx = FetchSectionCtx {
@@ -73,8 +73,8 @@ impl super::App {
         let mut rm: Option<usize> = None;
         let mut model_hover_here: Option<String> = None;
         let mut model_drag_stopped = false;
-        // 本帧被勾上的启用开关，用 `(provider 下标, 模型下标)` 记录。
-        // 互斥在全部卡片渲染完后统一处理（见 `ui_providers_section`）。
+        // Enable switches checked this frame, recorded by `(provider index, model index)`.
+        // Exclusivity resolves centrally after all cards render (see `ui_providers_section`).
         let mut enable_request: Option<(usize, usize)> = None;
         for j in 0..p.models.len() {
             let model_key = format!("{}\u{1f}{}", p.key, p.models[j].id);
@@ -98,7 +98,7 @@ impl super::App {
                 model_highlight,
                 egui::Id::new(("model_card", model_key.clone())),
                 |ui| {
-                    // 停用的模型整行压淡。
+                    // Disabled models dim their whole row.
                     if show_model_disabled && p.models[j].disabled {
                         ui.set_opacity(0.45);
                     }
@@ -111,7 +111,7 @@ impl super::App {
                         if handle.drag_stopped() {
                             model_drag_stopped = true;
                         }
-                        // 单模型延迟测试：按钮在拖动按钮右侧，结果显示在按钮右侧。
+                        // Single-model latency test: the button sits right of the drag button, its result right of the button.
                         let model_id = p.models[j].id.trim().to_string();
                         let gate =
                             net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
@@ -126,7 +126,7 @@ impl super::App {
                         }
                         let latency = self.latency.get(&p.key);
                         model_latency_label(ui, latency, &model_id);
-                        // 右对齐区放在行尾；先加的靠最右（「删」在右、「启用」紧贴其左）。
+                        // The right-aligned zone sits at the line's end; earlier additions land further right ("delete" rightmost, "enable" hugging its left).
                         let enabled_now = !p.models[j].disabled;
                         let mut enable_clicked: Option<bool> = None;
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -134,9 +134,9 @@ impl super::App {
                                 rm = Some(j);
                             }
                             if show_model_disabled {
-                                // 先加开关、后加文字，右对齐布局下读作「启用 [开关] 删」。
-                                // id 用行的稳定键（`model_key` = provider 键 + 模型 id），
-                                // 不用 egui 自动 id。
+                                // Add the switch first, the text after — under right-to-left layout it reads "enable [switch] delete".
+                                // The id uses the row's stable key (`model_key` = provider key + model id),
+                                // never egui's auto ids.
                                 let mut enabled = enabled_now;
                                 let toggle = crate::ui::toggle_switch(
                                     ui,
@@ -167,7 +167,7 @@ impl super::App {
                             }
                         }
                     });
-                    // 用 `(provider key, 模型下标)` 当下拉 id 盐：模型 id 允许为空或重复。
+                    // `(provider key, model index)` as the dropdown's id salt: model ids may be empty or duplicated.
                     let mut model_sync: Option<SyncField> = None;
                     model_core_fields_row(
                         ui,
@@ -178,7 +178,7 @@ impl super::App {
                         &format!("{}#{}", p.key, j),
                         &mut model_sync,
                     );
-                    // 同步信号连同源值冒泡到区块层统一应用（避开借用冲突）。
+                    // The sync signal bubbles to the block level with its source value for centralized application (avoiding borrow conflicts).
                     if let Some(field) = model_sync {
                         let value = match field {
                             SyncField::Context => p.models[j].context.clone(),
@@ -223,8 +223,8 @@ impl super::App {
                 &api,
             );
         }
-        // 只登记本 provider 内被拖到的模型，跨卡片聚合由调用方统一写入
-        // `self.model_drag_target`。
+        // Register only models dragged within this provider; cross-card aggregation writes `self.model_drag_target`
+        // centrally at the caller.
         merge_drag_target(model_hover_target, model_hover_here);
         if let Some(picked) = enable_request {
             model_enable_target.get_or_insert(picked);
@@ -249,7 +249,7 @@ impl super::App {
         }
         if let Some(j) = rm {
             p.models.remove(j);
-            // 删除后关闭该 provider 的档位弹窗。
+            // Deleting closes that provider's tiers popover.
             let prefix = format!("variant_open_{}_", p.key);
             self.variant_open.retain(|k| !k.starts_with(&prefix));
         }
@@ -281,7 +281,7 @@ impl super::App {
             };
             new_model_subform(ui, p, &flags, &mut variants, &show_new_model_key);
         }
-        // key 重命名后同步展开状态与弹窗键
+        // Sync the expanded state and popover keys after a key rename
         let new_key = self.providers[idx].key.clone();
         if new_key != prev_key {
             self.sync_provider_rename(&prev_key, &new_key);

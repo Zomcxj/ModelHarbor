@@ -40,7 +40,7 @@ capabilities = [ "tool_use" ]
 enabled = true
 "#;
 
-/// 双表 join：模型按 `provider` 挂到对应 provider 下。
+/// The two-table join: models hang under their provider via `provider`.
 #[test]
 fn models_join_to_their_provider() {
     let root = root_of(SAMPLE);
@@ -48,11 +48,11 @@ fn models_join_to_their_provider() {
     let sensenova = joined.iter().find(|j| j.name == "sensenova").unwrap();
     assert_eq!(sensenova.models.len(), 1);
     assert_eq!(sensenova.models[0].0, "sensenova/deepseek-v4-flash");
-    // 两条模型都挂到了 provider 上（没有孤儿）
+    // Both models hang under the provider (no orphans)
     assert_eq!(joined.iter().map(|j| j.models.len()).sum::<usize>(), 2);
 }
 
-/// 孤儿模型（provider 不存在）不 panic、不被丢弃。
+/// Orphan models (provider absent) neither panic nor get dropped.
 #[test]
 fn orphan_models_are_kept() {
     let root = root_of(
@@ -69,12 +69,12 @@ max_context_size = 1
     let joined = join(&root);
     assert_eq!(joined.len(), 1);
     assert_eq!(joined[0].models.len(), 0, "孤儿模型不挂到任何 provider 上");
-    // 保存后仍在
+    // Still there after saving
     let out = KimiCodeBackend.serialize_root(&[], &[], &root, None);
     assert_eq!(out["models"]["gone/x"]["model"], "x");
 }
 
-/// `managed:*` 的 provider 与模型都不进界面。
+/// `managed:*` providers and models never enter the UI.
 #[test]
 fn managed_providers_are_not_listed() {
     let root = root_of(SAMPLE);
@@ -84,7 +84,7 @@ fn managed_providers_are_not_listed() {
     assert_eq!(load.providers[0].key, "sensenova");
 }
 
-/// `managed:*` 的 provider 与模型保存后原样还在（含 oauth 子表）。
+/// `managed:*` providers and models survive a save verbatim (oauth subtable included).
 #[test]
 fn managed_entries_survive_a_save() {
     let root = root_of(SAMPLE);
@@ -100,7 +100,7 @@ fn managed_entries_survive_a_save() {
     );
 }
 
-/// 界面没有 provider 时，基座里的 provider 不被删。
+/// With no providers in the UI, the base's providers aren't deleted.
 #[test]
 fn providers_are_not_dropped_when_ui_is_empty() {
     let root = root_of(SAMPLE);
@@ -109,7 +109,7 @@ fn providers_are_not_dropped_when_ui_is_empty() {
     assert!(out["models"].get("kimi-code/k3").is_some());
 }
 
-/// alias ≠ model 时往返保持 alias 作表键、model 作 wire id。
+/// With alias ≠ model, the round trip keeps the alias as table key and the model as wire id.
 #[test]
 fn alias_is_preserved_when_it_differs_from_model() {
     let root = root_of(
@@ -136,7 +136,7 @@ max_context_size = 1000
     assert_eq!(out["models"]["my-alias"]["model"], "real-wire-id");
 }
 
-/// 含 `.` / `:` 的键序列化后仍是合法 TOML 且键名不变。
+/// Keys containing `.` / `:` serialize into valid TOML with unchanged key names.
 #[test]
 fn dotted_and_colon_keys_round_trip() {
     let root = root_of(SAMPLE);
@@ -149,7 +149,7 @@ fn dotted_and_colon_keys_round_trip() {
     );
 }
 
-/// capabilities 只增不减：界面没勾的已有标签保存后仍在。
+/// Capabilities grow only: labels present but unchecked in the UI survive a save.
 #[test]
 fn capabilities_are_only_added() {
     let entry: Value = toml::from_str(
@@ -157,7 +157,7 @@ fn capabilities_are_only_added() {
         )
         .unwrap();
     let mut m = model_from_entry("a", &entry);
-    m.tool_call = true; // 界面勾上工具调用
+    m.tool_call = true; // The UI checks tool use on
     m.reasoning = true;
     let out = entry_from_model(&m, "p", Some(&entry));
     let caps: Vec<&str> = out["capabilities"]
@@ -174,7 +174,7 @@ fn capabilities_are_only_added() {
     assert!(caps.contains(&"thinking"));
 }
 
-/// 取消「支持思考」要能真的关掉。
+/// Unchecking "supports reasoning" must really turn it off.
 #[test]
 fn unchecking_reasoning_removes_thinking_caps() {
     let entry: Value = toml::from_str(
@@ -195,7 +195,7 @@ fn unchecking_reasoning_removes_thinking_caps() {
     assert!(caps.contains(&"tool_use"), "只动思考相关标签");
 }
 
-/// 写出的模型条目永远不带 `disabled`。
+/// Written model entries never carry `disabled`.
 #[test]
 fn written_entries_carry_no_disabled_key() {
     let root = root_of(SAMPLE);
@@ -207,7 +207,7 @@ fn written_entries_carry_no_disabled_key() {
     }
 }
 
-/// XOR 体检：同时填 api_key 与 api_key_env 判成冲突。
+/// XOR check: api_key and api_key_env together count as a conflict.
 #[test]
 fn credential_conflict_is_detected() {
     let mut p = ProviderRow::new();
@@ -219,7 +219,7 @@ fn credential_conflict_is_detected() {
     assert!(err.contains("mutually exclusive"), "{err}");
 }
 
-/// `api_key = ""` 与 `oauth` 并存不是冲突。
+/// `api_key = ""` alongside oauth is not a conflict.
 #[test]
 fn empty_api_key_does_not_conflict_with_oauth() {
     let root = root_of(SAMPLE);
@@ -227,7 +227,7 @@ fn empty_api_key_does_not_conflict_with_oauth() {
     assert_eq!(credential_conflict("managed:kimi-code", managed), None);
 }
 
-/// 非空 api_key 与 oauth 并存才是冲突。
+/// A non-empty api_key alongside oauth IS a conflict.
 #[test]
 fn non_empty_api_key_conflicts_with_oauth() {
     let entry: Value = toml::from_str(
@@ -238,7 +238,7 @@ fn non_empty_api_key_conflicts_with_oauth() {
     assert!(msg.contains("api_key") && msg.contains("oauth"), "{msg}");
 }
 
-/// 界面填了密钥就清掉 env 变量名（XOR 的落地点）。
+/// Filling the key clears the env variable name (where XOR lands).
 #[test]
 fn writing_a_key_clears_the_env_name() {
     let old: Value = toml::from_str("type = \"openai\"\napi_key_env = \"OLD_ENV\"\n").unwrap();
@@ -252,7 +252,7 @@ fn writing_a_key_clears_the_env_name() {
     assert!(out.get("api_key_env").is_none(), "必须清掉 env 名");
 }
 
-/// 界面填了 env 名就清掉密钥。
+/// Filling the env name clears the key.
 #[test]
 fn writing_an_env_name_clears_the_key() {
     let old: Value = toml::from_str("type = \"openai\"\napi_key = \"sk-old\"\n").unwrap();
@@ -265,7 +265,7 @@ fn writing_an_env_name_clears_the_key() {
     assert!(out.get("api_key").is_none(), "必须清掉密钥");
 }
 
-/// `max_context_size` 必填且 ≥1：填不出正数就不写这个键。
+/// `max_context_size` is required and ≥1: an unparseable positive omits the key.
 #[test]
 fn invalid_context_size_is_omitted_not_zeroed() {
     let mut obj = Map::new();
@@ -279,7 +279,7 @@ fn invalid_context_size_is_omitted_not_zeroed() {
     assert_eq!(obj["max_context_size"], 1024);
 }
 
-/// `default_effort` 不在 `support_efforts` 里时删掉。
+/// `default_effort` outside `support_efforts` gets deleted.
 #[test]
 fn default_effort_must_stay_within_support_efforts() {
     let entry: Value = toml::from_str(
@@ -287,20 +287,20 @@ fn default_effort_must_stay_within_support_efforts() {
         )
         .unwrap();
     let mut m = model_from_entry("a", &entry);
-    m.variants = "low, max".into(); // 用户改了档位，high 不在了
+    m.variants = "low, max".into(); // The user changed the tiers; high is gone
     let out = entry_from_model(&m, "p", Some(&entry));
     assert!(
         out.get("default_effort").is_none(),
         "不在清单里的 default_effort 必须删掉"
     );
-    // 仍在清单里时保留用户选的默认档
+    // Still in the list → the user's chosen default is kept
     let mut m2 = model_from_entry("a", &entry);
     m2.variants = "low, high, max".into();
     let out2 = entry_from_model(&m2, "p", Some(&entry));
     assert_eq!(out2["default_effort"], "high");
 }
 
-/// 顶层 extras（`[thinking]`、`default_*`）往返不丢。
+/// Top-level extras (`[thinking]`, `default_*`) survive the round trip.
 #[test]
 fn top_level_extras_survive() {
     let root = root_of(SAMPLE);
@@ -310,7 +310,7 @@ fn top_level_extras_survive() {
     assert_eq!(out["thinking"]["enabled"], true);
 }
 
-/// `null` 不会让 TOML 序列化失败。
+/// `null` doesn't break TOML serialization.
 #[test]
 fn nulls_are_stripped_before_serializing() {
     let v: Value = serde_json::json!({"a": null, "b": {"c": null, "d": 1}, "e": [1, null]});
@@ -320,7 +320,7 @@ fn nulls_are_stripped_before_serializing() {
     assert_eq!(back["b"]["d"], 1);
 }
 
-/// 判别：Codex 的 `model_providers` 不归本后端。
+/// Detection: Codex's `model_providers` doesn't belong to this backend.
 #[test]
 fn detect_rejects_codex_shape() {
     let codex = r#"
@@ -334,31 +334,31 @@ base_url = "https://api.openai.com/v1"
     assert!(!KimiCodeBackend.detect(codex, ""));
 }
 
-/// 判别：路径命中与内容特征都认。
+/// Detection: both the path hit and the content fingerprint count.
 #[test]
 fn detect_accepts_kimi_shapes() {
     assert!(KimiCodeBackend.detect("", r"C:\Users\x\.kimi-code\config.toml"));
     assert!(KimiCodeBackend.detect(SAMPLE, ""));
     assert!(KimiCodeBackend.detect("default_permission_mode = \"auto\"\n", ""));
-    // 空内容 / 无关 TOML 不认
+    // Empty content / unrelated TOML isn't recognized
     assert!(!KimiCodeBackend.detect("", ""));
     assert!(!KimiCodeBackend.detect("[package]\nname = \"x\"\n", ""));
 }
 
-/// 解析失败要有可读报错（非法 TOML）。
+/// Parse failures give readable errors (invalid TOML).
 #[test]
 fn invalid_toml_reports_an_error() {
     assert!(KimiCodeBackend.parse("this is not = = toml").is_err());
 }
 
-/// 空文件解析成空 load，不 panic。
+/// An empty file parses into an empty load, no panic.
 #[test]
 fn empty_file_parses_to_nothing() {
     let load = KimiCodeBackend.parse("").unwrap();
     assert!(load.providers.is_empty());
 }
 
-/// 别名缺省值：`<provider>/<model>`，managed 用去掉前缀的平台名。
+/// The alias default: `<provider>/<model>`; managed uses the platform name with the prefix stripped.
 #[test]
 fn alias_key_follows_kimis_own_convention() {
     assert_eq!(
@@ -372,8 +372,8 @@ fn alias_key_follows_kimis_own_convention() {
     );
 }
 
-/// 新增（或跨格式复制来的）模型没有 `kimi_alias`：写出时生成 `<provider>/<model>`，
-/// `display_name` 回落到 wire id。
+/// A new (or cross-format copied) model without `kimi_alias`: writes generate `<provider>/<model>`,
+/// with `display_name` falling back to the wire id.
 #[test]
 fn a_new_model_gets_a_vendor_prefixed_alias_and_display_name() {
     let root = root_of("[providers.p]\ntype = \"openai\"\n");
@@ -381,7 +381,7 @@ fn a_new_model_gets_a_vendor_prefixed_alias_and_display_name() {
     p.key = "sensenova".into();
     p.pi_api = "openai-completions".into();
     let mut m = ModelRow::new();
-    m.id = "deepseek-v4-flash".into(); // name 留空（界面中间态）
+    m.id = "deepseek-v4-flash".into(); // name left empty (a UI intermediate state)
     p.models.push(m);
     let out = KimiCodeBackend.serialize_root(&[], &[p], &root, None);
     let entry = &out["models"]["sensenova/deepseek-v4-flash"];
@@ -396,20 +396,20 @@ fn a_new_model_gets_a_vendor_prefixed_alias_and_display_name() {
     );
 }
 
-/// 没有 wire id 的模型行（界面中间态）不写进文件。
+/// Model rows without a wire id (a UI intermediate state) stay out of the file.
 #[test]
 fn models_without_a_wire_id_are_skipped() {
     let root = root_of(SAMPLE);
     let joined = join(&root);
     let mut load = build_load(joined);
-    load.providers[0].models.push(ModelRow::new()); // id 为空
+    load.providers[0].models.push(ModelRow::new()); // id is empty
     let out = KimiCodeBackend.serialize_root(&[], &load.providers, &root, None);
     for (_, entry) in out["models"].as_object().unwrap() {
         assert!(!entry["model"].as_str().unwrap_or("").is_empty());
     }
 }
 
-/// 新条目的键序：`provider` 在 `model` 之前。
+/// New entries' key order: `provider` before `model`.
 #[test]
 fn a_new_entry_puts_provider_before_model() {
     let entry: Value = toml::from_str(
@@ -425,7 +425,7 @@ max_context_size = 1
     assert_eq!(keys[1], "model");
 }
 
-/// 旧条目的键序不受影响。
+/// Old entries' key order is unaffected.
 #[test]
 fn an_existing_entry_keeps_its_file_order() {
     let entry: Value = toml::from_str(
@@ -445,7 +445,7 @@ display_name = \"M\"
     );
 }
 
-/// 认不出来的键（`overrides` / `reasoning_key` / 模型级 `base_url`）原样保留。
+/// Unrecognized keys (`overrides` / `reasoning_key` / model-level `base_url`) are preserved verbatim.
 #[test]
 fn unmodelled_keys_are_inherited() {
     let entry: Value = toml::from_str(

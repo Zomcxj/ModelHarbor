@@ -1,25 +1,25 @@
-//! `app` 模块的单元测试：序列化排版、预览查找/重建、语法高亮、
-//! 模型获取与延迟探测。按领域拆分到子文件。
+//! The `app` module's unit tests: serialization layout, preview find/rebuild, syntax highlighting,
+//! model fetching and latency probes. Split into subfiles by domain.
 
 #[cfg(test)]
 mod compact_tests;
-/// 跨页写 agent：`model` 的 provider 前缀必须是目标页网关认的那个。
+/// Cross-page agent writes: `model`'s provider prefix must be one the target page's gateway accepts.
 ///
-/// 三页（opencode / kilocode / mimocode）共用同一份 agents 数据，而 `model` 是
-/// `provider/model`，保存路径逐页归一。
+/// The three pages (opencode / kilocode / mimocode) share one agents dataset, while `model` is
+/// `provider/model` — the save path normalizes per page.
 #[cfg(test)]
 mod cross_page_agent_model_tests;
-/// 模型探测（A-2）：候选文案、勾选种子、只填空新增、状态栏文案与缓存调度。
+/// Model discovery (A-2): candidate wording, check seeding, fill-only adds, status wording, and cache scheduling.
 #[cfg(test)]
 mod discovery_tests;
-/// 拖动光标：任一拖动源（含页签/后端图标）都必须点亮自定义抓取光标。
+/// Drag cursors: every drag source (tabs / backend icons included) must light the custom grab cursor.
 #[cfg(all(test, target_os = "windows"))]
 mod drag_cursor_tests;
 #[cfg(test)]
 mod latency_tests;
 #[cfg(test)]
 mod layer_order_tests;
-/// 「启用」开关只属于 WorkBuddy 一页。
+/// The "enable" switch belongs to the WorkBuddy page alone.
 #[cfg(test)]
 mod model_enable_visibility_tests;
 #[cfg(test)]
@@ -39,42 +39,42 @@ mod preview_find_boundary_tests;
 mod preview_sync_tests;
 #[cfg(test)]
 mod provider_header_layout_tests;
-/// 用真实配置文件确认「启用」开关只在 WorkBuddy 页出现。
+/// Use real config files to confirm the "enable" switch appears only on the WorkBuddy page.
 #[cfg(test)]
 mod real_config_enable_visibility;
 #[cfg(test)]
 mod real_file_grouping;
 #[cfg(test)]
 mod save_all_tests;
-/// 启动页选择：跟随顶栏「已安装」段的拖动顺序，而非固定后端序。
+/// The startup page's choice: follows the top bar's "installed" segment drag order, not a fixed backend order.
 #[cfg(test)]
 mod startup_page_tests;
 #[cfg(test)]
 mod station_token_tests;
 #[cfg(test)]
 mod syntax_highlight_tests;
-/// 页签（后端图标）的状态配色：底色随状态走，图标色不随状态走。
+/// Tabs' (backend icons') state coloring: the fill follows state; the icon color doesn't.
 ///
-/// 三态三色：选中 = 悬浮色 + 加粗描边；拖动源 = 橙（`DRAG_SOURCE_FILL`）；
-/// 换位目标 = 绿（`DROP_TARGET_COLOR`）。图标 tint 只在白（已安装）/ 压淡（未安装）
-/// 之间选。这里用离屏渲染把实际颜色钉住。
+/// Three states, three colors: selected = hover color + thicker border; drag source = orange
+/// (`DRAG_SOURCE_FILL`); reorder target = green (`DROP_TARGET_COLOR`). Icon tints choose only between
+/// white (installed) and dimmed (not). Offscreen rendering pins the actual colors.
 #[cfg(test)]
 mod tab_highlight_tests;
-/// 用量视图的图表与统计块布局：图例不能压住柱子、统计块不能折行错位。
+/// The usage view's chart and stat-block layout: the legend mustn't cover bars, stat blocks mustn't wrap misaligned.
 #[cfg(test)]
 mod usage_chart_layout_tests;
-/// 删除会话后「行隐藏、明细真删、总量保留」的端到端契约。
+/// The end-to-end contract that deleting a session hides the row, really removes details, and keeps totals.
 #[cfg(test)]
 mod usage_delete_keeps_total_tests;
-/// 用量视图的两列布局与顶栏按钮位置。
+/// The usage view's two-column layout and top-bar button positions.
 #[cfg(test)]
 mod usage_layout_tests;
-/// 用量表格的排版（数字右对齐、表头对齐）与 agent 筛选真的接到渲染路径上。
+/// The usage tables' layout (right-aligned numbers, header alignment) and that agent filtering really reaches the render path.
 #[cfg(test)]
 mod usage_table_layout_tests;
-/// opencode v2 页面的字段可见性与标签跟随 v2 键名。
+/// The opencode v2 page's field visibility and labels follow v2 key names.
 #[cfg(test)]
 mod v2_field_visibility_tests;
-/// 进 WorkBuddy 页时，同一 id 多条启用收敛成「只启用第一条」。
+/// Entering the WorkBuddy page converges multiple enabled per id to "only the first enabled".
 #[cfg(test)]
 mod workbuddy_enable_normalization_tests;

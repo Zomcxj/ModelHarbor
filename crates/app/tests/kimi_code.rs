@@ -1,11 +1,12 @@
-//! KimiCode 后端回归：`~/.kimi-code/config.toml` 的判别 / 解析 / 序列化。
+//! KimiCode backend regression: discrimination / parsing / serialization of `~/.kimi-code/config.toml`.
 //!
-//! 结构：模型在顶层全局表 `[models."<alias>"]` 里，靠 `provider` 字段 join 到
-//! `[providers.<name>]`；表键是 alias，`model` 是发给上游的 wire id，两者可以不同；
-//! 没有 `disabled` 字段，也没有去重。`api_key` / `api_key_env` / `oauth` 三者互斥，
-//! `managed:*` provider 来自 OAuth 登录、只读。
+//! Structure: models live in the top-level global table `[models."<alias>"]`, joined via the
+//! `provider` field to `[providers.<name>]`; the table key is the alias and `model` is the wire id
+//! sent upstream — the two may differ. There is no `disabled` field and no dedup. `api_key` /
+//! `api_key_env` / `oauth` are mutually exclusive; `managed:*` providers come from OAuth login and
+//! are read-only.
 //!
-//! 本文件不读 `~/.kimi-code/config.toml`，样本是冻结的副本。
+//! This file never reads `~/.kimi-code/config.toml`; samples are frozen copies.
 
 use model_harbor_core::backends;
 use model_harbor_core::format::ConfigFormat;
@@ -13,8 +14,8 @@ use model_harbor_core::model::ProviderRow;
 use serde_json::Value;
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
-    // 目录名全局唯一：Windows 时钟粒度粗，并行测试仅靠 pid+纳秒会撞 tick
-    // 共用目录互相覆盖。原子计数器消除碰撞。
+    // Directory names globally unique: Windows clock granularity is coarse, and parallel tests relying on pid+nanoseconds
+    // can collide within a tick, sharing a directory and overwriting each other. An atomic counter removes the collisions.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -36,10 +37,10 @@ fn kimi_backend() -> &'static dyn backends::Backend {
     backends::backend(ConfigFormat::KimiCode)
 }
 
-/// 真实形态样本：本机 `~/.kimi-code/config.toml` 的冻结副本（密钥已替换为占位符）。
+/// Realistic sample: a frozen copy of this machine's `~/.kimi-code/config.toml` (keys replaced with placeholders).
 ///
-/// 含 `managed:` + oauth 子表、alias ≠ model、两种 provider type、`[thinking]` 顶层表，
-/// 以及没有 `display_name` 的条目。
+/// Contains a `managed:` + oauth subtable, alias ≠ model, both provider types, the `[thinking]`
+/// top-level table, and an entry without `display_name`.
 fn config_toml() -> String {
     r#"default_model = "sensenova/sensenova-6.8-flash-lite"
 default_permission_mode = "auto"
@@ -113,21 +114,21 @@ fn provider<'a>(load: &'a backends::BackendLoad, key: &str) -> &'a ProviderRow {
         .unwrap_or_else(|| panic!("缺少 provider {key}"))
 }
 
-/// 解析 TOML（测试内部用；后端不暴露解析器）。
+/// Parse TOML (test-internal; the backend exposes no parser).
 fn toml_value(text: &str) -> Value {
     toml::from_str(text).expect("测试样本必须是合法 TOML")
 }
 
-// ---------------------------------------------------------------- 判别
+// ---------------------------------------------------------------- Discrimination
 
 #[test]
 fn detect_matches_the_install_path() {
     let b = kimi_backend();
     assert!(b.detect("", r"C:\Users\me\.kimi-code\config.toml"));
     assert!(b.detect("", "/home/me/.kimi-code/config.toml"));
-    // 路径对就认，空文件也认
+    // The right path counts, even for an empty file
     assert!(b.detect("", r"C:\Users\me\.kimi-code\config.toml"));
-    // 同目录的别的文件不算
+    // Other files in the same directory don't
     assert!(!b.detect("{}", r"C:\Users\me\.kimi-code\mcp.json"));
     assert!(!b.detect("", r"C:\Users\me\.kimi-code\tui.toml"));
 }
@@ -138,9 +139,9 @@ fn detect_matches_the_content_shape() {
     assert!(b.detect(&config_toml(), ""), "真实形态应命中");
     // `managed:kimi-code` + `type = "kimi"`
     assert!(b.detect("[providers.\"managed:kimi-code\"]\ntype = \"kimi\"\n", ""));
-    // `default_permission_mode` 是 Kimi 的顶层键
+    // `default_permission_mode` is a Kimi top-level key
     assert!(b.detect("default_permission_mode = \"auto\"\n", ""));
-    // 两张表同时出现 + 模型带 max_context_size
+    // Both tables present + models carrying max_context_size
     assert!(b.detect(
         "[providers.p]\ntype = \"openai\"\n\n[models.a]\nprovider = \"p\"\nmax_context_size = 1\n",
         ""
@@ -149,7 +150,7 @@ fn detect_matches_the_content_shape() {
 
 #[test]
 fn detect_rejects_codex_shape() {
-    // Codex 的顶层键是 `model_providers`（带下划线），靠路径与键名分辨。
+    // Codex's top-level key is `model_providers` (underscored); told apart by path and key name.
     let codex = r#"
 model = "gpt-5"
 model_provider = "openai"
@@ -160,18 +161,18 @@ base_url = "https://api.openai.com/v1"
 wire_api = "responses"
 "#;
     assert!(!kimi_backend().detect(codex, ""));
-    // 显式带 Codex 特征时，即使路径像也不认
+    // With explicit Codex fingerprints, even a Kimi-like path isn't claimed
     assert!(!kimi_backend().detect(codex, r"C:\Users\me\.codex\config.toml"));
 }
 
 #[test]
 fn detect_does_not_steal_sibling_formats() {
-    // KimiCode 的 TOML 不被 pi 系抢走
+    // KimiCode's TOML isn't stolen by the pi family
     assert_eq!(
         backends::detect_format(&config_toml(), ""),
         ConfigFormat::KimiCode
     );
-    // 反过来也不抢别人的
+    // And it doesn't steal others' either
     assert_eq!(
         backends::detect_format(r#"{"provider": {}}"#, ""),
         ConfigFormat::Opencode
@@ -180,12 +181,12 @@ fn detect_does_not_steal_sibling_formats() {
         backends::detect_format(r#"{"providers": {}}"#, ""),
         ConfigFormat::Pi
     );
-    // 无关 TOML 不认
+    // Unrelated TOML isn't recognized
     assert!(!kimi_backend().detect("[package]\nname = \"x\"\n", ""));
     assert!(!kimi_backend().detect("", ""));
 }
 
-// ---------------------------------------------------------------- 解析
+// ---------------------------------------------------------------- Parsing
 
 #[test]
 fn models_join_to_their_provider_by_the_provider_field() {
@@ -204,7 +205,7 @@ fn models_join_to_their_provider_by_the_provider_field() {
 
 #[test]
 fn managed_providers_stay_out_of_the_ui() {
-    // `managed:*` 由 OAuth 维护，界面不显示。
+    // `managed:*` is OAuth-maintained; the UI doesn't show it.
     let load = load(&config_toml());
     assert_eq!(load.providers.len(), 1, "只列出 sensenova");
     assert_eq!(load.providers[0].key, "sensenova");
@@ -216,10 +217,10 @@ fn managed_providers_stay_out_of_the_ui() {
 
 #[test]
 fn alias_differs_from_the_wire_model_id() {
-    // `[models."kimi-code/k3"]` 里 `model = "k3"`：表键是 alias，model 是 wire id。
+    // Inside `[models."kimi-code/k3"]`, `model = "k3"`: the table key is the alias, model is the wire id.
     let load = load(&config_toml());
     let sensenova = provider(&load, "sensenova");
-    // sensenova 的两条 alias 与 wire id 相同
+    // sensenova's two entries have identical alias and wire id
     assert_eq!(
         sensenova.models[0].kimi_alias,
         "sensenova/sensenova-6.8-flash-lite"
@@ -249,7 +250,7 @@ fn parse_maps_model_attributes() {
 
 #[test]
 fn parse_falls_back_when_optional_keys_are_absent() {
-    // 可选项缺失时的缺省：名称回落 wire id，档位与输出上限留空。
+    // Defaults when optional fields are missing: the name falls back to the wire id; tiers and output cap stay empty.
     let content = r#"
 [providers.p]
 type = "openai"
@@ -268,7 +269,7 @@ max_context_size = 1000
 
 #[test]
 fn parse_reads_display_name_and_efforts() {
-    // k3 是 managed 的；用构造样本验证 display_name 与 efforts 的读取路径
+    // k3 is managed; the constructed sample verifies the display_name and efforts read paths
     let content = r#"
 [providers.p]
 type = "openai"
@@ -295,7 +296,7 @@ support_efforts = [ "low", "high" ]
 
 #[test]
 fn parse_does_not_invent_undeclared_defaults() {
-    // 条目只写了必填字段：上下文之外的数值 / 模态 / 档位一律留空。
+    // The entry lists only required fields: everything beyond context — numbers / modalities / tiers — stays empty.
     let content = r#"
 [providers.p]
 type = "openai"
@@ -316,7 +317,7 @@ max_context_size = 1
 
 #[test]
 fn orphan_models_do_not_panic_and_are_kept() {
-    // `provider` 指向不存在的键：无处归属，界面不显示，但保留。
+    // `provider` points at a nonexistent key: unplaceable, hidden from the UI, but preserved.
     let content = r#"
 [providers.p]
 type = "openai"
@@ -334,7 +335,7 @@ max_context_size = 2
     let load = load(content);
     assert_eq!(load.providers.len(), 1);
     assert_eq!(provider(&load, "p").models.len(), 1, "孤儿不进界面");
-    // 保存后仍在
+    // Still there after saving
     let root = toml_value(content);
     let out = kimi_backend().serialize_root(&[], &load.providers, &root, None);
     assert_eq!(out["models"]["orphan"]["model"], "orphan");
@@ -362,7 +363,7 @@ max_context_size = 2
     assert_eq!(out["models"]["no-provider"]["model"], "no-provider");
 }
 
-// ---------------------------------------------------------------- 序列化
+// ---------------------------------------------------------------- Serialization
 
 #[test]
 fn serialize_round_trips_without_losing_anything() {
@@ -372,7 +373,7 @@ fn serialize_round_trips_without_losing_anything() {
     let text = kimi_backend().render(&out, false).unwrap();
     let back = toml_value(&text);
     assert_eq!(out, back, "render → parse 必须语义不变");
-    // 两张表都还在
+    // Both tables still present
     assert!(back["providers"].get("managed:kimi-code").is_some());
     assert!(back["models"].get("kimi-code/k3").is_some());
     assert!(back["models"].get("sensenova/deepseek-v4-flash").is_some());
@@ -389,7 +390,7 @@ fn serialize_keeps_the_top_level_extras() {
 
 #[test]
 fn serialize_preserves_managed_entries_verbatim() {
-    // managed 条目与 credentials/ 里的凭据配对，原样保留。
+    // The managed entry pairs with credentials in credentials/, preserved as-is.
     let root = toml_value(&config_toml());
     let out = kimi_backend().serialize_root(&[], &[], &root, None);
     let managed = &out["providers"]["managed:kimi-code"];
@@ -397,7 +398,7 @@ fn serialize_preserves_managed_entries_verbatim() {
     assert_eq!(managed["base_url"], "https://api.kimi.com/coding/v1");
     assert_eq!(managed["oauth"]["storage"], "file");
     assert_eq!(managed["oauth"]["key"], "oauth/kimi-code");
-    // 它的模型也原样保留
+    // Its models are preserved as-is too
     assert_eq!(out["models"]["kimi-code/k3"]["model"], "k3");
     assert_eq!(
         out["models"]["kimi-code/kimi-for-coding"]["display_name"],
@@ -407,7 +408,7 @@ fn serialize_preserves_managed_entries_verbatim() {
 
 #[test]
 fn serialize_writes_display_name_even_when_it_equals_the_wire_id() {
-    // 官方写法每条模型都带 `display_name`（等于 `model` 时也带）。
+    // The official format gives every model a `display_name` (even when equal to `model`).
     let content = "[providers.p]\ntype = \"openai\"\n\n\
          [models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1000\n\
          display_name = \"m\"\n";
@@ -423,7 +424,7 @@ fn serialize_writes_display_name_even_when_it_equals_the_wire_id() {
 
 #[test]
 fn serialize_keeps_unmodelled_keys() {
-    // 界面不建模的键（reasoning_key / adaptive_thinking / overrides / beta_api）要继承。
+    // Keys the UI doesn't model (reasoning_key / adaptive_thinking / overrides / beta_api) must be inherited.
     let root = toml_value(&config_toml());
     let load = load(&config_toml());
     let out = kimi_backend().serialize_root(&[], &load.providers, &root, None);
@@ -461,7 +462,7 @@ max_output_size = 500
 
 #[test]
 fn quoted_keys_round_trip() {
-    // `[providers.<name>]` 的键可含 `.` 与 `:`，不加引号 TOML 会当成嵌套表。
+    // Keys of `[providers.<name>]` may contain `.` and `:` — unquoted, TOML would read them as nested tables.
     let content = r#"
 [providers."my.provider"]
 type = "openai"
@@ -487,7 +488,7 @@ max_context_size = 1
 
 #[test]
 fn type_is_written_verbatim_and_never_rewritten() {
-    // 已有的 type 逐字保留，不做映射。
+    // An existing type is kept verbatim, no mapping.
     for ty in [
         "kimi",
         "openai",
@@ -509,7 +510,7 @@ fn type_is_written_verbatim_and_never_rewritten() {
 
 #[test]
 fn cross_format_providers_get_a_kimi_vocabulary_type() {
-    // 跨格式复制来的 provider 带的是内部协议名，写 `type` 时按 Kimi 词表翻译。
+    // Providers copied in cross-format carry internal protocol names; writing `type` translates per Kimi's vocabulary.
     for (api, expected) in [
         ("openai-completions", "openai"),
         ("openai-responses", "openai_responses"),
@@ -532,7 +533,7 @@ fn cross_format_providers_get_a_kimi_vocabulary_type() {
 
 #[test]
 fn an_invalid_type_in_the_file_is_healed_on_the_next_save() {
-    // 文件里的内部协议名逐字进 pi_api，保存时按词表翻译。
+    // The file's internal protocol name goes into pi_api verbatim; translated per the vocabulary at save.
     let content = "[providers.openai_apizh]
 type = \"openai-completions\"
 base_url = \"https://gw.example.com/v1\"
@@ -551,15 +552,15 @@ max_context_size = 262000
         out["providers"]["openai_apizh"]["type"], "openai",
         "文件里的非法 type 要在下次保存时翻译成词表内的值"
     );
-    // 别名仍按 Kimi 的约定保留
+    // Aliases still follow Kimi's convention
     assert!(out["models"].get("openai_apizh/gpt-6-luna").is_some());
 }
 
-// ---------------------------------------------------------------- 凭据 XOR
+// ---------------------------------------------------------------- Credential XOR
 
 #[test]
 fn api_key_and_api_key_env_are_mutually_exclusive_on_save() {
-    // 同时写 api_key 与 api_key_env 会被 Kimi Code 拒绝，写盘前挡住。
+    // Writing both api_key and api_key_env gets rejected by Kimi Code — blocked before the disk write.
     let dir = temp_dir("xor");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -582,7 +583,7 @@ fn api_key_and_api_key_env_are_mutually_exclusive_on_save() {
 
 #[test]
 fn a_reserved_managed_name_is_refused() {
-    // `managed:` 是 /login 的保留前缀，写盘前挡住。
+    // `managed:` is /login's reserved prefix — blocked before the disk write.
     let dir = temp_dir("managed_reserved");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -601,8 +602,9 @@ fn a_reserved_managed_name_is_refused() {
 
 #[test]
 fn an_alias_collision_across_providers_is_refused() {
-    // 别名就是 TOML 表键：provider "a" + model "b/c" 与 provider "a/b" + model "c"
-    // 生成同一个键，这里拦跨 provider 的组合撞名（同 provider 内的重复由保存入口查重）。
+    // The alias IS the TOML table key: provider "a" + model "b/c" and provider "a/b" + model "c"
+    // produce the same key, so cross-provider combination collisions are blocked here (same-provider
+    // duplicates are checked by the save entry point).
     let dir = temp_dir("alias_clash");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -630,14 +632,14 @@ fn an_alias_collision_across_providers_is_refused() {
 
 #[test]
 fn an_empty_api_key_does_not_conflict_with_oauth() {
-    // 判据是「非空字符串」，空串视同未设置。
+    // The criterion is a "non-empty string"; empty counts as unset.
     let load = load(&config_toml());
-    // 直接构造一份带 oauth 的 provider
+    // Construct a provider carrying oauth directly
     let mut p = ProviderRow::new();
     p.key = "oauth-provider".into();
     p.api_key = String::new();
     p.raw = toml_value("[oauth]\nstorage = \"file\"\nkey = \"k\"\n");
-    // 空密钥 + oauth 不冲突
+    // Empty key + oauth don't conflict
     assert!(
         kimi_backend()
             .save_sidecars(
@@ -652,7 +654,7 @@ fn an_empty_api_key_does_not_conflict_with_oauth() {
 
 #[test]
 fn writing_a_key_clears_the_env_name_and_vice_versa() {
-    // 界面两个框：填了一个就清掉另一个。
+    // Two boxes in the UI: filling one clears the other.
     let content = "[providers.p]\ntype = \"openai\"\napi_key_env = \"OLD\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1\n";
     let root = toml_value(content);
     let load = load(content);
@@ -668,12 +670,12 @@ fn writing_a_key_clears_the_env_name_and_vice_versa() {
 
 #[test]
 fn capabilities_are_only_added_never_removed() {
-    // 已有的标签只增不删。
+    // Existing labels only grow, never shrink.
     let content = "[providers.p]\ntype = \"openai\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1\ncapabilities = [ \"dynamically_loaded_tools\", \"max_context_tokens\" ]\n";
     let root = toml_value(content);
     let load = load(content);
     let mut providers = load.providers.clone();
-    // 界面把「工具调用」勾上
+    // The UI checks "tool use" on
     providers[0].models[0].tool_call = true;
     let out = kimi_backend().serialize_root(&[], &providers, &root, None);
     let caps: Vec<&str> = out["models"]["p/m"]["capabilities"]
@@ -692,7 +694,7 @@ fn capabilities_are_only_added_never_removed() {
 
 #[test]
 fn unchecking_reasoning_can_actually_disable_thinking() {
-    // 例外：thinking / always_thinking 是「支持思考」开关的两种表达，取消勾选时一并移除。
+    // Exception: thinking / always_thinking are two spellings of the "supports reasoning" switch — unchecking removes both.
     let content = "[providers.p]\ntype = \"openai\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1\ncapabilities = [ \"thinking\", \"always_thinking\", \"tool_use\" ]\n";
     let root = toml_value(content);
     let load = load(content);
@@ -710,11 +712,11 @@ fn unchecking_reasoning_can_actually_disable_thinking() {
     assert!(caps.contains(&"tool_use"), "只动思考相关标签：{caps:?}");
 }
 
-// ---------------------------------------------------------------- 必填校验
+// ---------------------------------------------------------------- Required-field validation
 
 #[test]
 fn max_context_size_is_required_and_never_zeroed() {
-    // schema 要求 ≥1：值为 0 时省略该键。
+    // The schema requires ≥1: a value of 0 omits the key.
     let content = "[providers.p]\ntype = \"openai\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1000\n";
     let root = toml_value(content);
     let load = load(content);
@@ -732,25 +734,25 @@ fn default_effort_must_stay_inside_support_efforts() {
     let content = "[providers.p]\ntype = \"openai\"\n\n[models.\"p/m\"]\nprovider = \"p\"\nmodel = \"m\"\nmax_context_size = 1\nsupport_efforts = [ \"low\", \"high\" ]\ndefault_effort = \"high\"\n";
     let root = toml_value(content);
     let load = load(content);
-    // 档位清单里没有 high 时删掉 default_effort
+    // high is no longer in the tier list → default_effort is removed
     let mut providers = load.providers.clone();
     providers[0].models[0].variants = "low, max".into();
     let out = kimi_backend().serialize_root(&[], &providers, &root, None);
     assert!(out["models"]["p/m"].get("default_effort").is_none());
-    // 仍在清单里时保留用户选的默认档
+    // Still in the list → the user's chosen default is kept
     let mut providers2 = load.providers.clone();
     providers2[0].models[0].variants = "low, high, max".into();
     let out2 = kimi_backend().serialize_root(&[], &providers2, &root, None);
     assert_eq!(out2["models"]["p/m"]["default_effort"], "high");
 }
 
-// ---------------------------------------------------------------- 启用/停用（没有）
+// ---------------------------------------------------------------- Enable/disable (none)
 
 #[test]
 fn there_is_no_disabled_concept_on_the_kimi_page() {
-    // Kimi 的模型 schema（`ModelAliasBaseSchema`）没有 disabled/enabled 字段，模型表
-    // 又按别名一一索引——没有去重，也没有开关。写出的条目不带 `disabled`，
-    // 全部条目一律进 `config.toml`。
+    // Kimi's model schema (`ModelAliasBaseSchema`) has no disabled/enabled field, and the model table indexes
+    // one-to-one by alias — no dedup, no toggles. Written entries carry no `disabled`; every entry goes into
+    // `config.toml`.
     assert!(!ConfigFormat::KimiCode.has_model_enable());
 
     let root = toml_value(&config_toml());
@@ -759,13 +761,13 @@ fn there_is_no_disabled_concept_on_the_kimi_page() {
     for (alias, entry) in out["models"].as_object().unwrap() {
         assert!(entry.get("disabled").is_none(), "{alias} 不该带 disabled");
     }
-    // 4 条全在（界面接管的 2 条 + managed 名下的 2 条），没有筛选。
+    // All 4 present (2 UI-managed + 2 under managed), no filtering.
     assert_eq!(out["models"].as_object().unwrap().len(), 4);
 }
 
 #[test]
 fn no_sidecar_is_written_any_more() {
-    // 保存后同目录不写全量副本 models.full.toml。
+    // After saving, no full-copy models.full.toml appears in the directory.
     let dir = temp_dir("no_sidecar");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -781,7 +783,7 @@ fn no_sidecar_is_written_any_more() {
 
 #[test]
 fn hand_added_entries_are_visible_without_a_sidecar() {
-    // 主配置即全部状态，手加的条目能看见。
+    // The main config is the whole state; hand-added entries are visible.
     let dir = temp_dir("hand_added");
     let path = dir.join("config.toml");
     std::fs::write(&path, config_toml()).unwrap();
@@ -806,7 +808,7 @@ fn hand_added_entries_are_visible_without_a_sidecar() {
 
 #[test]
 fn shrinks_on_save_detects_deletions() {
-    // 删卡片仍会让条目变少——`.bak` 备份的触发条件需要它。
+    // Deleting a card still shrinks entries — the `.bak` backup's trigger condition needs it.
     use model_harbor_core::backends::kimi_code::shrinks_on_save;
     let before = toml_value(&config_toml());
     let after = toml_value(
@@ -817,7 +819,7 @@ fn shrinks_on_save_detects_deletions() {
     assert!(!shrinks_on_save(&before, &before), "没变不用备份");
 }
 
-// ---------------------------------------------------------------- 跨格式
+// ---------------------------------------------------------------- Cross-format
 
 #[test]
 fn cross_format_strip_keeps_managed_and_drops_ui_owned() {
@@ -825,7 +827,7 @@ fn cross_format_strip_keeps_managed_and_drops_ui_owned() {
     model_harbor_app::app::strip_cross_format_containers(ConfigFormat::KimiCode, &mut root, false);
     let obj = root.as_object().unwrap();
 
-    // `managed:*` 是 `/login` 的登录态（与 credentials/ 配对），界面不显示也无从重建。
+    // `managed:*` is /login's login state (paired with credentials/), invisible to the UI and unrebuildable.
     let providers = obj["providers"].as_object().expect("providers 表要留下");
     assert_eq!(providers.len(), 1, "只该留下 managed provider");
     let managed = &providers["managed:kimi-code"];
@@ -836,7 +838,7 @@ fn cross_format_strip_keeps_managed_and_drops_ui_owned() {
     assert_eq!(managed["type"], "kimi");
     assert_eq!(managed["api_key"], "");
 
-    // 界面接管的 provider 及其名下模型才剔（干净转换）。
+    // Only UI-managed providers and their models are evicted (clean conversion).
     let models = obj["models"].as_object().expect("models 表要留下");
     let aliases: Vec<&str> = models.keys().map(String::as_str).collect();
     assert_eq!(
@@ -845,14 +847,14 @@ fn cross_format_strip_keeps_managed_and_drops_ui_owned() {
         "只该留下 managed 名下的模型，且顺序不变"
     );
 
-    // 顶层设置保留
+    // Top-level settings preserved
     assert_eq!(obj["default_model"], "sensenova/sensenova-6.8-flash-lite");
     assert_eq!(obj["thinking"]["enabled"], true);
 }
 
 #[test]
 fn cross_format_strip_drops_the_tables_when_nothing_is_managed() {
-    // 没有只读内容时仍是「整体接管」：表整个删掉，不留空壳。
+    // With no read-only content it's still "wholly managed": the table is removed whole, no empty shell left.
     let mut root = toml_value(
         "[providers.sensenova]\ntype = \"openai\"\n\n\
          [models.\"sensenova/x\"]\nprovider = \"sensenova\"\nmodel = \"x\"\nmax_context_size = 1000\n",
@@ -865,7 +867,7 @@ fn cross_format_strip_drops_the_tables_when_nothing_is_managed() {
 
 #[test]
 fn cross_format_strip_keeps_orphan_models() {
-    // `provider` 指向表里没有的键：本工具认不出的内容，保留原样。
+    // `provider` points at a key absent from the table: content this tool can't interpret — preserved as-is.
     let mut root = toml_value(
         "[providers.sensenova]\ntype = \"openai\"\n\n\
          [models.\"ghost/x\"]\nprovider = \"ghost\"\nmodel = \"x\"\nmax_context_size = 1000\n",
@@ -878,7 +880,7 @@ fn cross_format_strip_keeps_orphan_models() {
 
 #[test]
 fn cross_format_strip_leaves_other_formats_alone() {
-    // 剔 Kimi 的表不动别人的容器
+    // Evicting Kimi's tables doesn't touch others' containers
     let mut root = toml_value("[providers.p]\ntype = \"openai\"\n");
     model_harbor_app::app::strip_cross_format_containers(ConfigFormat::Opencode, &mut root, false);
     assert!(root.as_object().unwrap().get("providers").is_some());
@@ -886,7 +888,7 @@ fn cross_format_strip_leaves_other_formats_alone() {
 
 #[test]
 fn models_can_be_copied_to_another_format() {
-    // 复制到别的格式时模型 id 是 wire id（不是 alias）。
+    // When copying to other formats, the model id is the wire id (not the alias).
     let load = load(&config_toml());
     let m = &provider(&load, "sensenova").models[0];
     let value = m.to_value();
@@ -894,11 +896,11 @@ fn models_can_be_copied_to_another_format() {
     assert_eq!(m.id, "sensenova-6.8-flash-lite");
 }
 
-// ---------------------------------------------------------------- 类型往返
+// ---------------------------------------------------------------- Type round-trip
 
 #[test]
 fn all_toml_types_round_trip() {
-    // 字符串 / 整数 / 布尔 / 数组 / 嵌套表五种类型都不能丢。
+    // All five types — string / integer / boolean / array / nested table — must survive.
     let content = r#"
 a_string = "hello"
 a_int = 42
@@ -929,7 +931,7 @@ max_context_size = 1
 fn empty_content_parses_to_an_empty_load() {
     let load = kimi_backend().parse("").unwrap();
     assert!(load.providers.is_empty());
-    // 空内容 + 空 provider 列表 → 保存出一个空文件，不 panic
+    // Empty content + empty provider list → saving produces an empty file, no panic
     let out = kimi_backend().serialize_root(&[], &[], &Value::Object(Default::default()), None);
     assert!(out.as_object().unwrap().is_empty());
 }

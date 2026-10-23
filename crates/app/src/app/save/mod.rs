@@ -1,4 +1,4 @@
-//! 保存 / 预览文档的路径解析、校验、写盘与各后端加载入口。
+//! Path resolution, validation, disk writes, and per-backend load entry points for saving / previewing documents.
 
 mod checks;
 mod fields;
@@ -14,32 +14,32 @@ use crate::model::{AgentRow, ProviderRow};
 use crate::util::{self, is_wsl_path};
 use serde_json::{Map, Value};
 
-/// 一个保存目标的运行时状态（可用性 / 解析路径 / 勾选）。
+/// Runtime state of one save target (availability / resolved path / checked flag).
 pub(super) struct SaveTarget {
     pub(super) backend: ConfigFormat,
     pub(super) available: bool,
     pub(super) path: String,
 }
 
-/// 本页写入路径的解析结果。
+/// Resolution result of this page's write path.
 #[derive(Clone)]
 pub(super) enum PageTarget {
-    /// 当前文件（已加载）：整体替换 agent / provider。
+    /// The current file (loaded): agents / providers replaced wholesale.
     Current(String),
-    /// 路径已修改但未重新加载：按“先读后合并”写入。
+    /// The path was edited but not reloaded: write with "read first, then merge".
     Modified(String),
-    /// 该后端默认目标（Windows 本地路径；WSL 仅在勾选「WSL同步」后写入）。
+    /// The backend's default target (a Windows local path; WSL writes only after checking "WSL sync").
     Default(String),
 }
 
-/// 跨格式转换前，从目标 root 中剔除由界面接管的容器：
-/// provider（opencode 的 provider / pi 系与 DSH 的 providers）与 opencode 的 agent。
+/// Before cross-format conversion, evict from the target root the containers the UI manages:
+/// provider (opencode's provider / pi-family and DSH providers) and opencode's agent.
 ///
-/// 界面不显示、也无从重建的只读内容（Kimi 的 `managed:*`、Qwen 的 `qwen-oauth`）保留，
-/// 其余顶层字段原样保留。删除用 `shift_remove` 保持其余键的相对顺序。
-/// `agents_owned` 为假时保留目标文件里的 agent 容器。
+/// Read-only content the UI neither shows nor can rebuild (Kimi's `managed:*`, Qwen's `qwen-oauth`) is
+/// kept; other top-level fields are preserved verbatim. Deletion uses `shift_remove` to keep the
+/// relative order of remaining keys. With `agents_owned` false, the target file's agent container stays.
 ///
-/// 加载 opencode 配置；读取/解析失败返回 Err。
+/// Load an opencode config; returns Err on read/parse failure.
 pub fn load_opencode_result(
     path: &str,
 ) -> Result<(Value, Vec<AgentRow>, Vec<ProviderRow>), String> {
@@ -47,20 +47,20 @@ pub fn load_opencode_result(
     Ok((load.root, load.agents, load.providers))
 }
 
-/// 兼容包装：失败时回退空状态。
+/// Compatibility wrapper: falls back to an empty state on failure.
 pub fn load_or_empty(path: &str) -> (Value, Vec<AgentRow>, Vec<ProviderRow>) {
     load_opencode_result(path)
         .unwrap_or_else(|_| (Value::Object(Map::new()), Vec::new(), Vec::new()))
 }
 
 impl App {
-    /// 本页写入路径：
-    /// - 当前文件属于本页格式且已加载 → 当前文件（整体替换）；
-    /// - 路径已修改但未加载 → 仍写该路径，但按“先读后合并”；
-    /// - 其余 → 该后端默认目标（Windows 本地；WSL 需勾选「WSL同步」）。
+    /// This page's write path:
+    /// - the current file belongs to this page's format and is loaded → the current file (wholesale replace);
+    /// - the path was edited but not loaded → still that path, but with "read first, then merge";
+    /// - otherwise → the backend's default target (Windows local; WSL requires "WSL sync").
     pub(super) fn page_save_path(&self, fmt: ConfigFormat) -> PageTarget {
         if !self.config_path.is_empty() && self.config_path != self.loaded_path {
-            // 路径框中已明确指定目标文件时使用该路径，即使尚未点击“加载”。
+            // When the path box explicitly names a target file, that path is used even before clicking "load".
             return PageTarget::Modified(self.config_path.clone());
         }
         if self.source_format == fmt && !self.config_path.is_empty() {
@@ -75,15 +75,16 @@ impl App {
         PageTarget::Default(path)
     }
 
-    /// 保存当前页面：写入该页格式对应的路径，并按需同步 WSL。
+    /// Save the current page: write to the page format's path and sync WSL as needed.
     pub(super) fn save_page(&mut self, fmt: ConfigFormat) {
         self.status = self.save_page_report(fmt);
     }
 
-    /// 一键保存：按页面顺序把所有**已安装**后端各写一遍。
+    /// Save all: write every **installed** backend once, in page order.
     ///
-    /// 每页结果拼进状态栏。当前页走 [`Self::page_save_path`]（含输入框里「已改未加载」
-    /// 的路径），其他页面用各自的目标路径。未安装的后端跳过。
+    /// Each page's result joins the status bar. The current page goes through [`Self::page_save_path`]
+    /// (including an "edited but not loaded" path from the input box); other pages use their own targets.
+    /// Uninstalled backends skip.
     pub(super) fn save_all(&mut self) {
         if let Some(dup) = self.find_duplicate_keys() {
             self.status = format!("key 重复: {}，已取消保存", dup);
@@ -109,7 +110,7 @@ impl App {
         };
     }
 
-    /// 保存一页并返回状态文本（不写 `self.status`，供单页保存与一键保存共用）。
+    /// Save one page and return the status text (doesn't write `self.status`; shared by single-page and save-all).
     pub(super) fn save_page_report(&mut self, fmt: ConfigFormat) -> String {
         if let Some(dup) = self.find_duplicate_keys() {
             return format!("key 重复: {}，已取消保存", dup);
@@ -134,7 +135,7 @@ impl App {
         self.save_report_to(fmt, &path)
     }
 
-    /// 按已解析好的路径写入一页并返回状态文本（含 WSL 同步）。
+    /// Write one page via an already-resolved path and return the status text (WSL sync included).
     fn save_report_to(&mut self, fmt: ConfigFormat, path: &str) -> String {
         let res = self.save_backend_to(fmt, path);
         let ok = res.is_ok();
@@ -149,7 +150,7 @@ impl App {
             Err(e) => format!("{}: 保存失败({})", fmt.label(), e),
         };
         if ok {
-            // 该格式不支持 agents 时在状态栏说明
+            // State in the status bar when the format doesn't support agents
             if !fmt.is_opencode_family() && !self.agents.is_empty() {
                 status.push_str(&format!(
                     "（{} 个 agents 未写入：该格式不支持）",
@@ -161,8 +162,8 @@ impl App {
                 status.push_str(&format!("（已忽略 {} 个无效数字字段）", bad));
             }
         }
-        // WSL 同步：勾选“WSL同步”且写入路径为本地时，同步到 WSL 侧默认路径。
-        // 三态判定：「已安装」才写，「确认未安装」与「探测中」都跳过，文案分开。
+        // WSL sync: with "WSL sync" checked and a local write path, sync to the WSL-side default path.
+        // Three-state gating: only "installed" writes; "confirmed missing" and "probing" both skip, with separate wording.
         if self.sync_wsl && ok && !is_wsl_path(path) {
             match backends::wsl_target_state(fmt) {
                 backends::WslTargetState::Installed(wsl_path) => {
@@ -173,28 +174,30 @@ impl App {
                         }
                     }
                 }
-                // 未安装 / 探测中都不写。
+                // Neither installed nor probing writes.
                 other => status.push_str(&wsl_skip_note(fmt, &other)),
             }
         }
         status
     }
 
-    /// 通用保存：按后端构造 root、渲染内容并写入。
+    /// Generic save: build the root per backend, render, and write.
     pub(super) fn save_backend_to(
         &mut self,
         fmt: ConfigFormat,
         path: &str,
     ) -> Result<Option<String>, String> {
         let backend = backends::backend(fmt);
-        // 已加载的当前文件整体替换；同格式的其他路径（WSL 同步等）先读后合并；
-        // 跨格式目标做干净转换：界面接管的 provider / agent 容器整体丢弃，其余顶层字段保留。
+        // A loaded current file replaces wholesale; other same-format paths (WSL sync etc.) read first then merge;
+        // cross-format targets do a clean conversion: UI-managed provider / agent containers are dropped whole,
+        // other top-level fields are kept.
         let is_current = self.source_format == fmt && path == self.loaded_path;
-        // WSL 同步是当前页面配置的完整镜像，不做保守 upsert。
+        // WSL sync is a complete mirror of the current page's config — no conservative upsert.
         let is_opencode_wsl_sync =
             fmt.is_opencode_family() && self.source_format == fmt && is_wsl_path(path);
         let cross_format = self.source_format != fmt;
-        // 写往别的页面时，agent 的 `model` 先按目标页网关归一；写当前页则原样落盘。
+        // When writing to another page, the agent's `model` normalizes to the target page's gateway first; writing
+        // the current page lands as-is.
         let agents = if cross_format {
             self.agents_for_page(fmt)
         } else {
@@ -203,7 +206,7 @@ impl App {
         let target_root: Option<Value> = if is_current || is_opencode_wsl_sync {
             None
         } else {
-            // 目标文件存在但读不出 / 解析不了 → 取消保存。
+            // A target that exists but can't be read / parsed → cancel the save.
             let mut target = backend
                 .load_target_root(path)
                 .map_err(|e| format!("目标文件无法读取，已取消保存（未动原文件）: {e}"))?;
@@ -219,7 +222,7 @@ impl App {
             target_root.as_ref(),
         );
         let content = if fmt == ConfigFormat::DeepSeekHarness && is_current {
-            // 未发生结构化修改时保留原始 YAML；有修改则用 DSH 渲染器。
+            // With no structured modification, keep the original YAML; with changes, use the DSH renderer.
             match util::read_config_content(path) {
                 Ok(original)
                     if util::parse_yaml_content(&original).ok().as_ref() == Some(&root) =>
@@ -241,8 +244,9 @@ impl App {
         } else {
             None
         };
-        // WorkBuddy / QwenCode / KimiCode 保存后条目可能变少，需要备份。
-        // 判据：WorkBuddy 按裸 id 去重后条目变少（根是数组）；QwenCode 与 KimiCode 问各自后端。
+        // WorkBuddy / QwenCode / KimiCode saves may shrink entries — a backup is needed.
+        // Criterion: WorkBuddy's entry count shrinks after bare-id dedup (root is an array); QwenCode and
+        // KimiCode ask their own backends.
         let shrinks = is_current
             && match fmt {
                 ConfigFormat::WorkBuddy => util::read_config_content(path)
@@ -253,7 +257,7 @@ impl App {
                         let after = root.as_array().map(Vec::len).unwrap_or(0);
                         before > after
                     })
-                    // 读不出 / 解析不了旧文件时按「会收缩」处理，交由下面的备份分支读原文件。
+                    // An unreadable / unparseable old file counts as "may shrink", letting the backup branch below read the original.
                     .unwrap_or(true),
                 ConfigFormat::QwenCode => util::read_config_content(path)
                     .ok()
@@ -267,8 +271,8 @@ impl App {
                     .unwrap_or(true),
                 _ => false,
             };
-        // 跨格式转换、收缩式保存与 WSL 同步：先把原文件备份为 `.bak`；
-        // 备份失败或原文件读不出则取消保存。
+        // Cross-format conversion, shrinking saves, and WSL sync: back up the original as `.bak` first;
+        // a failed backup or unreadable original cancels the save.
         let backup = if (cross_format && !is_current) || shrinks || is_opencode_wsl_sync {
             match util::read_config_content(path) {
                 Ok(old) if !old.is_empty() && (old != content || is_opencode_wsl_sync) => {
@@ -284,8 +288,8 @@ impl App {
         } else {
             None
         };
-        // sidecar 一律在主配置之前写。这里同时是写盘前的总闸：
-        // Kimi 挡凭据 XOR、`managed:` 保留前缀与别名撞名，Qwen 挡 envKey 变量名撞名。
+        // Sidecars always write before the main config. This doubles as the pre-write master gate:
+        // Kimi blocks the credential XOR and `managed:` reserved-prefix vs alias collisions; Qwen blocks envKey variable-name collisions.
         if matches!(
             fmt,
             ConfigFormat::DeepSeekHarness
@@ -295,7 +299,7 @@ impl App {
         ) {
             backend.save_sidecars(path, &self.providers)?;
         }
-        // 写盘前的自动快照（Auto tag）：磁盘内容与上次快照不同才备份（见 save::auto_snapshot_before_save）。
+        // The pre-write auto-snapshot (Auto tag): back up only when disk content differs from the last snapshot (see save::auto_snapshot_before_save).
         self.auto_snapshot_before_save(path);
         if let Err(error) = backends::write_config(path, &content) {
             if let Some((sidecar, old_content)) = dsh_sidecar_backup {
@@ -314,27 +318,27 @@ impl App {
             }
             return Err(error);
         }
-        // 当前文件保存成功后，回填 opencode 的 extras 载体（self.root）保持与磁盘一致
+        // After a successful current-file save, backfill opencode's extras carrier (self.root) to stay consistent with disk
         if is_current && fmt.is_opencode_family() {
             self.root = root;
         }
-        // 磁盘内容变了：对比视图的缓存作废。计数只增不减，回绕只多算一次差异。
+        // Disk content changed: the diff view's cache is invalid. The count only grows; wraparound miscounts a diff once.
         self.save_serial = self.save_serial.wrapping_add(1);
-        // 记录刚写入内容的 hash（下次保存判定「外部改动」用），并按默认保留
-        // 策略清理备份目录；两者失败都不影响保存结果。
+        // Record the just-written content's hash (for the next save's "external change" verdict) and prune the
+        // backup directory by the default retention policy; either failing doesn't affect the save outcome.
         self.note_snapshot_hash(path);
         self.prune_backups_after_save();
         Ok(backup)
     }
 
-    /// 当前文件保存时使用的基底 extras（按后端取对应载体）。
+    /// The base extras used when saving the current file (the corresponding carrier per backend).
     pub(super) fn extras_for(&self, fmt: ConfigFormat) -> &Value {
         match fmt {
-            // opencode 系（含 kilocode / mimocode）extras 就是完整 root。
+            // For the opencode family (kilocode / mimocode included), extras IS the complete root.
             ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => &self.root,
-            // pi 系（pi / oh-my-pi）共用 extras 载体：providers 之外的顶层字段
+            // The pi family (pi / oh-my-pi) shares an extras carrier: top-level fields beyond providers
             ConfigFormat::Pi | ConfigFormat::OhMyPi => &self.pi_extras,
-            // ZCode / WorkBuddy / QwenCode / KimiCode 与 opencode、DSH 一样，extras 就是完整 root。
+            // ZCode / WorkBuddy / QwenCode / KimiCode, like opencode and DSH: extras IS the complete root.
             ConfigFormat::DeepSeekHarness
             | ConfigFormat::ZCode
             | ConfigFormat::WorkBuddy
@@ -344,15 +348,16 @@ impl App {
     }
 }
 
-/// WSL 同步被跳过时的状态栏补充文案（按三态区分）。
+/// Status-bar supplement when WSL sync is skipped (distinct per three-state).
 ///
-/// 「探测中」与「确认未安装」都不写入，措辞分开。传入 `Installed` 时退回通用文案。
+/// "Probing" and "confirmed missing" both write nothing, with separate wording. Passing `Installed`
+/// falls back to the generic text.
 fn wsl_skip_note(fmt: ConfigFormat, state: &backends::WslTargetState) -> String {
     match state {
         backends::WslTargetState::NotInstalled => {
             format!("; {}(WSL): 未安装，跳过同步", fmt.label())
         }
-        // 探测未出结果：不写、不报「未安装」，明说在检测。
+        // Probe without a result: write nothing, don't report "not installed" — say plainly that detection is running.
         backends::WslTargetState::Unknown => {
             format!("; {}(WSL): 正在检测安装状态，本次跳过同步", fmt.label())
         }
@@ -362,22 +367,23 @@ fn wsl_skip_note(fmt: ConfigFormat, state: &backends::WslTargetState) -> String 
     }
 }
 
-// ---------- 自动快照挂点（原 app::profiles 的保存侧方法，UI 摘除后迁入） ----------
+// ---------- Auto-snapshot hooks (save-side methods from the former app::profiles, moved after the UI split) ----------
 
 impl App {
-    /// 自动快照目录：单测可注入 tempdir，生产用配置目录下的 backups/。
+    /// The auto-snapshot directory: tests may inject a tempdir; production uses backups/ under the config dir.
     pub(in crate::app) fn backups_root(&self) -> std::path::PathBuf {
         self.snapshots_root
             .clone()
             .unwrap_or_else(crate::profiles::default_backups_root)
     }
 
-    /// 保存写盘前的自动快照（Auto tag）。
+    /// The pre-save auto-snapshot (Auto tag).
     ///
-    /// 走 core 的外部修改检测：磁盘内容与上次记录的 hash 不同（或本会话从没
-    /// 快照过）才备份——我们自己刚写入的内容不重复留底，只有被外部改过的
-    /// 文件才在被覆盖前备份一份。快照失败一律静默：备份是保险措施，不能挡住
-    /// 保存主流程。WSL 路径由 wsl 命令读写、core 快照只走本地 fs，直接跳过。
+    /// Goes through core's external-change detection: back up only when disk content differs from the
+    /// recorded hash (or this session never snapshotted) — content we just wrote isn't re-archived; only
+    /// externally-modified files get one copy before being overwritten. Snapshot failures are always silent:
+    /// backups are insurance and must never block the save's main flow. WSL paths go through the wsl command
+    /// while core snapshots use the local fs only — skipped outright.
     pub(in crate::app) fn auto_snapshot_before_save(&mut self, path: &str) {
         if path.trim().is_empty() || crate::util::is_wsl_path(path) {
             return;
@@ -390,7 +396,7 @@ impl App {
         }
     }
 
-    /// 记录目标文件当前内容的 hash（写盘成功后调用），供下次保存判定「外部改动」。
+    /// Record the target file's current content hash (called after a successful write), for the next save's "external change" verdict.
     pub(in crate::app) fn note_snapshot_hash(&mut self, path: &str) {
         if path.trim().is_empty() || crate::util::is_wsl_path(path) {
             return;
@@ -400,7 +406,7 @@ impl App {
         }
     }
 
-    /// 保存成功后的备份清理：按默认保留策略（Auto 留最近 20 条等）。失败静默。
+    /// Post-save backup pruning: by the default retention policy (Auto keeps the latest 20, etc.). Failures are silent.
     pub(in crate::app) fn prune_backups_after_save(&self) {
         let _ = crate::profiles::prune(
             &self.backups_root(),
@@ -412,7 +418,7 @@ impl App {
 mod wsl_skip_note_tests {
     use super::*;
 
-    /// 「探测中」与「未安装」的文案必须可区分。
+    /// "Probing" and "not installed" wordings must be distinguishable.
     #[test]
     fn unknown_does_not_claim_not_installed() {
         let fmt = ConfigFormat::Opencode;
@@ -431,7 +437,7 @@ mod wsl_skip_note_tests {
         assert_ne!(unknown, missing, "两种跳过的文案必须不同");
     }
 
-    /// 文案带上后端名。
+    /// The wording carries the backend's name.
     #[test]
     fn note_names_the_backend() {
         let note = wsl_skip_note(ConfigFormat::KimiCode, &backends::WslTargetState::Unknown);

@@ -1,16 +1,17 @@
-//! 卡片头部的「删除 / 复制」按钮必须始终可见。
+//! A card head's "delete / duplicate" buttons must always be visible.
 //!
-//! 卡片头是 `ui.horizontal`（左组：拖柄、折叠钮、厂商名、baseUrl 提示、连通性结果）
-//! 里再嵌一个 `right_to_left` 放按钮组，布局用 `egui::Sides::new().shrink_left().truncate()`：
-//! 先量右组，再把左组限制在剩余宽度内并按需截断。这里按真实结构离屏渲染（预览侧栏
-//! + 滚动区 + Providers 区），断言每个 provider 的「删除」按钮都落在组件区内。
+//! The card head is a `ui.horizontal` (left group: grab handle, collapse button, vendor name, baseUrl note,
+//! connectivity result) nesting a `right_to_left` button group, laid out with
+//! `egui::Sides::new().shrink_left().truncate()`: measure the right group first, then constrain the left
+//! group to the remaining width, truncating as needed. Rendered offscreen with real structure (preview
+//! sidebar + scroll area + the Providers block), asserting every provider's "delete" button lands inside the component area.
 
 use crate::app::App;
 use crate::format::ConfigFormat;
 use crate::model::{ModelRow, ProviderRow};
 use eframe::egui;
 
-/// 用户实际配置里的 provider 名与顺序。
+/// Provider names and order from a real user config.
 const PROVIDERS: [&str; 15] = [
     "sensenova",
     "openai_apizh",
@@ -43,7 +44,7 @@ struct TextAt {
     rect: egui::Rect,
 }
 
-/// 收集全部文本形状（含嵌套）。
+/// Collect all text shapes (including nested).
 fn texts_of(out: &egui::FullOutput) -> Vec<TextAt> {
     let mut texts = Vec::new();
     fn collect(shape: &egui::Shape, out: &mut Vec<TextAt>) {
@@ -62,28 +63,28 @@ fn texts_of(out: &egui::FullOutput) -> Vec<TextAt> {
     texts
 }
 
-/// 场景参数：窗口宽度、是否打开预览、首个 provider 的连通性错误文本长度。
+/// Scenario parameters: window width, whether the preview is open, the first provider's connectivity error text length.
 struct Scene {
     width: f32,
     preview_open: bool,
     err_len: usize,
 }
 
-/// 按真实结构离屏渲染 Providers 区：预览侧栏（按比例定宽）+ 中央滚动区。
+/// Offscreen-render the Providers block with real structure: the preview sidebar (ratio-sized) + the central scroll area.
 ///
-/// 返回 (组件区矩形, 文本形状)。
+/// Returns (component-area rect, text shapes).
 fn render(scene: &Scene) -> (egui::Rect, Vec<TextAt>) {
     let mut app = App {
         providers: PROVIDERS.iter().map(|k| provider(k)).collect(),
         source_format: ConfigFormat::Opencode,
         current_page: ConfigFormat::Opencode,
-        // 关掉首次引导条：它会让卡片整体下移，干扰按 y 配对的断言。
+        // Turn off the first-use guidance: it would push every card down, disturbing the y-based pairing assertions.
         guide_dismissed: true,
         show_preview: scene.preview_open,
         ..App::default()
     };
-    // 全部折叠：只留卡片头（本测试针对头部布局），同时不依赖用户 prefs 里的
-    // 折叠状态，避免展开态下卡片过高、尾部卡片被 ScrollArea 纵向裁掉。
+    // Collapse everything, leaving only card heads (this test targets head layout), while also avoiding the
+    // user prefs' collapse state — expanded cards would grow too tall and tail cards would clip vertically in the ScrollArea.
     app.set_all_providers_collapsed(true);
     if scene.err_len > 0 {
         let state = app.latency.entry(PROVIDERS[0].to_string()).or_default();
@@ -103,7 +104,7 @@ fn render(scene: &Scene) -> (egui::Rect, Vec<TextAt>) {
             ..Default::default()
         },
         |ctx| {
-            // 与 App::update 同构：先预览侧栏（按比例定宽），再中央面板。
+            // Isomorphic to App::update: the preview sidebar first (ratio-sized), then the central panel.
             let max_w = (scene.width - 320.0).max(220.0);
             let preview_w = (scene.width * 0.38).clamp(220.0, max_w);
             egui::SidePanel::right("preview_panel")
@@ -124,7 +125,7 @@ fn render(scene: &Scene) -> (egui::Rect, Vec<TextAt>) {
     (area, texts_of(&out))
 }
 
-/// 取与 `name` 同一行的某按钮文本（y 中心相差 8px 以内）。
+/// Take a button's text on the same line as `name` (y centers within 8px).
 fn button_on_row<'a>(texts: &'a [TextAt], name: &TextAt, label: &str) -> Option<&'a TextAt> {
     texts
         .iter()
@@ -132,7 +133,7 @@ fn button_on_row<'a>(texts: &'a [TextAt], name: &TextAt, label: &str) -> Option<
         .find(|t| (t.rect.center().y - name.rect.center().y).abs() < 8.0)
 }
 
-/// 核心回归：各种宽度 / 预览开关 / 长错误文本下，「删除」按钮都必须在组件区内。
+/// The core regression: across widths / preview toggles / long error texts, "delete" buttons must stay inside the component area.
 #[test]
 fn delete_button_stays_visible_in_every_layout() {
     let scenes = [
@@ -146,7 +147,7 @@ fn delete_button_stays_visible_in_every_layout() {
             preview_open: true,
             err_len: 0,
         },
-        // 修复前：这个组合下第 1 个 provider 的「删除」按钮完全未渲染。
+        // Before the fix: under this combination, the 1st provider's "delete" button rendered not at all.
         Scene {
             width: 970.0,
             preview_open: true,
@@ -157,7 +158,7 @@ fn delete_button_stays_visible_in_every_layout() {
             preview_open: false,
             err_len: 96,
         },
-        // 极窄（下限 970 窗口 - 38% 预览后更窄）也要保住右组。
+        // Extremely narrow (the 970 floor, narrower still after a 38% preview) must keep the right group too.
         Scene {
             width: 600.0,
             preview_open: true,
@@ -184,7 +185,7 @@ fn delete_button_stays_visible_in_every_layout() {
                 del.rect,
                 area
             );
-            // 「复制」与「删除」同组，一并钉住。
+            // "Duplicate" shares the group with "delete" — pinned together.
             assert!(
                 button_on_row(&texts, name, "复制").is_some(),
                 "{ctx_desc}：{key} 的「复制」按钮没渲染出来"
@@ -193,7 +194,7 @@ fn delete_button_stays_visible_in_every_layout() {
     }
 }
 
-/// 打印每个 provider 的「删除」按钮横向范围（诊断辅助）。
+/// Print each provider's "delete" button's horizontal range (a diagnostic aid).
 #[test]
 fn dump_delete_button_positions() {
     let scenes = [

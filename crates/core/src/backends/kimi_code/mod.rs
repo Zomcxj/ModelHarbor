@@ -1,27 +1,27 @@
-//! KimiCode 后端：`~/.kimi-code/config.toml`（TOML）。
+//! The KimiCode backend: `~/.kimi-code/config.toml` (TOML).
 //!
-//! 中间表示是 `serde_json::Value`，由 `toml` crate 做 `from_str::<Value>` /
-//! `to_string(&Value)`。
+//! The intermediate representation is `serde_json::Value`, with the `toml` crate doing
+//! `from_str::<Value>` / `to_string(&Value)`.
 //!
-//! ## 结构：两张分开的表，靠 `provider` 字段 join
+//! ## Structure: two separate tables joined by the `provider` field
 //!
 //! ```toml
-//! default_model = "sensenova/sensenova-6.8-flash-lite"   # 顶层标量
+//! default_model = "sensenova/sensenova-6.8-flash-lite"   # top-level scalar
 //! default_permission_mode = "auto"
 //!
-//! [providers."managed:kimi-code"]        # 键 = provider 名（含 `:` 必须加引号）
+//! [providers."managed:kimi-code"]        # key = provider name (with `:`, must be quoted)
 //! base_url = "https://api.kimi.com/coding/v1"
-//! type = "kimi"                          # 必填
-//! api_key = ""                           # 空串 = 未设置
+//! type = "kimi"                          # required
+//! api_key = ""                           # empty string = unset
 //!
-//! [providers."managed:kimi-code".oauth]  # /login 注入，只读保留
+//! [providers."managed:kimi-code".oauth]  # injected by /login, kept read-only
 //! storage = "file"
 //! key = "oauth/kimi-code"
 //!
-//! [models."kimi-code/k3"]                # 顶层独立表，键 = alias
-//! provider = "managed:kimi-code"         # join key → [providers.*]，必填
-//! model = "k3"                           # 上游 wire id，必填
-//! max_context_size = 1048576             # 必填，≥1
+//! [models."kimi-code/k3"]                # standalone top-level table, key = alias
+//! provider = "managed:kimi-code"         # join key → [providers.*], required
+//! model = "k3"                           # upstream wire id, required
+//! max_context_size = 1048576             # required, ≥1
 //! capabilities = [ "thinking", "tool_use" ]
 //! display_name = "K3"
 //! support_efforts = [ "low", "high", "max" ]
@@ -31,31 +31,30 @@
 //! enabled = true
 //! ```
 //!
-//! 模型不在 provider 下，而在顶层全局表里，靠 `provider` 字段关联；[`parse`] 做
-//! join，[`serialize_root`] 拆回两张表。
+//! Models don't nest under providers — they sit in a top-level global table joined by the `provider`
+//! field; [`parse`] performs the join and [`serialize_root`] splits back into the two tables.
 //!
-//! ## 约束
+//! ## Constraints
 //!
-//! 1. 表键是 alias，`model` 是 wire id，两者可以不同。界面显示 wire id
-//!    （[`ModelRow::id`]，它会被发给上游），alias 另存 [`ModelRow::kimi_alias`]，
-//!    写回时作表键。
-//! 2. `api_key` / `api_key_env` / `oauth` 三者互斥，同时写会让 Kimi Code 启动失败。
-//!    判据是**非空字符串**：`api_key = ""` 视同未设置。见
-//!    [`credential_conflict`]。
-//! 3. `managed:*` provider 来自 OAuth 登录，只读，只能用 `/login`、`/logout` 管理；
-//!    界面不给删除、不给改字段。
-//! 4. `capabilities` 只增不减。见 [`merge_capabilities`]。
+//! 1. The table key is the alias; `model` is the wire id; the two may differ. The UI displays the wire id
+//!    ([`ModelRow::id`] — it's what gets sent upstream); the alias is stored separately in
+//!    [`ModelRow::kimi_alias`] and serves as the table key at write-back.
+//! 2. `api_key` / `api_key_env` / `oauth` are mutually exclusive; writing two makes Kimi Code fail to start.
+//!    The criterion is a **non-empty string**: `api_key = ""` counts as unset. See [`credential_conflict`].
+//! 3. `managed:*` providers come from OAuth login and are read-only — manageable only via `/login` and
+//!    `/logout`; the UI offers neither deletion nor field edits.
+//! 4. `capabilities` only grows, never shrinks. See [`merge_capabilities`].
 //!
-//! 模型 schema 里没有 `disabled`/`enabled` 字段，模型表按别名一一索引，每条别名
-//! 独立生效，既不去重也没有开关，也没有全量副本；删卡片即真删。
+//! The model schema has no `disabled`/`enabled` field; the model table indexes one-to-one by alias, every
+//! alias independently effective — no dedup, no toggles, no full copy; deleting a card really deletes.
 //!
-//! 界面新增（或从别的格式复制来的）模型，缺省别名按 `<provider>/<model>` 生成。
+//! Models added by the UI (or copied in from other formats) get a default alias of `<provider>/<model>`.
 //!
-//! 保存时整块原样带过的两类内容：`managed:*` provider 与其模型（界面不显示），
-//! 以及孤儿模型（`provider` 指向的键在 `[providers.*]` 里不存在）。其余条目一律
-//! 以界面状态为准，包括用户把卡片删掉的情况。
+//! Two kinds of content pass through untouched at save: `managed:*` providers and their models (not shown
+//! in the UI), and orphan models (whose `provider` key doesn't exist in `[providers.*]`). Everything else
+//! follows the UI state, including cards the user deleted.
 //!
-//! TOML 全量序列化会丢注释；Kimi Code 桌面端与本文件共享。
+//! Full TOML serialization drops comments; the Kimi Code desktop app shares this file.
 
 use super::{Backend, BackendLoad};
 use crate::format::ConfigFormat;
@@ -76,42 +75,42 @@ pub struct KimiCodeBackend;
 
 pub static BACKEND: KimiCodeBackend = KimiCodeBackend;
 
-/// OAuth 登录写入的 provider 前缀。
+/// The provider prefix written by OAuth login.
 pub(crate) const MANAGED_PREFIX: &str = "managed:";
 
 fn default_local_path() -> String {
     format!("{}\\.kimi-code\\config.toml", home_dir_string())
 }
 
-/// 某个 provider 是否由 OAuth 登录维护（只读）。
+/// Whether a provider is OAuth-login-managed (read-only).
 ///
-/// 另供 `app::strip_cross_format_containers` 使用。
+/// Also used by `app::strip_cross_format_containers`.
 pub fn is_managed_provider(name: &str) -> bool {
     name.starts_with(MANAGED_PREFIX)
 }
 
-/// 解析 TOML 文本为 root；解析失败返回 `None`。
+/// Parse TOML text into a root; `None` on parse failure.
 ///
-/// `util::parse_config_content` 是 JSONC 解析器，不适用于 TOML。
+/// `util::parse_config_content` is a JSONC parser — unsuitable for TOML.
 pub fn parse_root_for_shrink(content: &str) -> Option<Value> {
     parse_toml(content).ok()
 }
 
-/// 这次保存是否会让模型表变小。
+/// Whether this save would shrink the model table.
 ///
-/// 判据是模型表条目数变少；孤儿与 `managed:` 模型都被原样保留。
+/// Criterion: the model table's entry count decreasing; orphans and `managed:` models are preserved as-is.
 pub fn shrinks_on_save(before: &Value, after: &Value) -> bool {
     let count = |root: &Value| models_map(root).map(Map::len).unwrap_or(0);
     count(before) > count(after)
 }
 
-// ---------- TOML 读写 ----------
+// ---------- TOML IO ----------
 
-// ---------- 结构访问 ----------
+// ---------- Structure access ----------
 
-// ---------- 解析：两张表 join ----------
+// ---------- Parsing: joining the two tables ----------
 
-// ---------- 序列化：拆回两张表 ----------
+// ---------- Serialization: splitting back into two tables ----------
 
 impl Backend for KimiCodeBackend {
     fn id(&self) -> ConfigFormat {
@@ -127,7 +126,7 @@ impl Backend for KimiCodeBackend {
     }
 
     fn detect(&self, content: &str, path: &str) -> bool {
-        // 路径强命中：Kimi Code 的用户级配置就在这个位置。
+        // Strong path hit: Kimi Code's user-level config lives exactly here.
         let normalized = path.replace('\\', "/");
         if normalized.contains("/.kimi-code/") && normalized.ends_with("config.toml") {
             return true;
@@ -135,19 +134,19 @@ impl Backend for KimiCodeBackend {
         let Ok(root) = parse_toml(content) else {
             return false;
         };
-        // `model_providers` 是 Codex 的顶层键（带下划线），Kimi 是 `providers`。
+        // `model_providers` is Codex's top-level key (underscored); Kimi uses `providers`.
         if root.get("model_providers").is_some() {
             return false;
         }
-        // 极强特征：`managed:kimi-code` + `type = "kimi"`。
+        // Very strong fingerprint: `managed:kimi-code` + `type = "kimi"`.
         if providers_map(&root).is_some_and(|m| {
             m.iter()
                 .any(|(name, v)| name.starts_with(MANAGED_PREFIX) && provider_type(v) == "kimi")
         }) {
             return true;
         }
-        // 一般特征：`[providers.` 与 `[models.` 两张表同时出现，且模型带
-        // `max_context_size`（Kimi 特有且必填）。
+        // General fingerprint: the `[providers.` and `[models.` tables together, with models carrying
+        // `max_context_size` (Kimi-specific and required).
         let has_providers = providers_map(&root).is_some_and(|m| !m.is_empty());
         let has_models = models_map(&root).is_some_and(|m| {
             m.values()
@@ -156,7 +155,7 @@ impl Backend for KimiCodeBackend {
         if has_providers && has_models {
             return true;
         }
-        // 顶层独有标量：`default_permission_mode` 是 Kimi 的权限模式键。
+        // Top-level unique scalar: `default_permission_mode` is Kimi's permission-mode key.
         root.get("default_permission_mode").is_some()
     }
 
@@ -168,7 +167,7 @@ impl Backend for KimiCodeBackend {
         Ok(load)
     }
 
-    // `parse_at` 用 trait 缺省实现（直接 `parse`）。
+    // `parse_at` uses the trait's default implementation (straight `parse`).
 
     fn serialize_root(
         &self,
@@ -177,22 +176,22 @@ impl Backend for KimiCodeBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
-        // 产物是 Kimi Code 的全部生效状态，`config.toml` 承担所有条目。
+        // The product is Kimi Code's entire effective state; `config.toml` carries all entries.
         let base = target_root.unwrap_or(extras);
         let mut root = base.as_object().cloned().unwrap_or_default();
         set_or_drop_table(&mut root, "providers", all_providers(providers, base));
         let mut models = model_table(providers, base);
-        // 认不出来的条目原样补回（孤儿模型 / managed 名下的模型）。
+        // Unrecognized entries are added back as-is (orphan models / models under managed names).
         merge_unmanaged_models(&mut models, base, providers);
         set_or_drop_table(&mut root, "models", models);
         Value::Object(root)
     }
 
-    /// 没有全量副本可写，但仍挂在保存序列里，作为写盘前的总闸：
-    /// - 凭据 XOR（见模块说明第 2 点）；
-    /// - `managed:` 保留前缀与别名撞名（[`first_structural_conflict`]）。
+    /// No full copy to write, yet it stays in the save sequence as the pre-write master gate:
+    /// - the credential XOR (see module note 2);
+    /// - `managed:` reserved-prefix vs alias collisions ([`first_structural_conflict`]).
     ///
-    /// 失败时返回错误、取消保存。
+    /// Returns an error and cancels the save on failure.
     fn save_sidecars(&self, _path: &str, providers: &[ProviderRow]) -> Result<(), String> {
         if let Some(conflict) = first_credential_conflict(providers) {
             return Err(format!("凭据冲突，已取消保存: {conflict}"));
@@ -216,7 +215,7 @@ impl Backend for KimiCodeBackend {
     }
 
     fn render(&self, root: &Value, _compact: bool) -> Result<String, String> {
-        // `compact` 参数对本后端无意义（忽略）：`toml` 的输出就是规范形态。
+        // The `compact` parameter is meaningless for this backend (ignored): the `toml` output is already canonical.
         to_toml_string(root)
     }
 }

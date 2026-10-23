@@ -177,7 +177,7 @@ fn provider_row_roundtrip() {
 
 #[test]
 fn opencode_chat_completions_defaults_compat_false() {
-    // 缺省 npm 或 @ai-sdk/openai(-compatible)：compat 默认 false。
+    // A missing npm or @ai-sdk/openai(-compatible): compat defaults false.
     for npm in ["", "@ai-sdk/openai", "@ai-sdk/openai-compatible"] {
         let v = json!({
             "npm": npm,
@@ -187,7 +187,7 @@ fn opencode_chat_completions_defaults_compat_false() {
         let provider = ProviderRow::from("openai", &v);
         assert!(!provider.compat, "npm={:?} 应默认不打勾", npm);
     }
-    // 非 chat/completions（如 anthropic）：compat 默认 true。
+    // Non-chat/completions (like anthropic): compat defaults true.
     let v = json!({
         "npm": "@ai-sdk/anthropic",
         "options": {"baseURL": "https://api.anthropic.com", "apiKey": "sk-xxx"},
@@ -199,7 +199,7 @@ fn opencode_chat_completions_defaults_compat_false() {
 
 #[test]
 fn cross_format_source_writes_default_timeout_to_opencode() {
-    // pi 来源 → opencode：文件没有 options.timeout 时写出默认 180000。
+    // pi source → opencode: when the file has no options.timeout, the default 180000 writes out.
     let raw = json!({
         "baseUrl": "https://x/v1",
         "apiKey": "k",
@@ -274,8 +274,8 @@ fn nested_roundtrip_modify_and_reload() {
 
 #[test]
 fn v2_file_assigns_schema_to_minimal_agents() {
-    // v2 文件里的极简 agent（无 request、model 不带 #）不能被逐条嗅探
-    // 误判成 v1：温度要从 request.body 读，而不是顶层死键。
+    // A v2 file's minimal agent (no request, model without #) must not be misjudged as v1 by per-entry
+    // sniffing: temperature reads from request.body, not the top-level dead key.
     let path = tmp_path("v2_minimal");
     let content = serde_json::to_string_pretty(&json!({
         "agents": {
@@ -298,7 +298,7 @@ fn v2_file_assigns_schema_to_minimal_agents() {
         "从 request.body.temperature 读"
     );
 
-    // 写回保持 v2 形状，顶层不出现死键。
+    // The write-back keeps the v2 shape; no dead keys at the top level.
     let out = agents[0].to_value();
     assert_eq!(out["request"]["body"]["temperature"], 0.5);
     assert!(
@@ -310,8 +310,8 @@ fn v2_file_assigns_schema_to_minimal_agents() {
 
 #[test]
 fn v2_minimal_agent_full_roundtrip_keeps_temperature() {
-    // 数据丢失回归：极简 agent 以前被误判成 v1，保存时
-    // request.body.temperature 被静默删掉。
+    // Data-loss regression: minimal agents were once misjudged as v1, silently deleting
+    // request.body.temperature at save.
     let path = tmp_path("v2_rt_temp");
     let content = serde_json::to_string_pretty(&json!({
         "agents": {
@@ -346,8 +346,8 @@ fn v2_minimal_agent_full_roundtrip_keeps_temperature() {
 
 #[test]
 fn agent_sniffing_still_recognizes_explicit_v2_and_v1() {
-    // 逐条嗅探本身保留（AgentRow::from 的老语义）：带 request 的条目判 v2，
-    // 顶层温度的条目判 v1；文件级指定用 from_with_schema。
+    // Per-entry sniffing itself is kept (AgentRow::from's old semantics): entries with request judge v2,
+    // top-level-temperature entries judge v1; file-level specification uses from_with_schema.
     let v2 = json!({ "model": "a#high", "request": { "body": { "temperature": 0.1 } } });
     assert_eq!(AgentRow::from("a", &v2).schema, OpencodeSchemaVersion::V2);
     assert_eq!(AgentRow::from("a", &v2).temperature, "0.1");
@@ -356,7 +356,7 @@ fn agent_sniffing_still_recognizes_explicit_v2_and_v1() {
     assert_eq!(AgentRow::from("a", &v1).schema, OpencodeSchemaVersion::V1);
     assert_eq!(AgentRow::from("a", &v1).temperature, "0.1");
 
-    // 极简条目自嗅探是 v1（老语义），但文件级指定后从 request.body 读。
+    // A minimal entry self-sniffs as v1 (old semantics), but with file-level specification it reads from request.body.
     let minimal = json!({ "model": "a" });
     assert_eq!(
         AgentRow::from("a", &minimal).schema,
@@ -447,7 +447,7 @@ fn model_variants_raw_values_preserved() {
 
 #[test]
 fn model_limit_omitted_when_empty() {
-    // 空上下文/输出限制不写入 limit。
+    // Empty context/output limits write no limit.
     let v = json!({ "name": "m", "reasoning": false, "tool_call": false });
     let model = ModelRow::from("m", &v);
     let out = model.to_value();
@@ -456,10 +456,10 @@ fn model_limit_omitted_when_empty() {
 
 #[test]
 fn provider_options_omitted_when_empty() {
-    // 无 baseURL/apiKey/timeout 时不写入 options。
+    // Without baseURL/apiKey/timeout, no options are written.
     let v = json!({ "npm": "@ai-sdk/openai", "models": {} });
     let provider = ProviderRow::from("p", &v);
-    // 文件未写 options.timeout 时默认显示 180000，未修改不写回。
+    // When the file wrote no options.timeout, 180000 displays by default; unmodified, it doesn't write back.
     assert_eq!(provider.timeout, "180000");
     assert_eq!(provider.original_timeout, "180000");
     let out = provider.to_value();
@@ -490,7 +490,7 @@ fn load_opencode_result_nonexistent_is_ok_empty() {
 
 #[test]
 fn new_model_writes_defaults_for_reasoning_tool_call_and_limit() {
-    // 新增模型默认勾选 reasoning/tool_call，并预填上下文/输出上限。
+    // New models default reasoning/tool_call checked, with context/output caps prefilled.
     let mut model = ModelRow::new();
     model.id = "glm-5.3".into();
     model.name = "glm-5.3".into();
@@ -507,7 +507,7 @@ fn new_model_writes_defaults_for_reasoning_tool_call_and_limit() {
 
 #[test]
 fn new_model_fields_in_canonical_opencode_order() {
-    // 新建模型的键顺序：name → modalities → reasoning → tool_call → limit → options → variants。
+    // A new model's key order: name → modalities → reasoning → tool_call → limit → options → variants.
     let mut model = ModelRow::new();
     model.id = "glm-5.3".into();
     model.name = "glm-5.3".into();
@@ -536,7 +536,7 @@ fn new_model_fields_in_canonical_opencode_order() {
 
 #[test]
 fn existing_model_key_order_preserved_when_unmodified() {
-    // 已有 raw 的模型不重排键顺序，只更新实际改动字段。
+    // Models with existing raw don't reorder keys — only actually-changed fields update.
     let v = json!({"variants": {"high": {}}, "name": "m", "reasoning": true});
     let model = ModelRow::from("m", &v);
     let out = model.to_value();
@@ -551,7 +551,7 @@ fn existing_model_key_order_preserved_when_unmodified() {
 
 #[test]
 fn model_variants_written_in_canonical_order() {
-    // 写出时按规范顺序排序，并保留 raw 中各档位的原始内容。
+    // Writing sorts into canonical order while preserving each tier's original content from raw.
     let raw = json!({
         "name": "m",
         "variants": {"medium": {"reasoningEffort": "medium"}, "high": {}, "max": {}, "xhigh": {}}

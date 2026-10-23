@@ -1,13 +1,14 @@
-//! 用量表格的排版与筛选：数字必须右对齐，筛到单个 agent 时数字必须跟着变。
+//! The usage tables' layout and filtering: numbers must right-align, and filtering to one agent must move them.
 //!
-//! 用户反馈过「排版太丑」，根因是数字列左对齐 —— 位数不同的数（`1.2K` 与
-//! `123.4M`）左对齐会排成参差的锯齿。这里按真实结构离屏渲染，断言：
+//! A user called the old layout "too ugly"; the root cause was left-aligned number columns — mixed-digit
+//! values (`1.2K` vs `123.4M`) left-aligned stagger like sawteeth. Rendering offscreen with real structure,
+//! this asserts:
+//! 1. Numbers in one column have **right edges aligned** (that's what makes a table a table);
+//! 2. Headers sit exactly above their numbers (same column, same width);
+//! 3. After switching to one agent, the totals column's numbers do shrink (the filter really reaches the
+//!    render path).
 //!
-//! 1. 同一列的数字**右边缘对齐**（这才是「表格」的样子）；
-//! 2. 表头落在数字正上方（同列同宽）；
-//! 3. 切到某个 agent 后，合计列的数字确实收窄（筛选真的接到了渲染路径上）。
-//!
-//! 只断言几何关系，不断言具体像素值，这样换主题 / 改字体也不会误报。
+//! Only geometry is asserted, never pixel values — theme or font changes won't cause false failures.
 
 use crate::app::App;
 use crate::format::ConfigFormat;
@@ -15,13 +16,13 @@ use crate::usage::{DailyBucket, DayTotals, SessionSnapshot};
 use eframe::egui;
 use std::collections::HashMap;
 
-/// 一段被渲染出来的文本及其矩形。
+/// A rendered piece of text with its rect.
 struct TextAt {
     text: String,
     rect: egui::Rect,
 }
 
-/// 收集全部文本形状（含嵌套）。
+/// Collect all text shapes (including nested).
 fn texts_of(out: &egui::FullOutput) -> Vec<TextAt> {
     let mut texts = Vec::new();
     fn collect(shape: &egui::Shape, out: &mut Vec<TextAt>) {
@@ -40,7 +41,7 @@ fn texts_of(out: &egui::FullOutput) -> Vec<TextAt> {
     texts
 }
 
-/// 造一条会话快照。
+/// Build one session snapshot.
 fn session(client: ConfigFormat, id: &str, input: i64) -> SessionSnapshot {
     SessionSnapshot {
         client,
@@ -62,7 +63,7 @@ fn session(client: ConfigFormat, id: &str, input: i64) -> SessionSnapshot {
     }
 }
 
-/// 造一天的分桶：pi 与 opencode 各有用量。
+/// Build one day's bucket: pi and opencode each with usage.
 fn day_bucket(date: &str, pi_input: i64, opencode_input: i64) -> DailyBucket {
     let mut bucket = DailyBucket::new(date);
     let pi = DayTotals {
@@ -99,7 +100,7 @@ fn day_bucket(date: &str, pi_input: i64, opencode_input: i64) -> DailyBucket {
             .collect(),
     );
     bucket.by_model.insert("claude-opus-5".into(), pi);
-    // 会话表读的是 `by_session`（键同 `SessionSnapshot::key`）。
+    // The session table reads `by_session` (keys same as `SessionSnapshot::key`).
     bucket.by_session.insert(
         SessionSnapshot::key(ConfigFormat::Pi, "pi-session-aaaa"),
         pi,
@@ -111,9 +112,9 @@ fn day_bucket(date: &str, pi_input: i64, opencode_input: i64) -> DailyBucket {
     bucket
 }
 
-/// 离屏渲染用量视图，返回全部文本形状。
+/// Offscreen-render the usage view; returns all text shapes.
 ///
-/// 与 `App::update` 同构：状态行 + 控件行 + 总览 + 表格都在中央面板的滚动区里。
+/// Isomorphic to `App::update`: status line + control row + overview + tables all inside the central panel's scroll area.
 fn render(filter: Option<ConfigFormat>) -> Vec<TextAt> {
     let mut app = App {
         main_view: crate::app::MainView::Usage,
@@ -122,7 +123,7 @@ fn render(filter: Option<ConfigFormat>) -> Vec<TextAt> {
         guide_dismissed: true,
         ..App::default()
     };
-    // 直接注入一次「扫描完成」的结果：本测试只关心排版，不跑真实扫描。
+    // Inject a "scan finished" result directly: this test cares about layout, not real scanning.
     let sessions = vec![
         session(ConfigFormat::Pi, "pi-session-aaaa", 1_000),
         session(ConfigFormat::Opencode, "oc-session-bbbb", 50_000_000),
@@ -155,8 +156,8 @@ fn render(filter: Option<ConfigFormat>) -> Vec<TextAt> {
         },
         |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                // 照搬 [`App::update`] 的用量分支：状态行（含筛选
-                // 文字与区间切换）画在滚动区**之外**，固定在顶部不跟随滚动。
+                // Copied from [`App::update`]'s usage branch: the status line (with filter text and range switch) paints
+                // **outside** the scroll area, pinned to the top, never scrolling.
                 app.ui_usage_status(ui);
                 ui.add_space(crate::theme::SPACE_4);
                 egui::ScrollArea::vertical()
@@ -170,14 +171,14 @@ fn render(filter: Option<ConfigFormat>) -> Vec<TextAt> {
     texts_of(&out)
 }
 
-/// 同一列的数字必须右边缘对齐。
+/// Numbers in one column must have right edges aligned.
 ///
-/// 取「合计」列：它在四个表里都紧跟在名称列后面，且一定存在。这里用模型表
-/// （模型名固定、行数固定）来测，断言所有数字的 `rect.right()` 落在同一 x 上。
+/// Take the "total" column: it follows the name column in all four tables and always exists. Measured on
+/// the model table (fixed names, fixed rows), asserting every number's `rect.right()` lands on one x.
 #[test]
 fn number_columns_are_right_aligned() {
     let texts = render(None);
-    // 数字形状：全是等宽体的格式化结果（含 K / M / B 后缀或纯数字）。
+    // Number shapes: all monospace-formatted results (with K / M / B suffixes or plain digits).
     let numbers: Vec<&TextAt> = texts
         .iter()
         .filter(|t| t.text.ends_with('M') || t.text.ends_with('K') || t.text.ends_with('B'))
@@ -188,11 +189,12 @@ fn number_columns_are_right_aligned() {
         numbers.len()
     );
 
-    // 按「列」分组：x 中心接近的算同一列，再看右边缘是否齐平。
+    // Group by "column": x centers close together belong to one column; then check right-edge alignment.
     let mut rights_by_column: HashMap<i64, Vec<f32>> = HashMap::new();
     for n in &numbers {
-        // 按**右缘**量化到 4px 网格分组（右对齐列的中心随文本宽度漂移，
-        // 一加列就会跨过量化格把同列拆散；要对齐的本来就是右缘）。
+        // Group by quantizing the **right edge** onto a 4px grid (right-aligned columns' centers drift with text
+        // width — adding one column can cross a quantization cell and split a column apart; what must align is
+        // the right edge anyway).
         let key = (n.rect.right() / 4.0).round() as i64;
         rights_by_column
             .entry(key)
@@ -205,7 +207,7 @@ fn number_columns_are_right_aligned() {
         }
         let max = rights.iter().cloned().fold(f32::MIN, f32::max);
         let min = rights.iter().cloned().fold(f32::MAX, f32::min);
-        // 右边缘差在 1px 内算对齐（等宽字体下应当几乎完全一致）。
+        // Right edges within 1px count as aligned (monospace should be near-exact).
         max - min < 1.0
     });
     assert!(
@@ -214,11 +216,11 @@ fn number_columns_are_right_aligned() {
     );
 }
 
-/// 表头要落在数字正上方（同列同宽），否则表头与数据会错位。
+/// The header must sit directly above its numbers (same column, same width), or headers and data misalign.
 #[test]
 fn headers_sit_above_their_numbers() {
     let texts = render(None);
-    // 表头可能带排序箭头（`合计 ▼`）：按前缀找，不要求完全相等。
+    // Headers may carry the sort arrow (`total ▼`): match by prefix, not exact equality.
     let header = |name: &str| {
         texts
             .iter()
@@ -226,7 +228,7 @@ fn headers_sit_above_their_numbers() {
             .unwrap_or_else(|| panic!("没渲染出表头「{name}」"))
     };
     let total = header("合计");
-    // 合计列的某个数字：右边缘与表头右边缘应当基本齐平（同列右对齐）。
+    // Some number of the totals column: its right edge should roughly meet the header's (same-column right alignment).
     let same_column = texts.iter().filter(|t| {
         let is_number = t.text.ends_with('M') || t.text.ends_with('K') || t.text.ends_with('B');
         is_number && (t.rect.right() - total.rect.right()).abs() < 2.0
@@ -237,25 +239,25 @@ fn headers_sit_above_their_numbers() {
     );
 }
 
-/// 筛到单个 agent 后，合计列的数字必须跟着变小（筛选真的接到了渲染路径）。
+/// After filtering to one agent, the totals column's numbers must shrink (the filter really reaches the render path).
 #[test]
 fn filtering_narrows_the_rendered_numbers() {
     let all = render(None);
     let pi = render(Some(ConfigFormat::Pi));
 
-    // 只看 pi 时，状态行要显示筛选名。
+    // With only pi selected, the status line shows the filter's name.
     assert!(
         pi.iter().any(|t| t.text.contains("pi")),
         "筛选后状态行应显示 agent 名"
     );
-    // 未筛选时状态行显示「全部 agent」。
+    // Unfiltered, the status line shows "all agents".
     assert!(
         all.iter().any(|t| t.text.contains("全部 agent")),
         "未筛选时状态行应显示「全部 agent」"
     );
 
-    // 表格画的是 total()（= 输入 + 输出 + 缓存读），不是单独的输入列。
-    // opencode 两天的合计 = (1e8 + 1e7 + 4e8) * 1.1 ≈ 561.0M。
+    // The table draws total() (= input + output + cache read), not a standalone input column.
+    // opencode's two-day total = (1e8 + 1e7 + 4e8) * 1.1 ≈ 561.0M.
     let has_opencode_total = |texts: &[TextAt]| texts.iter().any(|t| t.text == "561.0M");
     assert!(
         has_opencode_total(&all),
@@ -269,7 +271,7 @@ fn filtering_narrows_the_rendered_numbers() {
         !has_opencode_total(&pi),
         "只看 pi 时不该出现 opencode 的 561.0M"
     );
-    // 只看 pi 时合计应变成它自己的量级（15.3K）。
+    // With only pi selected, the total should become pi's own magnitude (15.3K).
     assert!(
         pi.iter().any(|t| t.text == "15.3K"),
         "只看 pi 时应渲染出 15.3K，实际：{:?}",

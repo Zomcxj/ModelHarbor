@@ -1,7 +1,7 @@
 use eframe::egui;
 
-/// 表单字段标签：左对齐且宽度按文本内容自适应（上限 `max_width`），紧贴其后的输入框；
-/// 超长时截断并悬停显示完整文本。
+/// A form field's label: left-aligned, width fitted to its text (capped at `max_width`), hugging the input that follows;
+/// over-long truncates with the full text on hover.
 pub fn field_label(ui: &mut egui::Ui, max_width: f32, text: impl Into<String>) -> egui::Response {
     let text = text.into();
     let font = egui::TextStyle::Body.resolve(ui.style());
@@ -22,7 +22,7 @@ pub fn field_label(ui: &mut egui::Ui, max_width: f32, text: impl Into<String>) -
     resp.on_hover_text(text)
 }
 
-/// 依次渲染卡片列表（每卡片之间附加行间距）。
+/// Render a card list in order (adding row spacing between cards).
 pub fn card_list(
     ui: &mut egui::Ui,
     keys: &[usize],
@@ -35,8 +35,8 @@ pub fn card_list(
     }
 }
 
-/// 密钥输入框：`show` 为 false 时掩码显示（圆点），内容仍保留。
-/// 显隐切换由工具栏「显示密钥/隐藏密钥」全局按钮控制。
+/// The key input box: masked (dots) when `show` is false, content retained.
+/// Visibility toggles via the toolbar's global "show keys / hide keys" button.
 pub fn secret_text_edit(
     ui: &mut egui::Ui,
     value: &mut String,
@@ -52,7 +52,7 @@ pub fn secret_text_edit(
     )
 }
 
-/// 数字文本编辑框：内容非空且无法解析为数字时红色高亮并悬停提示。
+/// A numeric text edit: non-empty unparseable content highlights red with a hover note.
 pub fn numeric_text_edit(
     ui: &mut egui::Ui,
     s: &mut String,
@@ -71,21 +71,21 @@ pub fn numeric_text_edit(
     }
 }
 
-/// 滑动开关（toggle）的几何：轨道尺寸与滑块直径。
+/// The toggle's geometry: track size and knob diameter.
 pub const TOGGLE_WIDTH: f32 = 34.0;
 pub const TOGGLE_HEIGHT: f32 = 18.0;
-/// 滑块与轨道边缘的间距。
+/// The gap between knob and track edge.
 pub const TOGGLE_INSET: f32 = 2.0;
-/// 滑块直径 = 轨道高 − 2×内边距。
+/// Knob diameter = track height − 2×padding.
 pub const TOGGLE_KNOB: f32 = TOGGLE_HEIGHT - 2.0 * TOGGLE_INSET;
 
-/// 几何常量必须自洽：滑块小于轨道，轨道横向长于纵向。
+/// The geometry constants must be self-consistent: the knob smaller than the track, the track wider than tall.
 const _: () = {
     assert!(TOGGLE_KNOB < TOGGLE_HEIGHT, "滑块要小于轨道高，留出描边");
     assert!(TOGGLE_WIDTH > TOGGLE_HEIGHT, "轨道应横向长于纵向");
 };
 
-/// 滑动开关的滑块圆心：按进度插值，`t = 0` 贴左、`t = 1` 贴右，垂直居中。
+/// The toggle knob's center: interpolated by progress — `t = 0` hugs left, `t = 1` hugs right, vertically centered.
 pub fn toggle_knob_center_at(rect: egui::Rect, t: f32) -> egui::Pos2 {
     let radius = TOGGLE_KNOB / 2.0;
     let left = rect.left() + TOGGLE_INSET + radius;
@@ -94,16 +94,17 @@ pub fn toggle_knob_center_at(rect: egui::Rect, t: f32) -> egui::Pos2 {
     egui::pos2(left + (right - left) * t, rect.center().y)
 }
 
-/// 滑动开关的滑块圆心（两态版本：`on` 即进度 1，`off` 即进度 0）。
+/// The toggle knob's center (two-state version: `on` is progress 1, `off` is progress 0).
 pub fn toggle_knob_center(rect: egui::Rect, on: bool) -> egui::Pos2 {
     toggle_knob_center_at(rect, on as u8 as f32)
 }
 
-/// 滑动开关：轨道与滑块表达的「点击即切换」控件，整块轨道都是点击热区。
+/// The toggle: a "click to flip" control expressed by track and knob, with the whole track as the click hot zone.
 ///
-/// `id` 由调用方给出稳定值（如「卡片键 + 字段名」），动画状态挂在它上面。
+/// `id` is a stable value from the caller (like "card key + field name"); animation state hangs on it.
 ///
-/// 视觉规则：状态靠填充 + 滑块位置表达；圆角取主题控件圆角；不挂悬停提示。
+/// Visual rules: state is expressed by fill + knob position; the radius takes the theme's widget radius;
+/// no hover tip.
 pub fn toggle_switch(ui: &mut egui::Ui, id: egui::Id, on: &mut bool) -> egui::Response {
     let desired = egui::vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT);
     let (rect, mut resp) = ui.allocate_exact_size(desired, egui::Sense::click());
@@ -111,13 +112,13 @@ pub fn toggle_switch(ui: &mut egui::Ui, id: egui::Id, on: &mut bool) -> egui::Re
         *on = !*on;
         resp.mark_changed();
     }
-    // 进度先取：即使本帧不画（被裁剪），动画也继续推进。
+    // Take the progress first: even when this frame paints nothing (clipped out), the animation keeps advancing.
     let t = crate::motion::toggle_progress(ui.ctx(), id, *on);
     if ui.is_rect_visible(rect) {
         let visuals = ui.style().interact(&resp);
         let colors = crate::theme::semantics(ui);
         let radius = TOGGLE_HEIGHT / 2.0;
-        // 轨道：开=绿色，关=中性灰。悬停各提亮一档，再按进度插值。
+        // Track: green when on, neutral gray when off. Hover brightens each a step, then interpolates by progress.
         let off = if resp.hovered() {
             ui.visuals().widgets.hovered.bg_fill
         } else {
@@ -136,14 +137,14 @@ pub fn toggle_switch(ui: &mut egui::Ui, id: egui::Id, on: &mut bool) -> egui::Re
             visuals.bg_stroke,
             egui::StrokeKind::Inside,
         );
-        // 滑块：白色圆点，带一圈细描边。
+        // Knob: a white dot with a thin border.
         let center = toggle_knob_center_at(rect, t);
         ui.painter()
             .circle_filled(center, TOGGLE_KNOB / 2.0, egui::Color32::WHITE);
         ui.painter().circle_stroke(
             center,
             TOGGLE_KNOB / 2.0,
-            // 宽度带 `_f32` 后缀，避免 `float_literal_f32_fallback`。
+            // The width literal carries an `_f32` suffix to avoid `float_literal_f32_fallback`.
             egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
         );
     }

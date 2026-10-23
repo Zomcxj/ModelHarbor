@@ -1,6 +1,6 @@
-//! pi 后端：`~/.pi/agent/models.json`（JSONC）。
+//! The pi backend: `~/.pi/agent/models.json` (JSONC).
 //!
-//! 结构：顶层 `providers`（map）+ 其他顶层字段（extras）原样保留。
+//! Structure: the top-level `providers` (map) + other top-level fields (extras) preserved verbatim.
 
 use super::{Backend, BackendLoad};
 use crate::convert;
@@ -31,14 +31,14 @@ impl Backend for PiBackend {
     }
 
     fn detect(&self, content: &str, path: &str) -> bool {
-        // opencode 系路径不归 pi 认领：新版 opencode 顶层同样写
-        // `providers` 且无 `provider`，内容特征与 pi 重合。
+        // opencode-family paths are never claimed by pi: newer opencode also writes top-level `providers`
+        // without `provider`, overlapping pi's content fingerprints.
         if super::opencode::family_path_matches(path) {
             return false;
         }
-        // 含 `providers` 对象且无 `provider` 键；opencode v2 的内容特征
-        // （顶层复数 agents/plugins、providers 条目带 package/settings）
-        // 同样命中前一条，命中 v2 特征时让路给 opencode。
+        // A `providers` object present with no `provider` key; opencode v2's content fingerprints (top-level
+        // plural agents/plugins, providers entries carrying package/settings) also hit the previous rule —
+        // v2 fingerprints yield to opencode.
         parse_config_content(content)
             .map(|v| {
                 v.get("providers").and_then(|x| x.as_object()).is_some()
@@ -67,7 +67,7 @@ impl Backend for PiBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
-        // 跨格式目标：extras 取目标文件自身的顶层字段，仅重写 providers
+        // Cross-format target: extras take the target file's own top-level fields, rewriting only providers
         let base = match target_root {
             Some(target) => target,
             None => extras,
@@ -76,7 +76,7 @@ impl Backend for PiBackend {
     }
 
     fn load_target_root(&self, path: &str) -> Result<Value, String> {
-        // 取目标文件的完整 providers 用于保守合并，而非只取顶层 extras。
+        // Take the target file's complete providers for conservative merging, not just the top-level extras.
         super::load_target_root_with(path, parse_config_content, || Value::Object(Map::new()))
     }
 

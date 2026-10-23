@@ -1,6 +1,6 @@
 use eframe::egui;
 
-/// 使用 SVG 纹理的图标按钮：激活、悬停和按下状态都有明确视觉反馈。
+/// An icon button using an SVG texture: active, hover, and pressed states all give clear visual feedback.
 pub(in crate::app) fn toolbar_icon_button(
     ui: &mut egui::Ui,
     texture: Option<&egui::TextureHandle>,
@@ -12,7 +12,7 @@ pub(in crate::app) fn toolbar_icon_button(
     let pressed = response.is_pointer_button_down_on();
     let hovered = response.hovered();
     let visuals = ui.visuals();
-    // 圆角跟随当前主题形状（与其它控件一致）。
+    // The corner radius follows the current theme's shape (consistent with other widgets).
     let corner = visuals.widgets.inactive.corner_radius;
     let fill = if active {
         visuals.selection.bg_fill

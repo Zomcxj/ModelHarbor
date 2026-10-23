@@ -59,7 +59,7 @@ fn normalization_is_idempotent_and_keeps_a_users_choice() {
         current_page: ConfigFormat::WorkBuddy,
         ..App::default()
     };
-    // 用户关掉第一条、启用第二条。
+    // The user disables the first entry and enables the second.
     app.providers[0].models[0].disabled = true;
     app.providers[1].models[0].disabled = false;
     app.normalize_workbuddy_enable_flags();
@@ -71,7 +71,7 @@ fn normalization_is_idempotent_and_keeps_a_users_choice() {
         !app.providers[1].models[0].disabled,
         "用户勾的那条必须保持启用"
     );
-    // 幂等：再跑一次不变。
+    // Idempotent: running again changes nothing.
     app.normalize_workbuddy_enable_flags();
     assert!(app.providers[0].models[0].disabled);
     assert!(!app.providers[1].models[0].disabled);

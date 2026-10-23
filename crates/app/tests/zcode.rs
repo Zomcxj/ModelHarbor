@@ -1,7 +1,7 @@
-//! ZCode 后端回归：`~/.zcode/v2/provider_config.json` 的判别 / 解析 / 序列化。
+//! ZCode backend regression: discrimination / parsing / serialization of `~/.zcode/v2/provider_config.json`.
 //!
-//! provider 与模型级属性分两处存放（`providerRules` 只列模型 id，
-//! 元数据在 `modelConfigRules.providerModelRules`），序列化时两边同步。
+//! Provider and model-level attributes live in two places (`providerRules` lists model ids only;
+//! metadata sits in `modelConfigRules.providerModelRules`); serialization keeps both in sync.
 
 use model_harbor_core::backends;
 use model_harbor_core::convert;
@@ -10,8 +10,8 @@ use model_harbor_core::model::{ModelRow, ProviderRow};
 use serde_json::json;
 
 fn temp_path(name: &str) -> std::path::PathBuf {
-    // 目录名全局唯一：Windows 时钟粒度粗，并行测试仅靠 pid+纳秒会撞 tick
-    // 共用目录互相覆盖。原子计数器消除碰撞。
+    // Directory names globally unique: Windows clock granularity is coarse, and parallel tests relying on pid+nanoseconds
+    // can collide within a tick, sharing a directory and overwriting each other. An atomic counter removes the collisions.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -63,7 +63,7 @@ fn detect_requires_provider_rules_or_order() {
     let b = backends::backend(ConfigFormat::ZCode);
     assert!(b.detect(&zcode_json(), ""), "providerRules 数组应命中");
     assert!(b.detect(r#"{"config":{"providerOrder":[]}}"#, ""));
-    // 反例：pi 的 providers、opencode 的 provider、空对象都不命中
+    // Counterexamples: pi's providers, opencode's provider, and empty objects all miss
     assert!(!b.detect(r#"{"providers":{}}"#, ""));
     assert!(!b.detect(r#"{"provider":{}}"#, ""));
     assert!(!b.detect("{}", ""));
@@ -71,7 +71,7 @@ fn detect_requires_provider_rules_or_order() {
 
 #[test]
 fn detect_does_not_steal_sibling_formats() {
-    // 判别优先级：ZCode 排在 pi 系之前，但不抢它们的配置。
+    // Detection priority: ZCode ranks before the pi family without stealing their configs.
     assert_eq!(
         backends::detect_format(r#"{"providers":{"a":{}}}"#, ""),
         ConfigFormat::Pi
@@ -95,7 +95,7 @@ fn parse_maps_provider_and_model_fields() {
     assert_eq!(p.description, "workbuddy");
     assert_eq!(p.base_url, "http://127.0.0.1:3065/v1");
     assert_eq!(p.api_key, "sk-test");
-    // ZCode 的 openai-chat-completions 映射成内部的 openai-completions。
+    // ZCode's openai-chat-completions maps to the internal openai-completions.
     assert_eq!(p.pi_api, "openai-completions");
 
     assert_eq!(p.models.len(), 1);
@@ -131,11 +131,11 @@ fn current_file_save_preserves_unknown_keys_and_map_expression() {
     let load = b.parse(content).expect("解析失败");
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
 
-    // group / 自定义扩展键保留
+    // group / custom extension keys preserved
     let cfg = &root["config"]["providerConfigRules"]["providerRules"][0]["config"];
     assert_eq!(cfg["group"], json!("standard-personal"));
     assert_eq!(cfg["customExt"]["keep"], json!(1), "未知扩展键必须保留");
-    // map 表达式原样保留（只同步档位清单，不解析这段 JS）
+    // The map expression is preserved verbatim (only the tier list syncs; the JS is never parsed)
     let specs =
         &root["config"]["modelConfigRules"]["providerModelRules"][0]["config"]["optionSpecs"];
     assert_eq!(
@@ -144,7 +144,7 @@ fn current_file_save_preserves_unknown_keys_and_map_expression() {
         "map 表达式不得被改写"
     );
     assert_eq!(specs["reasoningLevel"]["values"], json!(["low", "high"]));
-    // manualProviderModelRules 全量保留
+    // manualProviderModelRules preserved whole
     assert_eq!(
         root["config"]["modelConfigRules"]["manualProviderModelRules"][0]["modelId"],
         json!("manual")
@@ -166,7 +166,7 @@ fn enabled_is_a_sibling_of_properties_not_a_member() {
 
 #[test]
 fn does_not_invent_capability_flags() {
-    // 原文件没写 supports* 时，保存不补 false。
+    // When the original file wrote no supports*, saving adds no false.
     let content = r#"{
       "config": {
         "providerOrder": ["p1"],
@@ -195,7 +195,7 @@ fn does_not_invent_capability_flags() {
 
 #[test]
 fn modalities_live_under_properties_input_format() {
-    // 模态布尔嵌在 properties.inputFormat 下，读入按嵌套取，写出按嵌套落。
+    // Modality booleans nest under properties.inputFormat: read nested, written nested.
     let content = r#"{
       "config": {
         "providerOrder": ["p1"],
@@ -211,11 +211,11 @@ fn modalities_live_under_properties_input_format() {
               "inputFormat": { "supportsText": true, "supportsImage": true, "supportsVideo": false } } } } ],
           "manualProviderModelRules": [] } } }"#;
     let load = load_zcode(content);
-    // 读入：从 inputFormat 推导出模态列表（不含 video）。
+    // Read: the modality list derives from inputFormat (video absent).
     let m = &load.providers[0].models[0];
     assert_eq!(m.modalities_input, "text, image", "模态应从 inputFormat 取");
 
-    // 写出：模态回落到 properties.inputFormat。
+    // Write: modalities land back in properties.inputFormat.
     let b = backends::backend(ConfigFormat::ZCode);
     let root = b.serialize_root(&[], &load.providers, &load.extras, None);
     let props =
@@ -232,7 +232,7 @@ fn modalities_live_under_properties_input_format() {
 
 #[test]
 fn does_not_expand_declared_modalities_into_false_flags() {
-    // 模型只声明了 inputFormat.supportsImage 时，保存不展开成其它 flag。
+    // When the model declared only inputFormat.supportsImage, saving doesn't expand into other flags.
     let content = r#"{
       "config": {
         "providerOrder": ["p1"],
@@ -273,7 +273,7 @@ fn does_not_expand_declared_modalities_into_false_flags() {
 
 #[test]
 fn provider_always_gets_standard_personal_group() {
-    // ZCode 要求 provider.config.group 必填，缺失时补 standard-personal。
+    // ZCode requires provider.config.group; a missing one gets standard-personal.
     let mut p = ProviderRow::new();
     p.key = "wb1".into();
     p.base_url = "https://api.example.com".into();
@@ -296,7 +296,7 @@ fn provider_always_gets_standard_personal_group() {
 
 #[test]
 fn existing_group_is_preserved() {
-    // ZCode 源自带的 group（如 zai-family）不被覆盖。
+    // A group the ZCode source carried (like zai-family) isn't overwritten.
     let content = r#"{
       "config": {
         "providerOrder": ["p1"],
@@ -316,7 +316,7 @@ fn existing_group_is_preserved() {
 
 #[test]
 fn cross_format_save_does_not_leak_foreign_keys() {
-    // 从 WorkBuddy 形状的 raw 转存到 ZCode：对方的 id/vendor/url 不进 config。
+    // Converting a WorkBuddy-shaped raw into ZCode: the other side's id/vendor/url stay out of config.
     let mut p = ProviderRow::new();
     p.key = "wb1".into();
     p.base_url = "https://api.example.com".into();
@@ -349,7 +349,7 @@ fn cross_format_save_does_not_leak_foreign_keys() {
 
 #[test]
 fn protocol_vocabulary_maps_both_ways() {
-    // ZCode 的 Chat Completions 叫 openai-chat-completions，pi 系叫 openai-completions。
+    // ZCode calls Chat Completions openai-chat-completions; the pi family calls it openai-completions.
     assert_eq!(
         convert::zcode_api_to_api("openai-chat-completions"),
         "openai-completions"
@@ -366,7 +366,7 @@ fn protocol_vocabulary_maps_both_ways() {
         convert::api_to_zcode_api("openai-responses"),
         "openai-responses"
     );
-    // 无对应值的协议回落到 Chat Completions（ZCode 只认三值）。
+    // Protocols without a corresponding value fall back to Chat Completions (ZCode knows only three).
     assert_eq!(
         convert::api_to_zcode_api("google-vertex"),
         "openai-chat-completions"
@@ -387,7 +387,7 @@ fn round_trip_through_file_keeps_credentials() {
     std::fs::remove_file(&path).ok();
 }
 
-/// anthropic 协议的 provider 规则（baseUrl 由调用方给出）。
+/// A provider rule for the anthropic protocol (baseUrl given by the caller).
 fn zcode_anthropic(base_url: &str) -> String {
     format!(
         r#"{{
@@ -412,7 +412,7 @@ fn zcode_anthropic(base_url: &str) -> String {
 
 #[test]
 fn anthropic_base_url_drops_v1_like_pi() {
-    // ZCode 只剥完整端点后缀，不认光秃秃的 `/v1`，所以 baseUrl 进出都不带 `/v1`。
+    // ZCode strips only full endpoint suffixes, never a bare `/v1`, so baseUrl passes through without one.
     let load = load_zcode(&zcode_anthropic("https://api.justwoker.icu/v1"));
     assert_eq!(
         load.providers[0].base_url, "https://api.justwoker.icu",
@@ -432,23 +432,22 @@ fn anthropic_base_url_drops_v1_like_pi() {
 
 #[test]
 fn anthropic_base_url_collapses_a_full_endpoint_path() {
-    // 手填整段端点也收敛回基址：ZCode 自己会剥 `/v1/messages` / `/messages` 再拼回去。
+    // A hand-typed full endpoint also converges back to the base: ZCode itself strips /v1/messages / /messages and re-appends.
     let load = load_zcode(&zcode_anthropic("https://api.justwoker.icu/v1/messages"));
     assert_eq!(load.providers[0].base_url, "https://api.justwoker.icu");
 
-    // 已经是基址时不动它（幂等）。
+    // Already a base: left alone (idempotent).
     let load = load_zcode(&zcode_anthropic("https://api.justwoker.icu"));
     assert_eq!(load.providers[0].base_url, "https://api.justwoker.icu");
 
-    // 带子路径的基址只剥到路径边界。
+    // A base with a sub-path strips only to the path boundary.
     let load = load_zcode(&zcode_anthropic("https://host.example/anthropic/v1"));
     assert_eq!(load.providers[0].base_url, "https://host.example/anthropic");
 }
 
 #[test]
 fn chat_completions_base_url_keeps_its_v1() {
-    // Chat Completions 相反：ZCode 拼的是 `/chat/completions`，
-    // `https://host/v1` 正是它的基址。
+    // Chat Completions is the reverse: ZCode appends `/chat/completions`, so `https://host/v1` IS its base.
     let load = load_zcode(&zcode_json());
     assert_eq!(load.providers[0].base_url, "http://127.0.0.1:3065/v1");
 
@@ -476,7 +475,7 @@ fn zcode_base_url_normalization_is_idempotent() {
         let once = convert::zcode_normalize_base_url(api, url);
         let twice = convert::zcode_normalize_base_url(api, &once);
         assert_eq!(once, twice, "{api} {url} 归一化必须幂等");
-        // 归一化结果再拼上 ZCode 自己的端点后缀，就是最终请求 URL。
+        // The normalized result plus ZCode's own endpoint suffix is the final request URL.
         let suffix = match api {
             "anthropic-messages" => "/v1/messages",
             "openai-responses" => "/responses",
@@ -491,10 +490,10 @@ fn zcode_base_url_normalization_is_idempotent() {
     }
 }
 
-/// 序列化后 `config` 内键序必须恒定：providerOrder → providerConfigRules → modelConfigRules。
+/// After serialization, key order inside `config` must be constant: providerOrder → providerConfigRules → modelConfigRules.
 ///
-/// `serde_json` 开了 `preserve_order`（IndexMap），它的 `remove` 是 swap_remove，
-/// 删键会把最后一个键搬到空位。
+/// `serde_json` runs with `preserve_order` (IndexMap), whose `remove` is swap_remove — deleting a key
+/// moves the last key into the gap.
 fn config_keys_of(root: &serde_json::Value) -> Vec<String> {
     root.get("config")
         .and_then(|c| c.as_object())
@@ -525,7 +524,7 @@ fn serialize_keeps_zcode_native_key_order() {
 
 #[test]
 fn cross_format_strip_does_not_reorder_config_keys() {
-    // 模拟跨格式保存路径：先剔除界面接管的容器，再序列化。
+    // Simulating the cross-format save path: first evict UI-managed containers, then serialize.
     let load = load_zcode(&zcode_json());
     let mut target = load.root.clone();
     model_harbor_app::app::strip_cross_format_containers(ConfigFormat::ZCode, &mut target, false);
@@ -550,7 +549,7 @@ fn cross_format_strip_does_not_reorder_config_keys() {
     );
 }
 
-/// 内层容器的键序也固定，且缺 `manualProviderModelRules` 时补空数组。
+/// The inner container's key order is also fixed, and a missing `manualProviderModelRules` gets an empty array.
 #[test]
 fn nested_containers_keep_their_key_order() {
     let src = r#"{
@@ -582,9 +581,9 @@ fn nested_containers_keep_their_key_order() {
     assert_eq!(provider_keys, vec!["providerRules"]);
 }
 
-/// `config.enabled` 是 ZCode 自己的模型开关，ModelHarbor 不接管它。
+/// `config.enabled` is ZCode's own model switch; ModelHarbor doesn't manage it.
 ///
-/// 只补缺失的键，已有值原样保留。
+/// Only missing keys are added; existing values are preserved verbatim.
 #[test]
 fn a_model_disabled_in_zcode_stays_disabled() {
     let src = r#"{
@@ -629,7 +628,7 @@ fn a_model_disabled_in_zcode_stays_disabled() {
     assert_eq!(enabled_of("unset"), Some(true), "原文件没写该键时才补 true");
 }
 
-/// 非法数字不写成 0：只跳过对应键的写入。
+/// Invalid numbers are not written as 0: the corresponding key's write is skipped.
 #[test]
 fn invalid_numbers_are_skipped_not_written_as_zero() {
     let src = r#"{

@@ -1,20 +1,20 @@
-//! opencode 系的「内置网关免费模型」列表：按后端动态获取。
+//! The opencode family's "built-in gateway free models" list: fetched dynamically per backend.
 //!
-//! opencode 与 kilocode 有官方免费网关，mimocode 无免费层。免费判定为
-//! `cost.input == 0 && cost.output == 0`（两者都须是显式的 0，字段缺失按收费处理）；
-//! 网关请求失败时只信 models.dev，并排除 `deprecated` 条目。
+//! opencode and kilocode have official free gateways; mimocode has no free tier. Free means
+//! `cost.input == 0 && cost.output == 0` (both must be explicit zeros; missing fields count as paid);
+//! when the gateway request fails, only models.dev is trusted, and `deprecated` entries are excluded.
 //!
-//! 结果按后端落盘到 `.modelharbor/free-models-<后端>.json`，只存模型 id，超过
-//! [`CACHE_TTL_SECS`] 才在后台重新拉取。
+//! Results are written per backend to `.modelharbor/free-models-<backend>.json`, storing model ids only;
+//! past [`CACHE_TTL_SECS`] they are refreshed in the background.
 
-/// 价格数据源（models.dev 全量模型库）。
+/// Pricing data source (models.dev's full model library).
 mod net;
 mod parse;
 
 pub use net::{cache_path, fetch_remote, load_cache, save_cache, Cache, CACHE_TTL_SECS};
 pub use parse::{parse_kilo_free, parse_live_models, parse_models_dev_free, FreeModel};
 
-// 扁平门面（仅测试）：把子模块项平铺进本模块命名空间，供 `use super::*` 使用。
+// Flat facade (tests only): flatten submodule items into this module's namespace for `use super::*`.
 #[cfg(test)]
 use net::*;
 #[cfg(test)]
@@ -26,21 +26,21 @@ use serde_json::Value;
 
 pub const SOURCE_URL: &str = "https://models.dev/api.json";
 
-/// opencode Zen 网关的模型列表（可用性数据源）。
+/// The opencode Zen gateway's model list (availability data source).
 pub const OPENCODE_LIVE_URL: &str = "https://opencode.ai/zen/v1/models";
 
-/// Kilo 网关的模型列表（含 `isFree` 标记）。
+/// The Kilo gateway's model list (carries an `isFree` flag).
 pub const KILO_LIVE_URL: &str = "https://api.kilo.ai/api/gateway/models";
 
-/// 某个后端的免费模型配置。`None` 表示该后端没有免费层。
+/// One backend's free-model source. `None` = that backend has no free tier.
 pub struct Source {
-    /// 该后端的网关 provider id（agent 里 `provider/model` 的前半段）。
+    /// The backend's gateway provider id (the first half of `provider/model` in agents).
     pub provider_id: &'static str,
-    /// 数据源说明，用于悬停提示。
+    /// The data source's description, for hover tips.
     pub origin: &'static str,
 }
 
-/// 取某个后端的免费模型来源；没有免费层时返回 `None`。
+/// Take a backend's free-model source; `None` when there is no free tier.
 pub fn source_for(format: ConfigFormat) -> Option<Source> {
     match format {
         ConfigFormat::Opencode => Some(Source {
@@ -51,15 +51,15 @@ pub fn source_for(format: ConfigFormat) -> Option<Source> {
             provider_id: "kilo",
             origin: KILO_LIVE_URL,
         }),
-        // MiMo Code 没有免费层，不提供候选。
+        // MiMo Code has no free tier and offers no candidates.
         _ => None,
     }
 }
 
-/// 某个 opencode 系页面**自家网关**认的 provider id（agent `model` 的前半段）。
+/// The provider ids **this page's own gateway** accepts for an opencode-family page (the first half of an agent's `model`).
 ///
-/// 与 [`source_for`] 无关：这里回答「哪些前缀在本页算自家」。
-/// MiMo Code 有两个：`mimo/`（自动路由）与 `xiaomi/`（小米模型族）。
+/// Unrelated to [`source_for`]: this answers "which prefixes count as native on this page".
+/// MiMo Code has two: `mimo/` (auto routing) and `xiaomi/` (the Xiaomi model family).
 pub fn gateway_provider_ids(format: ConfigFormat) -> &'static [&'static str] {
     match format {
         ConfigFormat::Opencode => &["opencode"],
@@ -69,10 +69,9 @@ pub fn gateway_provider_ids(format: ConfigFormat) -> &'static [&'static str] {
     }
 }
 
-/// 某页网关的首选模型：替换 agent 的 model 的目标，也是下拉第一项。
+/// A page gateway's preferred model: the replacement target for an agent's model, and the dropdown's first item.
 ///
-/// kilo 用 `kilo-auto/free`、mimo 用 `mimo/mimo-auto`（自动路由），
-/// opencode 用 `big-pickle`。
+/// kilo uses `kilo-auto/free`, mimo uses `mimo/mimo-auto` (auto routing), opencode uses `big-pickle`.
 fn preferred_gateway_model(format: ConfigFormat) -> Option<&'static str> {
     match format {
         ConfigFormat::Opencode => Some("opencode/big-pickle"),
@@ -82,12 +81,12 @@ fn preferred_gateway_model(format: ConfigFormat) -> Option<&'static str> {
     }
 }
 
-/// 动态列表为空时用的内置兜底清单（已带 `provider/` 前缀）。
+/// Built-in fallback list used when the dynamic list is empty (already carrying `provider/` prefixes).
 fn builtin_gateway_models(format: ConfigFormat) -> &'static [&'static str] {
     match format {
         ConfigFormat::Opencode => &["opencode/big-pickle"],
         ConfigFormat::Kilocode => &["kilo/kilo-auto/free"],
-        // MiMo Code 的网关模型，顺序即官方顺序。
+        // MiMo Code's gateway models, in official order.
         ConfigFormat::Mimocode => &[
             "mimo/mimo-auto",
             "xiaomi/mimo-v2.5",
@@ -101,10 +100,11 @@ fn builtin_gateway_models(format: ConfigFormat) -> &'static [&'static str] {
     }
 }
 
-/// 某页自家网关的模型候选（已带 `provider/` 前缀，首选在最前）。
+/// Model candidates of a page's own gateway (with `provider/` prefixes, preferred first).
 ///
-/// `free` 是该页动态拉到的免费模型裸 id（见 [`Source::provider_id`]）；非空时以它
-/// 为准，为空时退回内置兜底。排序：首选第一，其余按字典序。
+/// `free` is the bare id of the page's dynamically fetched free model (see [`Source::provider_id`]);
+/// non-empty takes precedence, empty falls back to the built-in list. Ordering: preferred first, the
+/// rest lexicographic.
 pub fn gateway_models(format: ConfigFormat, free: &[String]) -> Vec<String> {
     let mut models: Vec<String> = match source_for(format) {
         Some(source) if !free.is_empty() => free
@@ -127,12 +127,12 @@ pub fn gateway_models(format: ConfigFormat, free: &[String]) -> Vec<String> {
     models
 }
 
-/// 把 agent 的 model 换成自家网关模型时的目标：候选列表的第一个。
+/// The target when swapping an agent's model to its own gateway model: the first candidate.
 pub fn default_gateway_model(format: ConfigFormat, free: &[String]) -> Option<String> {
     gateway_models(format, free).into_iter().next()
 }
 
-/// `model` 引用（`provider/model`）的 provider 前缀；没有斜杠时返回 `None`。
+/// The provider prefix of a `model` reference (`provider/model`); `None` without a slash.
 pub fn model_provider_prefix(model: &str) -> Option<&str> {
     let model = model.trim();
     if model.is_empty() {
@@ -147,10 +147,9 @@ pub fn model_provider_prefix(model: &str) -> Option<&str> {
     }
 }
 
-/// `model` 引用在指定页面上是否有效：前缀要么是本页网关，要么是用户自配的
-/// provider。
+/// Whether a `model` reference is valid on a given page: the prefix is either this page's gateway or a user-configured provider.
 ///
-/// 前缀解析不出来（没有斜杠 / 空）一律算无效。
+/// Unparseable prefixes (no slash / empty) are always invalid.
 pub fn model_is_valid_on(page: ConfigFormat, configured_keys: &[String], model: &str) -> bool {
     let Some(prefix) = model_provider_prefix(model) else {
         return false;
@@ -162,7 +161,7 @@ pub fn model_is_valid_on(page: ConfigFormat, configured_keys: &[String], model: 
 mod tests {
     use super::*;
 
-    /// 造一份最小 api.json：只有 opencode 厂商与几个模型。
+    /// Build a minimal api.json: only the opencode vendor and a few models.
     fn sample() -> String {
         serde_json::json!({
             "anthropic": { "models": { "claude-x": { "cost": { "input": 0, "output": 0 } } } },
@@ -181,7 +180,7 @@ mod tests {
         .to_string()
     }
 
-    /// Zen 风格的 `/models` 响应。
+    /// A Zen-style `/models` response.
     fn live(ids: &[&str]) -> String {
         let data: Vec<Value> = ids
             .iter()
@@ -190,7 +189,7 @@ mod tests {
         serde_json::json!({ "object": "list", "data": data }).to_string()
     }
 
-    /// Kilo 风格的网关响应：`isFree` 决定免费，`id` 不一定带 `:free` 后缀。
+    /// A Kilo-style gateway response: `isFree` decides free; `id` doesn't necessarily carry a `:free` suffix.
     fn kilo_live() -> String {
         serde_json::json!({
             "data": [
@@ -225,9 +224,9 @@ mod tests {
     fn missing_cost_is_not_treated_as_free() {
         let ids = free_ids(&sample());
         assert!(!ids.contains(&"no-cost".to_string()));
-        // 只写了 input 价格、没有 output：按未知处理，不推荐
+        // Only the input price written, no output: treated as unknown, not recommended
         assert!(!ids.contains(&"only-input".to_string()));
-        // 单边为零不算免费
+        // One-sided zero doesn't count as free
         assert!(!ids.contains(&"free-in-paid-out".to_string()));
         assert!(!ids.contains(&"paid-model".to_string()));
     }
@@ -249,10 +248,10 @@ mod tests {
     #[test]
     fn reports_broken_payloads_without_panicking() {
         assert!(parse_models_dev_free("not json", "opencode").is_err());
-        // 合法 JSON 但没有目标厂商
+        // Valid JSON but no target vendor
         let err = parse_models_dev_free(r#"{"anthropic":{"models":{}}}"#, "opencode").unwrap_err();
         assert!(err.contains("opencode"), "错误应点明缺失的厂商：{}", err);
-        // 有厂商但没有 models 容器
+        // A vendor present but no models container
         assert!(parse_models_dev_free(r#"{"opencode":{}}"#, "opencode").is_err());
     }
 
@@ -272,7 +271,7 @@ mod tests {
         assert!(parse_live_models(r#"{"object":"list"}"#).is_err());
     }
 
-    /// 两个源都在时取交集：免费且网关在供。
+    /// With both sources present, take the intersection: free AND offered by the gateway.
     #[test]
     fn intersects_free_with_live() {
         let free = parse_models_dev_free(&sample(), "opencode").unwrap();
@@ -283,7 +282,7 @@ mod tests {
         assert_eq!(ids, vec!["big-pickle"]);
     }
 
-    /// 标记为 deprecated、但网关仍在供的模型要保留。
+    /// Models flagged deprecated but still gateway-offered are kept.
     #[test]
     fn keeps_deprecated_model_that_is_still_served() {
         let free = parse_models_dev_free(&sample(), "opencode").unwrap();
@@ -298,14 +297,14 @@ mod tests {
         );
     }
 
-    /// 网关拿不到时回退：只信 models.dev，并排除 deprecated。
+    /// Gateway unavailable → fallback: trust only models.dev, excluding deprecated.
     #[test]
     fn falls_back_to_models_dev_without_gateway() {
         let free = parse_models_dev_free(&sample(), "opencode").unwrap();
         assert_eq!(combine(free, None), vec!["big-pickle", "some-free"]);
     }
 
-    /// Kilo 按 `isFree` 判定：不带 `:free` 后缀的免费项也要收。
+    /// Kilo judges by `isFree`: free entries without a `:free` suffix are collected too.
     #[test]
     fn kilo_free_uses_the_is_free_flag() {
         let ids = parse_kilo_free(&kilo_live()).unwrap();
@@ -319,7 +318,7 @@ mod tests {
         );
     }
 
-    /// Kilo 的付费项与未标注 `isFree` 的项都不算免费。
+    /// Kilo's paid entries and those without an `isFree` flag don't count as free.
     #[test]
     fn kilo_excludes_paid_and_unflagged_models() {
         let ids = parse_kilo_free(&kilo_live()).unwrap();
@@ -332,14 +331,14 @@ mod tests {
     fn kilo_reports_broken_payloads() {
         assert!(parse_kilo_free("not json").is_err());
         assert!(parse_kilo_free(r#"{"object":"list"}"#).is_err());
-        // 空列表是合法结果，不是错误
+        // An empty list is a valid result, not an error
         assert_eq!(
             parse_kilo_free(r#"{"data":[]}"#).unwrap(),
             Vec::<String>::new()
         );
     }
 
-    /// 各后端的 provider id 与免费层支持情况。
+    /// Each backend's provider id and free-tier support.
     #[test]
     fn only_opencode_and_kilocode_have_free_tiers() {
         assert_eq!(
@@ -350,14 +349,14 @@ mod tests {
             source_for(ConfigFormat::Kilocode).unwrap().provider_id,
             "kilo"
         );
-        // MiMo Code 没有免费层
+        // MiMo Code has no free tier
         assert!(source_for(ConfigFormat::Mimocode).is_none());
-        // 非 opencode 系后端同样没有
+        // Non-opencode-family backends have none either
         assert!(source_for(ConfigFormat::WorkBuddy).is_none());
         assert!(source_for(ConfigFormat::ZCode).is_none());
     }
 
-    /// 各后端的缓存文件互不覆盖。
+    /// Backends' cache files never overwrite each other.
     #[test]
     fn cache_files_are_per_backend() {
         let a = cache_file(ConfigFormat::Opencode);
@@ -366,22 +365,22 @@ mod tests {
         assert!(a.contains("opencode") && b.contains("kilocode"));
     }
 
-    /// 每页认的自家网关前缀。
+    /// Each page's own-gateway prefixes.
     #[test]
     fn gateway_provider_ids_match_the_real_clis() {
         assert_eq!(gateway_provider_ids(ConfigFormat::Opencode), ["opencode"]);
         assert_eq!(gateway_provider_ids(ConfigFormat::Kilocode), ["kilo"]);
-        // MiMo Code 有两个：自动路由 + 小米模型族
+        // MiMo Code has two: auto routing + the Xiaomi model family
         assert_eq!(
             gateway_provider_ids(ConfigFormat::Mimocode),
             ["mimo", "xiaomi"]
         );
-        // 非 opencode 系没有自家网关
+        // Non-opencode-family pages have no own gateway
         assert!(gateway_provider_ids(ConfigFormat::WorkBuddy).is_empty());
         assert!(gateway_provider_ids(ConfigFormat::ZCode).is_empty());
     }
 
-    /// 动态列表为空时必须有兜底模型。
+    /// An empty dynamic list must still have a fallback model.
     #[test]
     fn every_opencode_family_page_has_a_gateway_default() {
         for page in [
@@ -402,7 +401,7 @@ mod tests {
         }
     }
 
-    /// 兜底值取各页的自动路由 id。
+    /// Fallbacks take each page's auto-routing id.
     #[test]
     fn gateway_defaults_prefer_auto_routing_models() {
         assert_eq!(
@@ -419,17 +418,17 @@ mod tests {
         );
     }
 
-    /// 有动态列表时以它为准，不掺入兜底项。
+    /// With a dynamic list, it wins — no fallback items mixed in.
     #[test]
     fn live_free_models_win_over_the_builtin_fallback() {
         let live = vec!["zzz-free".to_string(), "aaa-free".to_string()];
         let models = gateway_models(ConfigFormat::Kilocode, &live);
-        // 首选不在动态列表里时不加入
+        // A preferred model missing from the dynamic list isn't added
         assert_eq!(models, vec!["kilo/aaa-free", "kilo/zzz-free"]);
         assert!(!models.iter().any(|m| m == "kilo/kilo-auto/free"));
     }
 
-    /// 首选在动态列表里时被提到第一位。
+    /// A preferred model present in the dynamic list is promoted to first.
     #[test]
     fn the_preferred_model_is_promoted_to_the_front() {
         let live = vec![
@@ -439,7 +438,7 @@ mod tests {
         ];
         let models = gateway_models(ConfigFormat::Opencode, &live);
         assert_eq!(models.first().unwrap(), "opencode/big-pickle");
-        // 其余仍按字典序，且不重复
+        // The rest stay lexicographic, without duplicates
         assert_eq!(
             models,
             vec![
@@ -450,7 +449,7 @@ mod tests {
         );
     }
 
-    /// mimo 页的兜底清单与顺序。
+    /// The mimo page's fallback list and order.
     #[test]
     fn mimocode_fallback_matches_the_cli_output() {
         let models = gateway_models(ConfigFormat::Mimocode, &[]);
@@ -468,7 +467,7 @@ mod tests {
         );
     }
 
-    /// 前缀解析：没有斜杠、空段、只有斜杠都要判成「解析不出来」。
+    /// Prefix parsing: no slash, empty segment, slash-only all count as "unparseable".
     #[test]
     fn model_prefix_parsing_rejects_malformed_references() {
         assert_eq!(model_provider_prefix("kilo/kilo-auto/free"), Some("kilo"));
@@ -483,35 +482,35 @@ mod tests {
         assert_eq!(model_provider_prefix("provider/"), None);
     }
 
-    /// 别家网关的前缀在本页无效，自家网关与自配 provider 有效。
+    /// Another page's gateway prefix is invalid here; the own gateway and user-configured providers are valid.
     #[test]
     fn validity_is_about_the_pages_own_gateway() {
         let configured = vec!["sensenova".to_string()];
-        // 本页网关
+        // This page's gateway
         assert!(model_is_valid_on(
             ConfigFormat::Kilocode,
             &configured,
             "kilo/kilo-auto/free"
         ));
-        // 自配 provider 在任何一页都有效
+        // User-configured providers are valid on every page
         assert!(model_is_valid_on(
             ConfigFormat::Kilocode,
             &configured,
             "sensenova/deepseek-v4-flash"
         ));
-        // 别家网关前缀无效
+        // Another gateway's prefix is invalid
         assert!(!model_is_valid_on(
             ConfigFormat::Kilocode,
             &configured,
             "opencode/ling-3.0-flash-fin-free"
         ));
-        // 同一份引用在 opencode 页有效
+        // The same reference is valid on the opencode page
         assert!(model_is_valid_on(
             ConfigFormat::Opencode,
             &configured,
             "opencode/ling-3.0-flash-fin-free"
         ));
-        // mimo 页认 mimo/ 与 xiaomi/，不认 kilo/
+        // The mimo page accepts mimo/ and xiaomi/, not kilo/
         assert!(model_is_valid_on(
             ConfigFormat::Mimocode,
             &[],
@@ -524,7 +523,7 @@ mod tests {
         ));
     }
 
-    /// 解析不出来的引用一律算无效。
+    /// Unparseable references are always invalid.
     #[test]
     fn malformed_references_are_never_valid() {
         for page in [
@@ -542,7 +541,7 @@ mod tests {
         }
     }
 
-    /// 缓存往返：写入后能读回，且被判定为有效期内。
+    /// Cache round trip: readable after writing, and judged within its lifetime.
     #[test]
     fn cache_round_trip_marks_fresh() {
         let dir = std::env::temp_dir().join(format!(
@@ -560,7 +559,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 过期缓存仍返回列表，但标记为不新鲜。
+    /// An expired cache still returns the list, flagged as not fresh.
     #[test]
     fn stale_cache_still_yields_models() {
         let dir = std::env::temp_dir().join(format!(
@@ -582,7 +581,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 损坏 / 空缓存当作没有缓存，不 panic。
+    /// A corrupt / empty cache counts as no cache — no panic.
     #[test]
     fn broken_cache_is_ignored() {
         let dir = std::env::temp_dir().join(format!(

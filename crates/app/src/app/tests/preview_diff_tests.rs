@@ -1,8 +1,8 @@
 use crate::app::diff::{diff_hunks, DiffSummary, LineKind};
 use crate::app::preview::diff_signature;
 
-/// 对比视图显示的就是「按一下保存会改掉什么」：
-/// 用一份 opencode 配置走完「原文件 → 改过的草稿」的链路。
+/// The diff view shows exactly "what one save click would change":
+/// an opencode config walks the full "original file → edited draft" chain.
 #[test]
 fn a_one_line_change_shows_up_as_one_add_and_one_remove() {
     let original = r#"{
@@ -31,8 +31,8 @@ fn a_one_line_change_shows_up_as_one_add_and_one_remove() {
     );
 }
 
-/// 跨格式保存会整段替换目标文件的 provider 容器，对比要如实显示
-/// 「旧容器消失、新容器出现」。
+/// A cross-format save replaces the target file's provider container wholesale; the diff must faithfully
+/// show "the old container vanishing, the new one appearing".
 #[test]
 fn replacing_a_container_shows_both_the_old_and_the_new_entries() {
     let on_disk = r#"{
@@ -79,7 +79,7 @@ fn replacing_a_container_shows_both_the_old_and_the_new_entries() {
     );
 }
 
-/// 目标文件不存在（磁盘侧为空）时，整份文档都是新增。
+/// When the target file doesn't exist (an empty disk side), the whole document counts as inserted.
 #[test]
 fn a_file_that_does_not_exist_yet_reads_as_all_new() {
     let pending = "{\n  \"provider\": {}\n}";
@@ -88,7 +88,7 @@ fn a_file_that_does_not_exist_yet_reads_as_all_new() {
     assert_eq!(summary.added, 3, "整份文档都算新增");
 }
 
-/// 对比缓存签名包含路径：不同文件的同名草稿不共用缓存结果。
+/// The diff cache signature includes the path: same-named drafts of different files never share cache results.
 #[test]
 fn switching_pages_invalidates_the_cache_via_the_path() {
     let draft = "{\n  \"provider\": {}\n}";

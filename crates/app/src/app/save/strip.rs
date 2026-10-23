@@ -1,17 +1,17 @@
 use crate::format::ConfigFormat;
 use serde_json::{Map, Value};
 
-/// 跨格式转换前，从目标 root 中剔除由当前组件状态接管的容器：
-/// provider（opencode 的 provider / pi 系与 DSH 的 providers）与 opencode 的 agent。
+/// Before cross-format conversion, evict from the target root the containers the current component state manages:
+/// provider (opencode's provider / the pi family's and DSH's providers) and opencode's agent.
 ///
-/// 只剔界面接管得了的部分：界面不显示、也无从重建的只读内容（Kimi 的 `managed:*`
-/// OAuth provider 与它名下的模型、Qwen 的 `qwen-oauth`）保留，其他顶层字段原样保留。
+/// Only what the UI can manage is evicted: read-only content the UI neither shows nor can rebuild (Kimi's
+/// `managed:*` OAuth providers and their models, Qwen's `qwen-oauth`) is kept, as are other top-level fields.
 ///
-/// 删除一律用 `shift_remove`，保留其余键的相对顺序。
+/// Deletion always uses `shift_remove`, preserving the relative order of remaining keys.
 ///
-/// `agents_owned` 表示界面确实持有 agents 数据；为 `false` 时保留目标文件里的 agent 容器。
+/// `agents_owned` says the UI genuinely holds agents data; when false, the target file's agent container stays.
 pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents_owned: bool) {
-    // workbuddy 的根是数组：整体清空。
+    // workbuddy's root is an array: cleared whole.
     if fmt == ConfigFormat::WorkBuddy {
         *root = Value::Array(Vec::new());
         return;
@@ -20,7 +20,7 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
         return;
     };
     match fmt {
-        // opencode 系（opencode / kilocode / mimocode）容器名相同，共用一套剔除。
+        // The opencode family (opencode / kilocode / mimocode) shares container names — one eviction set.
         ConfigFormat::Opencode | ConfigFormat::Kilocode | ConfigFormat::Mimocode => {
             obj.shift_remove("provider");
             if agents_owned {
@@ -52,9 +52,9 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
                 }
             }
         }
-        // 已在上面提前返回，不会到达；列出以保持 match 穷尽。
+        // Already returned above — unreachable; listed to keep the match exhaustive.
         ConfigFormat::WorkBuddy => {}
-        // QwenCode：只剔界面接管的那部分，`qwen-oauth` 与认不出来的内容留下。
+        // QwenCode: evict only the UI-managed part; `qwen-oauth` and unrecognized content stay.
         ConfigFormat::QwenCode => {
             if let Some(providers) = obj.get_mut("modelProviders").and_then(Value::as_object_mut) {
                 let pids: Vec<String> = providers.keys().cloned().collect();
@@ -62,7 +62,7 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
                     if crate::backends::qwen_code::is_readonly_provider(&pid) {
                         continue;
                     }
-                    // 值不是数组（旧包装形状）：原样留着。
+                    // A non-array value (the old wrapper shape): left as-is.
                     let Some(items) = providers.get_mut(&pid).and_then(Value::as_array_mut) else {
                         continue;
                     };
@@ -79,7 +79,7 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
             {
                 obj.shift_remove("modelProviders");
             }
-            // `providerProtocol` 只留还存在的 pid 的映射。
+            // `providerProtocol` keeps only mappings of still-existing pids.
             let kept: Vec<String> = obj
                 .get("modelProviders")
                 .and_then(Value::as_object)
@@ -102,9 +102,9 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
                 }
             }
         }
-        // KimiCode：同样只剔界面接管的部分，`managed:*` 与它名下的模型留下。
+        // KimiCode: likewise evicts only the UI-managed part; `managed:*` and its models stay.
         ConfigFormat::KimiCode => {
-            // 模型归属按剔之前的 provider 表判断。
+            // Model ownership is judged against the pre-eviction provider table.
             let owners: Vec<String> = obj
                 .get("providers")
                 .and_then(Value::as_object)
@@ -125,12 +125,12 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
                     .iter()
                     .filter(|(_, entry)| {
                         let owner = entry.get("provider").and_then(Value::as_str).unwrap_or("");
-                        // `managed:*` 名下的留下。
+                        // Entries under `managed:*` stay.
                         if crate::backends::kimi_code::is_managed_provider(owner) {
                             return false;
                         }
-                        // 孤儿（没写 `provider`，或指向表里没有的键）也留下；只剔指向本次要剔的
-                        // 那个 provider 的条目。
+                        // Orphans (no `provider` written, or pointing at a key absent from the table) stay too; only entries
+                        // pointing at the provider being evicted this time are evicted.
                         !owner.is_empty() && owners.iter().any(|o| o == owner)
                     })
                     .map(|(alias, _)| alias.clone())
@@ -139,7 +139,7 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
                     models.shift_remove(&alias);
                 }
             }
-            // 表空了整个删掉。
+            // An emptied table is removed whole.
             for key in ["providers", "models"] {
                 if obj
                     .get(key)

@@ -1,16 +1,17 @@
-//! Windows 窗口外观：DWM 亚克力背景与圆角。
+//! Windows window appearance: DWM acrylic backdrop and rounded corners.
 //!
-//! 亚克力效果分两层：窗口层（本模块）让 DWM 在窗口背后画模糊背景并把窗口切成圆角；
-//! 绘制层（`theme::apply_style` + `App::clear_color`）用带 alpha 的底色把模糊透出来。
-//! 窗口恒为透明窗口，亚克力开关只切 DWM 背景与绘制层 alpha。
-//! 非 Windows 平台这些函数是空实现。
+//! The acrylic effect has two layers: the window layer (this module) has DWM paint a blurred backdrop
+//! behind the window and round the window's corners; the paint layer (`theme::apply_style` + `App::clear_color`)
+//! uses alpha-bearing fills to let the blur show through. The window is always transparent; the acrylic
+//! toggle switches only the DWM backdrop and the paint layer's alpha.
+//! Non-Windows platforms make these functions no-ops.
 
-/// 窗口背景档位：DWM 在窗口背后画什么。
+/// The window backdrop tier: what DWM paints behind the window.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Backdrop {
-    /// 不透明：DWM 不画背景，由 egui 的清屏色盖满（默认档）。
+    /// Opaque: DWM paints no backdrop; egui's clear color fills it (the default tier).
     None,
-    /// 亚克力：半透明 + 高斯模糊，桌面内容透出来（Win11 与 Win10 1803+ 可用）。
+    /// Acrylic: translucent + Gaussian blur, desktop content showing through (Win11 and Win10 1803+).
     Acrylic,
 }
 
@@ -24,25 +25,25 @@ mod imp {
         DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
 
-    /// 主窗口句柄：`main.rs` 建窗后写入一次，之后所有外观调用都走它。
+    /// The main window's handle: written once by `main.rs` after window creation; every appearance call uses it after.
     ///
-    /// 用 `OnceLock` 而不是 `App` 字段（与 `cursor` 模块同一套）。
+    /// A `OnceLock` rather than an `App` field (the same approach as the `cursor` module).
     static MAIN_HWND: OnceLock<isize> = OnceLock::new();
 
-    /// 记住主窗口句柄（`main.rs` 在窗口创建后调用一次）。
+    /// Remember the main window's handle (`main.rs` calls once after window creation).
     pub fn set_main_hwnd(hwnd: isize) {
         let _ = MAIN_HWND.set(hwnd);
     }
 
-    /// 主窗口句柄（未登记时返回 `None`）。
+    /// The main window's handle (`None` before registration).
     pub fn main_hwnd() -> Option<isize> {
         MAIN_HWND.get().copied()
     }
 
-    /// 按档位设置窗口背景。
+    /// Set the window backdrop per tier.
     ///
-    /// Win11（build 22000+）用 `DWMWA_SYSTEMBACKDROP_TYPE`；旧系统该属性被忽略，
-    /// 静默降级为不透明。
+    /// Win11 (build 22000+) uses `DWMWA_SYSTEMBACKDROP_TYPE`; older systems ignore the attribute and silently
+    /// degrade to opaque.
     pub fn set_backdrop(backdrop: Backdrop) {
         let Some(&hwnd) = MAIN_HWND.get() else {
             return;
@@ -50,7 +51,7 @@ mod imp {
         let hwnd = hwnd as HWND;
         let value = match backdrop {
             Backdrop::None => DWMSBT_NONE,
-            // 亚克力（高斯模糊 + 半透明），不是云母（壁纸染色）。
+            // Acrylic (Gaussian blur + translucency), not mica (wallpaper-tinted).
             Backdrop::Acrylic => DWMSBT_TRANSIENTWINDOW,
         };
         unsafe {
@@ -63,7 +64,7 @@ mod imp {
         }
     }
 
-    /// 把窗口切成系统圆角（Win11）；旧系统忽略。
+    /// Round the window with system corners (Win11); older systems ignore.
     pub fn set_rounded_corners() {
         let Some(&hwnd) = MAIN_HWND.get() else {
             return;

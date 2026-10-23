@@ -1,6 +1,6 @@
-//! 界面通用小件：抓取光标、卡片外框与装饰、拖拽把手、表单控件与滑动开关。
+//! Shared UI widgets: grab cursor, card frames and decorations, drag handles, form controls, and toggles.
 //!
-//! 公共 API 一律从这里再导出，外部 `crate::ui::X` 路径不变。
+//! The public API is always re-exported from here, so external `crate::ui::X` paths stay unchanged.
 
 mod card;
 mod cursor;
@@ -26,7 +26,7 @@ mod tests {
     };
     use eframe::egui;
 
-    /// 色带只覆盖卡片顶部 3px。
+    /// The ribbon covers only the card's top 3px.
     #[test]
     fn accent_bar_covers_only_the_top_strip() {
         let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(200.0, 60.0));
@@ -35,11 +35,11 @@ mod tests {
         assert_eq!(bar.top(), rect.top());
         assert_eq!(bar.left(), rect.left());
         assert_eq!(bar.right(), rect.right());
-        // 远小于卡片高度。
+        // Far smaller than the card height.
         assert!(bar.bottom() < rect.top() + 10.0, "色带侵入内容区：{bar:?}");
     }
 
-    /// 点阵的几何中心与控件矩形中心重合（控件被 `interact_size` 撑高时也一样）。
+    /// The dot matrix's geometric center coincides with the widget rect's center (even when `interact_size` stretches the widget).
     #[test]
     fn drag_handle_dots_are_centered_in_the_rect() {
         for rect in [
@@ -60,13 +60,13 @@ mod tests {
                 "点阵中心 ({cx}, {cy}) 与控件中心 {:?} 不重合",
                 rect.center()
             );
-            // 间距就是常量：两列相距 gap，三行跨 2*gap。
+            // The spacing IS the constant: two columns gap apart, three rows span 2*gap.
             assert!((max_x - min_x - DRAG_HANDLE_GAP).abs() < 0.01);
             assert!((max_y - min_y - 2.0 * DRAG_HANDLE_GAP).abs() < 0.01);
         }
     }
 
-    /// 浮雕线落在矩形内侧，两端避开圆角；亮边在上 / 左，暗边在下 / 右。
+    /// The emboss lines sit inside the rect, avoiding the corners at both ends; the bright edge top/left, dark edge bottom/right.
     #[test]
     fn bevel_lines_stay_inside_and_clear_the_corners() {
         use super::bevel_segments;
@@ -74,14 +74,14 @@ mod tests {
         let radius = 4.0;
         let (light, dark) = bevel_segments(rect, radius);
         let [top, left] = light;
-        // 都在矩形内侧 1px（Frame 的描边占掉那一圈）。
+        // Both 1px inside the rect (the Frame's border takes that ring).
         assert!(top[0].y > rect.top() && top[0].y < rect.bottom());
         assert!(left[0].x > rect.left() && left[0].x < rect.right());
         assert!((top[0].x - (rect.left() + 1.0 + radius)).abs() < 0.01);
         assert!((top[1].x - (rect.right() - 1.0 - radius)).abs() < 0.01);
         assert!((left[0].y - (rect.top() + 1.0 + radius)).abs() < 0.01);
         assert!((left[1].y - (rect.bottom() - 1.0 - radius)).abs() < 0.01);
-        // 暗边在下 / 右，与亮边对称。
+        // Dark edge bottom/right, symmetric to the bright edge.
         let [bottom, right] = dark;
         assert!(bottom[0].y < rect.bottom() && bottom[0].y > rect.top());
         assert!(right[0].x < rect.right() && right[0].x > rect.left());
@@ -89,7 +89,7 @@ mod tests {
         assert!((right[0].y - left[0].y).abs() < 0.01);
     }
 
-    /// 圆角超过矩形一半时，线段不反向。
+    /// When the corner radius exceeds half the rect, lines don't reverse.
     #[test]
     fn bevel_lines_stay_ordered_with_a_huge_radius() {
         use super::bevel_segments;
@@ -103,51 +103,51 @@ mod tests {
         assert!(right[0].y <= right[1].y, "右边线反向了：{right:?}");
     }
 
-    /// 同一帧里多个热区报状态时取更强的一态（`Fist` 优先于 `Palm`）。
+    /// When several hot zones report states in one frame, take the stronger one (`Fist` beats `Palm`).
     #[test]
     fn grab_cursor_requests_take_the_strongest_state_in_a_frame() {
         use super::{take_grab_cursor, GrabCursor};
 
         let ctx = egui::Context::default();
-        // 没有任何请求：默认熄灭，且 take 之后清空。
+        // No requests: default off, and cleared after take.
         assert_eq!(take_grab_cursor(&ctx), GrabCursor::None);
         assert_eq!(take_grab_cursor(&ctx), GrabCursor::None);
 
-        // None 请求本身不写入任何状态。
+        // A None request itself writes no state.
         super::request_grab_cursor(&ctx, GrabCursor::None);
         assert_eq!(take_grab_cursor(&ctx), GrabCursor::None);
 
-        // 手掌先到、拳头后到 -> 拳头。
+        // Palm first, fist later -> fist.
         super::request_grab_cursor(&ctx, GrabCursor::Palm);
         super::request_grab_cursor(&ctx, GrabCursor::Fist);
         assert_eq!(take_grab_cursor(&ctx), GrabCursor::Fist);
 
-        // 拳头先到、手掌后到 -> 仍是拳头。
+        // Fist first, palm later -> still fist.
         super::request_grab_cursor(&ctx, GrabCursor::Fist);
         super::request_grab_cursor(&ctx, GrabCursor::Palm);
         assert_eq!(take_grab_cursor(&ctx), GrabCursor::Fist);
 
-        // 只有手掌 -> 手掌。
+        // Palm only -> palm.
         super::request_grab_cursor(&ctx, GrabCursor::Palm);
         assert_eq!(take_grab_cursor(&ctx), GrabCursor::Palm);
 
-        // take 清空后，下一帧从零开始。
+        // After take clears, the next frame starts from zero.
         assert_eq!(take_grab_cursor(&ctx), GrabCursor::None);
     }
 
     #[test]
     fn merge_drag_target_keeps_earlier_hit() {
         let mut acc = None;
-        // 先渲染的卡片未命中：聚合结果保持为空
+        // The earlier-rendered card missed: the aggregate stays empty
         merge_drag_target(&mut acc, None);
         assert_eq!(acc, None);
-        // 命中落点
+        // A hit landing
         merge_drag_target(&mut acc, Some("p\u{1f}m".to_string()));
         assert_eq!(acc.as_deref(), Some("p\u{1f}m"));
-        // 后面还有卡片展开且未命中：不清掉已命中的落点
+        // A later card expanded and missed: don't clear the already-registered landing
         merge_drag_target(&mut acc, None);
         assert_eq!(acc.as_deref(), Some("p\u{1f}m"));
-        // 已命中时后续命中不覆盖：保持首个落点
+        // Once hit, later hits don't overwrite: the first landing is kept
         merge_drag_target(&mut acc, Some("other".to_string()));
         assert_eq!(acc.as_deref(), Some("p\u{1f}m"));
     }
@@ -160,7 +160,7 @@ mod tests {
         assert_eq!(acc, None);
     }
 
-    /// 滑块在两态下都完整落在轨道内（含内边距），且左右分开。
+    /// The knob sits fully inside the track in both states (padding included), and the two states separate.
     #[test]
     fn toggle_knob_stays_inside_the_track() {
         let rect = egui::Rect::from_min_size(
@@ -182,20 +182,20 @@ mod tests {
                 c
             );
         }
-        // 两态圆心分开。
+        // The two states' centers separate.
         assert!(on.x > off.x, "开态应在右、关态应在左");
-        // 垂直居中
+        // Vertically centered
         assert!((off.y - rect.center().y).abs() < 0.01);
         assert!((on.y - rect.center().y).abs() < 0.01);
     }
 
-    /// 滑块直径等于「轨道高 − 2×内边距」。
+    /// The knob's diameter equals "track height − 2×padding".
     #[test]
     fn toggle_knob_diameter_follows_the_track() {
         assert!((TOGGLE_KNOB - (TOGGLE_HEIGHT - 2.0 * TOGGLE_INSET)).abs() < 0.01);
     }
 
-    /// 关态滑块贴左、开态贴右，且左右内边距对称。
+    /// Off-state knob hugs the left, on-state the right, with symmetric side padding.
     #[test]
     fn toggle_knob_inset_is_symmetric() {
         let rect = egui::Rect::from_min_size(
@@ -214,14 +214,14 @@ mod tests {
         assert!((left_gap - TOGGLE_INSET).abs() < 0.01);
     }
 
-    /// 离屏渲染开关：两态都画出轨道（圆角矩形）+ 滑块（圆），
-    /// 开态轨道的填充色与关态不同。
+    /// Offscreen-render the toggle: both states paint a track (rounded rect) + knob (circle),
+    /// with the on-state track's fill differing from the off-state's.
     ///
-    /// 用离屏 `ctx.run` + 形状遍历。
+    /// Uses an offscreen `ctx.run` + a shape sweep.
     #[test]
     fn toggle_paints_a_track_and_a_knob_in_both_states() {
         use egui::epaint::Shape;
-        // 收集 (矩形填充色, 圆心) 两类形状
+        // Collect two shape kinds: (rect fill, circle center)
         fn collect(shape: &Shape, rects: &mut Vec<egui::Color32>, knobs: &mut Vec<egui::Pos2>) {
             match shape {
                 Shape::Rect(r) => rects.push(r.fill),
@@ -277,7 +277,7 @@ mod tests {
         );
     }
 
-    /// 点击切换：整块轨道都是热区，点一下就翻转。
+    /// Click to toggle: the whole track is the hot zone; one click flips it.
     #[test]
     fn toggle_click_flips_the_value() {
         let ctx = egui::Context::default();
@@ -295,7 +295,7 @@ mod tests {
             )),
             ..Default::default()
         };
-        // 第一帧：拿到开关的实际矩形。
+        // First frame: get the toggle's actual rect.
         let out = ctx.run(input.clone(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut v = value;
@@ -305,7 +305,7 @@ mod tests {
         });
         assert!(rect.is_positive(), "开关应占据正面积");
         let _ = out;
-        // 第二帧：在开关中心按下并抬起 -> 值翻转。
+        // Second frame: press and release at the toggle's center -> value flips.
         let center = rect.center();
         let mut input2 = input.clone();
         input2.events = vec![
@@ -333,7 +333,7 @@ mod tests {
         assert!(value, "点击后应从关变开");
     }
 
-    /// 动画中间帧：进度在 (0,1) 之间时，滑块落在两态之间。
+    /// Mid-animation frame: with progress in (0,1), the knob sits between the two states.
     #[test]
     fn toggle_knob_sweeps_between_the_two_ends() {
         let rect = egui::Rect::from_min_size(
@@ -342,7 +342,7 @@ mod tests {
         );
         let off = toggle_knob_center(rect, false);
         let on = toggle_knob_center(rect, true);
-        // 单调：进度越大越靠右。
+        // Monotonic: greater progress sits further right.
         let mut prev = f32::NEG_INFINITY;
         for step in 0..=10 {
             let t = step as f32 / 10.0;
@@ -350,10 +350,10 @@ mod tests {
             assert!(x > prev, "进度 {t} 处滑块没有继续向右：{x} <= {prev}");
             prev = x;
         }
-        // 端点精确等于两态。
+        // Endpoints exactly equal the two states.
         assert!((toggle_knob_center_at(rect, 0.0).x - off.x).abs() < 0.01);
         assert!((toggle_knob_center_at(rect, 1.0).x - on.x).abs() < 0.01);
-        // 中间帧确实在中间。
+        // Mid-frames are genuinely in the middle.
         let mid = toggle_knob_center_at(rect, 0.5).x;
         assert!(
             mid > off.x + 1.0 && mid < on.x - 1.0,
@@ -363,7 +363,7 @@ mod tests {
         );
     }
 
-    /// 任意进度（含越界值）下滑块都完整留在轨道内。
+    /// The knob stays fully inside the track at any progress (out-of-range included).
     #[test]
     fn toggle_knob_stays_inside_at_every_progress() {
         let rect = egui::Rect::from_min_size(
@@ -371,7 +371,7 @@ mod tests {
             egui::vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT),
         );
         let radius = TOGGLE_KNOB / 2.0;
-        // 越界的 t（负数 / 大于 1）会被 clamp。
+        // Out-of-range t (negative / greater than 1) gets clamped.
         for t in [-1.0, -0.001, 0.0, 0.25, 0.5, 0.75, 1.0, 1.001, 2.0] {
             let c = toggle_knob_center_at(rect, t);
             assert!(
@@ -385,7 +385,7 @@ mod tests {
         }
     }
 
-    /// `toggle_progress` 的确定性路径：调试 / 单测下直接给终值。
+    /// `toggle_progress`'s deterministic path: the final value directly under debug / tests.
     #[test]
     fn toggle_progress_is_binary_when_everything_is_visible() {
         let ctx = egui::Context::default();
@@ -395,9 +395,9 @@ mod tests {
         assert_eq!(crate::motion::toggle_progress(&ctx, id, true), 1.0);
     }
 
-    /// 动画随时间推进：滑块离开起点，最终停到终点。
+    /// The animation advances with time: the knob leaves the start and finally rests at the target.
     ///
-    /// 用真实时间（`RawInput::time`）驱动（egui 按时间差推进）。
+    /// Driven by real time (`RawInput::time`; egui advances by time deltas).
     #[test]
     fn toggle_animates_towards_the_target_over_time() {
         let ctx = egui::Context::default();
@@ -414,7 +414,7 @@ mod tests {
             )),
             ..Default::default()
         };
-        // 起始：关态，先把 id 登记成 0。
+        // Start: off state; register the id as 0 first.
         let mut time = 0.0f64;
         let progress_at = |time: f64, on: bool| {
             let mut input = base.clone();
@@ -428,15 +428,15 @@ mod tests {
             out
         };
         assert_eq!(progress_at(time, false), 0.0, "首帧未登记 -> 直接给终值 0");
-        // 打开：进度立刻开始离开 0，但还没到 1。
+        // Opened: progress immediately leaves 0, but hasn't reached 1.
         time += 1.0 / 60.0;
         let early = progress_at(time, true);
         assert!(early > 0.0, "开启动画没有推进：{early}");
         assert!(early < 1.0, "开启动画一帧就到位，没有滑动过程：{early}");
-        // 推进超过动画时长：停在 1。
+        // Advance past the animation duration: rests at 1.
         time += crate::motion::TOGGLE_TIME as f64 + 0.05;
         assert_eq!(progress_at(time, true), 1.0, "动画应收敛到 1");
-        // 关回去同样要经过中间态。
+        // Toggling back off also passes through the intermediate state.
         time += 1.0 / 60.0;
         let back = progress_at(time, false);
         assert!(back < 1.0 && back > 0.0, "关闭动画应在中间：{back}");

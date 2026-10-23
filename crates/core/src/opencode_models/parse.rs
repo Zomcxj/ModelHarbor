@@ -1,16 +1,16 @@
 use serde_json::Value;
 
-/// models.dev 里的一个免费模型。
+/// A free model in models.dev.
 #[derive(Debug)]
 pub struct FreeModel {
     pub id: String,
-    /// 数据源是否已标记其下架（保守标记，不代表网关已停供）。
+    /// Whether the data source has flagged it delisted (a conservative flag — not proof the gateway stopped serving).
     pub deprecated: bool,
 }
 
-/// 该模型是否「价格为零」。
+/// Whether the model's "price is zero".
 ///
-/// 价格必须是显式的 0；字段缺失按收费处理。
+/// Prices must be explicit zeros; missing fields count as paid.
 fn is_zero_cost(model: &Value) -> bool {
     let zero = |key: &str| {
         model
@@ -22,9 +22,9 @@ fn is_zero_cost(model: &Value) -> bool {
     zero("input") && zero("output")
 }
 
-/// 解析响应 JSON，失败时给出带开头片段的错误。
+/// Parse the response JSON, attaching a leading excerpt to errors.
 ///
-/// 片段只取 120 个字符。三个解析器共用这一段，错误文案保持一致。
+/// The excerpt takes 120 characters. All three parsers share it, keeping error wording uniform.
 fn parse_json(text: &str) -> Result<Value, String> {
     serde_json::from_str(text).map_err(|err| {
         let snippet = text.chars().take(120).collect::<String>();
@@ -32,14 +32,14 @@ fn parse_json(text: &str) -> Result<Value, String> {
     })
 }
 
-/// 取响应里的 `data` 数组（OpenAI 风格的 `/models` 响应）。
+/// Take the response's `data` array (OpenAI-style `/models` responses).
 fn data_items(root: &Value) -> Result<&Vec<Value>, String> {
     root.get("data")
         .and_then(Value::as_array)
         .ok_or_else(|| "响应里没有 data 数组".to_string())
 }
 
-/// 从 `data[].id` 收集模型 id，排序去重。
+/// Collect model ids from `data[].id`, sorted and deduped.
 fn ids_from_data(items: &[Value], keep: impl Fn(&Value) -> bool) -> Vec<String> {
     let mut ids: Vec<String> = items
         .iter()
@@ -54,7 +54,7 @@ fn ids_from_data(items: &[Value], keep: impl Fn(&Value) -> bool) -> Vec<String> 
     ids
 }
 
-/// 从 models.dev 的 `api.json` 全文里筛出指定厂商的免费模型。
+/// Filter a vendor's free models out of models.dev's full `api.json`.
 pub fn parse_models_dev_free(text: &str, provider: &str) -> Result<Vec<FreeModel>, String> {
     let root = parse_json(text)?;
     let provider = root
@@ -77,15 +77,15 @@ pub fn parse_models_dev_free(text: &str, provider: &str) -> Result<Vec<FreeModel
     Ok(found)
 }
 
-/// 解析 OpenAI 风格 `/models` 响应里的 id（`data[].id`）。
+/// Parse ids out of an OpenAI-style `/models` response (`data[].id`).
 pub fn parse_live_models(text: &str) -> Result<Vec<String>, String> {
     let root = parse_json(text)?;
     Ok(ids_from_data(data_items(&root)?, |_| true))
 }
 
-/// 解析 Kilo 网关响应里 `isFree == true` 的模型 id。
+/// Parse model ids with `isFree == true` out of a Kilo gateway response.
 ///
-/// 按响应自带的 `isFree` 字段筛选（不是按 id 后缀或价格推断）。
+/// Filters by the response's own `isFree` field (never by id suffix or price inference).
 pub fn parse_kilo_free(text: &str) -> Result<Vec<String>, String> {
     let root = parse_json(text)?;
     Ok(ids_from_data(data_items(&root)?, |item| {
@@ -93,8 +93,8 @@ pub fn parse_kilo_free(text: &str) -> Result<Vec<String>, String> {
     }))
 }
 
-/// 合并两个数据源：`live` 为 `Some` 时取交集（免费且网关在供）；
-/// 为 `None`（网关请求失败）时退回「只信 models.dev，并排除 deprecated」。
+/// Merge the two sources: with `live` Some, take the intersection (free AND gateway-offered);
+/// with None (the gateway request failed), fall back to "trust only models.dev, excluding deprecated".
 pub(super) fn combine(free: Vec<FreeModel>, live: Option<&[String]>) -> Vec<String> {
     let mut ids: Vec<String> = match live {
         Some(live) => free

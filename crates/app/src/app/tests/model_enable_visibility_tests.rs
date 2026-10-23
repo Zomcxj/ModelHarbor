@@ -3,7 +3,7 @@ use crate::app::App;
 use crate::format::ConfigFormat;
 use crate::model::{ModelRow, ProviderRow};
 
-/// 造一个「文件来自 opencode、当前页是 `page`」的 App。
+/// Build an App of "file from opencode, current page = `page`".
 fn app_loaded_from_opencode(page: ConfigFormat) -> App {
     let mut model = ModelRow::new();
     model.id = "m1".into();
@@ -47,7 +47,7 @@ fn only_workbuddy_shows_the_enable_toggle() {
     );
 }
 
-/// 文件来自 WorkBuddy 时，其他页也不显示开关。
+/// With the file from WorkBuddy, other pages don't show the switch either.
 #[test]
 fn a_workbuddy_file_does_not_leak_the_toggle_onto_other_pages() {
     let mut app = app_loaded_from_opencode(ConfigFormat::ZCode);
@@ -58,7 +58,7 @@ fn a_workbuddy_file_does_not_leak_the_toggle_onto_other_pages() {
     );
 }
 
-/// 谓词本身：只有 WorkBuddy 为真。
+/// The predicate itself: only WorkBuddy is true.
 #[test]
 fn has_model_enable_is_workbuddy_only() {
     for format in [

@@ -1,19 +1,19 @@
-//! 配置体检：把散落在各处的检查汇总成一张清单，保存前一次看完。
+//! Config health check: gathers the scattered validations into one list, reviewed in one pass before saving.
 //!
-//! 每一条都复用原有判定口径（[`crate::util::url_suspicions`]、
-//! [`crate::opencode_models::model_is_valid_on`] 等），体检本身只读、不改任何东西。
+//! Every item reuses the existing judgment logic ([`crate::util::url_suspicions`],
+//! [`crate::opencode_models::model_is_valid_on`], etc.); the check itself is read-only, touching nothing.
 
 use crate::format::ConfigFormat;
 use crate::model::{AgentRow, ProviderRow};
 
-/// 体检结论的严重度，决定清单里的排序与配色。
+/// Severity of a health finding; decides ordering and coloring in the list.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(super) enum Severity {
-    /// 保存会被拦住。
+    /// The save will be blocked.
     Blocker,
-    /// 保存能过，但结果可能不是用户想要的。
+    /// The save passes, but the result may not be what the user wants.
     Warn,
-    /// 只是提个醒。
+    /// Just a heads-up.
     Info,
 }
 
@@ -27,28 +27,28 @@ impl Severity {
     }
 }
 
-/// 一条体检结论。`where_` 是定位用的名字（provider key / agent 名 / 字段名）。
+/// One health finding. `where_` is the locating name (provider key / agent name / field name).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Issue {
     pub severity: Severity,
-    /// 一句话说清问题。
+    /// The problem in one sentence.
     pub title: String,
-    /// 定位：出问题的 provider / agent / 条目。
+    /// Locating: the problematic provider / agent / entry.
     pub where_: String,
-    /// 问题说明与处理方式。
+    /// What's wrong and how to handle it.
     pub detail: String,
 }
 
-/// 体检的输入：只依赖界面状态，不读文件、不发网络请求。
+/// Health-check input: depends only on UI state; no file reads, no network requests.
 pub(super) struct HealthInput<'a> {
     pub page: ConfigFormat,
     pub providers: &'a [ProviderRow],
     pub agents: &'a [AgentRow],
-    /// 来源格式是否为 opencode 系（决定 agents 是否会写进目标文件）。
+    /// Whether the source format is opencode-family (deciding whether agents land in the target file).
     pub source_is_opencode: bool,
 }
 
-/// 汇总所有体检结论，按严重度排序（阻断在前）。
+/// Gather all findings, sorted by severity (blockers first).
 pub(super) fn collect(input: &HealthInput<'_>) -> Vec<Issue> {
     let mut issues = Vec::new();
     check_duplicate_keys(input, &mut issues);
@@ -58,12 +58,12 @@ pub(super) fn collect(input: &HealthInput<'_>) -> Vec<Issue> {
     check_agent_models(input, &mut issues);
     check_api_keys(input, &mut issues);
     check_agents_not_written(input, &mut issues);
-    // 稳定排序：同级内保持上面各检查的发现顺序（provider 顺序 = 界面顺序）。
+    // Stable sort: within a level, keep each check's discovery order (provider order = UI order).
     issues.sort_by_key(|issue| issue.severity);
     issues
 }
 
-/// 重复的 key / model id。与保存的判定同一口径（`find_duplicate_keys`）。
+/// Duplicate keys / model ids. Same criteria as the save path (`find_duplicate_keys`).
 fn check_duplicate_keys(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     let mut seen_agents = std::collections::HashSet::new();
     for agent in input.agents {
@@ -107,7 +107,7 @@ fn check_duplicate_keys(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     }
 }
 
-/// 空 key / 空 id：这些条目保存时会被跳过。
+/// Empty key / empty id: these entries are skipped at save time.
 fn check_empty_identifiers(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     for (idx, provider) in input.providers.iter().enumerate() {
         if provider.key.trim().is_empty() {
@@ -135,7 +135,7 @@ fn check_empty_identifiers(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     }
 }
 
-/// 非法数字字段：保存时被忽略。
+/// Invalid numeric fields: ignored at save time.
 fn check_invalid_numbers(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     let bad =
         |text: &str| !text.trim().is_empty() && crate::util::parse_number_text(text).is_none();
@@ -183,9 +183,9 @@ fn check_invalid_numbers(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     }
 }
 
-/// baseUrl 可疑写法（缺协议头 / 重复斜杠 / 末尾斜杠 / 含空白）。
+/// Suspicious baseUrl spellings (missing scheme / doubled slashes / trailing slash / embedded whitespace).
 ///
-/// 只提示、不自动改写。
+/// Hints only; never auto-rewritten.
 fn check_base_urls(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     for provider in input.providers {
         let suspicions = crate::util::url_suspicions(&provider.base_url);
@@ -205,7 +205,7 @@ fn check_base_urls(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     }
 }
 
-/// agent 的 `model` 指向本页不认的网关。
+/// An agent's `model` points at a gateway this page doesn't recognize.
 fn check_agent_models(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     if !input.page.is_opencode_family() {
         return;
@@ -217,7 +217,7 @@ fn check_agent_models(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
         .collect();
     for agent in input.agents {
         let model = agent.model.trim();
-        // 空 model 是「还没选」。
+        // An empty model means "not chosen yet".
         if model.is_empty() {
             continue;
         }
@@ -237,16 +237,16 @@ fn check_agent_models(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     }
 }
 
-/// 没填密钥的 provider。
+/// Providers with no key set.
 ///
-/// 严重度为 `Info`。
+/// Severity is `Info`.
 fn check_api_keys(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     for provider in input.providers {
         if provider.key.trim().is_empty() {
             continue;
         }
         let has_secret = !provider.api_key_secret.trim().is_empty();
-        // DSH 走 apiKeyEnv 引用，其余后端看 apiKey。
+        // DSH goes through apiKeyEnv references; other backends look at apiKey.
         let filled = if input.page == ConfigFormat::DeepSeekHarness {
             !provider.api_key_env.trim().is_empty() || has_secret
         } else {
@@ -265,7 +265,7 @@ fn check_api_keys(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     }
 }
 
-/// 当前格式写不了 agents 时提醒一句。
+/// A one-line reminder when the current format cannot store agents.
 fn check_agents_not_written(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     if input.agents.is_empty() || input.source_is_opencode {
         return;
@@ -281,7 +281,7 @@ fn check_agents_not_written(input: &HealthInput<'_>, out: &mut Vec<Issue>) {
     });
 }
 
-/// 按严重度统计条数，供入口按钮上显示角标。
+/// Count findings per severity, for the badge on the entry button.
 pub(super) fn count_by_severity(issues: &[Issue]) -> (usize, usize) {
     let blockers = issues
         .iter()
@@ -411,7 +411,7 @@ mod tests {
     fn an_empty_number_field_is_not_reported() {
         let mut p = provider("p1");
         p.api_key = "sk-x".into();
-        // timeout / context 留空表示不指定，合法。
+        // An empty timeout / context means unspecified — legal.
         p.models = vec![ModelRow::from("m", &serde_json::json!({}))];
         let providers = vec![p];
         let issues = collect(&input(ConfigFormat::Opencode, &providers, &[]));
@@ -446,7 +446,7 @@ mod tests {
         agent.key = "build".into();
         agent.model = "kilo/kilo-auto/free".into();
         let agents = vec![agent];
-        // opencode 页不认 kilo 前缀，且没有同名 provider。
+        // The opencode page doesn't accept the kilo prefix, and no same-named provider exists.
         let issues = collect(&input(ConfigFormat::Opencode, &[], &agents));
         let issue = issues
             .iter()
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn dsh_reads_the_env_var_field_instead_of_the_literal_key() {
         let mut p = provider("p1");
-        // DSH 的密钥是 apiKeyEnv 引用，apiKey 字段对它没有意义。
+        // DSH's key is an apiKeyEnv reference; the apiKey field means nothing to it.
         p.api_key_env = "MY_KEY".into();
         let providers = vec![p];
         let issues = collect(&input(ConfigFormat::DeepSeekHarness, &providers, &[]));
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn blockers_sort_before_warnings_and_info() {
-        // 一个重复 key（阻断）+ 一个可疑 baseUrl（注意）+ 一个缺密钥（提示）。
+        // One duplicate key (blocker) + one suspicious baseUrl (caution) + one missing key (info).
         let mut a = provider("dup");
         a.base_url = "api.example.com".into();
         let b = provider("dup");
