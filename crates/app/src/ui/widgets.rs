@@ -35,6 +35,55 @@ pub fn card_list(
     }
 }
 
+/// A centered empty-state block: a title line, an optional hint line, and an optional action button.
+///
+/// Empty lists used to leave bare left-aligned weak text on the panel; this gives them one consistent
+/// treatment — centered, the title at body size, the hint faint — so an empty page still reads as a
+/// designed state rather than a rendering failure. `title_color` emphasizes the title when the empty
+/// state signals a problem (e.g. the usage page's warning shade); `None` keeps it quiet. Returns
+/// whether the action button was clicked.
+pub fn empty_state(
+    ui: &mut egui::Ui,
+    title: &str,
+    hint: &str,
+    title_color: Option<egui::Color32>,
+    action: Option<&str>,
+) -> bool {
+    let weak = ui.visuals().weak_text_color();
+    let title_color = title_color.unwrap_or(weak);
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(
+            crate::theme::SPACE_3 as i8,
+            crate::theme::SPACE_5 as i8,
+        ))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(crate::theme::TEXT_BODY)
+                        .color(title_color),
+                );
+                if !hint.is_empty() {
+                    ui.add_space(crate::theme::SPACE_1);
+                    ui.label(
+                        egui::RichText::new(hint)
+                            .size(crate::theme::TEXT_CAPTION)
+                            .color(weak),
+                    );
+                }
+                action
+                    .map(|label| {
+                        ui.add_space(crate::theme::SPACE_3);
+                        ui.button(label).clicked()
+                    })
+                    .unwrap_or(false)
+            })
+            .inner
+        })
+        .inner
+}
+
 /// The key input box: masked (dots) when `show` is false, content retained.
 /// Visibility toggles via the toolbar's global "show keys / hide keys" button.
 pub fn secret_text_edit(

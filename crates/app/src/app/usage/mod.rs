@@ -64,17 +64,23 @@ pub(in crate::app) const MIN_REPAINT_SECS: f64 = 0.01;
 /// range / dimension / chart-toggle groups all reuse it instead of restating the selected style.
 pub(in crate::app) fn chip(ui: &mut egui::Ui, selected: bool, label: &str, width: f32) -> bool {
     let visuals = ui.visuals();
-    let (fill, stroke) = if selected {
+    // The selected chip is the strong state: the accent fill with the on-accent text color, so the
+    // current filter stands out from the unselected ones instead of blending into the hover shade.
+    let accent = visuals.selection.bg_fill;
+    let (fill, stroke, text_color) = if selected {
         (
-            visuals.widgets.hovered.bg_fill,
-            egui::Stroke::new(2.0f32, visuals.widgets.hovered.bg_stroke.color),
+            accent,
+            egui::Stroke::new(1.5f32, accent),
+            Some(visuals.selection.stroke.color),
         )
     } else {
-        (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
+        (egui::Color32::TRANSPARENT, egui::Stroke::NONE, None)
     };
-    let text = egui::RichText::new(label);
+    let mut text = egui::RichText::new(label);
+    if let Some(color) = text_color {
+        text = text.color(color);
+    }
     let text = if selected { text.strong() } else { text };
-    let accent = visuals.widgets.hovered.bg_fill;
     let corner = ui.visuals().widgets.inactive.corner_radius;
     let response = ui.add(
         egui::Button::new(text)
@@ -720,6 +726,48 @@ mod tests {
     use crate::app::usage::range::Range;
     use crate::usage::DayTotals;
     use std::collections::BTreeMap;
+
+    /// The selected chip carries the accent fill; the unselected one stays a bare outline.
+    #[test]
+    fn selected_chip_uses_the_accent_fill() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::default(), false);
+        let accent = ctx.style().visuals.selection.bg_fill;
+        fn fills(shape: &egui::Shape, out: &mut Vec<egui::Color32>) {
+            match shape {
+                egui::Shape::Rect(r) => out.push(r.fill),
+                egui::Shape::Vec(items) => items.iter().for_each(|s| fills(s, out)),
+                _ => {}
+            }
+        }
+        let run = |selected: bool| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(200.0, 60.0),
+                )),
+                ..Default::default()
+            };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    super::chip(ui, selected, "全部", 48.0);
+                });
+            });
+            let mut colors = Vec::new();
+            for clipped in &out.shapes {
+                fills(&clipped.shape, &mut colors);
+            }
+            colors
+        };
+        assert!(
+            run(true).contains(&accent),
+            "选中 chip 必须用强调色填充，否则看不出当前筛选"
+        );
+        assert!(
+            !run(false).contains(&accent),
+            "未选中 chip 不该出现强调色填充"
+        );
+    }
 
     /// The idle branch must request a frame for "the next check point": egui doesn't repaint on its own while
     /// idle, and without frame requests the periodic check starves — later source changes would never be

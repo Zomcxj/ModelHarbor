@@ -14,7 +14,7 @@ pub use drag::{
     DRAG_SOURCE_FILL, DROP_TARGET_COLOR, DROP_TARGET_FILL,
 };
 pub use widgets::{
-    card_list, field_label, numeric_text_edit, secret_text_edit, toggle_knob_center,
+    card_list, empty_state, field_label, numeric_text_edit, secret_text_edit, toggle_knob_center,
     toggle_knob_center_at, toggle_switch, TOGGLE_HEIGHT, TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
 };
 
@@ -25,6 +25,44 @@ mod tests {
         DRAG_HANDLE_GAP, TOGGLE_HEIGHT, TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
     };
     use eframe::egui;
+
+    /// The empty state draws its title, hint, and action label.
+    #[test]
+    fn empty_state_renders_its_text() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::default(), false);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 200.0),
+            )),
+            ..Default::default()
+        };
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                egui::Shape::Vec(items) => items.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        let mut seen: Vec<String> = Vec::new();
+        let mut clicked = true;
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                clicked = super::empty_state(ui, "没有数据", "先跑一轮对话", None, Some("去扫描"));
+            });
+        });
+        for clipped in &out.shapes {
+            texts(&clipped.shape, &mut seen);
+        }
+        for want in ["没有数据", "先跑一轮对话", "去扫描"] {
+            assert!(
+                seen.iter().any(|t| t.contains(want)),
+                "空态缺少「{want}」：{seen:?}"
+            );
+        }
+        assert!(!clicked, "未点击时不应报告动作被触发");
+    }
 
     /// The ribbon covers only the card's top 3px.
     #[test]

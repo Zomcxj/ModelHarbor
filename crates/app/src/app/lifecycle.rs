@@ -13,17 +13,49 @@ impl super::App {
     }
 
     /// Re-apply styling when theme / shape / acrylic tier changes (first startup included).
+    ///
+    /// A theme switch cross-fades: the previous and current palettes blend over [`crate::motion::THEME_TIME`].
+    /// Shape / acrylic changes share the path but blend a palette onto itself, so they stay instant.
     pub(in crate::app) fn apply_theme_if_changed(&mut self, ctx: &egui::Context) {
         let shape = self.ui_style;
         let glass = self.glass;
-        if crate::theme::needs_apply_style(&mut self.applied_theme, self.theme, shape, glass) {
-            self.theme.apply_style(ctx, shape, glass);
+        let changed =
+            crate::theme::needs_apply_style(&mut self.applied_theme, self.theme, shape, glass);
+        if changed {
+            // Start a cross-fade from the palette that is on screen; the first startup has none.
+            if let Some(from) = self.applied_palette {
+                if from != self.theme.palette() {
+                    self.theme_fade = Some((from, ctx.input(|input| input.time)));
+                }
+            }
             // Window layer: DWM backdrop and corners, toggling only "whether DWM paints the blur".
             crate::windowfx::set_backdrop(if glass {
                 crate::windowfx::Backdrop::Acrylic
             } else {
                 crate::windowfx::Backdrop::None
             });
+        }
+        match self.theme_fade {
+            // Mid-fade: re-apply with the blended palette every frame.
+            Some((from, start)) => {
+                let t = crate::motion::fade_progress(ctx, start);
+                let palette = from.lerp(&self.theme.palette(), t);
+                self.theme
+                    .apply_style_with_palette(ctx, shape, glass, palette);
+                self.applied_palette = Some(palette);
+                if t >= 1.0 {
+                    self.theme_fade = None;
+                    self.applied_palette = Some(self.theme.palette());
+                }
+            }
+            None => {
+                if changed {
+                    let palette = self.theme.palette();
+                    self.theme
+                        .apply_style_with_palette(ctx, shape, glass, palette);
+                    self.applied_palette = Some(palette);
+                }
+            }
         }
     }
 

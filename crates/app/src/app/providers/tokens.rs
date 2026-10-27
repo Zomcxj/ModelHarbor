@@ -34,16 +34,12 @@ impl App {
             .color(ui.visuals().weak_text_color()),
         );
         if stations.is_empty() {
-            ui.label(
-                egui::RichText::new("当前页面没有带 baseUrl 的 provider")
-                    .color(ui.visuals().weak_text_color()),
-            );
-            ui.label(
-                egui::RichText::new(
-                    "先在 Providers 区新增一个 provider，填上 baseUrl，再回到这里填令牌。",
-                )
-                .small()
-                .color(ui.visuals().weak_text_color()),
+            crate::ui::empty_state(
+                ui,
+                "当前页面没有带 baseUrl 的 provider",
+                "先在 Providers 区新增一个 provider，填上 baseUrl，再回到这里填令牌。",
+                None,
+                None,
             );
             return;
         }

@@ -375,25 +375,14 @@ impl App {
     /// Empty state: one explanatory line + one line on "how to make numbers appear".
     fn ui_usage_empty(&self, ui: &mut egui::Ui) {
         let semantics = crate::theme::semantics(ui);
-        egui::Frame::NONE
-            .inner_margin(egui::Margin::same(crate::theme::SPACE_3 as i8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    egui::RichText::new("没有找到本机用量数据。")
-                        .size(crate::theme::TEXT_BODY)
-                        .color(semantics.warn),
-                );
-                ui.add_space(crate::theme::SPACE_2);
-                ui.label(
-                    egui::RichText::new(
-                        "统计的是各 agent 自己写在磁盘上的会话账本（pi / opencode / \
-                         workbuddy / dsh 等）。先用其中任意一个跑一轮对话，数字就会出现在这里。",
-                    )
-                    .small()
-                    .weak(),
-                );
-            });
+        crate::ui::empty_state(
+            ui,
+            "没有找到本机用量数据。",
+            "统计的是各 agent 自己写在磁盘上的会话账本（pi / opencode / workbuddy / dsh 等）。\
+             先用其中任意一个跑一轮对话，数字就会出现在这里。",
+            Some(semantics.warn),
+            None,
+        );
     }
 }
 

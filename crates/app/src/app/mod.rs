@@ -218,6 +218,10 @@ pub struct App {
     theme: Theme,
     /// The theme already applied to egui (theme + shape + acrylic).
     applied_theme: Option<(Theme, crate::theme::UiStyle, bool)>,
+    /// The palette currently on screen (the cross-fade blends from it).
+    applied_palette: Option<crate::theme::Palette>,
+    /// An in-flight theme cross-fade: the previous palette plus the start time (egui seconds).
+    theme_fade: Option<(crate::theme::Palette, f64)>,
     save_format: SaveFormat,
     /// The scroll-wheel format-switch latch: one continuous scroll gesture switches once.
     save_format_wheel_latch: bool,
@@ -401,6 +405,8 @@ impl Default for App {
             theme: Theme::from_key(&prefs.theme),
             // Handed to the first frame's apply_theme_if_changed
             applied_theme: None,
+            applied_palette: None,
+            theme_fade: None,
             save_format: SaveFormat::from_key(&prefs.save_format),
             prefs_saved: prefs.clone(),
             save_format_wheel_latch: false,

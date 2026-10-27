@@ -23,6 +23,12 @@ pub const DIGIT_ROLL_TIME: f32 = 0.45;
 /// Click acknowledgment pulse duration (seconds).
 pub const PULSE_TIME: f32 = 0.22;
 
+/// Theme cross-fade duration (seconds).
+///
+/// Only for the palette interpolation on a theme switch: long enough to read as a transition, short
+/// enough that the new colors settle before the click feels stale.
+pub const THEME_TIME: f32 = 0.22;
+
 /// Compile-time upper-bound check on animation durations.
 const _: () = {
     assert!(HOVER_TIME <= 0.2, "悬停过渡时长超过 0.2s，界面会显得拖沓");
@@ -45,6 +51,14 @@ const _: () = {
         "click pulse over 0.25s reads as lag, not acknowledgment"
     );
     assert!(PULSE_TIME > 0.0, "click pulse duration must be positive");
+    assert!(
+        THEME_TIME <= 0.25,
+        "theme cross-fade over 0.25s reads as lag, not a transition"
+    );
+    assert!(
+        THEME_TIME > 0.0,
+        "theme cross-fade duration must be positive"
+    );
 };
 
 /// Per-channel interpolation in gamma space (premultiplied alpha interpolated as-is).
@@ -59,6 +73,22 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
         mix(a.b(), b.b()),
         mix(a.a(), b.a()),
     )
+}
+
+/// Theme cross-fade progress since `start` (0 = the previous palette, 1 = the new one).
+///
+/// Unlike the click pulse this only requests a repaint while the fade is running, so a settled theme
+/// costs nothing. Under `everything_is_visible` (debug / offscreen tests) the fade is skipped entirely.
+pub fn fade_progress(ctx: &egui::Context, start: f64) -> f32 {
+    if ctx.memory(|mem| mem.everything_is_visible()) {
+        return 1.0;
+    }
+    let now = ctx.input(|input| input.time);
+    let t = ((now - start) as f32 / THEME_TIME).clamp(0.0, 1.0);
+    if t < 1.0 {
+        ctx.request_repaint();
+    }
+    t
 }
 
 /// Hover interpolation factor (0 = not hovered, 1 = hovered).
@@ -430,6 +460,23 @@ mod tests {
         assert_eq!(super::hover_t(&ctx, id, true), 1.0);
     }
 
+    /// The theme cross-fade starts at 0 and is skipped (jumps to 1) under `everything_is_visible`.
+    #[test]
+    fn fade_progress_starts_at_zero_and_skips_in_debug_mode() {
+        let ctx = egui::Context::default();
+        assert_eq!(
+            super::fade_progress(&ctx, ctx.input(|input| input.time)),
+            0.0,
+            "刚切主题的那一帧进度必须是 0"
+        );
+        assert_eq!(super::fade_progress(&ctx, 1e9), 0.0, "起点在未来时进度为 0");
+        ctx.memory_mut(|mem| mem.set_everything_is_visible(true));
+        assert_eq!(
+            super::fade_progress(&ctx, 1e9),
+            1.0,
+            "调试模式必须直接给到终值"
+        );
+    }
     /// While expanded: renders and measures the full height; once collapsed returns `None`, taking no layout space.
     ///
     /// body reserves with a fixed-size widget, not text.

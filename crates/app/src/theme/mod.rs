@@ -136,10 +136,6 @@ impl Theme {
         }
     }
 
-    fn egui_theme(self) -> egui::Theme {
-        egui::Theme::from_dark_mode(self.palette().dark)
-    }
-
     /// Apply styling per the current theme + default shape.
     pub fn apply(&self, ctx: &egui::Context) {
         let style = UiStyle::default();
@@ -147,12 +143,37 @@ impl Theme {
     }
     /// Apply styling per theme + shape preset + acrylic tier.
     pub fn apply_style(&self, ctx: &egui::Context, shape: UiStyle, glass: bool) {
+        self.apply_style_with_palette(ctx, shape, glass, self.palette());
+    }
+
+    /// [`Self::apply_style`] with an explicit palette.
+    ///
+    /// The theme cross-fade passes a blend of the previous and current palettes, so every frame of the
+    /// transition re-applies the style instead of switching colors in one step.
+    pub fn apply_style_with_palette(
+        &self,
+        ctx: &egui::Context,
+        shape: UiStyle,
+        glass: bool,
+        palette: Palette,
+    ) {
         let mut style = egui::Style::default();
         style.spacing.item_spacing = egui::vec2(SPACE_2 / 2.0, SPACE_2);
         style.spacing.button_padding = egui::vec2(SPACE_4 - 2.0, SPACE_1 - 1.0);
         style.spacing.interact_size.y = TAP_TARGET_MIN;
         style.spacing.scroll.bar_outer_margin = 0.0;
         style.spacing.scroll.floating = true;
+        // A thin, quiet floating bar: no track while idle, a slim handle that strengthens on hover.
+        let scroll = &mut style.spacing.scroll;
+        scroll.bar_inner_margin = SPACE_1 / 2.0;
+        scroll.bar_width = SPACE_1 + 2.0;
+        scroll.floating_width = SPACE_1 + 2.0;
+        scroll.dormant_background_opacity = 0.0;
+        scroll.active_background_opacity = 0.18;
+        scroll.interact_background_opacity = 0.3;
+        scroll.dormant_handle_opacity = 0.3;
+        scroll.active_handle_opacity = 0.55;
+        scroll.interact_handle_opacity = 0.8;
         // Font-size scale.
         style.text_styles.insert(
             egui::TextStyle::Small,
@@ -170,7 +191,6 @@ impl Theme {
             egui::TextStyle::Heading,
             egui::FontId::new(TEXT_HEADING, egui::FontFamily::Proportional),
         );
-        let palette = self.palette();
         let dark = palette.dark;
         style.visuals = palette.into_visuals(glass);
         let radius = shape.radius();
@@ -182,6 +202,9 @@ impl Theme {
         ] {
             w.corner_radius = radius.into();
         }
+        // Tooltips follow the shape preset too: popup frames read these two fields.
+        style.visuals.menu_corner_radius = radius.into();
+        style.spacing.menu_margin = egui::Margin::symmetric(SPACE_2 as i8, SPACE_1 as i8 + 2);
         // Border widths follow the shape; colors come from the palette (hovered / active are the accent).
         for w in [
             &mut style.visuals.widgets.noninteractive,
@@ -207,7 +230,7 @@ impl Theme {
             style.visuals.window_shadow = shadow;
             style.visuals.popup_shadow = shadow;
         }
-        ctx.set_theme(self.egui_theme());
+        ctx.set_theme(egui::Theme::from_dark_mode(palette.dark));
         ctx.set_style(style);
         // The shape goes into the context: cards in `ui.rs` read it for border width and inset bright lines.
         ctx.data_mut(|data| data.insert_temp(egui::Id::new(ACTIVE_STYLE_ID), shape));
@@ -337,6 +360,33 @@ mod tests {
                 style.key()
             );
         }
+    }
+
+    /// The scroll-bar and tooltip tuning genuinely land in the Style.
+    #[test]
+    fn scroll_and_menu_styling_reach_the_style() {
+        let ctx = egui::Context::default();
+        Theme::Dark.apply_style(&ctx, UiStyle::Fine, false);
+        let style = ctx.style();
+        let scroll = &style.spacing.scroll;
+        assert!(scroll.floating, "floating 滚动条必须开启");
+        assert_eq!(
+            scroll.floating_width,
+            SPACE_1 + 2.0,
+            "滚动条把手宽度没进 Style"
+        );
+        assert_eq!(scroll.dormant_background_opacity, 0.0, "静止时轨道必须隐身");
+        assert!(scroll.interact_handle_opacity > scroll.dormant_handle_opacity);
+        // Tooltip geometry follows the shape preset.
+        assert_eq!(
+            style.visuals.menu_corner_radius.nw,
+            UiStyle::Fine.radius(),
+            "tooltip 圆角没跟随形状预设"
+        );
+        assert_eq!(
+            style.spacing.menu_margin.left, SPACE_2 as i8,
+            "tooltip 边距没进 Style"
+        );
     }
 
     /// A shape-preset change re-applies styling via `needs_apply_style`.
