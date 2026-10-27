@@ -84,6 +84,47 @@ pub fn empty_state(
         .inner
 }
 
+/// The accent focus ring: painted over a widget while it holds keyboard focus.
+///
+/// egui paints a focused `TextEdit`'s frame with `visuals.selection.stroke`, which this app must keep as the
+/// on-accent ink (`accent_text`) so text selected on the accent fill stays legible — that leaves the focus
+/// frame all but invisible: black on dark panels, white on light ones. Worse, the unfocused state keeps a
+/// themed border, so focusing an input used to *remove* its outline. This ring restores an unmistakable
+/// focus signal without touching selected text.
+pub fn focus_ring(ui: &egui::Ui, response: &egui::Response) {
+    if !response.has_focus() {
+        return;
+    }
+    let accent = ui.visuals().selection.bg_fill;
+    let corner = ui.visuals().widgets.inactive.corner_radius;
+    ui.painter().rect_stroke(
+        response.rect.expand(1.0),
+        corner,
+        egui::Stroke::new(1.5_f32, accent),
+        egui::StrokeKind::Outside,
+    );
+}
+
+/// Add a text edit, focus ring included.
+///
+/// Every text input in the app goes through here so focus feedback stays uniform across the plain, masked,
+/// error-tinted, and multi-line variants.
+pub fn text_edit(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> egui::Response {
+    let response = ui.add(edit);
+    focus_ring(ui, &response);
+    response
+}
+
+/// A single-line text input: `width` is the desired width, `hint` the placeholder.
+pub fn text_input(ui: &mut egui::Ui, value: &mut String, width: f32, hint: &str) -> egui::Response {
+    text_edit(
+        ui,
+        egui::TextEdit::singleline(value)
+            .desired_width(width)
+            .hint_text(hint),
+    )
+}
+
 /// The key input box: masked (dots) when `show` is false, content retained.
 /// Visibility toggles via the toolbar's global "show keys / hide keys" button.
 pub fn secret_text_edit(
@@ -93,12 +134,14 @@ pub fn secret_text_edit(
     width: f32,
     hint: &str,
 ) -> egui::Response {
-    ui.add(
+    let resp = text_edit(
+        ui,
         egui::TextEdit::singleline(value)
             .password(!show)
             .desired_width(width)
             .hint_text(hint),
-    )
+    );
+    resp
 }
 
 /// A numeric text edit: non-empty unparseable content highlights red with a hover note.
@@ -113,10 +156,10 @@ pub fn numeric_text_edit(
         .desired_width(width)
         .hint_text(hint);
     if valid {
-        ui.add(edit)
+        text_edit(ui, edit)
     } else {
-        ui.add(edit.text_color(crate::theme::semantics(ui).err))
-            .on_hover_text("无效数字：保存时该字段将被忽略")
+        let resp = text_edit(ui, edit.text_color(crate::theme::semantics(ui).err));
+        resp.on_hover_text("无效数字：保存时该字段将被忽略")
     }
 }
 

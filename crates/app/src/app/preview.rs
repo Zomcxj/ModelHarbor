@@ -238,8 +238,10 @@ impl App {
         // Find bar: Enter next / Shift+Enter previous / Esc closes.
         if self.preview_find_active {
             ui.horizontal(|ui| {
-                let resp =
-                    ui.add(egui::TextEdit::singleline(&mut self.preview_find).desired_width(150.0));
+                let resp = crate::ui::text_edit(
+                    ui,
+                    egui::TextEdit::singleline(&mut self.preview_find).desired_width(150.0),
+                );
                 if self.preview_find_focus {
                     resp.request_focus();
                     self.preview_find_focus = false;
@@ -373,6 +375,8 @@ impl App {
                 // Use show: needs output.cursor_range to compute the cursor's line.
                 let output = edit.show(ui);
                 let resp = output.response;
+                // The editor builds its own frame (code editor layout), so the shared ring goes on here.
+                crate::ui::focus_ring(ui, &resp);
                 // Find-hit jump: move the cursor onto the hit and write the state back; the scroll area follows.
                 if let Some(byte) = find_jump {
                     // The jump offset may be stale: clamp back to a character boundary first.

@@ -32,7 +32,7 @@ pub(super) fn provider_header_fields(
         } else {
             key_edit
         };
-        let key_resp = ui.add(key_edit);
+        let key_resp = crate::ui::text_edit(ui, key_edit);
         if let Some(other_keys) = ctx.other_keys {
             if !p.key.trim().is_empty() && other_keys.contains(p.key.trim()) {
                 key_resp.on_hover_text("key 与其他 provider 重复，保存将被阻止");
@@ -83,7 +83,10 @@ pub(super) fn provider_header_fields(
         }
         if flags.show_dsh {
             field_label(ui, 120.0, "retryPolicy.mode");
-            ui.add(egui::TextEdit::singleline(&mut p.dsh_retry_mode).desired_width(100.0));
+            crate::ui::text_edit(
+                ui,
+                egui::TextEdit::singleline(&mut p.dsh_retry_mode).desired_width(100.0),
+            );
             field_label(ui, 120.0, "maxRetries");
             numeric_text_edit(ui, &mut p.dsh_max_retries, 55.0, "3");
         }
@@ -97,7 +100,7 @@ pub(super) fn provider_header_fields(
             } else {
                 url_edit
             };
-            ui.add(url_edit);
+            crate::ui::text_edit(ui, url_edit);
         }
         // WorkBuddy's protocol is expressed by the URL suffix (the file has no protocol field), so no manual
         // toggle: the protocol chosen above decides what suffix gets appended at save.
@@ -112,7 +115,7 @@ pub(super) fn provider_header_fields(
             } else {
                 env_edit
             };
-            ui.add(env_edit);
+            crate::ui::text_edit(ui, env_edit);
             field_label(ui, 120.0, "API Key");
             let hint = if ctx.relaxed { "实际密钥" } else { "" };
             secret_text_edit(ui, &mut p.api_key_secret, ctx.show_api_keys, 408.0, hint);

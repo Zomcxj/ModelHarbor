@@ -41,17 +41,20 @@ impl App {
             {
                 self.save_all();
             }
-            let save_tint = ui.visuals().text_color();
+            // On the accent fill the body text color has too little contrast (dark ink on a dark accent,
+            // light ink on a light one): the on-accent ink is the one that reads.
+            let save_ink = ui.visuals().selection.stroke.color;
             let save_fill = ui.visuals().selection.bg_fill;
             let save_btn = match self.toolbar_icons.save.as_ref() {
                 Some(tex) => egui::Button::image_and_text(
                     egui::Image::from_texture(tex)
                         .fit_to_exact_size(egui::vec2(14.0, 14.0))
-                        .tint(save_tint),
-                    egui::RichText::new("保存").strong(),
+                        .tint(save_ink),
+                    egui::RichText::new("保存").strong().color(save_ink),
                 )
                 .fill(save_fill),
-                None => egui::Button::new(egui::RichText::new("保存").strong()).fill(save_fill),
+                None => egui::Button::new(egui::RichText::new("保存").strong().color(save_ink))
+                    .fill(save_fill),
             };
             if ui
                 .add_enabled(can_save, save_btn)

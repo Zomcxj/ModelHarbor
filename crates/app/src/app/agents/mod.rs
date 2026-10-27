@@ -216,7 +216,10 @@ impl App {
         let a = &mut self.agents[idx];
         ui.horizontal_wrapped(|ui| {
             field_label(ui, 120.0, "key");
-            let key_resp = ui.add(egui::TextEdit::singleline(&mut a.key).desired_width(120.0));
+            let key_resp = crate::ui::text_edit(
+                ui,
+                egui::TextEdit::singleline(&mut a.key).desired_width(120.0),
+            );
             if !a.key.trim().is_empty() && other_keys.contains(a.key.trim()) {
                 key_resp.on_hover_text("key 与其他 agent 重复，保存将被阻止");
                 ui.label(
@@ -226,9 +229,15 @@ impl App {
                 );
             }
             field_label(ui, 120.0, "mode");
-            ui.add(egui::TextEdit::singleline(&mut a.mode).desired_width(120.0));
+            crate::ui::text_edit(
+                ui,
+                egui::TextEdit::singleline(&mut a.mode).desired_width(120.0),
+            );
             field_label(ui, 120.0, "description");
-            ui.add(egui::TextEdit::singleline(&mut a.description).desired_width(450.0));
+            crate::ui::text_edit(
+                ui,
+                egui::TextEdit::singleline(&mut a.description).desired_width(450.0),
+            );
         });
         ui.horizontal_wrapped(|ui| {
             field_label(ui, 120.0, "model");
@@ -248,9 +257,15 @@ impl App {
             field_label(ui, 120.0, form_flags.agent_temperature_label);
             numeric_text_edit(ui, &mut a.temperature, 120.0, "");
             field_label(ui, 120.0, "color");
-            ui.add(egui::TextEdit::singleline(&mut a.color).desired_width(120.0));
+            crate::ui::text_edit(
+                ui,
+                egui::TextEdit::singleline(&mut a.color).desired_width(120.0),
+            );
             field_label(ui, 120.0, "system");
-            ui.add(egui::TextEdit::singleline(&mut a.system).desired_width(450.0));
+            crate::ui::text_edit(
+                ui,
+                egui::TextEdit::singleline(&mut a.system).desired_width(450.0),
+            );
         });
         // Sync the expanded state after a key rename.
         let new_key = self.agents[idx].key.clone();
@@ -265,19 +280,22 @@ impl App {
         ui.group(|ui| {
             ui.horizontal_wrapped(|ui| {
                 field_label(ui, 120.0, "key");
-                ui.add(
+                crate::ui::text_edit(
+                    ui,
                     egui::TextEdit::singleline(&mut self.new_agent.key)
                         .hint_text("coding-assistant")
                         .desired_width(120.0),
                 );
                 field_label(ui, 120.0, "mode");
-                ui.add(
+                crate::ui::text_edit(
+                    ui,
                     egui::TextEdit::singleline(&mut self.new_agent.mode)
                         .hint_text("subagent")
                         .desired_width(120.0),
                 );
                 field_label(ui, 120.0, "description");
-                ui.add(
+                crate::ui::text_edit(
+                    ui,
                     egui::TextEdit::singleline(&mut self.new_agent.description)
                         .hint_text("简要描述此 agent 的用途")
                         .desired_width(450.0),
@@ -301,13 +319,15 @@ impl App {
                 field_label(ui, 120.0, form_flags.agent_temperature_label);
                 numeric_text_edit(ui, &mut self.new_agent.temperature, 120.0, "0.7");
                 field_label(ui, 120.0, "color");
-                ui.add(
+                crate::ui::text_edit(
+                    ui,
                     egui::TextEdit::singleline(&mut self.new_agent.color)
                         .hint_text("#00ccff")
                         .desired_width(120.0),
                 );
                 field_label(ui, 120.0, "system");
-                ui.add(
+                crate::ui::text_edit(
+                    ui,
                     egui::TextEdit::singleline(&mut self.new_agent.system)
                         .hint_text("系统提示词")
                         .desired_width(450.0),

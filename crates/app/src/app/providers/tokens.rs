@@ -110,7 +110,8 @@ impl App {
                 ui.horizontal(|ui| {
                     // The hint text's color comes from the theme (`theme::Palette::hint_color`).
                     if let Some(draft) = self.token_draft.get_mut(origin) {
-                        ui.add(
+                        crate::ui::text_edit(
+                            ui,
                             egui::TextEdit::singleline(draft)
                                 .password(!revealed)
                                 .desired_width(280.0)
@@ -145,7 +146,8 @@ impl App {
                             .color(ui.visuals().weak_text_color()),
                     );
                     if let Some(draft) = self.token_uid_draft.get_mut(origin) {
-                        ui.add(
+                        crate::ui::text_edit(
+                            ui,
                             egui::TextEdit::singleline(draft)
                                 .desired_width(90.0)
                                 .hint_text("可留空"),

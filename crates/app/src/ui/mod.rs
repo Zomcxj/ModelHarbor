@@ -14,8 +14,9 @@ pub use drag::{
     DRAG_SOURCE_FILL, DROP_TARGET_COLOR, DROP_TARGET_FILL,
 };
 pub use widgets::{
-    card_list, empty_state, field_label, numeric_text_edit, secret_text_edit, toggle_knob_center,
-    toggle_knob_center_at, toggle_switch, TOGGLE_HEIGHT, TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
+    card_list, empty_state, field_label, focus_ring, numeric_text_edit, secret_text_edit,
+    text_edit, text_input, toggle_knob_center, toggle_knob_center_at, toggle_switch, TOGGLE_HEIGHT,
+    TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
 };
 
 #[cfg(test)]
@@ -25,6 +26,55 @@ mod tests {
         DRAG_HANDLE_GAP, TOGGLE_HEIGHT, TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
     };
     use eframe::egui;
+
+    /// A focused text input carries the accent focus ring.
+    ///
+    /// egui's own focus frame draws in `selection.stroke` — kept as the on-accent ink here — so without
+    /// the ring a focused input loses its outline entirely on both dark and light panels.
+    #[test]
+    fn focused_text_input_gets_the_accent_ring() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::default(), false);
+        let accent = ctx.style().visuals.selection.bg_fill;
+        let id = egui::Id::new("ring_probe");
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(300.0, 80.0),
+            )),
+            ..Default::default()
+        };
+        fn strokes(shape: &egui::Shape, out: &mut Vec<(egui::Color32, f32)>) {
+            match shape {
+                egui::Shape::Rect(r) => out.push((r.stroke.color, r.stroke.width)),
+                egui::Shape::Vec(items) => items.iter().for_each(|s| strokes(s, out)),
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        // First frame: the widget exists, focus is requested for the next one.
+        let _ = ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                crate::ui::text_edit(ui, egui::TextEdit::singleline(&mut text).id(id));
+                ui.memory_mut(|mem| mem.request_focus(id));
+            });
+        });
+        // Second frame: focused, so the ring is painted.
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let resp = crate::ui::text_edit(ui, egui::TextEdit::singleline(&mut text).id(id));
+                assert!(resp.has_focus(), "第二帧输入框应已取得焦点");
+            });
+        });
+        let mut painted = Vec::new();
+        for clipped in &out.shapes {
+            strokes(&clipped.shape, &mut painted);
+        }
+        assert!(
+            painted.iter().any(|(c, w)| *c == accent && *w > 1.0),
+            "聚焦的输入框必须画出强调色聚焦环：{painted:?}"
+        );
+    }
 
     /// The empty state draws its title, hint, and action label.
     #[test]

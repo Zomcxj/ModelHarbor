@@ -486,7 +486,7 @@ impl App {
                     ui.label(egui::RichText::new(self.source_format.label()).weak());
                 }
                 let path_resp =
-                    ui.add(egui::TextEdit::singleline(&mut self.config_path).desired_width(420.0));
+                    crate::ui::text_edit(ui, egui::TextEdit::singleline(&mut self.config_path).desired_width(420.0));
                 // Enter confirms: reload from the currently typed path (egui single-line edits lose focus on Enter)
                 if path_resp.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))

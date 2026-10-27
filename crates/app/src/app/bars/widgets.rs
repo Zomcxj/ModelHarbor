@@ -39,11 +39,18 @@ pub(in crate::app) fn toolbar_icon_button(
         egui::StrokeKind::Inside,
     );
     if let Some(texture) = texture {
+        // An active button sits on the accent fill, so its icon takes the on-accent ink instead of the
+        // caller's tint (which is tuned for the panel background and would wash out on the accent).
+        let ink = if active {
+            visuals.selection.stroke.color
+        } else {
+            tint
+        };
         ui.painter().image(
             texture.id(),
             rect.shrink(3.0),
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            tint,
+            ink,
         );
     }
     // Click acknowledgment: an accent ring expanding from the button.

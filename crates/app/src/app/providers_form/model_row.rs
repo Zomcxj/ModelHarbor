@@ -25,7 +25,10 @@ pub(super) fn model_core_fields_row(
     let on = |flag: bool| relaxed || flag;
     ui.horizontal_wrapped(|ui| {
         field_label(ui, 120.0, "id:");
-        let id_resp = ui.add(egui::TextEdit::singleline(&mut m.id).desired_width(120.0));
+        let id_resp = crate::ui::text_edit(
+            ui,
+            egui::TextEdit::singleline(&mut m.id).desired_width(120.0),
+        );
         if let Some((same_provider, global)) = dup {
             if !m.id.trim().is_empty()
                 && (same_provider.contains(m.id.trim()) || global.contains(m.id.trim()))
@@ -54,7 +57,10 @@ pub(super) fn model_core_fields_row(
         }
         if on(flags.show_model_name) {
             field_label(ui, 120.0, "name:");
-            ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(120.0));
+            crate::ui::text_edit(
+                ui,
+                egui::TextEdit::singleline(&mut m.name).desired_width(120.0),
+            );
         }
         // The v2 schema has no reasoning key: hidden even in the add form (relaxed);
         // crossing to a v1 target lands reasoning: true via the default-checked value.
@@ -121,11 +127,17 @@ pub(super) fn model_modalities_row(
     ui.horizontal_wrapped(|ui| {
         if on(flags.show_model_input) {
             field_label(ui, 120.0, flags.input_label);
-            ui.add(egui::TextEdit::singleline(&mut m.modalities_input).desired_width(80.0));
+            crate::ui::text_edit(
+                ui,
+                egui::TextEdit::singleline(&mut m.modalities_input).desired_width(80.0),
+            );
         }
         if flags.show_oc {
             field_label(ui, 120.0, flags.modal_output_label);
-            ui.add(egui::TextEdit::singleline(&mut m.modalities_output).desired_width(80.0));
+            crate::ui::text_edit(
+                ui,
+                egui::TextEdit::singleline(&mut m.modalities_output).desired_width(80.0),
+            );
         }
         if on(flags.show_model_variants) {
             field_label(ui, 120.0, variants.label);
