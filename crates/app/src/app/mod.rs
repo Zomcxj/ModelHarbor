@@ -550,7 +550,7 @@ impl eframe::App for App {
                 self.ui_usage_status(ui);
                 ui.add_space(crate::theme::SPACE_4);
             }
-            egui::ScrollArea::vertical()
+            let scrolled = egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                 .scroll_source(egui::scroll_area::ScrollSource {
@@ -570,6 +570,9 @@ impl eframe::App for App {
                     // The usage view is independent of the current tab: it counts every agent on this machine.
                     MainView::Usage => self.ui_usage_section(ui),
                 });
+            // The card list runs past the viewport the moment a page has a few cards: fade the edges so the
+            // cut-off cards read as "more below" instead of "the list ends here".
+            crate::ui::paint_edge_fades(ui, &scrolled);
         });
         // Token management: an independent popover (draggable / closable), outside the main layout.
         self.ui_tokens_window(ctx);

@@ -240,5 +240,8 @@ pub fn toggle_switch(ui: &mut egui::Ui, id: egui::Id, on: &mut bool) -> egui::Re
             egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
         );
     }
+    // The track's colors come from the on/off state, not from egui's widget visuals, so a focused toggle would
+    // otherwise look exactly like an unfocused one to a keyboard user.
+    focus_ring(ui, &resp);
     resp
 }

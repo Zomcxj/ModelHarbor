@@ -9,6 +9,7 @@ mod style;
 mod tokens;
 
 pub use palette::Palette;
+pub(crate) use semantics::relative_luminance;
 #[cfg(test)]
 pub(crate) use semantics::{contrast_for_tests, distance_for_tests};
 pub use semantics::{semantics, Semantics, SEMANTICS};

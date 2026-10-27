@@ -51,9 +51,11 @@ fn distance(a: Color32, b: Color32) -> f32 {
     (d(ar, br) + d(ag, bg) + d(ab, bb)).sqrt()
 }
 
-/// Contrast ratio (WCAG, 1.0–21.0). Unit tests only.
-#[cfg(test)]
-fn contrast(a: Color32, b: Color32) -> f32 {
+/// Relative luminance (WCAG) of a color, from its sRGB channels.
+///
+/// Shared with the usage views' generated series colors: whether a color reads against its background is a
+/// luminance question, not a hue or saturation one.
+pub(crate) fn relative_luminance(color: Color32) -> f32 {
     let channel = |value: u8| {
         let v = f32::from(value) / 255.0;
         if v <= 0.039_28 {
@@ -62,11 +64,14 @@ fn contrast(a: Color32, b: Color32) -> f32 {
             ((v + 0.055) / 1.055).powf(2.4)
         }
     };
-    let rel = |color: Color32| {
-        let [r, g, b, _] = color.to_array();
-        0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
-    };
-    let (la, lb) = (rel(a), rel(b));
+    let [r, g, b, _] = color.to_array();
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/// Contrast ratio (WCAG, 1.0–21.0). Unit tests only.
+#[cfg(test)]
+fn contrast(a: Color32, b: Color32) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
     let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
     (hi + 0.05) / (lo + 0.05)
 }

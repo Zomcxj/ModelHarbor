@@ -90,16 +90,33 @@ pub(in crate::app) fn chip(ui: &mut egui::Ui, selected: bool, label: &str, width
     );
     // Click acknowledgment: an accent ring expanding from the chip.
     crate::motion::click_pulse(ui, &response, accent, corner);
+    // The chip pins its own fill (accent when selected, transparent otherwise), so egui's focused-widget visuals
+    // never show through: the ring is what tells a keyboard user which chip they are on.
+    crate::ui::focus_ring(ui, &response);
     response.clicked()
 }
+
+/// The relative-luminance window a generated series color must land in to stay legible.
+///
+/// Rotation keeps the accent's brightness, but brightness belongs to the *hue*, not to the palette: a yellow
+/// or cyan at the accent's own lightness washes out on a pale card, and a deep blue or violet disappears on a
+/// deep one. Measured against the palest card (`#F5F5F5`) 0.20 clears 3:1, and against the deepest theme's
+/// panel (`#2E3440`) 0.24 clears 3:1.
+const SERIES_LUMA_MAX: f32 = 0.20;
+const SERIES_LUMA_MIN: f32 = 0.24;
+
+/// Step and cap for the luminance walk below.
+const SERIES_LUMA_STEP: f32 = 0.02;
+const SERIES_LUMA_STEPS: usize = 80;
 
 /// Series colors: the accent hue rotates by the golden angle; series 0 is the accent itself.
 ///
 /// Golden angle (137.508°) instead of even spacing: with many series, evenly spaced hues collide;
 /// the golden angle keeps any prefix of series well separated.
 ///
-/// Saturation and lightness are clamped per theme: on light themes highly saturated colors float off
-/// pale backgrounds; on dark themes low-lightness colors blur into deep backgrounds.
+/// The generated colors are then walked to a legible **luminance** for their background (see [`SERIES_LUMA_MAX`]):
+/// on light themes they darken, on dark themes they brighten — and a hue that can't reach the bound even at full
+/// value (deep blue contributes almost no luminance) gives up saturation instead, which is what actually lifts it.
 ///
 /// Shared by the trend chart's stacked series and the overview cards' composition bars so both match.
 pub(in crate::app) fn series_color(
@@ -107,23 +124,48 @@ pub(in crate::app) fn series_color(
     accent: egui::Color32,
     dark: bool,
 ) -> egui::Color32 {
-    // Series 0 uses the accent color as-is: the s/v clamping below exists to keep "generated" colors
-    // readable on both light and dark fills, but the accent itself was tuned by the theme author and
-    // must not be touched. (`Hsva` computes in linear space; a round trip would shift the accent
-    // several steps off.)
+    // Series 0 uses the accent color as-is: the walk below exists to keep "generated" colors readable on both
+    // light and dark fills, but the accent itself was tuned by the theme author and must not be touched.
+    // (`Hsva` computes in linear space; a round trip would shift the accent several steps off.)
     if index == 0 {
         return accent;
     }
     let mut hsva = egui::ecolor::Hsva::from(accent);
     hsva.h = (hsva.h + index as f32 * 0.381_966_1).fract();
-    if dark {
-        hsva.s = hsva.s.clamp(0.35, 0.95);
-        hsva.v = hsva.v.max(0.55);
+    hsva.s = hsva.s.clamp(0.35, 0.95);
+    let target = if dark {
+        SERIES_LUMA_MIN
     } else {
-        hsva.s = hsva.s.clamp(0.35, 0.95);
-        hsva.v = hsva.v.min(0.90);
+        SERIES_LUMA_MAX
+    };
+    let mut color = egui::Color32::from(hsva);
+    for _ in 0..SERIES_LUMA_STEPS {
+        let luma = crate::theme::relative_luminance(color);
+        if (dark && luma >= target) || (!dark && luma <= target) {
+            break;
+        }
+        if dark {
+            if hsva.v < 1.0 {
+                hsva.v = (hsva.v + SERIES_LUMA_STEP).min(1.0);
+            } else if hsva.s > 0.0 {
+                hsva.s = (hsva.s - SERIES_LUMA_STEP).max(0.0);
+            } else {
+                break;
+            }
+        } else {
+            if hsva.v <= 0.0 {
+                break;
+            }
+            hsva.v = (hsva.v - SERIES_LUMA_STEP).max(0.0);
+        }
+        let next = egui::Color32::from(hsva);
+        // 8-bit quantization reached its limit: no further step can change the color.
+        if next == color {
+            break;
+        }
+        color = next;
     }
-    egui::Color32::from(hsva)
+    color
 }
 
 /// Raw scan result delivered from the background thread: session table, daily buckets, message counts, engine-reported duration.
@@ -726,6 +768,27 @@ mod tests {
     use crate::app::usage::range::Range;
     use crate::usage::DayTotals;
     use std::collections::BTreeMap;
+
+    /// Every theme's generated series colors stay legible on that theme's own background.
+    ///
+    /// Guards the luminance walk in [`super::series_color`]: hue rotation alone put yellow / cyan series
+    /// nearly invisibly light on pale cards, and deep-blue ones nearly invisibly dark on deep panels.
+    #[test]
+    fn series_colors_keep_contrast_on_every_theme() {
+        for theme in crate::theme::Theme::ALL {
+            let palette = theme.palette();
+            for index in 0..8 {
+                let color = super::series_color(index, palette.accent, palette.dark);
+                let ratio = crate::theme::contrast_for_tests(color, palette.panel);
+                assert!(
+                    ratio >= 3.0,
+                    "{} 第 {index} 条系列色对比度仅 {ratio:.2}（底色 {:?}）",
+                    theme.key(),
+                    palette.panel
+                );
+            }
+        }
+    }
 
     /// The selected chip carries the accent fill; the unselected one stays a bare outline.
     #[test]

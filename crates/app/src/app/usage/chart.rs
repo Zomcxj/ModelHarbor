@@ -229,40 +229,35 @@ impl App {
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                                     let (_, month, mday) = aggregate::civil_from_days(day);
+                                    ui.set_min_width(TOOLTIP_NAME_W + TOOLTIP_VALUE_W + 12.0);
                                     ui.label(
                                         egui::RichText::new(format!("{month}/{mday}"))
                                             .size(crate::theme::TEXT_CAPTION)
                                             .strong(),
                                     );
+                                    ui.separator();
                                     for item in &rows {
                                         let value = item.by_day.get(&day).copied().unwrap_or(0);
-                                        ui.horizontal(|ui| {
-                                            let (swatch, _) = ui.allocate_exact_size(
-                                                egui::vec2(8.0, 8.0),
-                                                egui::Sense::hover(),
-                                            );
-                                            ui.painter().rect_filled(swatch, 2.0, item.color);
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "{} {}",
-                                                    item.label,
-                                                    aggregate::format_m(value)
-                                                ))
-                                                .size(crate::theme::TEXT_CAPTION),
-                                            );
-                                        });
+                                        tooltip_row(
+                                            ui,
+                                            &item.label,
+                                            &aggregate::format_m(value),
+                                            false,
+                                            Some(item.color),
+                                        );
                                     }
                                     if rows.len() > 1 {
                                         let total: i64 = rows
                                             .iter()
                                             .map(|item| item.by_day.get(&day).copied().unwrap_or(0))
                                             .sum();
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "合计 {}",
-                                                aggregate::format_m(total)
-                                            ))
-                                            .size(crate::theme::TEXT_CAPTION),
+                                        ui.separator();
+                                        tooltip_row(
+                                            ui,
+                                            "合计",
+                                            &aggregate::format_m(total),
+                                            true,
+                                            None,
                                         );
                                     }
                                 });
@@ -280,6 +275,64 @@ impl App {
             legend_row(ui, &series, peak);
         });
     }
+}
+
+/// The width of a hover tooltip's name slot, and of its right-aligned value slot.
+///
+/// Fixed slots are what line the numbers up down the tooltip: with the name and value in one label, every
+/// row's number sat wherever its name happened to end.
+const TOOLTIP_NAME_W: f32 = 132.0;
+const TOOLTIP_VALUE_W: f32 = 52.0;
+
+/// One hover-tooltip row: an optional color swatch, the name in a fixed slot, then the value right-aligned.
+///
+/// The name truncates inside its slot (full text on hover) so a long model name can't push the value column
+/// out of line.
+fn tooltip_row(
+    ui: &mut egui::Ui,
+    name: &str,
+    value: &str,
+    strong: bool,
+    swatch: Option<egui::Color32>,
+) {
+    let line_h = crate::theme::TEXT_CAPTION + 4.0;
+    ui.horizontal(|ui| {
+        match swatch {
+            Some(color) => {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 2.0, color);
+            }
+            // The total row carries no series color, but keeps the name column aligned with the rows above.
+            None => ui.add_space(8.0),
+        }
+        let name_text = egui::RichText::new(name).size(crate::theme::TEXT_CAPTION);
+        let name_text = if strong {
+            name_text.strong()
+        } else {
+            name_text
+        };
+        ui.allocate_ui_with_layout(
+            egui::vec2(TOOLTIP_NAME_W, line_h),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.add(egui::Label::new(name_text).truncate())
+                    .on_hover_text(name);
+            },
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(TOOLTIP_VALUE_W, line_h),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                let value_text = egui::RichText::new(value).size(crate::theme::TEXT_CAPTION);
+                let value_text = if strong {
+                    value_text.strong()
+                } else {
+                    value_text
+                };
+                ui.label(value_text);
+            },
+        );
+    });
 }
 
 /// Legend: one swatch + model name + usage per item, wrapping when out of width.

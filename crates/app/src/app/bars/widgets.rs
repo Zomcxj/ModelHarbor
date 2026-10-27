@@ -55,5 +55,8 @@ pub(in crate::app) fn toolbar_icon_button(
     }
     // Click acknowledgment: an accent ring expanding from the button.
     crate::motion::click_pulse(ui, &response, visuals.widgets.hovered.bg_fill, corner);
+    // Keyboard focus: the button paints its own fill / stroke per state, so the focus ring is the only way a
+    // tabbing user sees where they are.
+    crate::ui::focus_ring(ui, &response);
     response
 }

@@ -5,6 +5,7 @@
 mod card;
 mod cursor;
 mod drag;
+mod scroll;
 mod widgets;
 
 pub use card::{accent_bar_rect, bevel_segments, card_frame, ACCENT_BAR_HEIGHT};
@@ -13,6 +14,7 @@ pub use drag::{
     drag_handle_dots, merge_drag_target, move_item, DragHandle, DRAG_HANDLE_GAP, DRAG_SOURCE_COLOR,
     DRAG_SOURCE_FILL, DROP_TARGET_COLOR, DROP_TARGET_FILL,
 };
+pub use scroll::paint_edge_fades;
 pub use widgets::{
     card_list, empty_state, field_label, focus_ring, numeric_text_edit, secret_text_edit,
     text_edit, text_input, toggle_knob_center, toggle_knob_center_at, toggle_switch, TOGGLE_HEIGHT,
