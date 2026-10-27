@@ -1,0 +1,27 @@
+# cargo-audit configuration (picked up by rustsec/audit-check on CI).
+#
+# The zstd advisory batch (RUSTSEC-2026-0391 / 0398 / 0403 / 0410, disclosed
+# 2026-10-16) is fixed only in the zstd 0.14 line (0.14.3 / zstd-safe 8.2.0 /
+# zstd-sys 2.1.2). Our zstd comes in through tokscale-core (a git dependency)
+# whose workspace still pins `zstd = "0.13"` — v4.20.1 included — so neither
+# `cargo update` nor a `[patch]` can cross the semver boundary.
+#
+# Why these don't constitute a real attack surface for this tool:
+# - zstd is used solely to DECODE the user's own DSH session transcripts from
+#   local disk, one-shot per call — no context reuse across data streams
+#   (precondition of 0391);
+# - the `seekable` feature is not enabled (precondition of 0398);
+# - the legacy-frame issue (0403) requires a maliciously crafted corrupt frame
+#   on local disk; the worst outcome is parsing garbage — no disclosure
+#   channel to an attacker;
+# - 0410 only affects wasm32 targets; this tool ships Windows x64 only.
+#
+# Exit condition: once tokscale upstream bumps zstd to >= 0.14.3, remove the
+# matching entries.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0391",
+    "RUSTSEC-2026-0398",
+    "RUSTSEC-2026-0403",
+    "RUSTSEC-2026-0410",
+]
