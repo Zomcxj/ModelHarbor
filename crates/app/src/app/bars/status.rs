@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{status_color, App};
 use eframe::egui;
 
 impl App {
@@ -20,7 +20,9 @@ impl App {
                     let row_h = ui.available_height();
                     let (rect, _) =
                         ui.allocate_exact_size(egui::vec2(max_w, row_h), egui::Sense::hover());
-                    let color = ui.visuals().weak_text_color();
+                    // The text color follows the message's level: information stays faint, a completed action
+                    // reads green, a failure red (previously every message was the same gray).
+                    let color = status_color(ui, self.status_level);
                     let galley = ui.painter().layout_no_wrap(
                         self.status.clone(),
                         egui::FontId::proportional(crate::theme::TEXT_SMALL),

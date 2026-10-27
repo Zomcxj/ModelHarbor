@@ -192,7 +192,7 @@ impl App {
             self.tokens.set_site_kind(&origin, next);
             match self.tokens.save() {
                 Ok(()) => {
-                    self.status = format!(
+                    self.set_status_ok(format!(
                         "{} 已切换为 {}",
                         origin,
                         if next {
@@ -200,13 +200,13 @@ impl App {
                         } else {
                             "NewAPI（面板令牌）"
                         }
-                    );
+                    ));
                     self.forget_station_balance(&origin);
                 }
                 // A failed write rolls the in-memory flag back, keeping it consistent with disk.
                 Err(err) => {
                     self.tokens.set_site_kind(&origin, !next);
-                    self.status = format!("站点类型保存失败：{err}");
+                    self.set_status_err(format!("站点类型保存失败：{err}"));
                 }
             }
         }
@@ -218,7 +218,7 @@ impl App {
                 .cloned()
                 .unwrap_or_default();
             if token.trim().is_empty() {
-                self.status = format!("{} 的令牌为空：要清除请点「删除」", origin);
+                self.set_status_err(format!("{} 的令牌为空：要清除请点「删除」", origin));
             } else {
                 self.tokens.set(&origin, &token);
                 // The user ID is optional: an empty string = don't send New-Api-User.
@@ -226,15 +226,15 @@ impl App {
                 let with_uid = !uid.trim().is_empty();
                 match self.tokens.save() {
                     Ok(()) => {
-                        self.status = if with_uid {
+                        self.set_status_ok(if with_uid {
                             format!("已保存 {} 的面板令牌与用户 ID", origin)
                         } else {
                             format!("已保存 {} 的面板令牌", origin)
-                        };
+                        });
                         self.forget_station_balance(&origin);
                     }
                     // Errors carry paths only, never token content (see tokens::save_to).
-                    Err(err) => self.status = format!("令牌保存失败：{err}"),
+                    Err(err) => self.set_status_err(format!("令牌保存失败：{err}")),
                 }
             }
         }
@@ -244,10 +244,10 @@ impl App {
             self.token_uid_draft.remove(&origin);
             match self.tokens.save() {
                 Ok(()) => {
-                    self.status = format!("已删除 {} 的面板令牌", origin);
+                    self.set_status_ok(format!("已删除 {} 的面板令牌", origin));
                     self.forget_station_balance(&origin);
                 }
-                Err(err) => self.status = format!("令牌删除失败：{err}"),
+                Err(err) => self.set_status_err(format!("令牌删除失败：{err}")),
             }
         }
     }

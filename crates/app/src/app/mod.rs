@@ -20,6 +20,8 @@ mod preview;
 mod providers;
 mod providers_form;
 mod save;
+mod status;
+pub(in crate::app) use status::{status_color, StatusLevel};
 mod syntax;
 pub(in crate::app) mod usage;
 mod windows;
@@ -117,6 +119,9 @@ pub struct App {
     /// The path actually loaded last; treated as "not loaded" when it differs from `config_path`.
     loaded_path: String,
     status: String,
+    /// How [`Self::status`] should read; see [`StatusLevel`]. Set together with the text through the
+    /// `set_status*` methods, never on its own.
+    status_level: StatusLevel,
     show_new_agent: bool,
     show_new_provider: bool,
     /// Collapsed cards (`page/category/name`, see `prefs::collapsed_id`).
@@ -357,6 +362,7 @@ impl Default for App {
             config_path: path,
             loaded_path: String::new(),
             status: String::new(),
+            status_level: StatusLevel::default(),
             show_new_agent: false,
             show_new_provider: false,
             collapsed: prefs.collapsed.iter().cloned().collect(),

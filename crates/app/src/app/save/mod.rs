@@ -6,7 +6,7 @@ mod strip;
 
 pub use strip::strip_cross_format_containers;
 
-use super::{App, SaveFormat};
+use super::{App, SaveFormat, StatusLevel};
 use crate::backends;
 use crate::credentials;
 use crate::format::ConfigFormat;
@@ -77,7 +77,8 @@ impl App {
 
     /// Save the current page: write to the page format's path and sync WSL as needed.
     pub(super) fn save_page(&mut self, fmt: ConfigFormat) {
-        self.status = self.save_page_report(fmt);
+        let (level, msg) = self.save_page_report(fmt);
+        self.set_status_level(level, msg);
     }
 
     /// Save all: write every **installed** backend once, in page order.
@@ -87,33 +88,49 @@ impl App {
     /// Uninstalled backends skip.
     pub(super) fn save_all(&mut self) {
         if let Some(dup) = self.find_duplicate_keys() {
-            self.status = format!("key 重复: {}，已取消保存", dup);
+            self.set_status_err(format!("key 重复: {}，已取消保存", dup));
             return;
         }
         let current = self.current_page;
         let mut parts: Vec<String> = Vec::new();
+        // The combined level is the worst of the parts: any failure paints the whole line red, otherwise a
+        // write that actually happened reads as done.
+        let mut level: Option<StatusLevel> = None;
+        let mut merge = |part: StatusLevel| {
+            level = Some(match (level, part) {
+                (Some(StatusLevel::Err), _) | (_, StatusLevel::Err) => StatusLevel::Err,
+                (Some(StatusLevel::Ok), _) | (_, StatusLevel::Ok) => StatusLevel::Ok,
+                _ => StatusLevel::Info,
+            });
+        };
         for i in 0..self.targets.len() {
             let (fmt, available, path) = {
                 let t = &self.targets[i];
                 (t.backend, t.available, t.path.clone())
             };
-            if fmt == current {
-                parts.push(self.save_page_report(fmt));
+            let (part_level, text) = if fmt == current {
+                self.save_page_report(fmt)
             } else if available && !path.trim().is_empty() {
-                parts.push(self.save_report_to(fmt, &path));
-            }
+                self.save_report_to(fmt, &path)
+            } else {
+                continue;
+            };
+            merge(part_level);
+            parts.push(text);
         }
-        self.status = if parts.is_empty() {
-            "一键保存: 没有可写的目标（本地与 WSL 均未探测到已安装的配置）".to_string()
+        if parts.is_empty() {
+            self.set_status("一键保存: 没有可写的目标（本地与 WSL 均未探测到已安装的配置）");
         } else {
-            format!("一键保存: {}", parts.join(" | "))
-        };
+            let text = format!("一键保存: {}", parts.join(" | "));
+            self.set_status_level(level.unwrap_or(StatusLevel::Info), text);
+        }
     }
 
-    /// Save one page and return the status text (doesn't write `self.status`; shared by single-page and save-all).
-    pub(super) fn save_page_report(&mut self, fmt: ConfigFormat) -> String {
+    /// Save one page and return the status text with its level (doesn't write `self.status`; shared by
+    /// single-page and save-all).
+    pub(super) fn save_page_report(&mut self, fmt: ConfigFormat) -> (StatusLevel, String) {
         if let Some(dup) = self.find_duplicate_keys() {
-            return format!("key 重复: {}，已取消保存", dup);
+            return (StatusLevel::Err, format!("key 重复: {}，已取消保存", dup));
         }
         let target = self.page_save_path(fmt);
         let path = match &target {
@@ -122,12 +139,18 @@ impl App {
         match &target {
             PageTarget::Current(_) => {
                 if let Some(err) = self.load_error.clone() {
-                    return format!("当前文件: 加载失败({})，已跳过", err);
+                    return (
+                        StatusLevel::Err,
+                        format!("当前文件: 加载失败({})，已跳过", err),
+                    );
                 }
             }
             PageTarget::Default(_) => {
                 if !self.targets.iter().any(|t| t.backend == fmt && t.available) {
-                    return format!("{}: 未安装（本地与 WSL 均未找到配置）", fmt.label());
+                    return (
+                        StatusLevel::Info,
+                        format!("{}: 未安装（本地与 WSL 均未找到配置）", fmt.label()),
+                    );
                 }
             }
             PageTarget::Modified(_) => {}
@@ -135,19 +158,22 @@ impl App {
         self.save_report_to(fmt, &path)
     }
 
-    /// Write one page via an already-resolved path and return the status text (WSL sync included).
-    fn save_report_to(&mut self, fmt: ConfigFormat, path: &str) -> String {
+    /// Write one page via an already-resolved path and return the status text with its level (WSL sync included).
+    fn save_report_to(&mut self, fmt: ConfigFormat, path: &str) -> (StatusLevel, String) {
         let res = self.save_backend_to(fmt, path);
         let ok = res.is_ok();
-        let mut status = match res {
+        let (mut level, mut status) = match res {
             Ok(backup) => {
                 let mut msg = format!("{}: 已保存", fmt.label());
                 if let Some(backup) = backup {
                     msg.push_str(&format!("（原文件已备份为 {}）", backup));
                 }
-                msg
+                (StatusLevel::Ok, msg)
             }
-            Err(e) => format!("{}: 保存失败({})", fmt.label(), e),
+            Err(e) => (
+                StatusLevel::Err,
+                format!("{}: 保存失败({})", fmt.label(), e),
+            ),
         };
         if ok {
             // State in the status bar when the format doesn't support agents
@@ -170,7 +196,9 @@ impl App {
                     match self.save_backend_to(fmt, &wsl_path) {
                         Ok(_) => status.push_str(&format!("; {}(WSL): 已同步", fmt.label())),
                         Err(e) => {
-                            status.push_str(&format!("; {}(WSL): 同步失败({})", fmt.label(), e))
+                            status.push_str(&format!("; {}(WSL): 同步失败({})", fmt.label(), e));
+                            // The local write landed but the WSL mirror did not: report the failure.
+                            level = StatusLevel::Err;
                         }
                     }
                 }
@@ -178,7 +206,7 @@ impl App {
                 other => status.push_str(&wsl_skip_note(fmt, &other)),
             }
         }
-        status
+        (level, status)
     }
 
     /// Generic save: build the root per backend, render, and write.

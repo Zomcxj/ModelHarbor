@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::StatusLevel;
 
 impl super::App {
     pub(in crate::app) fn render_provider_form(
@@ -61,14 +62,19 @@ impl super::App {
             discovery: &mut self.discovery,
             discovery_cache: &mut self.discovery_cache,
         };
-        if let Some(msg) = models_fetch_section(
+        // Take the message out before writing the status: the fetch call borrows `self`'s sections mutably,
+        // and `p` holds `self.providers` across this whole function — so the `&mut self` setters are
+        // unavailable here and the two fields are written directly.
+        let fetch_msg = models_fetch_section(
             ui,
             &mut fetch_ctx,
             &p.base_url,
             &fetch_secret,
             &mut p.models,
-        ) {
+        );
+        if let Some(msg) = fetch_msg {
             self.status = msg;
+            self.status_level = StatusLevel::Info;
         }
         let mut rm: Option<usize> = None;
         let mut model_hover_here: Option<String> = None;
@@ -211,7 +217,7 @@ impl super::App {
             let secret = credentials::effective_secret(p);
             let api = p.effective_api();
             let gate = net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
-            self.status = Self::run_model_probe(
+            let msg = Self::run_model_probe(
                 &mut self.probe,
                 &mut self.latency,
                 gate.as_deref(),
@@ -222,6 +228,9 @@ impl super::App {
                 &secret,
                 &api,
             );
+            // `p` still holds `self.providers`, so the status fields are written directly here too.
+            self.status = msg;
+            self.status_level = StatusLevel::Info;
         }
         // Register only models dragged within this provider; cross-card aggregation writes `self.model_drag_target`
         // centrally at the caller.

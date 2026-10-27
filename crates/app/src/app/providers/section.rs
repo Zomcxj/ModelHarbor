@@ -42,13 +42,13 @@ impl App {
         }
         if let Some(idx) = actions.remove {
             self.providers.remove(idx);
-            self.status = "已删除 provider".into();
+            self.set_status_ok("已删除 provider");
         }
         if let Some(idx) = actions.copy {
             let mut p = self.providers[idx].clone();
             p.key = format!("{}_copy", p.key);
             self.providers.push(p);
-            self.status = "已复制 provider".into();
+            self.set_status_ok("已复制 provider");
         }
         if self.provider_drag_src.is_some() {
             self.provider_drag_target = actions.hover;
@@ -137,7 +137,7 @@ impl App {
                     for (key, base, secret, api) in targets {
                         Self::start_provider_latency(&mut self.latency, &key, &base, &secret, &api);
                     }
-                    self.status = format!("已开始连通性测试（{} 个厂商）", count);
+                    self.set_status(format!("已开始连通性测试（{} 个厂商）", count));
                 }
 
                 // Query user data (database icon, closest to the line's end): queries every vendor on the page in one go.
@@ -175,11 +175,11 @@ impl App {
                         }
                     }
                     self.balance_batch = started > 0;
-                    self.status = if started == 0 {
+                    self.set_status(if started == 0 {
                         "所有厂商都还在冷却中，请几秒后再试".to_string()
                     } else {
                         format!("已开始查询 {} 个厂商的用户数据…", started)
-                    };
+                    });
                 }
             });
         });
@@ -191,7 +191,7 @@ impl App {
     pub(in crate::app) fn apply_limit_sync(&mut self, field: SyncField, value: String) {
         let value = value.trim().to_string();
         if value.is_empty() {
-            self.status = format!("源模型的{}为空，未同步", field.label());
+            self.set_status_err(format!("源模型的{}为空，未同步", field.label()));
             return;
         }
         let mut touched = 0usize;
@@ -204,6 +204,9 @@ impl App {
                 touched += 1;
             }
         }
-        self.status = format!("已把{} {value} 同步到 {touched} 个模型", field.label());
+        self.set_status_ok(format!(
+            "已把{} {value} 同步到 {touched} 个模型",
+            field.label()
+        ));
     }
 }

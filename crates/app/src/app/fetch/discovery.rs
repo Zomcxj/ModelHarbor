@@ -292,7 +292,7 @@ impl App {
                         });
                         state.error = None;
                     }
-                    self.status = probe_status_text(&hhmm, &ProbeSummary::Success(count));
+                    self.set_status_ok(probe_status_text(&hhmm, &ProbeSummary::Success(count)));
                 }
                 ProbeOutcome::Failure(err) => {
                     let reason = err.to_string();
@@ -300,7 +300,7 @@ impl App {
                         state.found = None;
                         state.error = Some(reason.clone());
                     }
-                    self.status = probe_status_text(&hhmm, &ProbeSummary::Failure(reason));
+                    self.set_status_err(probe_status_text(&hhmm, &ProbeSummary::Failure(reason)));
                 }
             }
         }

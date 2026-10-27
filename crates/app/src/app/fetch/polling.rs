@@ -164,7 +164,7 @@ impl super::App {
             }
         }
         for msg in notices {
-            self.status = msg;
+            self.set_status(msg);
         }
     }
 

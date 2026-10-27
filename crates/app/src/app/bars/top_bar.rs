@@ -128,11 +128,11 @@ impl App {
             let leaving = (previous_page != id).then_some(previous_page);
             let replaced = self.normalize_agent_models_for_page(id, leaving);
             if replaced > 0 {
-                self.status = format!(
+                self.set_status(format!(
                     "已把 {} 个指向其他网关的 agent model 换为 {} 自家模型",
                     replaced,
                     id.label()
-                );
+                ));
             }
         }
         // Rebuild the preview draft after the page switch.
@@ -369,10 +369,10 @@ impl App {
                     if self.sync_wsl && !wsl_installed {
                         self.sync_wsl = false;
                         crate::util::wsl_set_enabled(false);
-                        self.status = format!(
+                        self.set_status(format!(
                             "WSL 中未检测到 {} 安装，已关闭 WSL 同步",
                             current.label()
-                        );
+                        ));
                     }
                     ui.separator();
                     // The resident-taskbar toggle (left of the theme): lit = clicking X only tucks into the tray.
@@ -604,11 +604,11 @@ impl App {
                     if proxy.clicked() {
                         self.allow_model_test_with_proxy = !self.allow_model_test_with_proxy;
                         // Status-bar echo.
-                        self.status = if self.allow_model_test_with_proxy {
+                        self.set_status(if self.allow_model_test_with_proxy {
                             "代理支持：已放行「模型延迟测试」".to_string()
                         } else {
                             "代理支持：已恢复拦截「模型延迟测试」".to_string()
-                        };
+                        });
                         if self.net_guard.is_none() {
                             self.status
                                 .push_str("（当前未检测到代理 / VPN，开关暂无实际影响）");

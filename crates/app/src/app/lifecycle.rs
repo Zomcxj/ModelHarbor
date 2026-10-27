@@ -67,7 +67,7 @@ impl super::App {
         }
         // Update the snapshot even when the write fails.
         if let Err(err) = current.save() {
-            self.status = format!("界面偏好保存失败：{err}");
+            self.set_status_err(format!("界面偏好保存失败：{err}"));
         }
         self.prefs_saved = current;
     }
@@ -116,12 +116,12 @@ impl super::App {
                     self.agent_models_by_page
                         .insert((self.config_id(), self.source_format), view);
                 }
-                self.status = format!(
+                self.set_status(format!(
                     "已加载 ({}): {} agents, {} providers",
                     self.source_format.label(),
                     self.agents.len(),
                     self.providers.len()
-                );
+                ));
             }
             Err(e) => {
                 self.root = Value::Object(Map::new());
@@ -129,7 +129,7 @@ impl super::App {
                 self.providers = Vec::new();
                 self.pi_extras = Value::Object(Map::new());
                 self.load_error = Some(e.clone());
-                self.status = format!("加载失败: {}", e);
+                self.set_status_err(format!("加载失败: {}", e));
             }
         }
         // The WorkBuddy page: multiple enabled entries per id converge to "only the first enabled"
@@ -189,7 +189,7 @@ impl super::App {
             // A nonexistent path carries no format evidence: never add or rewrite any persisted override on that basis.
             self.current_page = owner;
             self.load_error = Some("配置文件不存在".into());
-            self.status = format!("加载失败: 配置文件不存在 ({})", self.config_path);
+            self.set_status_err(format!("加载失败: 配置文件不存在 ({})", self.config_path));
             return;
         }
 

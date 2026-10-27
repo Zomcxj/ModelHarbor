@@ -493,7 +493,7 @@ impl App {
             Err(e) => {
                 self.preview_parse_ok = false;
                 self.preview_parse_error = Some(e.clone());
-                self.status = format!("预览内容解析失败：{}（继续编辑或撤销）", e);
+                self.set_status_err(format!("预览内容解析失败：{}（继续编辑或撤销）", e));
                 false
             }
         }
@@ -503,7 +503,7 @@ impl App {
     /// Parse failures and unavailable targets skip with a note.
     pub(super) fn preview_autosave(&mut self) {
         if !self.preview_parse_ok {
-            self.status = "预览内容解析失败，未保存（修正文本后会自动保存）".into();
+            self.set_status_err("预览内容解析失败，未保存（修正文本后会自动保存）");
             return;
         }
         let fmt = self.current_page;
@@ -516,23 +516,23 @@ impl App {
             _ => true,
         };
         if !usable {
-            self.status = format!(
+            self.set_status_err(format!(
                 "{}: 目标不可用（{}），未实时保存——请用保存按钮",
                 fmt.label(),
                 path
-            );
+            ));
             return;
         }
         match self.save_backend_to(fmt, &path) {
             Ok(backup) => {
-                self.status = match backup {
+                self.set_status_ok(match backup {
                     Some(backup) => {
                         format!("{}: 已实时保存（原文件已备份为 {}）", fmt.label(), backup)
                     }
                     None => format!("{}: 已实时保存", fmt.label()),
-                }
+                });
             }
-            Err(e) => self.status = format!("{}: 实时保存失败({})", fmt.label(), e),
+            Err(e) => self.set_status_err(format!("{}: 实时保存失败({})", fmt.label(), e)),
         }
     }
 

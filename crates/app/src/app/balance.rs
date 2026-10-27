@@ -115,7 +115,11 @@ impl App {
             .count();
         self.balance_batch = false;
         // Report counts only, never reasons.
-        self.status = format!("用户数据查询完成：{} 个查到，{} 个没查到", ok, total - ok);
+        self.set_status(format!(
+            "用户数据查询完成：{} 个查到，{} 个没查到",
+            ok,
+            total - ok
+        ));
     }
 }
 

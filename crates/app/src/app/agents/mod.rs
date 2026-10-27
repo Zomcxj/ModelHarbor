@@ -38,13 +38,13 @@ impl App {
         });
         if let Some(idx) = to_remove {
             self.agents.remove(idx);
-            self.status = "已删除 agent".into();
+            self.set_status_ok("已删除 agent");
         }
         if let Some(idx) = to_copy {
             let mut a = self.agents[idx].clone();
             a.key = format!("{}_copy", a.key);
             self.agents.push(a);
-            self.status = "已复制 agent".into();
+            self.set_status_ok("已复制 agent");
         }
         if self.agent_drag_src.is_some() {
             self.agent_drag_target = hover_target;
@@ -338,15 +338,15 @@ impl App {
                 if ui.button("确认").clicked() {
                     let key = self.new_agent.key.trim().to_string();
                     if key.is_empty() {
-                        self.status = "请填写 agent key".into();
+                        self.set_status_err("请填写 agent key");
                     } else if self.agents.iter().any(|a| a.key.trim() == key) {
-                        self.status = format!("agent key \"{}\" 已存在", key);
+                        self.set_status_err(format!("agent key \"{}\" 已存在", key));
                     } else {
                         let na = self.new_agent.clone();
                         self.agents.push(na);
                         self.new_agent = AgentRow::new();
                         self.show_new_agent = false;
-                        self.status = "已添加 agent".into();
+                        self.set_status_ok("已添加 agent");
                     }
                 }
                 if ui.button("取消").clicked() {

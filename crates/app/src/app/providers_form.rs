@@ -76,7 +76,7 @@ impl App {
                 &fetch_secret,
                 &mut self.new_provider.models,
             ) {
-                self.status = msg;
+                self.set_status(msg);
             }
             let mut rm_new: Option<usize> = None;
             let mut move_new_request: Option<(usize, usize)> = None;
@@ -141,7 +141,7 @@ impl App {
                 let secret = credentials::effective_secret(&self.new_provider);
                 let api = self.new_provider.effective_api();
                 let gate = net_guard_gate(&self.net_guard, self.allow_model_test_with_proxy);
-                self.status = Self::run_model_probe(
+                let msg = Self::run_model_probe(
                     &mut self.probe,
                     &mut self.latency,
                     gate.as_deref(),
@@ -152,6 +152,7 @@ impl App {
                     &secret,
                     &api,
                 );
+                self.set_status(msg);
             }
             if let Some((from, to)) = move_new_request {
                 move_item(&mut self.new_provider.models, from, to);
@@ -197,16 +198,16 @@ impl App {
                 if ui.button("确认").clicked() {
                     let key = self.new_provider.key.trim().to_string();
                     if key.is_empty() {
-                        self.status = "请填写 provider key".into();
+                        self.set_status_err("请填写 provider key");
                     } else if self.providers.iter().any(|p| p.key.trim() == key) {
-                        self.status = format!("provider key \"{}\" 已存在", key);
+                        self.set_status_err(format!("provider key \"{}\" 已存在", key));
                     } else {
                         let np = self.new_provider.clone();
                         self.providers.push(np);
                         self.new_provider = ProviderRow::new();
                         self.show_new_provider = false;
                         self.clear_new_provider_state();
-                        self.status = "已添加 provider".into();
+                        self.set_status_ok("已添加 provider");
                     }
                 }
                 if ui.button("取消").clicked() {
