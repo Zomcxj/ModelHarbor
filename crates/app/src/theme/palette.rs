@@ -90,6 +90,9 @@ impl Palette {
             }
         };
         let panel = surface(self.panel);
+        // Disabled widgets dim by this factor. egui's own default happens to match, but pinning it here keeps
+        // every theme on one deliberate value and survives an upstream default change.
+        v.disabled_alpha = DISABLED_ALPHA;
         v.panel_fill = if glass {
             self.panel.gamma_multiply(super::tokens::GLASS_PANEL_ALPHA)
         } else {

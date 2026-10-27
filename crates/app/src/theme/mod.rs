@@ -477,4 +477,18 @@ mod tests {
         }
         assert_eq!(labels.len(), Theme::ALL.len());
     }
+
+    /// Every theme dims disabled widgets by the one deliberate factor.
+    #[test]
+    fn every_theme_pins_the_disabled_alpha() {
+        for t in Theme::ALL {
+            let visuals = t.palette().into_visuals(false);
+            assert_eq!(
+                visuals.disabled_alpha,
+                crate::theme::tokens::DISABLED_ALPHA,
+                "{} 的禁用变暗系数没跟随常量（egui 默认值可能变）",
+                t.key()
+            );
+        }
+    }
 }

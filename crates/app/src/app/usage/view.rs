@@ -690,11 +690,19 @@ where
             // Reserve first to get this row's rect, then paint the background beneath the content.
             let (rect, response) =
                 ui.allocate_exact_size(egui::vec2(row_width, CELL_HEIGHT), egui::Sense::hover());
-            if index % 2 == 1 {
-                ui.painter().rect_filled(rect, 0.0, faint);
-            }
-            if response.hovered() {
-                ui.painter().rect_filled(rect, 0.0, hover);
+            let corner = ui.visuals().widgets.inactive.corner_radius;
+            let base = if index % 2 == 1 {
+                faint
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            // The highlight fades in rather than snapping: crossing rows with the pointer used to strobe.
+            // Keyed by position, so the highlight follows the row under the pointer across re-sorts.
+            let t =
+                crate::motion::hover_t(ui.ctx(), egui::Id::new((id, index)), response.hovered());
+            let fill = crate::motion::lerp_color(base, hover, t);
+            if fill != egui::Color32::TRANSPARENT {
+                ui.painter().rect_filled(rect, corner, fill);
             }
             // Content paints inside the reserved rect: a fresh child `Ui`, cursor starting at the line's head.
             let mut row_ui = ui.new_child(
@@ -1109,8 +1117,11 @@ fn delete_cell(
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(column.width, CELL_HEIGHT), egui::Sense::click());
     if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().widgets.inactive.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
     }
     let (label, color) = if confirming {
         ("确认", crate::theme::semantics(ui).err)

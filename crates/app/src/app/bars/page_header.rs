@@ -42,9 +42,20 @@ impl App {
                 self.save_all();
             }
             // On the accent fill the body text color has too little contrast (dark ink on a dark accent,
-            // light ink on a light one): the on-accent ink is the one that reads.
-            let save_ink = ui.visuals().selection.stroke.color;
-            let save_fill = ui.visuals().selection.bg_fill;
+            // light ink on a light one): the on-accent ink is the one that reads. With nothing to write the
+            // button drops the accent entirely — a faded accent still reads as "the primary action is
+            // available", while a neutral fill under the disabled dimming reads as "nothing to do".
+            let (save_fill, save_ink) = if can_save {
+                (
+                    ui.visuals().selection.bg_fill,
+                    ui.visuals().selection.stroke.color,
+                )
+            } else {
+                (
+                    ui.visuals().widgets.inactive.weak_bg_fill,
+                    ui.visuals().weak_text_color(),
+                )
+            };
             let save_btn = match self.toolbar_icons.save.as_ref() {
                 Some(tex) => egui::Button::image_and_text(
                     egui::Image::from_texture(tex)
