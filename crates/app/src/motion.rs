@@ -44,10 +44,7 @@ const _: () = {
         PULSE_TIME <= 0.25,
         "click pulse over 0.25s reads as lag, not acknowledgment"
     );
-    assert!(
-        PULSE_TIME > 0.0,
-        "click pulse duration must be positive"
-    );
+    assert!(PULSE_TIME > 0.0, "click pulse duration must be positive");
 };
 
 /// Per-channel interpolation in gamma space (premultiplied alpha interpolated as-is).
@@ -678,7 +675,12 @@ mod tests {
             path_count(&mid) > baseline,
             "the pulse must persist past the click frame"
         );
-        let expired = pulse_frame(&ctx, 1.04 + f64::from(super::PULSE_TIME) + 0.05, false, false);
+        let expired = pulse_frame(
+            &ctx,
+            1.04 + f64::from(super::PULSE_TIME) + 0.05,
+            false,
+            false,
+        );
         assert_eq!(
             path_count(&expired),
             baseline,
