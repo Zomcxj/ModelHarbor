@@ -46,5 +46,7 @@ pub(in crate::app) fn toolbar_icon_button(
             tint,
         );
     }
+    // Click acknowledgment: an accent ring expanding from the button.
+    crate::motion::click_pulse(ui, &response, visuals.widgets.hovered.bg_fill, corner);
     response
 }

@@ -74,13 +74,17 @@ pub(in crate::app) fn chip(ui: &mut egui::Ui, selected: bool, label: &str, width
     };
     let text = egui::RichText::new(label);
     let text = if selected { text.strong() } else { text };
-    ui.add(
+    let accent = visuals.widgets.hovered.bg_fill;
+    let corner = ui.visuals().widgets.inactive.corner_radius;
+    let response = ui.add(
         egui::Button::new(text)
             .fill(fill)
             .stroke(stroke)
             .min_size(egui::vec2(width, 22.0)),
-    )
-    .clicked()
+    );
+    // Click acknowledgment: an accent ring expanding from the chip.
+    crate::motion::click_pulse(ui, &response, accent, corner);
+    response.clicked()
 }
 
 /// Series colors: the accent hue rotates by the golden angle; series 0 is the accent itself.

@@ -36,7 +36,15 @@ fn theme_button_row(
                 .stroke(stroke)
                 .min_size(egui::vec2(52.0, 0.0))
                 .corner_radius(radius);
-            if ui.add(btn).clicked() {
+            let resp = ui.add(btn);
+            // Click acknowledgment: an accent ring expanding from the button.
+            crate::motion::click_pulse(
+                ui,
+                &resp,
+                accent,
+                ui.visuals().widgets.inactive.corner_radius,
+            );
+            if resp.clicked() {
                 clicked = Some(*t);
             }
         }
@@ -77,7 +85,15 @@ fn shape_button(
         .stroke(stroke)
         .min_size(egui::vec2(52.0, 0.0))
         .corner_radius(style.radius() as f32);
-    ui.add(btn).clicked()
+    let response = ui.add(btn);
+    // Click acknowledgment: an accent ring expanding from the button.
+    crate::motion::click_pulse(
+        ui,
+        &response,
+        current_accent,
+        egui::CornerRadius::same(style.radius()),
+    );
+    response.clicked()
 }
 
 impl App {
@@ -197,6 +213,13 @@ impl App {
                                 .sense(egui::Sense::click_and_drag()),
                         )
                         .on_hover_text(tip);
+                    // Click acknowledgment: an accent ring expanding from the tab.
+                    crate::motion::click_pulse(
+                        ui,
+                        &btn_resp,
+                        selected_fill,
+                        ui.visuals().widgets.inactive.corner_radius,
+                    );
                     // Cursor: open palm on hover, closed fist while held (same set as drag handles — see crate::ui).
                     let want = crate::ui::grab_cursor_for(&btn_resp);
                     if want != crate::ui::GrabCursor::None {

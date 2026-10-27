@@ -20,6 +20,9 @@ pub const TOGGLE_TIME: f32 = 0.14;
 /// roll) is also in the half-second range.
 pub const DIGIT_ROLL_TIME: f32 = 0.45;
 
+/// Click acknowledgment pulse duration (seconds).
+pub const PULSE_TIME: f32 = 0.22;
+
 /// Compile-time upper-bound check on animation durations.
 const _: () = {
     assert!(HOVER_TIME <= 0.2, "悬停过渡时长超过 0.2s，界面会显得拖沓");
@@ -36,6 +39,14 @@ const _: () = {
     assert!(
         DIGIT_ROLL_TIME > 0.0,
         "数字滚动时长不能为零，否则没有滚动过程"
+    );
+    assert!(
+        PULSE_TIME <= 0.25,
+        "click pulse over 0.25s reads as lag, not acknowledgment"
+    );
+    assert!(
+        PULSE_TIME > 0.0,
+        "click pulse duration must be positive"
     );
 };
 
@@ -87,6 +98,59 @@ pub fn toggle_progress(ctx: &egui::Context, id: egui::Id, on: bool) -> f32 {
 /// Pin the collapse animation to its final value immediately (zero duration). Used for bulk expand / collapse.
 pub fn snap_collapse(ctx: &egui::Context, id: egui::Id, open: bool) {
     ctx.animate_bool_with_time(id.with("collapse"), open, 0.0);
+}
+
+/// The click acknowledgment pulse: an accent ring expanding past the widget's edge, thinning and fading out.
+///
+/// Call right after creating a clickable widget. When `response` reports a click, the pulse records the
+/// moment and paints for [`PULSE_TIME`]: a rounded-rect ring grows ~6px beyond the widget's edge while
+/// thinning and fading — the click's visual receipt, without touching layout. Rapid re-clicks restart the
+/// pulse from the new click, so machine-gun clicking stays lively instead of stacking rings.
+///
+/// Under `everything_is_visible` (debug / offscreen tests) pulses are suppressed entirely: no temp state,
+/// no shapes, no repaint requests.
+pub fn click_pulse(
+    ui: &mut egui::Ui,
+    response: &egui::Response,
+    color: Color32,
+    corner: egui::CornerRadius,
+) {
+    let ctx = ui.ctx().clone();
+    if ctx.memory(|mem| mem.everything_is_visible()) {
+        return;
+    }
+    let id = response.id.with("click_pulse");
+    let now = ctx.input(|input| input.time);
+    if response.clicked() {
+        ctx.data_mut(|data| data.insert_temp(id, now));
+    }
+    let Some(start) = ctx.data(|data| data.get_temp::<f64>(id)) else {
+        return;
+    };
+    let t = ((now - start) as f32 / PULSE_TIME).clamp(0.0, 1.0);
+    if t >= 1.0 {
+        ctx.data_mut(|data| data.remove_temp::<f64>(id));
+        return;
+    }
+    ctx.request_repaint();
+    // Ease-out cubic: the ring snaps out, then dissolves.
+    let eased = 1.0 - (1.0 - t).powi(3);
+    let grow = 6.0 * eased;
+    let fade = 0.55 * (1.0 - eased);
+    let stroke = egui::Stroke::new(2.5 * (1.0 - eased) + 0.5, color.gamma_multiply(fade));
+    let wide = |v: u8| v.saturating_add(grow as u8);
+    let ring_corner = egui::CornerRadius {
+        nw: wide(corner.nw),
+        ne: wide(corner.ne),
+        sw: wide(corner.sw),
+        se: wide(corner.se),
+    };
+    ui.painter().rect_stroke(
+        response.rect.expand(grow),
+        ring_corner,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// Per-digit number roll: each digit rolls vertically inside its slot; non-digits (commas, dots, units) stay put.
@@ -532,6 +596,124 @@ mod tests {
         assert!(
             texts.iter().any(|(t, _, _)| t == "3") && !texts.iter().any(|(t, _, _)| t == "1"),
             "调试模式下应直接画终值"
+        );
+    }
+
+    /// Count stroked/filled rect and path shapes (the pulse ring paints as a rounded-rect stroke).
+    fn path_count(out: &egui::FullOutput) -> usize {
+        fn collect(shape: &egui::Shape, n: &mut usize) {
+            match shape {
+                egui::Shape::Path(_) | egui::Shape::Rect(_) => *n += 1,
+                egui::Shape::Vec(items) => items.iter().for_each(|s| collect(s, n)),
+                _ => {}
+            }
+        }
+        let mut n = 0;
+        for cs in &out.shapes {
+            collect(&cs.shape, &mut n);
+        }
+        n
+    }
+
+    /// Run one frame; `press` / `release` inject a primary-button press / release at the widget's spot.
+    fn pulse_frame(ctx: &egui::Context, time: f64, press: bool, release: bool) -> egui::FullOutput {
+        let hit = egui::pos2(70.0, 60.0);
+        let mut events = Vec::new();
+        if press {
+            events.push(egui::Event::PointerButton {
+                pos: hit,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        if release {
+            events.push(egui::Event::PointerButton {
+                pos: hit,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 200.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                // An explicit rect: the hit position can't drift with the panel's margins.
+                let response = ui.allocate_rect(
+                    egui::Rect::from_min_size(egui::pos2(50.0, 50.0), egui::vec2(40.0, 20.0)),
+                    egui::Sense::click(),
+                );
+                super::click_pulse(
+                    ui,
+                    &response,
+                    egui::Color32::from_rgb(200, 60, 60),
+                    egui::CornerRadius::same(6),
+                );
+            });
+        })
+    }
+
+    /// A click paints the pulse ring; past PULSE_TIME it is gone.
+    #[test]
+    fn click_pulse_paints_then_expires() {
+        let ctx = egui::Context::default();
+        let baseline = path_count(&pulse_frame(&ctx, 1.0, false, false));
+        // Press + release in two frames: the click registers on release.
+        let _ = pulse_frame(&ctx, 1.02, true, false);
+        let clicked = pulse_frame(&ctx, 1.04, false, true);
+        assert!(
+            path_count(&clicked) > baseline,
+            "the click frame must paint the pulse ring"
+        );
+        let mid = pulse_frame(&ctx, 1.1, false, false);
+        assert!(
+            path_count(&mid) > baseline,
+            "the pulse must persist past the click frame"
+        );
+        let expired = pulse_frame(&ctx, 1.04 + f64::from(super::PULSE_TIME) + 0.05, false, false);
+        assert_eq!(
+            path_count(&expired),
+            baseline,
+            "the ring must be gone once PULSE_TIME has passed"
+        );
+    }
+
+    /// A second click inside an active pulse restarts it from the new click (no stacking, no early cutoff).
+    #[test]
+    fn click_pulse_restarts_on_rapid_reclick() {
+        let ctx = egui::Context::default();
+        let baseline = path_count(&pulse_frame(&ctx, 1.0, false, false));
+        let _ = pulse_frame(&ctx, 1.02, true, false);
+        let _ = pulse_frame(&ctx, 1.04, false, true); // click 1: pulse ends at 1.26
+        let _ = pulse_frame(&ctx, 1.20, true, false);
+        let _ = pulse_frame(&ctx, 1.21, false, true); // click 2 restarts: ends at 1.43
+        let late = pulse_frame(&ctx, 1.35, false, false);
+        assert!(
+            path_count(&late) > baseline,
+            "at 1.35 the first pulse (ending 1.26) would be gone — a ring here proves the restart"
+        );
+    }
+
+    /// Debug / offscreen-test mode suppresses pulses entirely (stable output, no repaint churn).
+    #[test]
+    fn click_pulse_suppressed_under_everything_is_visible() {
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|mem| mem.set_everything_is_visible(true));
+        let baseline = path_count(&pulse_frame(&ctx, 1.0, false, false));
+        let _ = pulse_frame(&ctx, 1.02, true, false);
+        let clicked = pulse_frame(&ctx, 1.04, false, true);
+        assert_eq!(
+            path_count(&clicked),
+            baseline,
+            "debug mode must not paint pulses"
         );
     }
 }
