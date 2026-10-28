@@ -375,8 +375,10 @@ impl App {
                 // Use show: needs output.cursor_range to compute the cursor's line.
                 let output = edit.show(ui);
                 let resp = output.response;
-                // The editor builds its own frame (code editor layout), so the shared ring goes on here.
-                crate::ui::focus_ring(ui, &resp);
+                // The editor builds its own frame (code editor layout), so the shared ring goes on here, with the
+                // radius the editor's frame used.
+                let editor_corner = ui.visuals().widgets.inactive.corner_radius;
+                crate::ui::focus_ring(ui, &resp, editor_corner);
                 // Find-hit jump: move the cursor onto the hit and write the state back; the scroll area follows.
                 if let Some(byte) = find_jump {
                     // The jump offset may be stale: clamp back to a character boundary first.

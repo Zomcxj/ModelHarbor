@@ -18,16 +18,70 @@ pub use scroll::paint_edge_fades;
 pub use widgets::{
     card_list, empty_state, field_label, focus_ring, numeric_text_edit, secret_text_edit,
     text_edit, text_input, toggle_knob_center, toggle_knob_center_at, toggle_switch, TOGGLE_HEIGHT,
-    TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
+    TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_RADIUS, TOGGLE_WIDTH,
 };
 
 #[cfg(test)]
 mod tests {
     use super::{
         drag_handle_dots, merge_drag_target, toggle_knob_center, toggle_knob_center_at,
-        DRAG_HANDLE_GAP, TOGGLE_HEIGHT, TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_WIDTH,
+        toggle_switch, DRAG_HANDLE_GAP, TOGGLE_HEIGHT, TOGGLE_INSET, TOGGLE_KNOB, TOGGLE_RADIUS,
+        TOGGLE_WIDTH,
     };
     use eframe::egui;
+
+    /// A toggle is reachable and operable by keyboard: the caller's id **is** the widget's id.
+    ///
+    /// `allocate_exact_size(.., Sense::click())` derives an auto id and leaves the `id` callers pass naming only
+    /// the animation state, so `request_focus(id)` missed the widget silently — and egui turns Space / Enter into
+    /// a click only for the widget whose **own** id holds focus.
+    #[test]
+    fn toggle_is_focusable_and_keyboard_operable_by_its_id() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::Dark.apply_style(&ctx, crate::theme::UiStyle::default(), false);
+        let id = egui::Id::new("keyboard_toggle");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 60.0));
+        let frame = |events: Vec<egui::Event>| egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let mut on = false;
+        // Frame 1: render the toggle, then ask for focus by the caller's id.
+        let _ = ctx.run(frame(Vec::new()), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                toggle_switch(ui, id, &mut on);
+                ui.memory_mut(|mem| mem.request_focus(id));
+            });
+        });
+        // Frame 2: focused — so the accented ring paints and the id really is the widget's.
+        let mut focused = false;
+        let _ = ctx.run(frame(Vec::new()), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                focused = toggle_switch(ui, id, &mut on).has_focus();
+            });
+        });
+        assert!(
+            focused,
+            "调用方传入的 id 必须是控件自身的 id，否则 request_focus 会静默失效"
+        );
+        // Frame 3: Space, which egui turns into a primary click for a focused click-sensing widget.
+        let _ = ctx.run(
+            frame(vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }]),
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    toggle_switch(ui, id, &mut on);
+                });
+            },
+        );
+        assert!(on, "聚焦后的空格必须能切换开关");
+    }
 
     /// A focused text input carries the accent focus ring.
     ///
@@ -76,6 +130,69 @@ mod tests {
             painted.iter().any(|(c, w)| *c == accent && *w > 1.0),
             "聚焦的输入框必须画出强调色聚焦环：{painted:?}"
         );
+    }
+
+    /// A keyboard-focused toggle shows the same accent ring as the text inputs, shaped like the track.
+    ///
+    /// The toggle paints its own track and knob from the on/off colors, so egui's focused-widget visuals never
+    /// reach it — without the ring a keyboard user tabbing through the toolbar sees nothing move. The track is a
+    /// **pill** whatever the preset says, so the ring has to be one too: it used to take the preset radius, which
+    /// drew a square ring around a pill on the `minimal` preset.
+    #[test]
+    fn focused_toggle_ring_mirrors_the_track_shape() {
+        fn rect_shapes(shape: &egui::Shape, out: &mut Vec<(egui::Color32, f32, u8)>) {
+            match shape {
+                egui::Shape::Rect(r) => {
+                    out.push((r.stroke.color, r.stroke.width, r.corner_radius.nw))
+                }
+                egui::Shape::Vec(items) => items.iter().for_each(|s| rect_shapes(s, out)),
+                _ => {}
+            }
+        }
+        for style in crate::theme::UiStyle::ALL {
+            let ctx = egui::Context::default();
+            crate::theme::Theme::Dark.apply_style(&ctx, style, false);
+            let accent = ctx.style().visuals.selection.bg_fill;
+            let id = egui::Id::new(("toggle_shape_probe", style.key()));
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(200.0, 60.0),
+                )),
+                ..Default::default()
+            };
+            let mut on = false;
+            let _ = ctx.run(input.clone(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    toggle_switch(ui, id, &mut on);
+                    ui.memory_mut(|mem| mem.request_focus(id));
+                });
+            });
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    toggle_switch(ui, id, &mut on);
+                });
+            });
+            let mut painted = Vec::new();
+            for clipped in &out.shapes {
+                rect_shapes(&clipped.shape, &mut painted);
+            }
+            // The ring is the accent-colored 1.5px stroke; the track's own stroke is the widget border.
+            let ring = painted
+                .iter()
+                .find(|(color, width, _)| *color == accent && *width > 1.0);
+            let (_, _, radius) = ring.unwrap_or_else(|| {
+                panic!("{}：聚焦的开关没画出强调色聚焦环：{painted:?}", style.key())
+            });
+            assert_eq!(
+                *radius,
+                TOGGLE_RADIUS,
+                "{}：聚焦环圆角 {:?} 不等于轨道胶囊圆角 {TOGGLE_RADIUS}（预设圆角是 {}）",
+                style.key(),
+                radius,
+                style.radius()
+            );
+        }
     }
 
     /// The empty state draws its title, hint, and action label.

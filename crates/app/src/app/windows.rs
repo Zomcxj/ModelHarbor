@@ -76,11 +76,19 @@ impl super::App {
     }
 
     /// The popovers' shared border style: larger corner radius and padding than cards.
-    /// The radius adds one step over the shape preset (capped at 20).
+    ///
+    /// The radius adds one step over the shape preset. Capped at the slider's maximum: a popover is far larger
+    /// than a button, so the hierarchy already reads through proportion, and an unbounded radius would turn a
+    /// big window into a lozenge.
     pub(in crate::app) fn floating_window_frame(&self, ctx: &egui::Context) -> egui::Frame {
         let mut frame = egui::Frame::window(&ctx.style());
         let extra = crate::theme::RADIUS_LG - crate::theme::RADIUS_MD;
-        frame.corner_radius = self.ui_style.radius().saturating_add(extra).min(20).into();
+        frame.corner_radius = self
+            .ui_style
+            .radius()
+            .saturating_add(extra)
+            .min(crate::theme::RADIUS_SLIDER_MAX)
+            .into();
         frame.inner_margin = egui::Margin::same(crate::theme::SPACE_4 as i8);
         frame
     }

@@ -89,14 +89,21 @@ pub fn empty_state(
 /// egui paints a focused `TextEdit`'s frame with `visuals.selection.stroke`, which this app must keep as the
 /// on-accent ink (`accent_text`) so text selected on the accent fill stays legible — that leaves the focus
 /// frame all but invisible: black on dark panels, white on light ones. Worse, the unfocused state keeps a
-/// themed border, so focusing an input used to *remove* its outline. This ring restores an unmistakable
-/// focus signal without touching selected text.
-pub fn focus_ring(ui: &egui::Ui, response: &egui::Response) {
+/// themed border, so focusing an input used to *remove* its outline. This ring restores an unmistakable focus
+/// signal without touching selected text.
+///
+/// The same ring is what tells a keyboard user where they are on the controls that paint their own fill and
+/// therefore never show egui's focus visuals: the toggle, the toolbar icon buttons, the chips.
+///
+/// `corner` must be the radius the widget painted **its own** outline with, not a theme lookup. The toggle's
+/// track is a pill (radius = half its height) whatever the preset says, so reading the preset radius here drew
+/// a square ring around a pill on the `minimal` preset. Passing the caller's radius keeps the ring a mirror of
+/// the shape it circles.
+pub fn focus_ring(ui: &egui::Ui, response: &egui::Response, corner: egui::CornerRadius) {
     if !response.has_focus() {
         return;
     }
     let accent = ui.visuals().selection.bg_fill;
-    let corner = ui.visuals().widgets.inactive.corner_radius;
     ui.painter().rect_stroke(
         response.rect.expand(1.0),
         corner,
@@ -110,8 +117,11 @@ pub fn focus_ring(ui: &egui::Ui, response: &egui::Response) {
 /// Every text input in the app goes through here so focus feedback stays uniform across the plain, masked,
 /// error-tinted, and multi-line variants.
 pub fn text_edit(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> egui::Response {
+    // A focused TextEdit paints in the `active` widget state; every state shares the preset radius, so the
+    // inactive one is the same number.
+    let corner = ui.visuals().widgets.inactive.corner_radius;
     let response = ui.add(edit);
-    focus_ring(ui, &response);
+    focus_ring(ui, &response, corner);
     response
 }
 
@@ -177,6 +187,9 @@ const _: () = {
     assert!(TOGGLE_WIDTH > TOGGLE_HEIGHT, "轨道应横向长于纵向");
 };
 
+/// The toggle's radius: a full pill, half its height, whatever the shape preset says.
+pub const TOGGLE_RADIUS: u8 = (TOGGLE_HEIGHT / 2.0) as u8;
+
 /// The toggle knob's center: interpolated by progress — `t = 0` hugs left, `t = 1` hugs right, vertically centered.
 pub fn toggle_knob_center_at(rect: egui::Rect, t: f32) -> egui::Pos2 {
     let radius = TOGGLE_KNOB / 2.0;
@@ -193,13 +206,21 @@ pub fn toggle_knob_center(rect: egui::Rect, on: bool) -> egui::Pos2 {
 
 /// The toggle: a "click to flip" control expressed by track and knob, with the whole track as the click hot zone.
 ///
-/// `id` is a stable value from the caller (like "card key + field name"); animation state hangs on it.
+/// `id` is a stable value from the caller (like "card key + field name"); it is the **widget's own id**, so
+/// `Ui::memory_mut(|mem| mem.request_focus(id))` reaches it and keyboard navigation, Space / Enter activation
+/// (egui synthesizes a primary click for a focused click-sensing widget), and animation state all key off the
+/// same value.
 ///
 /// Visual rules: state is expressed by fill + knob position; the radius takes the theme's widget radius;
 /// no hover tip.
 pub fn toggle_switch(ui: &mut egui::Ui, id: egui::Id, on: &mut bool) -> egui::Response {
     let desired = egui::vec2(TOGGLE_WIDTH, TOGGLE_HEIGHT);
-    let (rect, mut resp) = ui.allocate_exact_size(desired, egui::Sense::click());
+    // Allocate the space first, then interact with the caller's id. `allocate_exact_size(.., Sense::click())`
+    // would derive an **auto** id and leave `id` naming only the animation state: `request_focus(id)` then
+    // silently missed the widget (so code focusing a toggle programmatically — after a validation error, say —
+    // would have failed quietly), and a test's ring assertion could never see focus.
+    let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    let mut resp = ui.interact(rect, id, egui::Sense::click());
     if resp.clicked() {
         *on = !*on;
         resp.mark_changed();
@@ -241,7 +262,8 @@ pub fn toggle_switch(ui: &mut egui::Ui, id: egui::Id, on: &mut bool) -> egui::Re
         );
     }
     // The track's colors come from the on/off state, not from egui's widget visuals, so a focused toggle would
-    // otherwise look exactly like an unfocused one to a keyboard user.
-    focus_ring(ui, &resp);
+    // otherwise look exactly like an unfocused one to a keyboard user. The ring takes the track's own radius:
+    // the track is a pill regardless of the shape preset.
+    focus_ring(ui, &resp, egui::CornerRadius::same(TOGGLE_RADIUS));
     resp
 }

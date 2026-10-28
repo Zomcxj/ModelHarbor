@@ -203,8 +203,12 @@ impl Theme {
         ] {
             w.corner_radius = radius.into();
         }
-        // Tooltips follow the shape preset too: popup frames read these two fields.
+        // Every floating surface follows the shape preset: tooltips and menus read `menu_corner_radius`, plain
+        // `egui::Window`s read `window_corner_radius`. The app's two popovers override their frame one step
+        // rounder (`floating_window_frame`); setting the field anyway removes a trap — a window that forgets the
+        // override used to fall back to egui's own 6 regardless of the preset.
         style.visuals.menu_corner_radius = radius.into();
+        style.visuals.window_corner_radius = radius.into();
         style.spacing.menu_margin = egui::Margin::symmetric(SPACE_2 as i8, SPACE_1 as i8 + 2);
         // Border widths follow the shape; colors come from the palette (hovered / active are the accent).
         for w in [
@@ -388,6 +392,34 @@ mod tests {
             style.spacing.menu_margin.left, SPACE_2 as i8,
             "tooltip 边距没进 Style"
         );
+    }
+
+    /// Every floating-surface radius follows the shape preset, for all eight of them.
+    ///
+    /// Widgets, tooltips / menus, and plain `egui::Window`s each read a different field; a preset that reaches
+    /// one but not the others leaves a popover with egui's own default radius, visibly unrelated to the cards
+    /// behind it.
+    #[test]
+    fn floating_surface_radii_follow_every_shape_preset() {
+        let ctx = egui::Context::default();
+        for style in UiStyle::ALL {
+            Theme::Dark.apply_style(&ctx, style, false);
+            let visuals = &ctx.style().visuals;
+            let want = style.radius();
+            assert_eq!(visuals.widgets.noninteractive.corner_radius.nw, want);
+            assert_eq!(
+                visuals.menu_corner_radius.nw,
+                want,
+                "{}：菜单 / tooltip 圆角没跟随预设",
+                style.key()
+            );
+            assert_eq!(
+                visuals.window_corner_radius.nw,
+                want,
+                "{}：浮层窗口圆角没跟随预设（会落回 egui 默认值）",
+                style.key()
+            );
+        }
     }
 
     /// A shape-preset change re-applies styling via `needs_apply_style`.

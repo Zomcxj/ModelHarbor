@@ -1,63 +1,91 @@
 //! UI motion: card border hover transitions, card-body collapse / expand height animation, and toggle knob tweening.
 //!
-//! All durations are 0.1–0.2 seconds.
+//! Every duration comes from the scale below instead of being invented per feature.
 
 use eframe::egui::{self, Color32};
 
-/// Hover border transition duration (seconds).
-pub const HOVER_TIME: f32 = 0.12;
+/// The motion scale: four tiers, ordered by how much of the interface a transition sweeps.
+///
+/// The durations used to be six independent numbers (0.12 / 0.14 / 0.18 / 0.22 / 0.22 / 0.45) with no stated
+/// relationship between them: a new animation had nothing to measure itself against and would have added a
+/// seventh. The scale states the rule instead — **the more area a transition moves, the longer it runs**, since
+/// the eye needs time proportional to the distance it must follow. A color-only change is the fastest; a card
+/// body unfolding is the slowest of the spatial tiers; and anything whose *content* must be read rather than
+/// merely felt (a rolling number) sits apart, on its own tier.
+///
+/// The values are deliberately close together: the tiers order the animations, they don't make small motions
+/// cinematic.
+pub const MOTION_QUICK: f32 = 0.12;
+/// Widget-scale: a knob travelling, a control changing state.
+pub const MOTION_FIRM: f32 = 0.16;
+/// Surface-scale: a card body unfolding, a palette sweeping the window, a pulse crossing a widget's edge.
+pub const MOTION_CALM: f32 = 0.22;
+/// Information-scale: content that must be read in flight, not just registered.
+pub const MOTION_READ: f32 = 0.45;
+
+/// Hover / focus color transition duration (seconds).
+///
+/// The quickest tier: nothing moves, only color — the smallest change the interface can express.
+pub const HOVER_TIME: f32 = MOTION_QUICK;
 
 /// Collapse / expand duration (seconds).
-pub const COLLAPSE_TIME: f32 = 0.18;
+///
+/// Surface-scale, not widget-scale: a card body can unfold hundreds of pixels, and at the toggle knob's pace
+/// the fold looked like it was being yanked open.
+pub const COLLAPSE_TIME: f32 = MOTION_CALM;
 
 /// Toggle knob travel duration (seconds).
-pub const TOGGLE_TIME: f32 = 0.14;
+///
+/// Widget-scale: the knob travels a couple of dozen pixels at most, so it takes the firm tier — slower than a
+/// color fade, quicker than a card.
+pub const TOGGLE_TIME: f32 = MOTION_FIRM;
 
 /// Per-digit number roll duration (seconds).
 ///
-/// One step longer than hover / collapse: the roll must let people see "the old digits roll out, the new
-/// roll in" — too fast reads as a flicker. The reference implementation (token-monitor v0.70.0's digit
-/// roll) is also in the half-second range.
-pub const DIGIT_ROLL_TIME: f32 = 0.45;
+/// Its own tier: the roll must let people see "the old digits roll out, the new roll in" — at a spatial tier's
+/// pace it reads as a flicker. The reference implementation (token-monitor v0.70.0's digit roll) is also in the
+/// half-second range.
+pub const DIGIT_ROLL_TIME: f32 = MOTION_READ;
 
 /// Click acknowledgment pulse duration (seconds).
-pub const PULSE_TIME: f32 = 0.22;
+///
+/// Surface-scale even though it is pure feedback: the ring sweeps *past* the widget's edge, so it covers more
+/// ground than the widget itself.
+pub const PULSE_TIME: f32 = MOTION_CALM;
 
 /// Theme cross-fade duration (seconds).
 ///
-/// Only for the palette interpolation on a theme switch: long enough to read as a transition, short
-/// enough that the new colors settle before the click feels stale.
-pub const THEME_TIME: f32 = 0.22;
+/// Surface-scale: the whole window changes, which is the largest area any transition covers here. Long enough
+/// to read as a transition, short enough that the new colors settle before the click feels stale.
+pub const THEME_TIME: f32 = MOTION_CALM;
 
-/// Compile-time upper-bound check on animation durations.
+/// Compile-time checks on the motion scale.
+///
+/// The ordering is the part worth pinning: the tiers only mean something if a bigger movement never gets a
+/// shorter duration. The caps keep any one animation from making the interface feel sluggish.
 const _: () = {
+    assert!(
+        MOTION_QUICK < MOTION_FIRM && MOTION_FIRM < MOTION_CALM && MOTION_CALM < MOTION_READ,
+        "动效分级必须严格递增：区域越大时长越长"
+    );
+    assert!(MOTION_QUICK > 0.0, "最快一档不能为零，否则没有过渡过程");
     assert!(HOVER_TIME <= 0.2, "悬停过渡时长超过 0.2s，界面会显得拖沓");
+    assert!(TOGGLE_TIME <= 0.2, "开关滑动时长超过 0.2s，点击会显得迟钝");
     assert!(
         COLLAPSE_TIME <= 0.25,
         "折叠动画时长超过 0.25s，界面会显得拖沓"
     );
-    assert!(TOGGLE_TIME <= 0.2, "开关滑动时长超过 0.2s，点击会显得迟钝");
-    assert!(TOGGLE_TIME > 0.0, "开关滑动时长不能为零，否则没有滑动过程");
     assert!(
         DIGIT_ROLL_TIME <= 0.6,
         "数字滚动时长超过 0.6s，读数会显得迟滞"
     );
     assert!(
-        DIGIT_ROLL_TIME > 0.0,
-        "数字滚动时长不能为零，否则没有滚动过程"
-    );
-    assert!(
         PULSE_TIME <= 0.25,
         "click pulse over 0.25s reads as lag, not acknowledgment"
     );
-    assert!(PULSE_TIME > 0.0, "click pulse duration must be positive");
     assert!(
         THEME_TIME <= 0.25,
         "theme cross-fade over 0.25s reads as lag, not a transition"
-    );
-    assert!(
-        THEME_TIME > 0.0,
-        "theme cross-fade duration must be positive"
     );
 };
 
@@ -473,6 +501,47 @@ mod tests {
         let id = egui::Id::new("hover_card");
         assert_eq!(super::hover_t(&ctx, id, false), 0.0);
         assert_eq!(super::hover_t(&ctx, id, true), 1.0);
+    }
+
+    /// Every feature duration sits on a tier of the scale, and the tiers are ordered by area swept.
+    ///
+    /// The compile-time asserts in the module pin the ordering; this catches a duration being replaced by a raw
+    /// number later (it would stop matching its tier while the scale itself kept passing). Read through tables
+    /// rather than constant expressions, so the checks stay runtime comparisons.
+    #[test]
+    fn feature_durations_come_from_the_ordered_scale() {
+        let mapping = [
+            (
+                "悬停是色变，属最快一档",
+                super::HOVER_TIME,
+                super::MOTION_QUICK,
+            ),
+            ("滑块是控件尺度", super::TOGGLE_TIME, super::MOTION_FIRM),
+            ("卡片展开是面尺度", super::COLLAPSE_TIME, super::MOTION_CALM),
+            ("扩散环越过控件边界", super::PULSE_TIME, super::MOTION_CALM),
+            ("换肤覆盖整个窗口", super::THEME_TIME, super::MOTION_CALM),
+            (
+                "数字要读，自带一档",
+                super::DIGIT_ROLL_TIME,
+                super::MOTION_READ,
+            ),
+        ];
+        for (what, duration, tier) in mapping {
+            assert_eq!(
+                duration, tier,
+                "{what}：{duration} 偏离了它所属的一档 {tier}"
+            );
+        }
+        // The scale itself: color-only < widget < surface < must-read.
+        let scale = [
+            super::MOTION_QUICK,
+            super::MOTION_FIRM,
+            super::MOTION_CALM,
+            super::MOTION_READ,
+        ];
+        for pair in scale.windows(2) {
+            assert!(pair[0] < pair[1], "动效分级必须严格递增：{pair:?} 不递增");
+        }
     }
 
     /// The shared curve: exact endpoints, monotonic, and past halfway at the midpoint (that is the ease-out).

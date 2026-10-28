@@ -91,8 +91,9 @@ pub(in crate::app) fn chip(ui: &mut egui::Ui, selected: bool, label: &str, width
     // Click acknowledgment: an accent ring expanding from the chip.
     crate::motion::click_pulse(ui, &response, accent, corner);
     // The chip pins its own fill (accent when selected, transparent otherwise), so egui's focused-widget visuals
-    // never show through: the ring is what tells a keyboard user which chip they are on.
-    crate::ui::focus_ring(ui, &response);
+    // never show through: the ring is what tells a keyboard user which chip they are on. It takes the chip's own
+    // radius so a `tag`-preset pill gets a pill-shaped ring.
+    crate::ui::focus_ring(ui, &response, corner);
     response.clicked()
 }
 
