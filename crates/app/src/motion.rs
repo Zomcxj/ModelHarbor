@@ -75,10 +75,25 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
+/// The single easing curve for every duration-driven animation.
+///
+/// All of them used to run at `linear` (egui's `animate_bool_with_time` default): motion that neither
+/// accelerates nor decelerates reads as mechanical, and a widget sliding at a constant rate looks like it is
+/// being dragged rather than settling. Ease-out means "fast start, gentle stop", which is what makes a
+/// transition feel like it *arrives*.
+///
+/// One curve for hover / collapse / toggle / theme cross-fade / click pulse / digit roll, rather than a curve
+/// per feature: mixing curves across one interface is what makes the parts feel assembled instead of designed.
+pub fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
 /// Theme cross-fade progress since `start` (0 = the previous palette, 1 = the new one).
 ///
-/// Unlike the click pulse this only requests a repaint while the fade is running, so a settled theme
-/// costs nothing. Under `everything_is_visible` (debug / offscreen tests) the fade is skipped entirely.
+/// Returns the **raw** (linear) fraction: callers needing the eased blend apply [`ease_out`] themselves, and
+/// the `>= 1.0` completion check must read the raw value. Under `everything_is_visible` (debug / offscreen
+/// tests) the fade is skipped entirely.
 pub fn fade_progress(ctx: &egui::Context, start: f64) -> f32 {
     if ctx.memory(|mem| mem.everything_is_visible()) {
         return 1.0;
@@ -98,7 +113,7 @@ pub fn hover_t(ctx: &egui::Context, id: egui::Id, hovered: bool) -> f32 {
     if ctx.memory(|mem| mem.everything_is_visible()) {
         return hovered as u8 as f32;
     }
-    ctx.animate_bool_with_time(id, hovered, HOVER_TIME)
+    ctx.animate_bool_with_time_and_easing(id, hovered, HOVER_TIME, ease_out)
 }
 
 /// Collapse/expand openness (0 = fully closed, 1 = fully open).
@@ -106,7 +121,7 @@ pub fn collapse_openness(ctx: &egui::Context, id: egui::Id, open: bool) -> f32 {
     if ctx.memory(|mem| mem.everything_is_visible()) {
         return open as u8 as f32;
     }
-    ctx.animate_bool_with_time(id.with("collapse"), open, COLLAPSE_TIME)
+    ctx.animate_bool_with_time_and_easing(id.with("collapse"), open, COLLAPSE_TIME, ease_out)
 }
 
 /// Toggle knob progress (0 = left / off, 1 = right / on).
@@ -119,7 +134,7 @@ pub fn toggle_progress(ctx: &egui::Context, id: egui::Id, on: bool) -> f32 {
     if ctx.memory(|mem| mem.everything_is_visible()) {
         return on as u8 as f32;
     }
-    ctx.animate_bool_with_time(id.with("toggle"), on, TOGGLE_TIME)
+    ctx.animate_bool_with_time_and_easing(id.with("toggle"), on, TOGGLE_TIME, ease_out)
 }
 
 /// Pin the collapse animation to its final value immediately (zero duration). Used for bulk expand / collapse.
@@ -160,8 +175,8 @@ pub fn click_pulse(
         return;
     }
     ctx.request_repaint();
-    // Ease-out cubic: the ring snaps out, then dissolves.
-    let eased = 1.0 - (1.0 - t).powi(3);
+    // The shared ease-out: the ring snaps out, then dissolves.
+    let eased = ease_out(t);
     let grow = 6.0 * eased;
     let fade = 0.55 * (1.0 - eased);
     let stroke = egui::Stroke::new(2.5 * (1.0 - eased) + 0.5, color.gamma_multiply(fade));
@@ -259,8 +274,8 @@ pub fn rolling_number(
             data.remove_temp::<f64>(start_id);
         });
     }
-    // Easing: fast then slow, so the finish doesn't jar.
-    let eased = 1.0 - (1.0 - t).powi(2);
+    // The shared ease-out: fast then slow, so the finish doesn't jar.
+    let eased = ease_out(t);
 
     let chars: Vec<char> = target.chars().collect();
     let from_chars: Vec<char> = from.chars().collect();
@@ -458,6 +473,85 @@ mod tests {
         let id = egui::Id::new("hover_card");
         assert_eq!(super::hover_t(&ctx, id, false), 0.0);
         assert_eq!(super::hover_t(&ctx, id, true), 1.0);
+    }
+
+    /// The shared curve: exact endpoints, monotonic, and past halfway at the midpoint (that is the ease-out).
+    #[test]
+    fn ease_out_hits_endpoints_and_leads_at_the_midpoint() {
+        assert_eq!(super::ease_out(0.0), 0.0);
+        assert_eq!(super::ease_out(1.0), 1.0);
+        // Out-of-range clamps instead of overshooting.
+        assert_eq!(super::ease_out(-1.0), 0.0);
+        assert_eq!(super::ease_out(2.0), 1.0);
+        let mid = super::ease_out(0.5);
+        assert!(mid > 0.5, "缓出曲线在中点必须过半，否则和线性没区别：{mid}");
+        assert!(mid < 1.0, "中点不该已经走完");
+        // Monotonic: sampling must never go backwards.
+        let mut previous = 0.0;
+        for step in 0..=20 {
+            let value = super::ease_out(step as f32 / 20.0);
+            assert!(
+                value >= previous,
+                "缓动曲线必须单调递增：{previous} -> {value}"
+            );
+            previous = value;
+        }
+    }
+
+    /// The three boolean-driven animations are wired to the shared curve, not egui's linear default.
+    ///
+    /// `animate_bool_with_time` eases with `linear`, which is what every transition used to run on; sampling
+    /// at half the duration catches a silent return to it (linear reads exactly 0.5 there).
+    #[test]
+    fn duration_driven_animations_use_the_shared_curve() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 200.0));
+        let input_at = |time: f64| egui::RawInput {
+            screen_rect: Some(screen),
+            time: Some(time),
+            ..Default::default()
+        };
+        // One monotonically advancing clock across all samples: egui's animation state advances by input time,
+        // and rewinding it (starting a sample "before" the previous one) makes egui treat the tween as fresh —
+        // real frames never go backwards.
+        let mut clock = 1.0f64;
+        let expected = super::ease_out(0.5);
+        let mut sample =
+            |name: &str, duration: f32, progress: &dyn Fn(&egui::Context, bool) -> f32| {
+                // Frame at the origin: the "off" state, so the tween has a known origin.
+                let _ = ctx.run(input_at(clock), |ctx| {
+                    progress(ctx, false);
+                });
+                // A hair later: flip to "on"; this is when the tween is armed.
+                let flip = clock + 0.001;
+                let _ = ctx.run(input_at(flip), |ctx| {
+                    progress(ctx, true);
+                });
+                // Half the duration after arming.
+                let mut seen = 0.0;
+                let _ = ctx.run(input_at(flip + f64::from(duration) * 0.5), |ctx| {
+                    seen = progress(ctx, true);
+                });
+                assert!(
+                    seen > 0.5,
+                    "{name}：半程进度 {seen:.3} 未过半（线性曲线正是 0.5）"
+                );
+                assert!(seen < 1.0, "{name}：半程不该已经走完");
+                assert!(
+                    (seen - expected).abs() < 0.05,
+                    "{name}：半程进度 {seen:.3} 不匹配统一缓动 {expected:.3}"
+                );
+                clock += 1.0;
+            };
+        sample("eased_hover", super::HOVER_TIME, &|ctx, on| {
+            super::hover_t(ctx, egui::Id::new("eased_hover"), on)
+        });
+        sample("eased_collapse", super::COLLAPSE_TIME, &|ctx, open| {
+            super::collapse_openness(ctx, egui::Id::new("eased_collapse"), open)
+        });
+        sample("eased_toggle", super::TOGGLE_TIME, &|ctx, on| {
+            super::toggle_progress(ctx, egui::Id::new("eased_toggle"), on)
+        });
     }
 
     /// The theme cross-fade starts at 0 and is skipped (jumps to 1) under `everything_is_visible`.

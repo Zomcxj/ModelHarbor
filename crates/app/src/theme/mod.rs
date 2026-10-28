@@ -9,9 +9,9 @@ mod style;
 mod tokens;
 
 pub use palette::Palette;
-pub(crate) use semantics::relative_luminance;
 #[cfg(test)]
 pub(crate) use semantics::{contrast_for_tests, distance_for_tests};
+pub(crate) use semantics::{distance, relative_luminance};
 pub use semantics::{semantics, Semantics, SEMANTICS};
 pub use style::{active_style, needs_apply, needs_apply_style, UiStyle};
 pub use tokens::{

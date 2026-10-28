@@ -39,7 +39,8 @@ impl super::App {
             // Mid-fade: re-apply with the blended palette every frame.
             Some((from, start)) => {
                 let t = crate::motion::fade_progress(ctx, start);
-                let palette = from.lerp(&self.theme.palette(), t);
+                // The fade blends on the eased curve while `t` keeps driving completion.
+                let palette = from.lerp(&self.theme.palette(), crate::motion::ease_out(t));
                 self.theme
                     .apply_style_with_palette(ctx, shape, glass, palette);
                 self.applied_palette = Some(palette);

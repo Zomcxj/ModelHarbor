@@ -109,14 +109,51 @@ const SERIES_LUMA_MIN: f32 = 0.24;
 const SERIES_LUMA_STEP: f32 = 0.02;
 const SERIES_LUMA_STEPS: usize = 80;
 
+/// The golden angle as a fraction of the color wheel (137.508°), the hue step per series.
+pub(in crate::app) const GOLDEN_ANGLE_FRACTION: f32 = 0.381_966_1;
+
+/// The minimum RGB Euclidean separation between any two series colors.
+///
+/// Rotation alone can land two series on near-identical colors: the luminance walk collapses every series onto
+/// one target luminance, so hues a small step apart converge to the same visible color. Measured on the shipped
+/// palettes, the closest pair was nord's accent `#88C0D0` vs series 5 `#88D0C0` at 22.6, with moss (#6D9D82 vs
+/// #769D6D) at 22.8 and rose at 24.7 — in a stacked bar those read as one color, which defeats the point of
+/// stacking.
+///
+/// 40 sits comfortably above the ~30 where two flat fills stop being reliably told apart, and is reachable on
+/// every shipped palette (asserted in the tests).
+const SERIES_MIN_SEPARATION: f32 = 40.0;
+
+/// How many further golden-angle steps a colliding hue may take before the best candidate is kept.
+///
+/// A cap rather than "keep going": a small palette can't host eight maximally separated colors, so the walk
+/// must terminate somewhere and hand back the best it found.
+const SERIES_HUE_TRIES: usize = 24;
+
+/// Saturation levels the candidate walk cycles through, one per attempt.
+///
+/// Hue alone cannot separate eight series. All candidates share the accent's value and a clamped saturation,
+/// so they sit on the same small hexagon in RGB space — on nord (accent saturation 0.35, the clamp floor) the
+/// best hue arrangement still left the closest pair 34 apart, because the hexagon itself is narrow. Varying
+/// **chroma** widens it, and it is what real palettes do: a family of related hues at a few saturation steps,
+/// not eight equally-saturated hues.
+///
+/// `None` is the accent's own saturation, so attempt 0 still reproduces the series' original color.
+const SERIES_SAT_LEVELS: [Option<f32>; 3] = [None, Some(0.55), Some(0.9)];
+
 /// Series colors: the accent hue rotates by the golden angle; series 0 is the accent itself.
 ///
 /// Golden angle (137.508°) instead of even spacing: with many series, evenly spaced hues collide;
 /// the golden angle keeps any prefix of series well separated.
 ///
-/// The generated colors are then walked to a legible **luminance** for their background (see [`SERIES_LUMA_MAX`]):
-/// on light themes they darken, on dark themes they brighten — and a hue that can't reach the bound even at full
-/// value (deep blue contributes almost no luminance) gives up saturation instead, which is what actually lifts it.
+/// Each candidate is then walked to a legible **luminance** for its background (see [`SERIES_LUMA_MAX`]): on
+/// light themes it darkens, on dark themes it brightens — and a hue that can't reach the bound even at full
+/// value (deep blue contributes almost no luminance) gives up saturation instead, which is what actually lifts
+/// it. A hue whose walked color lands within [`SERIES_MIN_SEPARATION`] of any earlier series takes the next
+/// golden-angle step instead.
+///
+/// Series 0 is the accent and is never moved (`Hsva` computes in linear space; a round trip would shift the
+/// theme author's color several steps off) — so a colliding *generated* series is the one that yields.
 ///
 /// Shared by the trend chart's stacked series and the overview cards' composition bars so both match.
 pub(in crate::app) fn series_color(
@@ -126,13 +163,42 @@ pub(in crate::app) fn series_color(
 ) -> egui::Color32 {
     // Series 0 uses the accent color as-is: the walk below exists to keep "generated" colors readable on both
     // light and dark fills, but the accent itself was tuned by the theme author and must not be touched.
-    // (`Hsva` computes in linear space; a round trip would shift the accent several steps off.)
     if index == 0 {
         return accent;
     }
+    // Every earlier series, recomputed: deterministic, and `index` is single digits.
+    let used: Vec<egui::Color32> = (0..index).map(|i| series_color(i, accent, dark)).collect();
+    let mut best = accent;
+    let mut best_gap = -1.0f32;
+    for attempt in 0..SERIES_HUE_TRIES {
+        // `attempt == 0` is the series' own hue, so a palette with no collision keeps the colors it had.
+        let candidate = series_candidate(accent, dark, index + attempt);
+        let gap = used
+            .iter()
+            .map(|other| crate::theme::distance(candidate, *other))
+            .fold(f32::MAX, f32::min);
+        if gap >= SERIES_MIN_SEPARATION {
+            return candidate;
+        }
+        if gap > best_gap {
+            best_gap = gap;
+            best = candidate;
+        }
+    }
+    // Nothing cleared the floor: the widest-gap candidate is still the best available.
+    best
+}
+
+/// One series candidate: hue `steps` golden-angle turns from the accent, at the background's legible luminance.
+///
+/// The saturation comes from [`SERIES_SAT_LEVELS`], cycled by the same `steps`.
+fn series_candidate(accent: egui::Color32, dark: bool, steps: usize) -> egui::Color32 {
     let mut hsva = egui::ecolor::Hsva::from(accent);
-    hsva.h = (hsva.h + index as f32 * 0.381_966_1).fract();
+    hsva.h = (hsva.h + steps as f32 * GOLDEN_ANGLE_FRACTION).fract();
     hsva.s = hsva.s.clamp(0.35, 0.95);
+    if let Some(level) = SERIES_SAT_LEVELS[steps % SERIES_SAT_LEVELS.len()] {
+        hsva.s = level;
+    }
     let target = if dark {
         SERIES_LUMA_MIN
     } else {
@@ -785,6 +851,62 @@ mod tests {
                     "{} 第 {index} 条系列色对比度仅 {ratio:.2}（底色 {:?}）",
                     theme.key(),
                     palette.panel
+                );
+            }
+        }
+    }
+
+    /// Any two series colors on one theme are far enough apart to be told apart.
+    ///
+    /// The luminance walk pulls every series onto one target luminance, which makes hues a small step apart
+    /// land on the same visible color (nord's accent vs series 5 were 22.6 apart).
+    #[test]
+    fn series_colors_are_mutually_distinguishable() {
+        for theme in crate::theme::Theme::ALL {
+            let palette = theme.palette();
+            let colors: Vec<_> = (0..8)
+                .map(|index| super::series_color(index, palette.accent, palette.dark))
+                .collect();
+            for a in 0..colors.len() {
+                for b in (a + 1)..colors.len() {
+                    let gap = crate::theme::distance(colors[a], colors[b]);
+                    assert!(
+                        gap >= 40.0,
+                        "{} 第 {a}/{b} 条系列色距离仅 {gap:.1}（{:?} vs {:?}）",
+                        theme.key(),
+                        colors[a],
+                        colors[b]
+                    );
+                }
+            }
+        }
+    }
+
+    /// Series 0 is the theme's accent, untouched by the separation walk.
+    #[test]
+    fn series_zero_is_the_accent() {
+        for theme in crate::theme::Theme::ALL {
+            let palette = theme.palette();
+            assert_eq!(
+                super::series_color(0, palette.accent, palette.dark),
+                palette.accent,
+                "{} 的第 0 条必须是 accent 本身（色相往返会走样）",
+                theme.key()
+            );
+        }
+    }
+
+    /// The separation walk is deterministic: same input, same color (chart and overview must agree).
+    #[test]
+    fn series_colors_are_deterministic() {
+        for theme in crate::theme::Theme::ALL {
+            let palette = theme.palette();
+            for index in 0..8 {
+                assert_eq!(
+                    super::series_color(index, palette.accent, palette.dark),
+                    super::series_color(index, palette.accent, palette.dark),
+                    "{} 第 {index} 条系列色两次调用不一致",
+                    theme.key()
                 );
             }
         }

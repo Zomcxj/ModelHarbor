@@ -40,8 +40,8 @@ fn semantics_with_accent(accent: Color32) -> Semantics {
     colors
 }
 
-/// RGB Euclidean distance.
-fn distance(a: Color32, b: Color32) -> f32 {
+/// RGB Euclidean distance between two colors (hue-space distance; unit-test / series-separation use).
+pub(crate) fn distance(a: Color32, b: Color32) -> f32 {
     let [ar, ag, ab, _] = a.to_array();
     let [br, bg, bb, _] = b.to_array();
     let d = |x: u8, y: u8| {
