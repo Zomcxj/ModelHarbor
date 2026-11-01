@@ -322,8 +322,9 @@ fn dsh_writes_retry_policy_before_timeout_ms() {
 }
 
 #[test]
-fn dsh_cross_format_preserves_target_only_provider() {
-    // Cross-format save to a DSH target: target-only providers are kept.
+fn dsh_cross_format_drops_target_only_provider() {
+    // Cross-format save to a DSH target: providers are the UI-managed container, so the UI's list decides which
+    // ones exist — a provider deleted in the UI must not come back out of the target document.
     let backend = backends::backend(ConfigFormat::DeepSeekHarness);
     let target = json!({
         "llm-pi-ai": {
@@ -338,11 +339,12 @@ fn dsh_cross_format_preserves_target_only_provider() {
     provider.dsh_timeout_ms = "180000".into();
     let root = backend.serialize_root(&[], &[provider], &json!({}), Some(&target));
     let provs = &root["llm-pi-ai"]["providers"];
-    assert_eq!(
-        provs["target-only"]["api"], "openai-completions",
-        "目标独有 provider 应保留"
+    assert!(
+        provs.get("target-only").is_none(),
+        "目标独有 provider 必须删除（界面里的删除要落盘），实际 {provs}"
     );
     assert!(provs.get("demo").is_some(), "来源 provider 应写入");
+    assert_eq!(provs["demo"]["timeoutMs"], json!(180000));
 }
 
 #[test]
@@ -662,19 +664,19 @@ fn patch_save_preserves_crlf() {
     assert!(text.contains("fresh"), "内容应当写入");
 }
 
-/// A save mirrors into the sibling profile's document, following the **primary's** provider set.
+/// A save mirrors into the sibling profile's document, following the **primary's rendered result**.
 ///
 /// The desktop app reads `profiles/desktop/` and the CLI / SDK reads `profiles/sdk/`; the two must agree. The
-/// invariant is "the sibling ends up with what the primary's document has", not "with whatever the UI list
-/// holds": writing the raw UI list dropped providers the primary's own merge had kept (the sdk profile lost
-/// three of them that way).
+/// invariant is "the sibling ends up with what the primary's document has" — not "with the sibling's own
+/// content", and not "with a bare re-render of the UI list" either: the fields the primary's merge kept from
+/// its own document (the sibling never had them) have to come along.
 #[test]
 fn save_mirrors_the_primary_provider_set_into_the_sibling() {
     let root = temp_path("dsh_root");
     let home = root.parent().unwrap().to_path_buf();
     let profiles = home.join(".dsh").join("profiles");
-    // The primary holds three providers; the UI knows only two of them (a UI list can be partial — a page that
-    // never saw the third, or a stale instance).
+    // The primary's own document holds a field the UI does not model, plus a provider the UI has no idea about:
+    // the UI's list decides which providers exist, so `gamma` goes away.
     let primary_doc = "- id: llm-pi-ai
   name: \"@deepseek-ai/dsh-llm-pi-ai\"
   config:
@@ -682,6 +684,7 @@ fn save_mirrors_the_primary_provider_set_into_the_sibling() {
       alpha:
         api: openai-completions
         baseURL: https://alpha.example/v1
+        customField: primary-only
       beta:
         api: openai-completions
         baseURL: https://beta.example/v1
@@ -708,8 +711,8 @@ fn save_mirrors_the_primary_provider_set_into_the_sibling() {
     }
     let primary = profiles.join("desktop").join("cordis.patch.yml");
     let b = backends::backend(ConfigFormat::DeepSeekHarness);
-    // A cross-format save (the "save all" shape): the target's own providers are the merge base, so `gamma`
-    // survives even though the UI list is only alpha / beta.
+    // A cross-format save (the "save all" shape): the target's own providers are the merge base for **fields**,
+    // while the UI's list decides the set.
     let provs = vec![
         provider("alpha", "alpha-model", "https://alpha.example/v1"),
         provider("beta", "beta-model", "https://beta.example/v1"),
@@ -744,14 +747,34 @@ fn save_mirrors_the_primary_provider_set_into_the_sibling() {
         keys.sort();
         keys
     }
+    fn provider_field(text: &str, key: &str, field: &str) -> serde_json::Value {
+        parse_yaml_content(text)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some("llm-pi-ai"))
+            .and_then(|e| e.get("config"))
+            .and_then(|c| c.get("providers"))
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.get(field))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    }
+    assert_eq!(
+        providers_of(&primary_content),
+        vec!["alpha".to_string(), "beta".to_string()],
+        "界面里删掉的 provider 必须落盘（目标文档不能把它们拉回来）：{primary_content}"
+    );
     assert_eq!(
         providers_of(&mirror_content),
         providers_of(&primary_content),
         "镜像档必须与主文档的 provider 集合一致：{mirror_content}"
     );
-    assert!(
-        providers_of(&mirror_content).contains(&"gamma".to_string()),
-        "主文档保住的 provider 不该在镜像里丢掉：{mirror_content}"
+    assert_eq!(
+        provider_field(&mirror_content, "alpha", "customField"),
+        json!("primary-only"),
+        "镜像必须渲染主文档的结果（UI 不建模的字段不能被丢掉）：{mirror_content}"
     );
     // The sibling keeps its own header and unrelated entries.
     assert!(
@@ -803,5 +826,132 @@ fn mirror_targets_skips_a_sibling_without_the_entry() {
     assert!(
         b.mirror_targets(primary.to_str().unwrap()).is_empty(),
         "无可拼接条目时不该镜像（否则整份文档会被覆盖）"
+    );
+}
+
+/// A cross-format save (the source document belongs to another agent) writes the UI's provider set and order —
+/// a deletion has to take effect — while a same-named provider keeps the DSH-side fields the UI does not model.
+#[test]
+fn cross_format_save_takes_ui_providers_and_keeps_target_fields() {
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let ui = vec![
+        provider("fresh", "fresh-model", "https://fresh.example/v1"),
+        provider("old", "old-model", "https://old.example/v1"),
+    ];
+
+    // The live document is an entry list: the map sits inside the `llm-pi-ai` entry's config.
+    let patch = json!([
+        {
+            "id": "llm-pi-ai",
+            "name": "@deepseek-ai/dsh-llm-pi-ai",
+            "config": { "providers": {
+                "old": {
+                    "apiKeyEnv": "OLD_KEY",
+                    "api": "openai-completions",
+                    "baseURL": "https://old.example/v1",
+                    "timeoutMs": 180000,
+                    "customProviderField": "keep-me",
+                    "models": [{ "id": "old-model", "name": "old-model" }]
+                },
+                "dropped": {
+                    "api": "openai-completions",
+                    "baseURL": "https://dropped.example/v1",
+                    "models": []
+                }
+            } }
+        },
+        { "id": "agent-default-model", "config": { "provider": "deepseek-account", "model": "deepseek-flash" } }
+    ]);
+    let doc = b.serialize_root(&[], &ui, &json!({}), Some(&patch));
+    let providers = doc
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == "llm-pi-ai")
+        .unwrap()["config"]["providers"]
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        providers.keys().collect::<Vec<_>>(),
+        vec!["fresh", "old"],
+        "provider 的集合与顺序必须来自界面（删除要生效，拖拽排序要可见）"
+    );
+    assert!(
+        providers.get("dropped").is_none(),
+        "目标补丁里 UI 没有的 provider 必须被删除"
+    );
+    assert_eq!(
+        providers["old"]["timeoutMs"],
+        json!(180000),
+        "同名 provider 的 DSH 专有字段（UI 不建模）必须保留"
+    );
+    assert_eq!(providers["old"]["customProviderField"], json!("keep-me"));
+    assert!(
+        doc.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["id"] == "agent-default-model"),
+        "补丁里其它条目必须原样保留"
+    );
+
+    // The legacy settings.yaml root keeps the same map one level up.
+    let legacy = json!({
+        "llm-pi-ai": { "providers": {
+            "old": {
+                "apiKeyEnv": "OLD_KEY",
+                "api": "openai-completions",
+                "baseURL": "https://old.example/v1",
+                "timeoutMs": 180000
+            },
+            "dropped": { "api": "openai-completions", "baseURL": "https://dropped.example/v1", "models": [] }
+        } },
+        "agent-default-model": { "provider": "demo", "model": "demo-model" }
+    });
+    let doc = b.serialize_root(&[], &ui, &json!({}), Some(&legacy));
+    let provs = doc["llm-pi-ai"]["providers"].as_object().unwrap();
+    assert_eq!(provs.keys().collect::<Vec<_>>(), vec!["fresh", "old"]);
+    assert!(provs.get("dropped").is_none());
+    assert_eq!(
+        doc["llm-pi-ai"]["providers"]["old"]["timeoutMs"],
+        json!(180000)
+    );
+    assert_eq!(doc["agent-default-model"]["model"], json!("demo-model"));
+}
+
+/// A path mixing separator styles still finds its sibling: `is_patch_path` already accepts such a path as a patch
+/// document, so the mirror must not silently skip it (the two profiles would drift apart).
+#[test]
+fn mirror_targets_handles_a_mixed_separator_path() {
+    let root = temp_path("dsh_mixed");
+    let home = root.parent().unwrap().to_path_buf();
+    let profiles = home.join(".dsh").join("profiles");
+    for profile in ["desktop", "sdk"] {
+        let dir = profiles.join(profile);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cordis.patch.yml"), patch_document()).unwrap();
+    }
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let clean = profiles
+        .join("desktop")
+        .join("cordis.patch.yml")
+        .to_string_lossy()
+        .to_string();
+    // One separator flipped: hand-typed paths look like this.
+    let mixed = clean.replacen("\\profiles\\desktop\\", "/profiles\\desktop\\", 1);
+    assert_ne!(mixed, clean, "测试自身：分隔符应当已被改动");
+    let mirrors = b.mirror_targets(&mixed);
+    assert_eq!(
+        mirrors.len(),
+        1,
+        "混合分隔符的路径必须找到对档：{mirrors:?}"
+    );
+    // The inserted segment follows the separator style of the matched position; what matters is that the
+    // returned path resolves to the sibling document.
+    let sdk_doc = std::fs::read_to_string(profiles.join("sdk").join("cordis.patch.yml")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&mirrors[0]).unwrap(),
+        sdk_doc,
+        "返回的对档路径必须指向 sdk 档：{}",
+        mirrors[0]
     );
 }

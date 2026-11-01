@@ -55,21 +55,31 @@ fn is_patch_path(path: &str) -> bool {
 }
 
 /// The sibling profile's patch document, or None when `path` isn't a profile patch path.
+///
+/// Matching runs on a slash-normalized copy — both separators are single ASCII bytes, so indices stay valid for
+/// the original — and the inserted segment reuses the original's separator style. A path that mixes styles (typed
+/// by hand, or joined from parts) therefore still finds its sibling, exactly like `is_patch_path` accepts it as a
+/// patch document: the two profiles must not drift apart because of a separator.
 fn mirror_path(path: &str) -> Option<String> {
-    for sep in ["\\", "/"] {
-        for (from, to) in [
-            (PATCH_PROFILE, PATCH_MIRROR_PROFILE),
-            (PATCH_MIRROR_PROFILE, PATCH_PROFILE),
-        ] {
-            let needle = format!("{sep}profiles{sep}{from}{sep}");
-            if let Some(idx) = path.find(&needle) {
-                let mut out = String::with_capacity(path.len() + 8);
-                out.push_str(&path[..idx]);
-                out.push_str(&format!("{sep}profiles{sep}{to}{sep}"));
-                out.push_str(&path[idx + needle.len()..]);
-                return Some(out);
-            }
-        }
+    let normalized = path.replace('\\', "/");
+    for (from, to) in [
+        (PATCH_PROFILE, PATCH_MIRROR_PROFILE),
+        (PATCH_MIRROR_PROFILE, PATCH_PROFILE),
+    ] {
+        let needle = format!("/profiles/{from}/");
+        let Some(idx) = normalized.find(&needle) else {
+            continue;
+        };
+        let sep = if path[idx..].starts_with('\\') {
+            '\\'
+        } else {
+            '/'
+        };
+        let mut out = String::with_capacity(path.len() + 8);
+        out.push_str(&path[..idx]);
+        out.push_str(&format!("{sep}profiles{sep}{to}{sep}"));
+        out.push_str(&path[idx + needle.len()..]);
+        return Some(out);
     }
     None
 }
@@ -611,15 +621,21 @@ fn provider_to_dsh(p: &ProviderRow) -> Value {
 ///
 /// `existing` is the merge base for a cross-format (upsert) save; a plain save starts empty so deletions made
 /// in the UI take effect.
+/// The provider map to write: the UI's rows, in the UI's order (drag-reorder is visible across pages).
+///
+/// A cross-format target donates only **fields** the UI does not model: a same-named entry merges
+/// conservatively, so a provider keeps the target's `retryPolicy` / `timeoutMs` (written only when the UI
+/// sets them, so their absence means "keep the target's"). Target-only providers are dropped: providers
+/// are the UI-managed container, and a deletion has to take effect.
 fn provider_values(
     providers: &[ProviderRow],
     cross_format: bool,
-    existing: Map<String, Value>,
+    existing: &Map<String, Value>,
 ) -> Map<String, Value> {
-    let mut values = if cross_format { existing } else { Map::new() };
+    let mut values = Map::new();
     for p in providers.iter().filter(|p| !p.key.is_empty()) {
         let value = provider_to_dsh(p);
-        let entry = match (cross_format, values.get(&p.key)) {
+        let entry = match (cross_format, existing.get(&p.key)) {
             (true, Some(target)) => convert::merge_conservative(target, &value),
             _ => value,
         };
@@ -644,7 +660,7 @@ fn patch_root(base: &Value, providers: &[ProviderRow], cross_format: bool) -> Va
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let values = provider_values(providers, cross_format, existing);
+    let values = provider_values(providers, cross_format, &existing);
     let mut entry = match idx {
         Some(i) => items[i].clone(),
         None => {
@@ -853,8 +869,9 @@ impl Backend for DeepSeekHarnessBackend {
         target_root: Option<&Value>,
     ) -> Value {
         let base = target_root.cloned().unwrap_or_else(|| extras.clone());
-        // Current-file saves replace wholesale per UI state (deletions take effect); cross-format targets merge
-        // conservatively: same-named providers merge by field, target-only providers stay.
+        // The UI's provider list decides both the set and the order in either case — a deletion has to take
+        // effect. A cross-format target only donates fields the UI does not model, for the providers it
+        // already has (see `provider_values`).
         let cross_format = target_root.is_some();
         if base.is_array() {
             return patch_root(&base, providers, cross_format);
@@ -866,7 +883,7 @@ impl Backend for DeepSeekHarnessBackend {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let provider_values = provider_values(providers, cross_format, existing);
+        let provider_values = provider_values(providers, cross_format, &existing);
         // No remove + re-insert of llm-pi-ai: a re-inserted key would move to the root's tail.
         if let Some(llm) = root.get_mut("llm-pi-ai").and_then(Value::as_object_mut) {
             llm.insert("providers".into(), Value::Object(provider_values));

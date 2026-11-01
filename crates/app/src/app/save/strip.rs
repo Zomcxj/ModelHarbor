@@ -2,7 +2,11 @@ use crate::format::ConfigFormat;
 use serde_json::{Map, Value};
 
 /// Before cross-format conversion, evict from the target root the containers the current component state manages:
-/// provider (opencode's provider / the pi family's and DSH's providers) and opencode's agent.
+/// provider (the opencode family's `provider`, the pi family's `providers`) and opencode's agent.
+///
+/// DSH is absent on purpose: its provider map is not a root field (the live document is an entry list, and the map
+/// sits inside the `llm-pi-ai` entry's `config`), so the backend owns that eviction — it drops target-only providers
+/// while merging same-named ones, which keeps the DSH-side fields the UI does not model.
 ///
 /// Only what the UI can manage is evicted: read-only content the UI neither shows nor can rebuild (Kimi's
 /// `managed:*` OAuth providers and their models, Qwen's `qwen-oauth`) is kept, as are other top-level fields.
@@ -30,11 +34,9 @@ pub fn strip_cross_format_containers(fmt: ConfigFormat, root: &mut Value, agents
         ConfigFormat::Pi | ConfigFormat::OhMyPi => {
             obj.shift_remove("providers");
         }
-        ConfigFormat::DeepSeekHarness => {
-            if let Some(llm) = obj.get_mut("llm-pi-ai").and_then(Value::as_object_mut) {
-                llm.shift_remove("providers");
-            }
-        }
+        // DSH: nothing evicted here — the container is not a root field (see the header note). The backend's
+        // `provider_values` drops target-only providers and merges same-named ones.
+        ConfigFormat::DeepSeekHarness => {}
         ConfigFormat::ZCode => {
             if let Some(cfg) = obj.get_mut("config").and_then(Value::as_object_mut) {
                 cfg.shift_remove("providerOrder");

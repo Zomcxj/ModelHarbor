@@ -215,13 +215,15 @@ fn strip_drops_managed_containers_per_format() {
         assert_eq!(root["defaultModel"], "x", "{:?}", fmt);
     }
 
-    // DSH: only llm-pi-ai.providers is evicted; sibling settings are kept
+    // DSH: nothing is evicted here. Its provider map is not a root field (the live document is an entry list and
+    // the map sits inside the `llm-pi-ai` entry), so the backend owns that eviction — a root-level eviction would
+    // also drop the DSH-side fields the merge is meant to keep.
     let mut dsh = json!({
         "llm-pi-ai": { "providers": { "old": {} }, "timeoutMs": 10000 },
         "other": 1
     });
     strip_cross_format_containers(ConfigFormat::DeepSeekHarness, &mut dsh, false);
-    assert!(dsh["llm-pi-ai"].get("providers").is_none());
+    assert_eq!(dsh["llm-pi-ai"]["providers"]["old"], json!({}));
     assert_eq!(dsh["llm-pi-ai"]["timeoutMs"], 10000);
     assert_eq!(dsh["other"], 1);
 }
@@ -296,4 +298,67 @@ fn cross_format_opencode_save_keeps_target_agents_when_ui_has_none() {
         "provider 仍由界面接管（干净转换语义不变）"
     );
     assert_eq!(doc["mcp"]["srv"]["command"], "node");
+}
+
+/// The live DSH document is an entry list, so its provider map is not a root field and the root-level strip has
+/// nothing to evict there. The backend drops target-only providers instead — a deletion in the UI has to reach
+/// the file — while a same-named provider keeps the DSH-side fields the UI does not model.
+#[test]
+fn cross_format_dsh_patch_takes_ui_providers_and_keeps_the_document() {
+    let mut target = json!([
+        {
+            "id": "llm-pi-ai",
+            "name": "@deepseek-ai/dsh-llm-pi-ai",
+            "config": { "providers": {
+                "zeta": {
+                    "apiKeyEnv": "ZETA_KEY",
+                    "api": "openai-completions",
+                    "baseURL": "https://old/v1",
+                    "timeoutMs": 180000
+                },
+                "old": { "apiKeyEnv": "OLD_KEY", "api": "openai-completions", "baseURL": "https://old/v1" }
+            } }
+        },
+        {
+            "id": "agent-default-model",
+            "name": "@deepseek-ai/dsh-agent-default-model",
+            "config": { "provider": "deepseek-account", "model": "deepseek-flash" }
+        }
+    ]);
+    strip_cross_format_containers(ConfigFormat::DeepSeekHarness, &mut target, false);
+    let providers = ui_providers(&["alpha", "zeta"]);
+    let doc = backends::backend(ConfigFormat::DeepSeekHarness).serialize_root(
+        &[],
+        &providers,
+        &empty_extras(),
+        Some(&target),
+    );
+    let entry = doc
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == "llm-pi-ai")
+        .expect("llm-pi-ai 条目");
+    let provs = entry["config"]["providers"].as_object().unwrap();
+    assert_eq!(
+        provs.keys().collect::<Vec<_>>(),
+        vec!["alpha", "zeta"],
+        "跨格式保存后 provider 的集合与顺序必须来自界面"
+    );
+    assert!(
+        provs.get("old").is_none(),
+        "目标里 UI 没有的 provider 必须删除（否则界面删不掉）"
+    );
+    assert_eq!(
+        provs["zeta"]["timeoutMs"],
+        json!(180000),
+        "同名 provider 的 DSH 专有字段必须保留"
+    );
+    assert!(
+        doc.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["id"] == "agent-default-model"),
+        "补丁里其它条目必须保留"
+    );
 }
