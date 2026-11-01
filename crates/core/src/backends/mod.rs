@@ -108,6 +108,20 @@ pub trait Backend: Sync {
         Ok(())
     }
 
+    /// Other live config files that must receive the **same rendered content** as `path`.
+    ///
+    /// Each is rendered through [`Self::render_at`], so a mirror keeps its own formatting and unrelated
+    /// entries. They are written after the main config succeeds: a mirror landing while the main write failed
+    /// would leave two configs disagreeing — and a mirror written from anything other than the main write's own
+    /// result can silently drop entries (writing the raw UI list instead of the merged one did exactly that
+    /// once: the sibling profile lost three providers).
+    ///
+    /// DSH is the case that needs this: provider config is per profile, so one page edit has to reach both the
+    /// desktop and the CLI / SDK profiles.
+    fn mirror_targets(&self, _path: &str) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The official icon: 32×32 non-premultiplied RGBA raw bytes and size; None = no icon.
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
         None

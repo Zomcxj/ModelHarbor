@@ -662,58 +662,146 @@ fn patch_save_preserves_crlf() {
     assert!(text.contains("fresh"), "内容应当写入");
 }
 
-/// Saving mirrors the providers into the sibling profile's document.
+/// A save mirrors into the sibling profile's document, following the **primary's** provider set.
 ///
-/// The desktop app reads `profiles/desktop/` and the CLI / SDK reads `profiles/sdk/`. Writing only the primary
-/// would leave the other entry point on the old provider list — the reported symptom.
+/// The desktop app reads `profiles/desktop/` and the CLI / SDK reads `profiles/sdk/`; the two must agree. The
+/// invariant is "the sibling ends up with what the primary's document has", not "with whatever the UI list
+/// holds": writing the raw UI list dropped providers the primary's own merge had kept (the sdk profile lost
+/// three of them that way).
 #[test]
-fn save_mirrors_providers_into_the_sibling_profile() {
-    // A fake ~/.dsh layout so both profiles' documents exist side by side.
+fn save_mirrors_the_primary_provider_set_into_the_sibling() {
     let root = temp_path("dsh_root");
     let home = root.parent().unwrap().to_path_buf();
-    for profile in ["desktop", "sdk"] {
-        let dir = home.join(".dsh").join("profiles").join(profile);
+    let profiles = home.join(".dsh").join("profiles");
+    // The primary holds three providers; the UI knows only two of them (a UI list can be partial — a page that
+    // never saw the third, or a stale instance).
+    let primary_doc = "- id: llm-pi-ai
+  name: \"@deepseek-ai/dsh-llm-pi-ai\"
+  config:
+    providers:
+      alpha:
+        api: openai-completions
+        baseURL: https://alpha.example/v1
+      beta:
+        api: openai-completions
+        baseURL: https://beta.example/v1
+      gamma:
+        api: openai-completions
+        baseURL: https://gamma.example/v1
+";
+    let sibling_doc = "# Your patch layer for this dsh profile
+- id: llm-pi-ai
+  name: \"@deepseek-ai/dsh-llm-pi-ai\"
+  config:
+    providers:
+      stale:
+        api: openai-completions
+        baseURL: https://stale.example/v1
+- id: ui-theme
+  config:
+    mode: dark
+";
+    for (profile, doc) in [("desktop", primary_doc), ("sdk", sibling_doc)] {
+        let dir = profiles.join(profile);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("cordis.patch.yml"), patch_document()).unwrap();
+        std::fs::write(dir.join("cordis.patch.yml"), doc).unwrap();
     }
-    let primary = home
-        .join(".dsh")
-        .join("profiles")
-        .join("desktop")
-        .join("cordis.patch.yml");
+    let primary = profiles.join("desktop").join("cordis.patch.yml");
     let b = backends::backend(ConfigFormat::DeepSeekHarness);
-    let providers = vec![provider("fresh", "fresh-model", "https://fresh.example/v1")];
-    // The sidecar mirror runs from save_sidecars; the primary document is written by the caller.
-    b.save_sidecars(primary.to_str().unwrap(), &providers)
+    // A cross-format save (the "save all" shape): the target's own providers are the merge base, so `gamma`
+    // survives even though the UI list is only alpha / beta.
+    let provs = vec![
+        provider("alpha", "alpha-model", "https://alpha.example/v1"),
+        provider("beta", "beta-model", "https://beta.example/v1"),
+    ];
+    let target_root = b.load_target_root(primary.to_str().unwrap()).unwrap();
+    let root = b.serialize_root(&[], &provs, &json!([]), Some(&target_root));
+    let primary_content = b
+        .render_at(&root, false, primary.to_str().unwrap())
         .unwrap();
-    let sdk = home
-        .join(".dsh")
-        .join("profiles")
-        .join("sdk")
-        .join("cordis.patch.yml");
-    let sdk_text = std::fs::read_to_string(&sdk).unwrap();
-    let parsed = parse_yaml_content(&sdk_text).unwrap();
-    let provs = parsed
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some("llm-pi-ai"))
-        .unwrap()
-        .get("config")
-        .unwrap()
-        .get("providers")
-        .unwrap()
-        .as_object()
-        .unwrap();
+    std::fs::write(&primary, &primary_content).unwrap();
+    let mirrors = b.mirror_targets(primary.to_str().unwrap());
+    assert_eq!(mirrors.len(), 1, "应当镜像到 sdk 档：{mirrors:?}");
+    let mirror = &mirrors[0];
+    let mirror_content = b.render_at(&root, false, mirror).unwrap();
+    std::fs::write(mirror, &mirror_content).unwrap();
+    fn providers_of(text: &str) -> Vec<String> {
+        let parsed = parse_yaml_content(text).unwrap();
+        let map = parsed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some("llm-pi-ai"))
+            .unwrap()
+            .get("config")
+            .unwrap()
+            .get("providers")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        let mut keys: Vec<String> = map.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
     assert_eq!(
-        provs.keys().collect::<Vec<_>>(),
-        vec!["fresh"],
-        "sdk 档应当被同步成同一份 provider：{sdk_text}"
+        providers_of(&mirror_content),
+        providers_of(&primary_content),
+        "镜像档必须与主文档的 provider 集合一致：{mirror_content}"
     );
-    // The sibling's own header and other entries survive.
     assert!(
-        sdk_text.starts_with("# Your patch layer"),
+        providers_of(&mirror_content).contains(&"gamma".to_string()),
+        "主文档保住的 provider 不该在镜像里丢掉：{mirror_content}"
+    );
+    // The sibling keeps its own header and unrelated entries.
+    assert!(
+        mirror_content.starts_with("# Your patch layer"),
         "sdk 档文件头被丢了"
     );
-    assert!(sdk_text.contains("mode: dark"), "sdk 档其它条目被丢了");
+    assert!(
+        mirror_content.contains("mode: dark"),
+        "sdk 档其它条目被丢了"
+    );
+}
+
+/// A profile with no sibling document isn't mirrored into being created.
+#[test]
+fn mirror_targets_skips_a_missing_sibling() {
+    let root = temp_path("dsh_root2");
+    let home = root.parent().unwrap().to_path_buf();
+    let dir = home.join(".dsh").join("profiles").join("desktop");
+    std::fs::create_dir_all(&dir).unwrap();
+    let primary = dir.join("cordis.patch.yml");
+    std::fs::write(&primary, patch_document()).unwrap();
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    assert!(
+        b.mirror_targets(primary.to_str().unwrap()).is_empty(),
+        "对档不存在时不该凭空创建"
+    );
+}
+
+/// A sibling document without the llm-pi-ai entry isn't mirrored into: the mirror renders into the file's own
+/// text, and a document with nothing to splice would be replaced wholesale by a fresh one.
+#[test]
+fn mirror_targets_skips_a_sibling_without_the_entry() {
+    let root = temp_path("dsh_root3");
+    let home = root.parent().unwrap().to_path_buf();
+    let profiles = home.join(".dsh").join("profiles");
+    let dir = profiles.join("desktop");
+    std::fs::create_dir_all(&dir).unwrap();
+    let primary = dir.join("cordis.patch.yml");
+    std::fs::write(&primary, patch_document()).unwrap();
+    let sdk_dir = profiles.join("sdk");
+    std::fs::create_dir_all(&sdk_dir).unwrap();
+    // A sibling that exists but has no provider entry (yet another plugin's patch layer).
+    std::fs::write(
+        sdk_dir.join("cordis.patch.yml"),
+        "# header\n- id: ui-theme\n  config:\n    mode: dark\n",
+    )
+    .unwrap();
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    assert!(
+        b.mirror_targets(primary.to_str().unwrap()).is_empty(),
+        "无可拼接条目时不该镜像（否则整份文档会被覆盖）"
+    );
 }

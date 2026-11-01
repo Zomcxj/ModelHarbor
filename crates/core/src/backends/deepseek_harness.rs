@@ -707,7 +707,7 @@ fn is_entry_id_line(line: &str, id: &str) -> bool {
 /// The target file's line ending, read from its **raw bytes**.
 ///
 /// `read_config_content` hands back normalized text, so the document's own ending can't be inferred from it;
-/// writing LF into a CRLF file leaves it with mixed endings, which the next splice then mis-parses.
+/// writing LF into a CRLF file leaves it with mixed endings, which the next splice then reads wrongly.
 fn file_line_ending(path: &str) -> &'static str {
     match std::fs::read(path) {
         Ok(bytes) if bytes.windows(2).any(|pair| pair == b"\r\n") => "\r\n",
@@ -888,31 +888,31 @@ impl Backend for DeepSeekHarnessBackend {
         };
         super::load_target_root_with(path, parse_yaml_content, || empty)
     }
-    /// The credentials sidecar, plus the sibling profile's patch document.
-    ///
-    /// The sibling is written here rather than by the caller because only the backend knows it is a sibling:
-    /// it needs the same in-place splice against **its own** text, whose header and other entries differ from
-    /// the primary's. A failure cancels the save, so the two profiles can't silently diverge.
+    /// The credentials sidecar. The sibling profile's document is **not** written here: it needs the same
+    /// providers the primary write produced, which this hook doesn't receive (see `mirror_targets`).
     fn save_sidecars(&self, path: &str, providers: &[ProviderRow]) -> Result<(), String> {
-        credentials::save(path, providers)?;
+        credentials::save(path, providers)
+    }
+
+    /// The sibling profile's document, when it exists **and can be spliced into**.
+    ///
+    /// Only an existing profile is mirrored: creating the other profile's document could show DSH a profile it
+    /// never set up. The document must already carry the `llm-pi-ai` entry, because a mirror is rendered into
+    /// the file's own text — a document without the entry would take `render_at`'s "write a fresh document"
+    /// path and lose every other entry it had.
+    fn mirror_targets(&self, path: &str) -> Vec<String> {
         let Some(sibling) = mirror_path(path) else {
-            return Ok(());
+            return Vec::new();
         };
-        // Only mirror into a profile that already exists: creating the other profile's document could make DSH
-        // see a profile it never set up.
-        if !crate::util::config_exists(&sibling) {
-            return Ok(());
+        let spliceable = crate::util::read_config_content(&sibling)
+            .ok()
+            .and_then(|text| parse_yaml_content(&text).ok())
+            .is_some_and(|doc| providers_of(&doc).is_some());
+        if spliceable {
+            vec![sibling]
+        } else {
+            Vec::new()
         }
-        let existing = crate::util::read_config_content(&sibling)?;
-        let block = render_provider_block(&provider_values(providers, false, Map::new()));
-        let content = splice_providers(&existing, &block, file_line_ending(&sibling))
-            .ok_or_else(|| format!("{sibling} 中没有 {PATCH_ENTRY_ID} 条目，未同步"))?;
-        // The app snapshots its own save target; this one is ours to keep.
-        let _ = crate::profiles::snapshot(
-            std::path::Path::new(&sibling),
-            crate::profiles::SnapshotTag::Auto,
-        );
-        crate::util::atomic_write_text(std::path::Path::new(&sibling), &content)
     }
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
         Some((

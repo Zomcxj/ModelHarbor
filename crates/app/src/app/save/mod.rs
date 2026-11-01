@@ -249,6 +249,7 @@ impl App {
             self.extras_for(fmt),
             target_root.as_ref(),
         );
+        let compact = self.save_format == SaveFormat::Compact;
         let content = if fmt == ConfigFormat::DeepSeekHarness && is_current {
             // With no structured modification, keep the original YAML; with changes, use the DSH renderer.
             match util::read_config_content(path) {
@@ -257,10 +258,10 @@ impl App {
                 {
                     original
                 }
-                _ => backend.render_at(&root, self.save_format == SaveFormat::Compact, path)?,
+                _ => backend.render_at(&root, compact, path)?,
             }
         } else {
-            backend.render_at(&root, self.save_format == SaveFormat::Compact, path)?
+            backend.render_at(&root, compact, path)?
         };
         let dsh_sidecar_backup = if fmt == ConfigFormat::DeepSeekHarness {
             let sidecar = credentials::sidecar_path(path);
@@ -345,6 +346,15 @@ impl App {
                 }
             }
             return Err(error);
+        }
+        // Sibling live configs (DSH keeps one patch document per profile) get the **same providers the primary
+        // write just produced**, rendered into their own documents through `render_at`. Mirroring the raw UI
+        // list instead would drop whatever the primary's merge kept, and writing before the primary would leave
+        // the two disagreeing whenever the primary fails.
+        for mirror in backend.mirror_targets(path) {
+            let mirror_content = backend.render_at(&root, compact, &mirror)?;
+            self.auto_snapshot_before_save(&mirror);
+            backends::write_config(&mirror, &mirror_content)?;
         }
         // After a successful current-file save, backfill opencode's extras carrier (self.root) to stay consistent with disk
         if is_current && fmt.is_opencode_family() {
