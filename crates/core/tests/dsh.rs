@@ -447,3 +447,273 @@ fn missing_sidecar_still_loads_as_skeleton() {
     assert_eq!(root["version"], 1);
     assert!(root["refs"].is_object());
 }
+
+// ---- The DSH ≥ 0.2 form: provider config lives in the profile patch document ----
+
+/// A realistic desktop profile patch: header comment, other entries, providers in the middle.
+fn patch_document() -> String {
+    r#"# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-08-13.1
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      old:
+        apiKeyEnv: OLD_KEY
+        api: openai-completions
+        baseURL: https://old.example/v1
+        models:
+          - id: old-model
+            name: old-model
+            contextWindow: 128000
+- id: ui-theme
+  name: "@deepseek-ai/dsh-client-ui-theme"
+  config:
+    mode: dark
+"#
+    .to_string()
+}
+
+fn provider(key: &str, model: &str, base_url: &str) -> ProviderRow {
+    let mut p = ProviderRow::new();
+    p.key = key.to_string();
+    p.base_url = base_url.to_string();
+    p.api_key_env = format!("{}_KEY", key.to_uppercase());
+    p.models = vec![{
+        let mut m = model_harbor_core::model::ModelRow::new();
+        m.id = model.to_string();
+        m.name = model.to_string();
+        m.context = "128000".to_string();
+        m
+    }];
+    p
+}
+
+/// Saving replaces the provider block in place and leaves every other byte of the document alone.
+#[test]
+fn patch_save_splices_providers_and_keeps_the_rest_of_the_document() {
+    let path = temp_path("cordis.patch.yml");
+    std::fs::write(&path, patch_document()).unwrap();
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let providers = vec![provider("fresh", "fresh-model", "https://fresh.example/v1")];
+    let root = b.serialize_root(&[], &providers, &json!({}), None);
+    let text = b.render_at(&root, false, path.to_str().unwrap()).unwrap();
+    // The replaced block carries the UI's provider.
+    let parsed = parse_yaml_content(&text).unwrap();
+    let provs = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some("llm-pi-ai"))
+        .unwrap()
+        .get("config")
+        .unwrap()
+        .get("providers")
+        .unwrap()
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        provs.keys().collect::<Vec<_>>(),
+        vec!["fresh"],
+        "保存后应当只剩 UI 里的 provider（删除要生效）"
+    );
+    // Everything else survives verbatim — the comment header and the sibling entries.
+    assert!(text.starts_with("# Your patch layer"), "文件头注释被丢了");
+    assert!(
+        text.contains("welcomeNoticeVersion: 2026-08-13.1"),
+        "其它补丁条目被丢了：{text}"
+    );
+    assert!(
+        text.contains("id: ui-theme") && text.contains("mode: dark"),
+        "尾部补丁条目被丢了：{text}"
+    );
+    // Entry order preserved: llm-pi-ai stays between the two ui entries.
+    let ids: Vec<&str> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(ids, vec!["ui-settings-general", "llm-pi-ai", "ui-theme"]);
+}
+
+/// The legacy settings.yaml form still parses (a path pointed at one keeps working).
+#[test]
+fn legacy_settings_form_still_parses() {
+    let settings = temp_path("settings.yaml");
+    std::fs::write(
+        &settings,
+        r#"
+llm-pi-ai:
+  providers:
+    demo:
+      apiKeyEnv: DEMO_KEY
+      api: openai-completions
+      baseURL: https://demo.example/v1
+      models:
+        - id: demo-model
+          name: demo-model
+          contextWindow: 128000
+"#,
+    )
+    .unwrap();
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let loaded = b
+        .parse_at(
+            &std::fs::read_to_string(&settings).unwrap(),
+            settings.to_str().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(loaded.providers.len(), 1, "旧式 settings.yaml 应当仍能读取");
+    assert_eq!(loaded.providers[0].key, "demo");
+}
+
+/// A missing patch document is created with DSH's own header and the llm-pi-ai entry.
+#[test]
+fn patch_save_creates_a_document_when_none_exists() {
+    let path = temp_path("cordis.patch.yml");
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let providers = vec![provider("first", "first-model", "https://first.example/v1")];
+    let root = b.serialize_root(&[], &providers, &json!([]), None);
+    let text = b.render_at(&root, false, path.to_str().unwrap()).unwrap();
+    assert!(
+        text.starts_with("# Your patch layer"),
+        "新建文件应带 DSH 的文件头"
+    );
+    let parsed = parse_yaml_content(&text).unwrap();
+    let ids: Vec<&str> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(ids, vec!["llm-pi-ai"], "新建文件应只含 llm-pi-ai 条目");
+    assert!(
+        text.contains("name: \"@deepseek-ai/dsh-llm-pi-ai\"")
+            || text.contains("@deepseek-ai/dsh-llm-pi-ai")
+    );
+}
+
+/// The provider block's indentation matches the document's (6 spaces under `    providers:`).
+#[test]
+fn patch_provider_block_is_indented_for_the_document() {
+    let path = temp_path("cordis.patch.yml");
+    std::fs::write(&path, patch_document()).unwrap();
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let providers = vec![provider("fresh", "fresh-model", "https://fresh.example/v1")];
+    let root = b.serialize_root(&[], &providers, &json!({}), None);
+    let text = b.render_at(&root, false, path.to_str().unwrap()).unwrap();
+    assert!(
+        text.contains("\n      fresh:\n"),
+        "provider 键应在 6 空格缩进：{text}"
+    );
+    assert!(
+        text.contains("\n          - id: \"fresh-model\"\n")
+            || text.contains("\n          - id: fresh-model\n"),
+        "model 条目应在 10 空格缩进：{text}"
+    );
+}
+
+/// An emptied provider list writes the flow form, which parses as an empty map rather than null.
+#[test]
+fn patch_save_with_no_providers_writes_an_empty_map() {
+    let path = temp_path("cordis.patch.yml");
+    std::fs::write(&path, patch_document()).unwrap();
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let root = b.serialize_root(&[], &[], &json!({}), None);
+    let text = b.render_at(&root, false, path.to_str().unwrap()).unwrap();
+    let parsed = parse_yaml_content(&text).unwrap();
+    let provs = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some("llm-pi-ai"))
+        .unwrap()
+        .get("config")
+        .unwrap()
+        .get("providers")
+        .unwrap();
+    assert!(
+        provs.as_object().is_some_and(|o| o.is_empty()),
+        "清空后应是空映射而不是 null：{text}"
+    );
+}
+
+/// CRLF documents keep their line endings (a mixed-ending file would confuse the next splice).
+#[test]
+fn patch_save_preserves_crlf() {
+    let path = temp_path("cordis.patch.yml");
+    let crlf = patch_document().replace('\n', "\r\n");
+    std::fs::write(&path, &crlf).unwrap();
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let providers = vec![provider("fresh", "fresh-model", "https://fresh.example/v1")];
+    let root = b.serialize_root(&[], &providers, &json!({}), None);
+    let text = b.render_at(&root, false, path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        text.matches("\r\n").count(),
+        text.matches('\n').count(),
+        "CRLF 文件写回后不该出现混行尾"
+    );
+    assert!(text.contains("fresh"), "内容应当写入");
+}
+
+/// Saving mirrors the providers into the sibling profile's document.
+///
+/// The desktop app reads `profiles/desktop/` and the CLI / SDK reads `profiles/sdk/`. Writing only the primary
+/// would leave the other entry point on the old provider list — the reported symptom.
+#[test]
+fn save_mirrors_providers_into_the_sibling_profile() {
+    // A fake ~/.dsh layout so both profiles' documents exist side by side.
+    let root = temp_path("dsh_root");
+    let home = root.parent().unwrap().to_path_buf();
+    for profile in ["desktop", "sdk"] {
+        let dir = home.join(".dsh").join("profiles").join(profile);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cordis.patch.yml"), patch_document()).unwrap();
+    }
+    let primary = home
+        .join(".dsh")
+        .join("profiles")
+        .join("desktop")
+        .join("cordis.patch.yml");
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let providers = vec![provider("fresh", "fresh-model", "https://fresh.example/v1")];
+    // The sidecar mirror runs from save_sidecars; the primary document is written by the caller.
+    b.save_sidecars(primary.to_str().unwrap(), &providers)
+        .unwrap();
+    let sdk = home
+        .join(".dsh")
+        .join("profiles")
+        .join("sdk")
+        .join("cordis.patch.yml");
+    let sdk_text = std::fs::read_to_string(&sdk).unwrap();
+    let parsed = parse_yaml_content(&sdk_text).unwrap();
+    let provs = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some("llm-pi-ai"))
+        .unwrap()
+        .get("config")
+        .unwrap()
+        .get("providers")
+        .unwrap()
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        provs.keys().collect::<Vec<_>>(),
+        vec!["fresh"],
+        "sdk 档应当被同步成同一份 provider：{sdk_text}"
+    );
+    // The sibling's own header and other entries survive.
+    assert!(
+        sdk_text.starts_with("# Your patch layer"),
+        "sdk 档文件头被丢了"
+    );
+    assert!(sdk_text.contains("mode: dark"), "sdk 档其它条目被丢了");
+}

@@ -362,12 +362,15 @@ fn jsonc_candidate_only_rewrites_the_file_name() {
 }
 
 /// Non-opencode-family backends have a single candidate (default implementation).
+///
+/// DSH is the deliberate exception: provider config is **per profile** (the desktop app reads
+/// `profiles/desktop/`, the CLI / SDK reads `profiles/sdk/`), so it offers the sibling as a fallback — a machine
+/// that only ran the CLI still loads its providers instead of showing an empty list.
 #[test]
 fn other_backends_have_a_single_candidate() {
     for fmt in [
         ConfigFormat::Pi,
         ConfigFormat::OhMyPi,
-        ConfigFormat::DeepSeekHarness,
         ConfigFormat::ZCode,
         ConfigFormat::WorkBuddy,
     ] {
@@ -379,6 +382,20 @@ fn other_backends_have_a_single_candidate() {
             "{fmt:?} 不应有额外候选"
         );
     }
+    // DSH: the primary first, the sibling profile's document second.
+    let b = backends::backend(ConfigFormat::DeepSeekHarness);
+    let p = b.default_local_path();
+    let candidates = b.path_candidates(&p);
+    assert_eq!(
+        candidates.len(),
+        2,
+        "DSH 应当同时看两个档位：{candidates:?}"
+    );
+    assert_eq!(candidates[0], p, "主档必须是第一候选");
+    assert!(
+        candidates[1].replace('\\', "/").contains("/profiles/sdk/"),
+        "第二候选应是 sdk 档：{candidates:?}"
+    );
 }
 
 /// Creating / merging into a missing target must still write `$schema`, and place it first.

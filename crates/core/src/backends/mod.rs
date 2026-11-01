@@ -121,6 +121,16 @@ pub trait Backend: Sync {
             crate::serialize::pretty_json(root)
         })
     }
+
+    /// root → file content for a specific target path.
+    ///
+    /// Backends whose target file belongs to another program override this to **edit that file in place**:
+    /// a file carrying the other program's comments and handwritten structure can't be re-emitted from a parsed
+    /// value without losing them. The default is a plain render, so most backends ignore the path entirely.
+    fn render_at(&self, root: &Value, compact: bool, path: &str) -> Result<String, String> {
+        let _ = path;
+        self.render(root, compact)
+    }
 }
 
 /// All backends. Order is semantics: entry 0 is the detection fallback; the rest are ordered

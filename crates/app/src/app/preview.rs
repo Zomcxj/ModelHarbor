@@ -466,7 +466,7 @@ impl App {
             self.extras_for(fmt),
             target_root.as_ref(),
         );
-        let content = backend.render(&root, self.save_format == SaveFormat::Compact)?;
+        let content = backend.render_at(&root, self.save_format == SaveFormat::Compact, &path)?;
         Ok((path, content))
     }
 

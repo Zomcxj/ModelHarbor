@@ -1,6 +1,12 @@
-//! The DeepSeek Harness (DSH) backend: `~/.dsh/settings.yaml`.
+//! The DeepSeek Harness (DSH) backend: `~/.dsh/profiles/<profile>/cordis.patch.yml`.
 //!
-//! Only `llm-pi-ai.providers` is managed; other top-level config is preserved verbatim over raw.
+//! Only the `llm-pi-ai` entry's `config.providers` is managed; everything else in the document is preserved.
+//!
+//! DSH ≥ 0.2 keeps provider config inside its **profile patch** documents (`profiles/desktop/`,
+//! `profiles/sdk/`), as the `llm-pi-ai` entry of a top-level array of loader patches. The older
+//! `~/.dsh/settings.yaml` is no longer read as live config: DSH imports it once, re-serializes it to
+//! `settings.yaml.imported` and moves the original aside. That form is still parsed here so a path pointed at
+//! one keeps working, but new saves target (and create) the patch document.
 
 use super::{Backend, BackendLoad};
 use crate::convert;
@@ -14,15 +20,81 @@ use serde_json::{Map, Value};
 pub struct DeepSeekHarnessBackend;
 pub static BACKEND: DeepSeekHarnessBackend = DeepSeekHarnessBackend;
 
+/// The profile whose patch document is the interactive (desktop app) config: the save target, and the path the UI shows.
+const PATCH_PROFILE: &str = "desktop";
+
+/// The profile DSH keeps in step with the desktop one; a save mirrors the providers into it.
+///
+/// Provider config is **per profile**: the desktop app reads `profiles/desktop/` while the CLI / SDK reads
+/// `profiles/sdk/`, and the two carry identical provider sets. Writing only one would leave the other entry
+/// point on the old list — which is the symptom that led here.
+const PATCH_MIRROR_PROFILE: &str = "sdk";
+
+/// The patch entry carrying provider config: `id: llm-pi-ai` → `config.providers`.
+const PATCH_ENTRY_ID: &str = "llm-pi-ai";
+const PATCH_ENTRY_NAME: &str = "@deepseek-ai/dsh-llm-pi-ai";
+
+/// The providers block's indentation in the patch document (`- id` / `  name` / `  config` / `    providers`).
+const PATCH_PROVIDERS_INDENT: usize = 6;
+
+/// A fresh patch document's header, copied from DSH's own template so a file created here looks like DSH's.
+const PATCH_HEADER: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n# a top-level YAML array of loader patch entries (id-targeted config\n# overrides, disables, and insert lists; `!!js` expressions allowed).\n";
+
 fn default_local_path() -> String {
-    format!("{}\\.dsh\\settings.yaml", home_dir_string())
+    format!("{}\\cordis.patch.yml", profile_dir(PATCH_PROFILE))
+}
+
+/// One DSH profile directory (`~/.dsh/profiles/<profile>`).
+fn profile_dir(profile: &str) -> String {
+    format!("{}\\.dsh\\profiles\\{}", home_dir_string(), profile)
+}
+
+/// Whether a path names a profile patch document (the DSH ≥ 0.2 config form).
+fn is_patch_path(path: &str) -> bool {
+    path.replace('\\', "/").ends_with("/cordis.patch.yml")
+}
+
+/// The sibling profile's patch document, or None when `path` isn't a profile patch path.
+fn mirror_path(path: &str) -> Option<String> {
+    for sep in ["\\", "/"] {
+        for (from, to) in [
+            (PATCH_PROFILE, PATCH_MIRROR_PROFILE),
+            (PATCH_MIRROR_PROFILE, PATCH_PROFILE),
+        ] {
+            let needle = format!("{sep}profiles{sep}{from}{sep}");
+            if let Some(idx) = path.find(&needle) {
+                let mut out = String::with_capacity(path.len() + 8);
+                out.push_str(&path[..idx]);
+                out.push_str(&format!("{sep}profiles{sep}{to}{sep}"));
+                out.push_str(&path[idx + needle.len()..]);
+                return Some(out);
+            }
+        }
+    }
+    None
+}
+
+/// The `llm-pi-ai` entry of a patch document.
+fn patch_entry(root: &Value) -> Option<&Value> {
+    root.as_array()?
+        .iter()
+        .find(|item| item.get("id").and_then(Value::as_str) == Some(PATCH_ENTRY_ID))
+}
+
+/// The provider map, from either document form: the profile patch array, or a legacy `settings.yaml` root.
+fn providers_of(root: &Value) -> Option<&Map<String, Value>> {
+    if root.is_array() {
+        patch_entry(root)?
+            .get("config")?
+            .get("providers")?
+            .as_object()
+    } else {
+        root.get("llm-pi-ai")?.get("providers")?.as_object()
+    }
 }
 
 fn is_dsh_root(v: &Value) -> bool {
-    v.get("llm-pi-ai")
-        .and_then(|x| x.get("providers"))
-        .and_then(Value::as_object)
-        .is_some()
+    providers_of(v).is_some()
 }
 
 fn model_from_dsh(v: &Value) -> ModelRow {
@@ -535,6 +607,188 @@ fn provider_to_dsh(p: &ProviderRow) -> Value {
     ))
 }
 
+/// The provider map for a document: UI rows → DSH provider values.
+///
+/// `existing` is the merge base for a cross-format (upsert) save; a plain save starts empty so deletions made
+/// in the UI take effect.
+fn provider_values(
+    providers: &[ProviderRow],
+    cross_format: bool,
+    existing: Map<String, Value>,
+) -> Map<String, Value> {
+    let mut values = if cross_format { existing } else { Map::new() };
+    for p in providers.iter().filter(|p| !p.key.is_empty()) {
+        let value = provider_to_dsh(p);
+        let entry = match (cross_format, values.get(&p.key)) {
+            (true, Some(target)) => convert::merge_conservative(target, &value),
+            _ => value,
+        };
+        values.insert(p.key.clone(), entry);
+    }
+    values
+}
+
+/// The patch document with the UI's providers written into the `llm-pi-ai` entry.
+///
+/// Every other entry — and the entry order — stays as it was: DSH's profile patch also carries ui / theme /
+/// permission entries, and rebuilding the document wholesale would drop or move them. A document without the
+/// entry gets one appended.
+fn patch_root(base: &Value, providers: &[ProviderRow], cross_format: bool) -> Value {
+    let mut items = base.as_array().cloned().unwrap_or_default();
+    let idx = items
+        .iter()
+        .position(|item| item.get("id").and_then(Value::as_str) == Some(PATCH_ENTRY_ID));
+    let existing = idx
+        .and_then(|i| items[i].get("config"))
+        .and_then(|config| config.get("providers"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let values = provider_values(providers, cross_format, existing);
+    let mut entry = match idx {
+        Some(i) => items[i].clone(),
+        None => {
+            let mut entry = Map::new();
+            entry.insert("id".into(), Value::String(PATCH_ENTRY_ID.into()));
+            entry.insert("name".into(), Value::String(PATCH_ENTRY_NAME.into()));
+            Value::Object(entry)
+        }
+    };
+    // Only `config.providers` is ours; any other key under `config` (and in the entry) stays.
+    let mut config = entry
+        .get("config")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    config.insert("providers".into(), Value::Object(values));
+    if let Some(obj) = entry.as_object_mut() {
+        obj.insert("config".into(), Value::Object(config));
+    }
+    match idx {
+        Some(i) => items[i] = entry,
+        None => items.push(entry),
+    }
+    Value::Array(items)
+}
+
+/// The providers map rendered as YAML at the patch document's indentation (`render_dsh_value` nests identically).
+fn render_provider_block(providers: &Map<String, Value>) -> String {
+    let mut out = String::new();
+    render_dsh_value(
+        &Value::Object(providers.clone()),
+        PATCH_PROVIDERS_INDENT,
+        &mut out,
+    );
+    out
+}
+
+/// A line's leading-space width (these documents use spaces, never tabs).
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+/// Whether a line opens a new top-level patch entry (entries start at column 0).
+fn starts_entry(line: &str) -> bool {
+    line.starts_with("- ")
+}
+
+/// Whether a line is the `- id: <id>` header of a patch entry.
+///
+/// Tolerates the quoted form (`- id: "llm-pi-ai"`): this document's writer (and DSH's own editor) quote the id,
+/// and missing that match would send the save down the "create a fresh document" path, silently dropping the
+/// header comment and every other entry.
+fn is_entry_id_line(line: &str, id: &str) -> bool {
+    line.strip_prefix("- id:").is_some_and(|rest| {
+        let value = rest.trim();
+        value == id || value == format!("\"{id}\"") || value == format!("'{id}'")
+    })
+}
+
+/// The target file's line ending, read from its **raw bytes**.
+///
+/// `read_config_content` hands back normalized text, so the document's own ending can't be inferred from it;
+/// writing LF into a CRLF file leaves it with mixed endings, which the next splice then mis-parses.
+fn file_line_ending(path: &str) -> &'static str {
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.windows(2).any(|pair| pair == b"\r\n") => "\r\n",
+        _ => "\n",
+    }
+}
+
+/// Replace the children of `providers:` inside the `llm-pi-ai` entry, in place.
+///
+/// Text surgery rather than a re-render: the document belongs to DSH and carries a header comment plus (in the
+/// desktop profile) nine other patch entries the user may have hand-edited. Parsing it to a value and emitting
+/// it again would drop the comments and reformat all of them. Returns None when the entry or its `providers:`
+/// key is missing — the caller then falls back to a fresh document.
+fn splice_providers(text: &str, providers_block: &str, eol: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let entry_start = lines
+        .iter()
+        .position(|line| is_entry_id_line(line, PATCH_ENTRY_ID))?;
+    // The entry runs to the next entry that opens (or to the end of the document).
+    let entry_end = lines[entry_start + 1..]
+        .iter()
+        .position(|line| starts_entry(line))
+        .map_or(lines.len(), |i| entry_start + 1 + i);
+    let key_line = (entry_start..entry_end).find(|&i| {
+        // `split_inclusive` keeps each line's terminator: compare against the trimmed content, not the raw line.
+        let trimmed = lines[i].trim();
+        trimmed == "providers:" || trimmed.starts_with("providers: ")
+    })?;
+    let key_indent = indent_of(lines[key_line]);
+    // The block's children end at the next line at or above the key's own indentation.
+    let children_end = (key_line + 1..entry_end)
+        .find(|&i| !lines[i].trim().is_empty() && indent_of(lines[i]) <= key_indent)
+        .unwrap_or(entry_end);
+    let pad = " ".repeat(key_indent);
+    let mut out = String::with_capacity(text.len() + providers_block.len());
+    for line in &lines[..key_line] {
+        out.push_str(line);
+    }
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push_str(eol);
+    }
+    if providers_block.is_empty() {
+        // An empty map needs the flow form: a bare `providers:` with no children parses as null.
+        out.push_str(&format!("{pad}providers: {{}}{eol}"));
+    } else {
+        // The key line is rewritten rather than copied: the original may carry an inline `{}`.
+        out.push_str(&format!("{pad}providers:{eol}"));
+        if eol == "\n" {
+            out.push_str(providers_block);
+        } else {
+            out.push_str(&providers_block.replace('\n', eol));
+        }
+    }
+    for line in &lines[children_end..] {
+        out.push_str(line);
+    }
+    Some(out)
+}
+
+/// A legacy `settings.yaml` root converted to the patch-document form, keeping `llm-pi-ai`'s other fields.
+///
+/// Only `providers` is UI-managed; any sibling key under `llm-pi-ai` (retry defaults and so on) travels with
+/// the entry so a conversion doesn't silently drop configuration.
+fn legacy_to_patch(root: &Value) -> Result<Value, String> {
+    let llm = root
+        .get("llm-pi-ai")
+        .ok_or_else(|| "旧式 settings.yaml 缺少 llm-pi-ai 节点".to_string())?;
+    let mut config = llm.as_object().cloned().unwrap_or_default();
+    let providers = config.remove("providers").unwrap_or_else(json_object);
+    let mut entry = Map::new();
+    entry.insert("id".into(), Value::String(PATCH_ENTRY_ID.into()));
+    entry.insert("name".into(), Value::String(PATCH_ENTRY_NAME.into()));
+    config.insert("providers".into(), providers);
+    entry.insert("config".into(), Value::Object(config));
+    Ok(Value::Array(vec![Value::Object(entry)]))
+}
+
+fn json_object() -> Value {
+    Value::Object(Map::new())
+}
+
 impl Backend for DeepSeekHarnessBackend {
     fn id(&self) -> ConfigFormat {
         ConfigFormat::DeepSeekHarness
@@ -542,8 +796,19 @@ impl Backend for DeepSeekHarnessBackend {
     fn default_local_path(&self) -> String {
         default_local_path()
     }
+    /// Read from either profile's patch document, desktop first: a machine with only the CLI / SDK profile
+    /// still loads its providers.
+    fn path_candidates(&self, path: &str) -> Vec<String> {
+        match mirror_path(path) {
+            Some(sibling) => vec![path.to_string(), sibling],
+            None => vec![path.to_string()],
+        }
+    }
     fn default_wsl_path(&self) -> Option<String> {
-        Some(format!("{}/.dsh/settings.yaml", wsl_home()?))
+        Some(format!(
+            "{}/.dsh/profiles/{PATCH_PROFILE}/cordis.patch.yml",
+            wsl_home()?
+        ))
     }
 
     fn detect(&self, content: &str, path: &str) -> bool {
@@ -566,10 +831,7 @@ impl Backend for DeepSeekHarnessBackend {
             // Display only: when the sidecar is unreadable, the key shows empty.
             credentials::load_root(path).unwrap_or(Value::Null)
         };
-        let providers = root
-            .get("llm-pi-ai")
-            .and_then(|x| x.get("providers"))
-            .and_then(Value::as_object)
+        let providers = providers_of(&root)
             .map(|o| {
                 o.iter()
                     .map(|(k, v)| provider_from_dsh(k, v, &creds))
@@ -590,30 +852,21 @@ impl Backend for DeepSeekHarnessBackend {
         extras: &Value,
         target_root: Option<&Value>,
     ) -> Value {
-        let mut root = target_root
-            .cloned()
-            .unwrap_or_else(|| extras.clone())
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        let base = target_root.cloned().unwrap_or_else(|| extras.clone());
         // Current-file saves replace wholesale per UI state (deletions take effect); cross-format targets merge
         // conservatively: same-named providers merge by field, target-only providers stay.
         let cross_format = target_root.is_some();
+        if base.is_array() {
+            return patch_root(&base, providers, cross_format);
+        }
+        let mut root = base.as_object().cloned().unwrap_or_default();
         let existing = root
             .get("llm-pi-ai")
             .and_then(|v| v.get("providers"))
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let mut provider_values = if cross_format { existing } else { Map::new() };
-        for p in providers.iter().filter(|p| !p.key.is_empty()) {
-            let value = provider_to_dsh(p);
-            let entry = match (cross_format, provider_values.get(&p.key)) {
-                (true, Some(target)) => convert::merge_conservative(target, &value),
-                _ => value,
-            };
-            provider_values.insert(p.key.clone(), entry);
-        }
+        let provider_values = provider_values(providers, cross_format, existing);
         // No remove + re-insert of llm-pi-ai: a re-inserted key would move to the root's tail.
         if let Some(llm) = root.get_mut("llm-pi-ai").and_then(Value::as_object_mut) {
             llm.insert("providers".into(), Value::Object(provider_values));
@@ -626,10 +879,40 @@ impl Backend for DeepSeekHarnessBackend {
     }
 
     fn load_target_root(&self, path: &str) -> Result<Value, String> {
-        super::load_target_root_with(path, parse_yaml_content, || Value::Object(Map::new()))
+        // A patch document is a top-level array; a missing one starts empty in that shape, so a cross-format
+        // save appends a fresh `llm-pi-ai` entry instead of writing a legacy settings.yaml object.
+        let empty = if is_patch_path(path) {
+            Value::Array(Vec::new())
+        } else {
+            Value::Object(Map::new())
+        };
+        super::load_target_root_with(path, parse_yaml_content, || empty)
     }
+    /// The credentials sidecar, plus the sibling profile's patch document.
+    ///
+    /// The sibling is written here rather than by the caller because only the backend knows it is a sibling:
+    /// it needs the same in-place splice against **its own** text, whose header and other entries differ from
+    /// the primary's. A failure cancels the save, so the two profiles can't silently diverge.
     fn save_sidecars(&self, path: &str, providers: &[ProviderRow]) -> Result<(), String> {
-        credentials::save(path, providers)
+        credentials::save(path, providers)?;
+        let Some(sibling) = mirror_path(path) else {
+            return Ok(());
+        };
+        // Only mirror into a profile that already exists: creating the other profile's document could make DSH
+        // see a profile it never set up.
+        if !crate::util::config_exists(&sibling) {
+            return Ok(());
+        }
+        let existing = crate::util::read_config_content(&sibling)?;
+        let block = render_provider_block(&provider_values(providers, false, Map::new()));
+        let content = splice_providers(&existing, &block, file_line_ending(&sibling))
+            .ok_or_else(|| format!("{sibling} 中没有 {PATCH_ENTRY_ID} 条目，未同步"))?;
+        // The app snapshots its own save target; this one is ours to keep.
+        let _ = crate::profiles::snapshot(
+            std::path::Path::new(&sibling),
+            crate::profiles::SnapshotTag::Auto,
+        );
+        crate::util::atomic_write_text(std::path::Path::new(&sibling), &content)
     }
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
         Some((
@@ -640,5 +923,37 @@ impl Backend for DeepSeekHarnessBackend {
     }
     fn render(&self, root: &Value, _compact: bool) -> Result<String, String> {
         render_dsh_yaml(root)
+    }
+
+    /// Render into the target document, editing an existing patch document in place.
+    fn render_at(&self, root: &Value, compact: bool, path: &str) -> Result<String, String> {
+        // A legacy settings.yaml root (the UI loaded that form, or nothing was loaded yet) still saves into a
+        // patch document when the target is one: the **path** decides the document form, not the in-memory
+        // shape. Without this a machine that first opened an old settings.yaml would keep rewriting that form
+        // at a patch path, which DSH never reads.
+        let converted;
+        let root = if !root.is_array() && is_patch_path(path) {
+            converted = legacy_to_patch(root)?;
+            &converted
+        } else {
+            root
+        };
+        if !root.is_array() {
+            return self.render(root, compact);
+        }
+        let providers = providers_of(root)
+            .ok_or_else(|| format!("缺少 {PATCH_ENTRY_ID} 的 config.providers 节点"))?;
+        let block = render_provider_block(providers);
+        // The patch document belongs to DSH: splice the providers block into it so the header comment and the
+        // other patch entries (ui / theme / permission …) come through exactly as they are.
+        if let Some(content) = crate::util::read_config_content(path)
+            .ok()
+            .filter(|existing| !existing.trim().is_empty())
+            .and_then(|existing| splice_providers(&existing, &block, file_line_ending(path)))
+        {
+            return Ok(content);
+        }
+        // No document yet, or the entry is missing from it: write a fresh one.
+        Ok(format!("{PATCH_HEADER}{}", render_dsh_yaml(root)?))
     }
 }

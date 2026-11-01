@@ -257,10 +257,10 @@ impl App {
                 {
                     original
                 }
-                _ => backend.render(&root, self.save_format == SaveFormat::Compact)?,
+                _ => backend.render_at(&root, self.save_format == SaveFormat::Compact, path)?,
             }
         } else {
-            backend.render(&root, self.save_format == SaveFormat::Compact)?
+            backend.render_at(&root, self.save_format == SaveFormat::Compact, path)?
         };
         let dsh_sidecar_backup = if fmt == ConfigFormat::DeepSeekHarness {
             let sidecar = credentials::sidecar_path(path);
