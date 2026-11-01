@@ -1,5 +1,6 @@
 use crate::app::save::PageTarget;
 use crate::app::App;
+use crate::format::ConfigFormat;
 use eframe::egui;
 
 impl App {
@@ -81,6 +82,37 @@ impl App {
             ui.add(
                 egui::Label::new(egui::RichText::new(format!("写入: {path}")).weak()).truncate(),
             );
+            // DSH keeps provider config in one patch document **per profile** (desktop / sdk), so "which file did
+            // this page actually read, and how many providers came out of it" is not something the write path
+            // alone answers — the two can differ while a save still looks like it worked.
+            if fmt == ConfigFormat::DeepSeekHarness {
+                let source = self
+                    .loaded_path
+                    .rsplit(['\\', '/'])
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let source = if source.is_empty() {
+                    "未加载".to_string()
+                } else {
+                    source
+                };
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!(
+                            "已读: {source} · {} 个 provider / {} 个模型",
+                            self.providers.len(),
+                            self.providers.iter().map(|p| p.models.len()).sum::<usize>(),
+                        ))
+                        .weak(),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(format!("实际读取的文件: {}", self.loaded_path));
+            }
             // Blocks the format doesn't support get an early note.
             if !fmt.is_opencode_family() && !self.agents.is_empty() {
                 ui.label(
