@@ -2378,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "model_harbor_app"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "eframe",
  "egui_extras",
@@ -2398,7 +2398,7 @@ dependencies = [
 
 [[package]]
 name = "model_harbor_core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "rusqlite",
  "serde_json",
