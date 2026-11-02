@@ -3,7 +3,9 @@
 //! Only the `llm-pi-ai` entry's `config.providers` is managed; everything else in the document is preserved.
 //!
 //! DSH ≥ 0.2 keeps provider config inside its **profile patch** documents (`profiles/desktop/`,
-//! `profiles/sdk/`), as the `llm-pi-ai` entry of a top-level array of loader patches. The older
+//! `profiles/sdk/`, `profiles/web/`), as the `llm-pi-ai` entry of a top-level array of loader patches. The older
+//! Provider secrets live in the harness-wide `~/.dsh/.credentials.yaml` (never inside a profile directory).
+//!
 //! `~/.dsh/settings.yaml` is no longer read as live config: DSH imports it once, re-serializes it to
 //! `settings.yaml.imported` and moves the original aside. That form is still parsed here so a path pointed at
 //! one keeps working, but new saves target (and create) the patch document.
@@ -20,15 +22,17 @@ use serde_json::{Map, Value};
 pub struct DeepSeekHarnessBackend;
 pub static BACKEND: DeepSeekHarnessBackend = DeepSeekHarnessBackend;
 
-/// The profile whose patch document is the interactive (desktop app) config: the save target, and the path the UI shows.
-const PATCH_PROFILE: &str = "desktop";
-
-/// The profile DSH keeps in step with the desktop one; a save mirrors the providers into it.
+/// The profile names a DSH install can carry, in priority order.
 ///
-/// Provider config is **per profile**: the desktop app reads `profiles/desktop/` while the CLI / SDK reads
-/// `profiles/sdk/`, and the two carry identical provider sets. Writing only one would leave the other entry
-/// point on the old list — which is the symptom that led here.
-const PATCH_MIRROR_PROFILE: &str = "sdk";
+/// DSH keeps one profile per entry point — the desktop app (`desktop`), the CLI / SDK (`sdk`) and the web app
+/// (`web`) — and which of them exist depends on what the machine installed: an SDK-only box has no `desktop`
+/// document, its providers live in `profiles/sdk/`. The page therefore targets **the first candidate present
+/// on disk** instead of a hard-coded name, and mirrors into the other present ones.
+const PROFILE_CANDIDATES: [&str; 3] = ["desktop", "sdk", "web"];
+
+/// The profile used when none of the candidates exists yet, so a fresh machine creates the desktop document —
+/// the one DSH's own desktop app would create.
+const PROFILE_FALLBACK: &str = "desktop";
 
 /// The patch entry carrying provider config: `id: llm-pi-ai` → `config.providers`.
 const PATCH_ENTRY_ID: &str = "llm-pi-ai";
@@ -41,7 +45,7 @@ const PATCH_PROVIDERS_INDENT: usize = 6;
 const PATCH_HEADER: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n# a top-level YAML array of loader patch entries (id-targeted config\n# overrides, disables, and insert lists; `!!js` expressions allowed).\n";
 
 fn default_local_path() -> String {
-    format!("{}\\cordis.patch.yml", profile_dir(PATCH_PROFILE))
+    format!("{}\\cordis.patch.yml", profile_dir(default_profile()))
 }
 
 /// One DSH profile directory (`~/.dsh/profiles/<profile>`).
@@ -49,39 +53,87 @@ fn profile_dir(profile: &str) -> String {
     format!("{}\\.dsh\\profiles\\{}", home_dir_string(), profile)
 }
 
+/// The credentials store DSH actually reads: `<dsh home>/.credentials.yaml`.
+///
+/// The store is harness-wide, not per profile: `dsh-credentials-local` resolves it as
+/// `$DSH_HOME/.credentials.yaml` and never reads `<profile>/.credentials.yaml`. For a profile patch document
+/// (`~/.dsh/profiles/<name>/cordis.patch.yml`) that means walking up past `profiles/<name>`; a legacy
+/// `~/.dsh/settings.yaml` already sits in the dsh home, so its sibling is the same file.
+fn credentials_path(config_path: &str) -> String {
+    let normalized = config_path.replace('\\', "/");
+    if let Some(idx) = normalized.find("/profiles/") {
+        let sep = if config_path[idx..].starts_with('\\') {
+            '\\'
+        } else {
+            '/'
+        };
+        let mut out = String::with_capacity(idx + 20);
+        out.push_str(&config_path[..idx]);
+        out.push_str(&format!("{sep}.credentials.yaml"));
+        return out;
+    }
+    crate::util::sibling_path(config_path, ".credentials.yaml")
+}
+
+/// The candidate profiles present on this machine, in priority order.
+fn existing_profiles() -> Vec<&'static str> {
+    PROFILE_CANDIDATES
+        .into_iter()
+        .filter(|profile| std::path::Path::new(&profile_dir(profile)).exists())
+        .collect()
+}
+
+/// The profile the DSH page reads and writes by default: the first candidate present on disk.
+///
+/// Nothing present means no DSH profile exists at all (or the home directory can't be read): fall back to the
+/// desktop name so the page still shows a plausible target rather than an empty path.
+fn default_profile() -> &'static str {
+    existing_profiles()
+        .first()
+        .copied()
+        .unwrap_or(PROFILE_FALLBACK)
+}
+
 /// Whether a path names a profile patch document (the DSH ≥ 0.2 config form).
 fn is_patch_path(path: &str) -> bool {
     path.replace('\\', "/").ends_with("/cordis.patch.yml")
 }
 
-/// The sibling profile's patch document, or None when `path` isn't a profile patch path.
+/// The other profiles' patch documents for `path`: every candidate except the profile the path names.
+///
+/// Empty for a path that isn't a profile patch path — an arbitrary file has no profile set to keep in step.
 ///
 /// Matching runs on a slash-normalized copy — both separators are single ASCII bytes, so indices stay valid for
 /// the original — and the inserted segment reuses the original's separator style. A path that mixes styles (typed
-/// by hand, or joined from parts) therefore still finds its sibling, exactly like `is_patch_path` accepts it as a
-/// patch document: the two profiles must not drift apart because of a separator.
-fn mirror_path(path: &str) -> Option<String> {
+/// by hand, or joined from parts) therefore still finds its siblings, exactly like `is_patch_path` accepts it as a
+/// patch document: the profiles must not drift apart because of a separator.
+fn mirror_paths(path: &str) -> Vec<String> {
     let normalized = path.replace('\\', "/");
-    for (from, to) in [
-        (PATCH_PROFILE, PATCH_MIRROR_PROFILE),
-        (PATCH_MIRROR_PROFILE, PATCH_PROFILE),
-    ] {
-        let needle = format!("/profiles/{from}/");
-        let Some(idx) = normalized.find(&needle) else {
-            continue;
-        };
-        let sep = if path[idx..].starts_with('\\') {
-            '\\'
-        } else {
-            '/'
-        };
-        let mut out = String::with_capacity(path.len() + 8);
-        out.push_str(&path[..idx]);
-        out.push_str(&format!("{sep}profiles{sep}{to}{sep}"));
-        out.push_str(&path[idx + needle.len()..]);
-        return Some(out);
-    }
-    None
+    let Some((from, idx)) = PROFILE_CANDIDATES.into_iter().find_map(|profile| {
+        normalized
+            .find(&format!("/profiles/{profile}/"))
+            .map(|idx| (profile, idx))
+    }) else {
+        return Vec::new();
+    };
+    let needle = format!("/profiles/{from}/");
+    let sep = if path[idx..].starts_with('\\') {
+        '\\'
+    } else {
+        '/'
+    };
+    let tail = &path[idx + needle.len()..];
+    PROFILE_CANDIDATES
+        .into_iter()
+        .filter(|profile| *profile != from)
+        .map(|profile| {
+            let mut out = String::with_capacity(path.len() + 8);
+            out.push_str(&path[..idx]);
+            out.push_str(&format!("{sep}profiles{sep}{profile}{sep}"));
+            out.push_str(tail);
+            out
+        })
+        .collect()
 }
 
 /// The `llm-pi-ai` entry of a patch document.
@@ -812,18 +864,19 @@ impl Backend for DeepSeekHarnessBackend {
     fn default_local_path(&self) -> String {
         default_local_path()
     }
-    /// Read from either profile's patch document, desktop first: a machine with only the CLI / SDK profile
-    /// still loads its providers.
+    /// Read from the named document first, then from the other profiles': a machine whose providers sit in
+    /// another profile's document still loads them instead of showing an empty list, whichever profile the page
+    /// happens to point at.
     fn path_candidates(&self, path: &str) -> Vec<String> {
-        match mirror_path(path) {
-            Some(sibling) => vec![path.to_string(), sibling],
-            None => vec![path.to_string()],
-        }
+        let mut candidates = vec![path.to_string()];
+        candidates.extend(mirror_paths(path));
+        candidates
     }
     fn default_wsl_path(&self) -> Option<String> {
         Some(format!(
-            "{}/.dsh/profiles/{PATCH_PROFILE}/cordis.patch.yml",
-            wsl_home()?
+            "{}/.dsh/profiles/{}/cordis.patch.yml",
+            wsl_home()?,
+            default_profile()
         ))
     }
 
@@ -844,8 +897,8 @@ impl Backend for DeepSeekHarnessBackend {
         let creds = if path.is_empty() {
             Value::Object(Map::new())
         } else {
-            // Display only: when the sidecar is unreadable, the key shows empty.
-            credentials::load_root(path).unwrap_or(Value::Null)
+            // Display only: when the store is unreadable, the key shows empty.
+            credentials::load_root_at(&credentials_path(path)).unwrap_or(Value::Null)
         };
         let providers = providers_of(&root)
             .map(|o| {
@@ -905,31 +958,29 @@ impl Backend for DeepSeekHarnessBackend {
         };
         super::load_target_root_with(path, parse_yaml_content, || empty)
     }
-    /// The credentials sidecar. The sibling profile's document is **not** written here: it needs the same
-    /// providers the primary write produced, which this hook doesn't receive (see `mirror_targets`).
+    /// The credentials store DSH reads (`<dsh home>/.credentials.yaml`). The sibling profile's document is
+    /// **not** written here: it needs the same providers the primary write produced, which this hook doesn't
+    /// receive (see `mirror_targets`).
     fn save_sidecars(&self, path: &str, providers: &[ProviderRow]) -> Result<(), String> {
-        credentials::save(path, providers)
+        credentials::save_at(&credentials_path(path), providers)
     }
 
-    /// The sibling profile's document, when it exists **and can be spliced into**.
+    /// The other profiles' documents, each of which exists **and can be spliced into**.
     ///
-    /// Only an existing profile is mirrored: creating the other profile's document could show DSH a profile it
-    /// never set up. The document must already carry the `llm-pi-ai` entry, because a mirror is rendered into
+    /// Only existing profiles are mirrored: creating another profile's document could show DSH a profile it
+    /// never set up. A document must already carry the `llm-pi-ai` entry, because a mirror is rendered into
     /// the file's own text — a document without the entry would take `render_at`'s "write a fresh document"
     /// path and lose every other entry it had.
     fn mirror_targets(&self, path: &str) -> Vec<String> {
-        let Some(sibling) = mirror_path(path) else {
-            return Vec::new();
-        };
-        let spliceable = crate::util::read_config_content(&sibling)
-            .ok()
-            .and_then(|text| parse_yaml_content(&text).ok())
-            .is_some_and(|doc| providers_of(&doc).is_some());
-        if spliceable {
-            vec![sibling]
-        } else {
-            Vec::new()
-        }
+        mirror_paths(path)
+            .into_iter()
+            .filter(|sibling| {
+                crate::util::read_config_content(sibling)
+                    .ok()
+                    .and_then(|text| parse_yaml_content(&text).ok())
+                    .is_some_and(|doc| providers_of(&doc).is_some())
+            })
+            .collect()
     }
     fn icon_rgba(&self) -> Option<(&'static [u8], u32, u32)> {
         Some((

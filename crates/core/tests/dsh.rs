@@ -955,3 +955,52 @@ fn mirror_targets_handles_a_mixed_separator_path() {
         mirrors[0]
     );
 }
+
+/// DSH's credential store is harness-wide (`<dsh home>/.credentials.yaml`), never per profile.
+///
+/// `dsh-credentials-local` resolves it once for the whole harness, so a page that loaded
+/// `profiles/<name>/cordis.patch.yml` must still read keys from `<dsh home>/.credentials.yaml` — and a stray
+/// profile-local `.credentials.yaml` must be ignored, not preferred.
+#[test]
+fn profile_patch_reads_the_harness_wide_credential_store() {
+    let home = temp_path("home");
+    let profile = home.join(".dsh").join("profiles").join("sdk");
+    std::fs::create_dir_all(&profile).unwrap();
+    let patch = profile.join("cordis.patch.yml");
+    std::fs::write(
+        &patch,
+        r#"
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      demo:
+        apiKeyEnv: DEMO_API_KEY
+        api: openai-completions
+        baseURL: https://relay.example/v1
+        models:
+          - id: m1
+"#,
+    )
+    .unwrap();
+    // The real store sits in the dsh home.
+    std::fs::write(
+        home.join(".dsh").join(".credentials.yaml"),
+        "version: 1\nrefs:\n  DEMO_API_KEY: harness-secret\nrecords: {}\n",
+    )
+    .unwrap();
+    // A profile-local file must not win (DSH never reads it).
+    std::fs::write(
+        profile.join(".credentials.yaml"),
+        "version: 1\nrefs:\n  DEMO_API_KEY: profile-secret\nrecords: {}\n",
+    )
+    .unwrap();
+
+    let loaded = backends::load_backend(ConfigFormat::DeepSeekHarness, patch.to_str().unwrap())
+        .expect("解析应成功");
+    assert_eq!(loaded.providers.len(), 1);
+    assert_eq!(
+        loaded.providers[0].api_key_secret, "harness-secret",
+        "必须从 <dsh home>/.credentials.yaml 读密钥，不能读 profile 目录里的同名文件"
+    );
+}

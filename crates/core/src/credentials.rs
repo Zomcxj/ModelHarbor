@@ -13,13 +13,19 @@ pub fn sidecar_path(config_path: &str) -> String {
     crate::util::sibling_path(config_path, ".credentials.yaml")
 }
 
-/// Read the credentials file's complete root.
+/// Read the credentials file's complete root (the sidecar next to `config_path`).
 ///
 /// A missing file (creation scenario) returns the skeleton; an existing but unreadable / unparseable file,
 /// or a non-object root, returns `Err`.
 pub fn load_root(config_path: &str) -> Result<Value, String> {
-    let path = sidecar_path(config_path);
-    let content = read_config_content(&path).map_err(|e| format!("读取失败（{path}）: {e}"))?;
+    load_root_at(&sidecar_path(config_path))
+}
+
+/// Read the credentials root at an explicit path.
+///
+/// Backends whose store does not sit next to the config document (DSH) pass their own path.
+pub fn load_root_at(path: &str) -> Result<Value, String> {
+    let content = read_config_content(path).map_err(|e| format!("读取失败（{path}）: {e}"))?;
     if content.trim().is_empty() {
         return Ok(skeleton_root());
     }
@@ -53,13 +59,17 @@ pub fn secret_for(root: &Value, env_name: &str) -> String {
 /// Update the provider's actual key into the sibling credentials file.
 /// An empty key deletes the ref; other refs / records / unknown fields are kept.
 pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> {
+    save_at(&sidecar_path(config_path), providers)
+}
+
+/// Update the given refs at an explicit credentials path (see [`save`] for the merge rules).
+pub fn save_at(path: &str, providers: &[ProviderRow]) -> Result<(), String> {
     if !providers.iter().any(|provider| {
         !effective_env_name(provider).is_empty() || !provider.original_api_key_env.trim().is_empty()
     }) {
         return Ok(());
     }
-    let path = sidecar_path(config_path);
-    let mut root = load_root(config_path)?;
+    let mut root = load_root_at(path)?;
     let Some(object) = root.as_object_mut() else {
         return Err("凭据文件根节点必须是对象".into());
     };
@@ -94,7 +104,7 @@ pub fn save(config_path: &str, providers: &[ProviderRow]) -> Result<(), String> 
     }
 
     let content = to_yaml_string(&Value::Object(object.clone()))?;
-    crate::backends::write_config(&path, &content)
+    crate::backends::write_config(path, &content)
 }
 
 /// Generate DSH's default credential reference name from the provider key.

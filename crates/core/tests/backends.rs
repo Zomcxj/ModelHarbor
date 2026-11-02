@@ -388,13 +388,37 @@ fn other_backends_have_a_single_candidate() {
     let candidates = b.path_candidates(&p);
     assert_eq!(
         candidates.len(),
-        2,
-        "DSH 应当同时看两个档位：{candidates:?}"
+        3,
+        "DSH 应当同时看三个档位（自身 + 另外两个候选）：{candidates:?}"
     );
     assert_eq!(candidates[0], p, "主档必须是第一候选");
-    assert!(
-        candidates[1].replace('\\', "/").contains("/profiles/sdk/"),
-        "第二候选应是 sdk 档：{candidates:?}"
+    // 其余候选是除自身外的两个档位，与磁盘上哪个存在无关。
+    let normalized: Vec<String> = candidates.iter().map(|c| c.replace('\\', "/")).collect();
+    let named = |needle: &str| normalized.iter().any(|c| c.contains(needle));
+    for profile in ["desktop", "sdk", "web"] {
+        assert!(
+            named(&format!("/profiles/{profile}/")),
+            "候选应覆盖 {profile} 档：{candidates:?}"
+        );
+    }
+    // 默认路径取磁盘上实际存在的第一个档位（都没有时才回落 desktop）。
+    let home_profiles = std::path::PathBuf::from(&p)
+        .parent()
+        .and_then(|dir| dir.parent())
+        .map(std::path::Path::to_path_buf)
+        .expect("默认路径应在 profiles/<profile>/ 下");
+    let existing: Vec<&str> = ["desktop", "sdk", "web"]
+        .into_iter()
+        .filter(|profile| home_profiles.join(profile).exists())
+        .collect();
+    let expected = existing.first().copied().unwrap_or("desktop");
+    assert_eq!(
+        std::path::PathBuf::from(&p)
+            .parent()
+            .and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str()),
+        Some(expected),
+        "默认档位应是磁盘上第一个存在的候选：{p}"
     );
 }
 
