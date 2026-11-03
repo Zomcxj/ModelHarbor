@@ -6,15 +6,24 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
-/// Build a wsl command: with CREATE_NO_WINDOW on Windows.
-pub(crate) fn wsl_command() -> Command {
-    let mut cmd = Command::new("wsl");
+/// Build a command that never pops a console window on Windows.
+///
+/// The app is a GUI process (`windows_subsystem = "windows"`): without `CREATE_NO_WINDOW`, starting a
+/// console child (`wsl`, `reg`, …) makes Windows allocate a fresh console — which the user sees as a
+/// terminal window flashing up. Every child process must go through here.
+pub(crate) fn hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     cmd
+}
+
+/// Build a wsl command: with CREATE_NO_WINDOW on Windows.
+pub(crate) fn wsl_command() -> Command {
+    hidden_command("wsl")
 }
 
 /// Whether WSL genuinely works: only `wsl -e true` exiting 0 counts. Cached per process.
